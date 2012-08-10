@@ -27,8 +27,6 @@ xcuserdata/
 project.xcworkspace/
 # Generated files
 VersionX-revision.h
-# build products
-build/
 *.[oa]
 # Other source repository archive directories (protects when importing)
 .hg
