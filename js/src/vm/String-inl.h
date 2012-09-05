@@ -1,50 +1,17 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=79 ft=cpp:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is SpiderMonkey JavaScript engine.
- *
- * The Initial Developer of the Original Code is
- * Mozilla Corporation.
- * Portions created by the Initial Developer are Copyright (C) 2009
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Luke Wagner <luke@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either the GNU General Public License Version 2 or later (the "GPL"), or
- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef String_inl_h__
 #define String_inl_h__
 
 #include "jscntxt.h"
-#include "jsgcmark.h"
 #include "jsprobes.h"
 
+#include "gc/Marking.h"
 #include "String.h"
 
 #include "jsgcinlines.h"
@@ -146,8 +113,10 @@ JSDependentString::init(JSLinearString *base, const jschar *chars, size_t length
 }
 
 JS_ALWAYS_INLINE JSDependentString *
-JSDependentString::new_(JSContext *cx, JSLinearString *base, const jschar *chars, size_t length)
+JSDependentString::new_(JSContext *cx, JSLinearString *base_, const jschar *chars, size_t length)
 {
+    JS::Rooted<JSLinearString*> base(cx, base_);
+
     /* Try to avoid long chains of dependent strings. */
     while (base->isDependent())
         base = base->asDependent().base();
@@ -155,8 +124,6 @@ JSDependentString::new_(JSContext *cx, JSLinearString *base, const jschar *chars
     JS_ASSERT(base->isFlat());
     JS_ASSERT(chars >= base->chars() && chars < base->chars() + base->length());
     JS_ASSERT(length <= base->length() - (chars - base->chars()));
-
-    JS::Root<JSLinearString*> baseRoot(cx, &base);
 
     /*
      * The characters may be an internal pointer to a GC thing, so prevent them
@@ -449,6 +416,8 @@ namespace js {
 static JS_ALWAYS_INLINE JSFixedString *
 NewShortString(JSContext *cx, const jschar *chars, size_t length)
 {
+    SkipRoot skip(cx, &chars);
+
     /*
      * Don't bother trying to find a static atom; measurement shows that not
      * many get here (for one, Atomize is catching them).

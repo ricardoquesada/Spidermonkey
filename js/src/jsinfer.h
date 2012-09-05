@@ -1,41 +1,8 @@
 //* -*- Mode: c++; c-basic-offset: 4; tab-width: 40; indent-tabs-mode: nil -*- */
 /* vim: set ts=40 sw=4 et tw=99: */
-/* ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is the Mozilla SpiderMonkey bytecode type inference
- *
- * The Initial Developer of the Original Code is
- *   Mozilla Foundation
- * Portions created by the Initial Developer are Copyright (C) 2010
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Brian Hackett <bhackett@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Definitions related to javascript type inference. */
 
@@ -43,12 +10,12 @@
 #define jsinfer_h___
 
 #include "jsalloc.h"
-#include "jscell.h"
 #include "jsfriendapi.h"
 #include "jsprvtd.h"
 
 #include "ds/LifoAlloc.h"
 #include "gc/Barrier.h"
+#include "gc/Heap.h"
 #include "js/HashTable.h"
 
 namespace JS {
@@ -107,10 +74,7 @@ class Type
         return data > JSVAL_TYPE_UNKNOWN;
     }
 
-    TypeObjectKey *objectKey() const {
-        JS_ASSERT(isObject());
-        return (TypeObjectKey *) data;
-    }
+    inline TypeObjectKey *objectKey() const;
 
     /* Accessors for JSObject types */
 
@@ -118,10 +82,7 @@ class Type
         return isObject() && !!(data & 1);
     }
 
-    JSObject *singleObject() const {
-        JS_ASSERT(isSingleObject());
-        return (JSObject *) (data ^ 1);
-    }
+    inline JSObject *singleObject() const;
 
     /* Accessors for TypeObject types */
 
@@ -129,10 +90,7 @@ class Type
         return isObject() && !(data & 1);
     }
 
-    TypeObject *typeObject() const {
-        JS_ASSERT(isTypeObject());
-        return (TypeObject *) data;
-    }
+    inline TypeObject *typeObject() const;
 
     bool operator == (Type o) const { return data == o.data; }
     bool operator != (Type o) const { return data != o.data; }
@@ -934,8 +892,8 @@ struct TypeCallsite
     bool isNew;
 
     /* Types of each argument to the call. */
-    TypeSet **argumentTypes;
     unsigned argumentCount;
+    TypeSet **argumentTypes;
 
     /* Types of the this variable. */
     TypeSet *thisTypes;
@@ -1139,28 +1097,51 @@ typedef HashMap<AllocationSiteKey,ReadBarriered<TypeObject>,AllocationSiteKey,Sy
 struct RecompileInfo
 {
     JSScript *script;
-    bool constructing:1;
-    uint32_t chunkIndex:31;
+    bool constructing : 1;
+    bool barriers : 1;
+    uint32_t chunkIndex:30;
 
     bool operator == (const RecompileInfo &o) const {
-        return script == o.script && constructing == o.constructing && chunkIndex == o.chunkIndex;
+        return script == o.script
+            && constructing == o.constructing
+            && barriers == o.barriers
+            && chunkIndex == o.chunkIndex;
     }
 };
 
 /* Type information for a compartment. */
 struct TypeCompartment
 {
+    /* Constraint solving worklist structures. */
+
+    /*
+     * Worklist of types which need to be propagated to constraints. We use a
+     * worklist to avoid blowing the native stack.
+     */
+    struct PendingWork
+    {
+        TypeConstraint *constraint;
+        TypeSet *source;
+        Type type;
+    };
+    PendingWork *pendingArray;
+    unsigned pendingCount;
+    unsigned pendingCapacity;
+
+    /* Whether we are currently resolving the pending worklist. */
+    bool resolving;
+
     /* Whether type inference is enabled in this compartment. */
     bool inferenceEnabled;
-
-    /* Number of scripts in this compartment. */
-    unsigned scriptCount;
 
     /*
      * Bit set if all current types must be marked as unknown, and all scripts
      * recompiled. Caused by OOM failure within inference operations.
      */
     bool pendingNukeTypes;
+
+    /* Number of scripts in this compartment. */
+    unsigned scriptCount;
 
     /* Pending recompilations to perform before execution of JIT code can resume. */
     Vector<RecompileInfo> *pendingRecompiles;
@@ -1190,25 +1171,6 @@ struct TypeCompartment
 
     void fixArrayType(JSContext *cx, JSObject *obj);
     void fixObjectType(JSContext *cx, JSObject *obj);
-
-    /* Constraint solving worklist structures. */
-
-    /*
-     * Worklist of types which need to be propagated to constraints. We use a
-     * worklist to avoid blowing the native stack.
-     */
-    struct PendingWork
-    {
-        TypeConstraint *constraint;
-        TypeSet *source;
-        Type type;
-    };
-    PendingWork *pendingArray;
-    unsigned pendingCount;
-    unsigned pendingCapacity;
-
-    /* Whether we are currently resolving the pending worklist. */
-    bool resolving;
 
     /* Logging fields */
 

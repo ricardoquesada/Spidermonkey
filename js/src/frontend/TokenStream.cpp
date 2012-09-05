@@ -1,43 +1,9 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=99:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Nick Fitzgerald <nfitzgerald@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
  * JS lexical scanner.
@@ -64,9 +30,9 @@
 #include "jsopcode.h"
 #include "jsscript.h"
 
-#include "frontend/BytecodeEmitter.h"
 #include "frontend/Parser.h"
 #include "frontend/TokenStream.h"
+#include "frontend/TreeContext.h"
 #include "vm/RegExpObject.h"
 
 #include "jsscriptinlines.h"
@@ -153,31 +119,34 @@ js::IsIdentifier(JSLinearString *str)
 #endif
 
 /* Initialize members that aren't initialized in |init|. */
-TokenStream::TokenStream(JSContext *cx, JSPrincipals *prin, JSPrincipals *originPrin)
-  : tokens(), tokensRoot(cx, &tokens),
-    cursor(), lookahead(), flags(), userbufRoot(cx, &userbuf),
-    sourceMap(), listenerTSData(), tokenbuf(cx),
-    cx(cx), originPrincipals(JSScript::normalizeOriginPrincipals(prin, originPrin))
+TokenStream::TokenStream(JSContext *cx, JSPrincipals *prin, JSPrincipals *originPrin,
+                         const jschar *base, size_t length, const char *fn, unsigned ln,
+                         JSVersion v, StrictModeGetter *smg)
+  : tokens(),
+    tokensRoot(cx, &tokens),
+    cursor(),
+    lookahead(),
+    lineno(ln),
+    flags(),
+    linebase(base),
+    prevLinebase(NULL),
+    linebaseRoot(cx, &linebase),
+    prevLinebaseRoot(cx, &prevLinebase),
+    userbuf(base, length),
+    userbufRoot(cx, &userbuf),
+    filename(fn),
+    sourceMap(NULL),
+    listenerTSData(),
+    tokenbuf(cx),
+    version(v),
+    allowXML(VersionHasAllowXML(v)),
+    moarXML(VersionHasMoarXML(v)),
+    cx(cx),
+    originPrincipals(JSScript::normalizeOriginPrincipals(prin, originPrin)),
+    strictModeGetter(smg)
 {
     if (originPrincipals)
         JS_HoldPrincipals(originPrincipals);
-}
-
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
-
-bool
-TokenStream::init(const jschar *base, size_t length, const char *fn, unsigned ln, JSVersion v)
-{
-    filename = fn;
-    lineno = ln;
-    version = v;
-    xml = VersionHasXML(v);
-
-    userbuf.init(base, length);
-    linebase = base;
-    prevLinebase = NULL;
 
     JSSourceHandler listener = cx->runtime->debugHooks.sourceHandler;
     void *listenerData = cx->runtime->debugHooks.sourceHandlerData;
@@ -239,8 +208,11 @@ TokenStream::init(const jschar *base, size_t length, const char *fn, unsigned ln
      * way to address the dependency from statements on the current token.
      */
     tokens[0].pos.begin.lineno = tokens[0].pos.end.lineno = ln;
-    return true;
 }
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 TokenStream::~TokenStream()
 {
@@ -296,8 +268,8 @@ TokenStream::getChar()
          * are by the far the most common) this gives false positives for '('
          * (0x0028) and ')' (0x0029).  We could avoid those by incorporating
          * the 13th bit of d into the lookup, but that requires extra shifting
-         * and masking and isn't worthwhile.  See TokenStream::init() for the
-         * initialization of the relevant entries in the table.
+         * and masking and isn't worthwhile.  See TokenStream::TokenStream()
+         * for the initialization of the relevant entries in the table.
          */
         if (JS_UNLIKELY(maybeEOL[c & 0xff])) {
             if (c == '\n')
@@ -553,21 +525,18 @@ TokenStream::reportCompileErrorNumberVA(ParseNode *pn, unsigned flags, unsigned 
 }
 
 bool
-js::ReportStrictModeError(JSContext *cx, TokenStream *ts, TreeContext *tc, ParseNode *pn,
-                          unsigned errorNumber, ...)
+js::ReportStrictModeError(JSContext *cx, TokenStream *ts, ParseNode *pn, unsigned errorNumber, ...)
 {
-    JS_ASSERT(ts || tc);
     JS_ASSERT(cx == ts->getContext());
 
     /* In strict mode code, this is an error, not merely a warning. */
     unsigned flags;
-    if ((ts && ts->isStrictMode()) || (tc && (tc->flags & TCF_STRICT_MODE_CODE))) {
+    if (ts->isStrictMode())
         flags = JSREPORT_ERROR;
-    } else {
-        if (!cx->hasStrictOption())
-            return true;
+    else if (cx->hasStrictOption())
         flags = JSREPORT_WARNING;
-    }
+    else
+        return true;
 
     va_list ap;
     va_start(ap, errorNumber);
@@ -581,17 +550,16 @@ bool
 js::ReportCompileErrorNumber(JSContext *cx, TokenStream *ts, ParseNode *pn, unsigned flags,
                              unsigned errorNumber, ...)
 {
-    va_list ap;
-
     /*
-     * We don't accept a TreeContext argument, so we can't implement
-     * JSREPORT_STRICT_MODE_ERROR here.  Use ReportStrictModeError instead,
-     * or do the checks in the caller and pass plain old JSREPORT_ERROR.
+     * We don't handle JSREPORT_STRICT_MODE_ERROR here.  Use
+     * ReportStrictModeError instead, or do the checks in the caller and pass
+     * plain old JSREPORT_ERROR.
      */
     JS_ASSERT(!(flags & JSREPORT_STRICT_MODE_ERROR));
-
-    va_start(ap, errorNumber);
     JS_ASSERT(cx == ts->getContext());
+
+    va_list ap;
+    va_start(ap, errorNumber);
     bool result = ts->reportCompileErrorNumberVA(pn, flags, errorNumber, ap);
     va_end(ap);
 
@@ -915,8 +883,8 @@ TokenStream::getXMLTextOrTag(TokenKind *ttp, Token **tpp)
  * - https://bugzilla.mozilla.org/show_bug.cgi?id=309712
  * - https://bugzilla.mozilla.org/show_bug.cgi?id=310993
  *
- * So without JSOPTION_XML, we changed around Firefox 1.5 never to scan an XML
- * comment or CDATA literal.  Instead, we always scan <! as the start of an
+ * So without JSOPTION_MOAR_XML, we changed around Firefox 1.5 never to scan an
+ * XML comment or CDATA literal.  Instead, we always scan <! as the start of an
  * HTML comment hack to end of line, used since Netscape 2 to hide script tag
  * content from script-unaware browsers.
  *
@@ -1334,7 +1302,7 @@ TokenStream::checkForKeyword(const jschar *s, size_t length, TokenKind *ttp, JSO
 
     /* Strict reserved word. */
     if (isStrictMode())
-        return ReportStrictModeError(cx, this, NULL, NULL, JSMSG_RESERVED_ID, kw->chars);
+        return ReportStrictModeError(cx, this, NULL, JSMSG_RESERVED_ID, kw->chars);
     return ReportCompileErrorNumber(cx, this, NULL, JSREPORT_STRICT | JSREPORT_WARNING,
                                     JSMSG_RESERVED_ID, kw->chars);
 }
@@ -1552,12 +1520,18 @@ TokenStream::getTokenInternal()
             numStart = userbuf.addressOfNextRawChar() - 2;
             goto decimal_dot;
         }
-#if JS_HAS_XML_SUPPORT
         if (c == '.') {
+            qc = getCharIgnoreEOL();
+            if (qc == '.') {
+                tt = TOK_TRIPLEDOT;
+                goto out;
+            }
+            ungetCharIgnoreEOL(qc);
+#if JS_HAS_XML_SUPPORT
             tt = TOK_DBLDOT;
             goto out;
-        }
 #endif
+        }
         ungetCharIgnoreEOL(c);
         tt = TOK_DOT;
         goto out;
@@ -1613,7 +1587,7 @@ TokenStream::getTokenInternal()
                             c = peekChar();
                             /* Strict mode code allows only \0, then a non-digit. */
                             if (val != 0 || JS7_ISDEC(c)) {
-                                if (!ReportStrictModeError(cx, this, NULL, NULL,
+                                if (!ReportStrictModeError(cx, this, NULL,
                                                            JSMSG_DEPRECATED_OCTAL)) {
                                     goto error;
                                 }
@@ -1794,7 +1768,7 @@ TokenStream::getTokenInternal()
             numStart = userbuf.addressOfNextRawChar() - 1;  /* one past the '0' */
             while (JS7_ISDEC(c)) {
                 /* Octal integer literals are not permitted in strict mode code. */
-                if (!ReportStrictModeError(cx, this, NULL, NULL, JSMSG_DEPRECATED_OCTAL))
+                if (!ReportStrictModeError(cx, this, NULL, JSMSG_DEPRECATED_OCTAL))
                     goto error;
 
                 /*
@@ -1900,7 +1874,7 @@ TokenStream::getTokenInternal()
 
       case '<':
 #if JS_HAS_XML_SUPPORT
-        if ((flags & TSF_OPERAND) && !isStrictMode() && (hasXML() || peekChar() != '!')) {
+        if ((flags & TSF_OPERAND) && allowsXML() && (hasMoarXML() || peekChar() != '!')) {
             if (!getXMLMarkup(&tt, &tp))
                 goto error;
             goto out;
@@ -2190,6 +2164,7 @@ TokenKindToString(TokenKind tt)
       case TOK_INC:             return "TOK_INC";
       case TOK_DEC:             return "TOK_DEC";
       case TOK_DOT:             return "TOK_DOT";
+      case TOK_TRIPLEDOT:       return "TOK_TRIPLEDOT";
       case TOK_LB:              return "TOK_LB";
       case TOK_RB:              return "TOK_RB";
       case TOK_LC:              return "TOK_LC";

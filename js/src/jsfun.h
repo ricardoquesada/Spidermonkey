@@ -1,41 +1,8 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jsfun_h___
 #define jsfun_h___
@@ -96,6 +63,8 @@ struct JSFunction : public JSObject
     } u;
     js::HeapPtrAtom  atom;        /* name for diagnostics and decompiling */
 
+    bool hasDefaults()       const { return flags & JSFUN_HAS_DEFAULTS; }
+    bool hasRest()           const { return flags & JSFUN_HAS_REST; }
     bool isInterpreted()     const { return kind() >= JSFUN_INTERPRETED; }
     bool isNative()          const { return !isInterpreted(); }
     bool isNativeConstructor() const { return flags & JSFUN_CONSTRUCTOR; }
@@ -118,11 +87,18 @@ struct JSFunction : public JSObject
         this->nargs = nargs;
     }
 
+    void setHasRest() {
+        JS_ASSERT(!hasRest());
+        this->flags |= JSFUN_HAS_REST;
+    }
+
+    void setHasDefaults() {
+        JS_ASSERT(!hasDefaults());
+        this->flags |= JSFUN_HAS_DEFAULTS;
+    }
+
     /* uint16_t representation bounds number of call object dynamic slots. */
     enum { MAX_ARGS_AND_VARS = 2 * ((1U << 16) - 1) };
-
-#define JS_LOCAL_NAME_TO_ATOM(nameWord)  ((JSAtom *) ((nameWord) & ~uintptr_t(1)))
-#define JS_LOCAL_NAME_IS_CONST(nameWord) ((((nameWord) & uintptr_t(1))) != 0)
 
     /*
      * For an interpreted function, accessors for the initial scope object of
@@ -188,7 +164,7 @@ struct JSFunction : public JSObject
 
     /* Bound function accessors. */
 
-    inline bool initBoundFunction(JSContext *cx, const js::Value &thisArg,
+    inline bool initBoundFunction(JSContext *cx, js::HandleValue thisArg,
                                   const js::Value *args, unsigned argslen);
 
     inline JSObject *getBoundFunctionTarget() const;
@@ -213,7 +189,7 @@ struct JSFunction : public JSObject
     inline const js::Value &getExtendedSlot(size_t which) const;
 
   private:
-    /* 
+    /*
      * These member functions are inherited from JSObject, but should never be applied to
      * a value statically known to be a JSFunction.
      */
@@ -249,7 +225,7 @@ js_CloneFunctionObject(JSContext *cx, js::HandleFunction fun,
                        js::gc::AllocKind kind = JSFunction::FinalizeKind);
 
 extern JSFunction *
-js_DefineFunction(JSContext *cx, js::HandleObject obj, jsid id, JSNative native,
+js_DefineFunction(JSContext *cx, js::HandleObject obj, js::HandleId id, JSNative native,
                   unsigned nargs, unsigned flags,
                   js::gc::AllocKind kind = JSFunction::FinalizeKind);
 
@@ -269,7 +245,7 @@ extern void
 js_ReportIsNotFunction(JSContext *cx, const js::Value *vp, unsigned flags);
 
 extern void
-js_PutCallObject(js::StackFrame *fp);
+js_PutCallObject(js::StackFrame *fp, js::CallObject &callobj);
 
 namespace js {
 
@@ -314,6 +290,9 @@ template<XDRMode mode>
 bool
 XDRInterpretedFunction(XDRState<mode> *xdr, JSObject **objp, JSScript *parentScript);
 
+extern JSObject *
+CloneInterpretedFunction(JSContext *cx, JSFunction *fun);
+
 } /* namespace js */
 
 extern JSBool
@@ -323,7 +302,7 @@ extern JSBool
 js_fun_call(JSContext *cx, unsigned argc, js::Value *vp);
 
 extern JSObject*
-js_fun_bind(JSContext *cx, js::HandleObject target, js::Value thisArg,
+js_fun_bind(JSContext *cx, js::HandleObject target, js::HandleValue thisArg,
             js::Value *boundArgs, unsigned argslen);
 
 #endif /* jsfun_h___ */

@@ -1,6 +1,10 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=99:
  */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 
 #include "tests.h"
 #include "jsdbgapi.h"
@@ -36,7 +40,7 @@ BEGIN_TEST(testTrap_gc)
     // execute
     jsvalRoot v2(cx);
     CHECK(JS_ExecuteScript(cx, global, script, v2.addr()));
-    CHECK(JSVAL_IS_OBJECT(v2));
+    CHECK(v2.value().isObject());
     CHECK_EQUAL(emptyTrapCallCount, 0);
 
     // Enable debug mode

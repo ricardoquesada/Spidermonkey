@@ -1,41 +1,9 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=99 ft=cpp:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is mozilla.org code, released
- * June 24, 2010.
- *
- * The Initial Developer of the Original Code is
- *    The Mozilla Foundation
- *
- * Contributor(s):
- *    Andreas Gal <gal@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/Util.h"
 
@@ -45,6 +13,7 @@
 #include "nsIDOMWindow.h"
 #include "nsIDOMWindowCollection.h"
 #include "nsContentUtils.h"
+#include "nsJSUtils.h"
 
 #include "XPCWrapper.h"
 #include "XrayWrapper.h"
@@ -151,14 +120,6 @@ IsPermitted(const char *name, JSFlatString *prop, bool set)
     if (!propLength)
         return false;
     switch (name[0]) {
-        NAME('D', "DOMException",
-             PROP('c', RW("code"))
-             PROP('m', RW("message"))
-             PROP('n', RW("name"))
-             PROP('r', RW("result"))
-             PROP('t', R("toString")))
-        NAME('E', "Error",
-             PROP('m', R("message")))
         NAME('H', "History",
              PROP('b', R("back"))
              PROP('f', R("forward"))
@@ -521,6 +482,22 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
     if (!found) {
         // For now, only do this on functions.
         if (!JS_ObjectIsFunction(cx, wrappedObject)) {
+
+            // This little loop hole will go away soon! See bug 553102.
+            JSAutoEnterCompartment innerAc;
+            if (!innerAc.enter(cx, wrapper))
+                return false;
+            nsCOMPtr<nsPIDOMWindow> win =
+                do_QueryInterface(nsJSUtils::GetStaticScriptGlobal(cx, wrapper));
+            if (win) {
+                nsCOMPtr<nsIDocument> doc =
+                    do_QueryInterface(win->GetExtantDocument());
+                if (doc) {
+                    doc->WarnOnceAbout(nsIDocument::eNoExposedProps,
+                                       /* asError = */ true);
+                }
+            }
+
             perm = PermitPropertyAccess;
             return true;
         }
@@ -533,20 +510,20 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
         return true;
     }
 
-    jsval exposedProps;
+    JS::Value exposedProps;
     if (!JS_LookupPropertyById(cx, wrappedObject, exposedPropsId, &exposedProps))
         return false;
 
-    if (JSVAL_IS_VOID(exposedProps) || JSVAL_IS_NULL(exposedProps)) {
+    if (exposedProps.isNullOrUndefined()) {
         return PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
     }
 
-    if (!JSVAL_IS_OBJECT(exposedProps)) {
+    if (!exposedProps.isObject()) {
         JS_ReportError(cx, "__exposedProps__ must be undefined, null, or an Object");
         return false;
     }
 
-    JSObject *hallpass = JSVAL_TO_OBJECT(exposedProps);
+    JSObject *hallpass = &exposedProps.toObject();
 
     Access access = NO_ACCESS;
 
@@ -605,6 +582,31 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
 
     perm = PermitPropertyAccess;
     return true; // Allow
+}
+
+bool
+ComponentsObjectPolicy::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper::Action act,
+                              Permission &perm) 
+{
+    perm = DenyAccess;
+    JSAutoEnterCompartment ac;
+    if (!ac.enter(cx, wrapper))
+        return false;
+
+    if (JSID_IS_STRING(id) && act == Wrapper::GET) {
+        JSFlatString *flatId = JSID_TO_FLAT_STRING(id);
+        if (JS_FlatStringEqualsAscii(flatId, "isSuccessCode") ||
+            JS_FlatStringEqualsAscii(flatId, "lookupMethod") ||
+            JS_FlatStringEqualsAscii(flatId, "interfaces") ||
+            JS_FlatStringEqualsAscii(flatId, "interfacesByID") ||
+            JS_FlatStringEqualsAscii(flatId, "results"))
+        {
+            perm = PermitPropertyAccess;
+            return true;
+        }
+    }
+
+    return PermitIfUniversalXPConnect(cx, id, act, perm);  // Deny
 }
 
 }

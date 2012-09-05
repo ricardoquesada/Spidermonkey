@@ -1,47 +1,9 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=2 sw=4 et tw=80:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   John Bandhauer <jband@netscape.com>
- *   Pierre Phaneuf <pp@ludusdesign.com>
- *   IBM Corp.
- *   Dan Mosedale <dan.mosedale@oracle.com>
- *   Serge Gautherie <sgautherie.bz@free.fr>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* XPConnect JavaScript interactive shell. */
 
@@ -83,11 +45,13 @@
 #include "nsIXPCSecurityManager.h"
 #include "nsJSPrincipals.h"
 #include "xpcpublic.h"
+#include "nsXULAppAPI.h"
 #ifdef XP_MACOSX
 #include "xpcshellMacUtils.h"
 #endif
 #ifdef XP_WIN
 #include <windows.h>
+#include <shlobj.h>
 #endif
 
 #ifdef ANDROID
@@ -127,9 +91,12 @@ public:
 
     bool SetGREDir(const char *dir);
     void ClearGREDir() { mGREDir = nsnull; }
+    void SetAppFile(nsILocalFile *appFile);
+    void ClearAppFile() { mAppFile = nsnull; }
 
 private:
     nsCOMPtr<nsILocalFile> mGREDir;
+    nsCOMPtr<nsILocalFile> mAppFile;
 };
 
 /***************************************************************************/
@@ -162,7 +129,7 @@ JSPrincipals *gJSPrincipals = nsnull;
 nsAutoString *gWorkingDirectory = nsnull;
 
 static JSBool
-GetLocationProperty(JSContext *cx, JSObject *obj, jsid id, jsval *vp)
+GetLocationProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, jsval *vp)
 {
 #if !defined(XP_WIN) && !defined(XP_UNIX)
     //XXX: your platform should really implement this
@@ -457,7 +424,7 @@ Dump(JSContext *cx, unsigned argc, jsval *vp)
         return false;
 
 #ifdef ANDROID
-    __android_log_print(ANDROID_LOG_INFO, "Gecko", bytes.ptr());
+    __android_log_print(ANDROID_LOG_INFO, "Gecko", "%s", bytes.ptr());
 #endif
     fputs(bytes.ptr(), gOutFile);
     fflush(gOutFile);
@@ -661,19 +628,6 @@ DumpHeap(JSContext *cx, unsigned argc, jsval *vp)
 #endif /* DEBUG */
 
 static JSBool
-Clear(JSContext *cx, unsigned argc, jsval *vp)
-{
-    if (argc > 0 && !JSVAL_IS_PRIMITIVE(JS_ARGV(cx, vp)[0])) {
-        JS_ClearScope(cx, JSVAL_TO_OBJECT(JS_ARGV(cx, vp)[0]));
-    } else {
-        JS_ReportError(cx, "'clear' requires an object");
-        return false;
-    }
-    JS_SET_RVAL(cx, vp, JSVAL_VOID);
-    return true;
-}
-
-static JSBool
 SendCommand(JSContext* cx,
             unsigned argc,
             jsval* vp)
@@ -729,7 +683,9 @@ static const struct JSOption {
     {"relimit",         JSOPTION_RELIMIT},
     {"strict",          JSOPTION_STRICT},
     {"werror",          JSOPTION_WERROR},
-    {"xml",             JSOPTION_XML},
+    {"allow_xml",       JSOPTION_ALLOW_XML},
+    {"moar_xml",        JSOPTION_MOAR_XML},
+    {"strict_mode",     JSOPTION_STRICT_MODE},
 };
 
 static uint32_t
@@ -843,7 +799,6 @@ static JSFunctionSpec glob_functions[] = {
 #ifdef JS_GC_ZEAL
     {"gczeal",          GCZeal,         1,0},
 #endif
-    {"clear",           Clear,          1,0},
     {"options",         Options,        0,0},
     JS_FN("parent",     Parent,         1,0),
 #ifdef DEBUG
@@ -861,7 +816,7 @@ JSClass global_class = {
 };
 
 static JSBool
-env_setProperty(JSContext *cx, JSObject *obj, jsid id, JSBool strict, jsval *vp)
+env_setProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict, jsval *vp)
 {
 /* XXX porting may be easy, but these don't seem to supply setenv by default */
 #if !defined XP_OS2 && !defined SOLARIS
@@ -914,7 +869,7 @@ env_setProperty(JSContext *cx, JSObject *obj, jsid id, JSBool strict, jsval *vp)
 }
 
 static JSBool
-env_enumerate(JSContext *cx, JSObject *obj)
+env_enumerate(JSContext *cx, JSHandleObject obj)
 {
     static JSBool reflected;
     char **evp, *name, *value;
@@ -946,7 +901,7 @@ env_enumerate(JSContext *cx, JSObject *obj)
 }
 
 static JSBool
-env_resolve(JSContext *cx, JSObject *obj, jsid id, unsigned flags,
+env_resolve(JSContext *cx, JSHandleObject obj, JSHandleId id, unsigned flags,
             JSObject **objp)
 {
     JSString *idstr, *valstr;
@@ -1229,7 +1184,7 @@ ProcessArgs(JSContext *cx, JSObject *obj, char **argv, int argc)
             JS_ToggleOptions(cx, JSOPTION_STRICT);
             break;
         case 'x':
-            JS_ToggleOptions(cx, JSOPTION_XML);
+            JS_ToggleOptions(cx, JSOPTION_MOAR_XML);
             break;
         case 'd':
             xpc_ActivateDebugMode();
@@ -1507,29 +1462,6 @@ FullTrustSecMan::EnableCapability(const char *capability)
     return NS_OK;;
 }
 
-/* void revertCapability (in string capability); */
-NS_IMETHODIMP
-FullTrustSecMan::RevertCapability(const char *capability)
-{
-    return NS_OK;
-}
-
-/* void disableCapability (in string capability); */
-NS_IMETHODIMP
-FullTrustSecMan::DisableCapability(const char *capability)
-{
-    return NS_OK;
-}
-
-/* void setCanEnableCapability (in AUTF8String certificateFingerprint, in string capability, in short canEnable); */
-NS_IMETHODIMP
-FullTrustSecMan::SetCanEnableCapability(const nsACString & certificateFingerprint,
-                                        const char *capability,
-                                        PRInt16 canEnable)
-{
-    return NS_OK;
-}
-
 /* [noscript] nsIPrincipal getObjectPrincipal (in JSContextPtr cx, in JSObjectPtr obj); */
 NS_IMETHODIMP
 FullTrustSecMan::GetObjectPrincipal(JSContext * cx, JSObject * obj,
@@ -1788,6 +1720,8 @@ main(int argc, char **argv, char **envp)
 
     XPCShellDirProvider dirprovider;
 
+    dirprovider.SetAppFile(appFile);
+
     if (argc > 1 && !strcmp(argv[1], "-g")) {
         if (argc < 3)
             return usage();
@@ -1878,6 +1812,7 @@ main(int argc, char **argv, char **envp)
             return 1;
         }
 
+        JS_SetOptions(cx, JS_GetOptions(cx) | JSOPTION_ALLOW_XML);
         xpc_LocalizeContext(cx);
 
         nsCOMPtr<nsIXPConnect> xpc = do_GetService(nsIXPConnect::GetCID());
@@ -2046,6 +1981,7 @@ main(int argc, char **argv, char **envp)
     appDir = nsnull;
     appFile = nsnull;
     dirprovider.ClearGREDir();
+    dirprovider.ClearAppFile();
 
 #ifdef MOZ_CRASHREPORTER
     // Shut down the crashreporter service to prevent leaking some strings it holds.
@@ -2071,6 +2007,12 @@ XPCShellDirProvider::SetGREDir(const char *dir)
     return NS_SUCCEEDED(rv);
 }
 
+void
+XPCShellDirProvider::SetAppFile(nsILocalFile* appFile)
+{
+    mAppFile = appFile;
+}
+
 NS_IMETHODIMP_(nsrefcnt)
 XPCShellDirProvider::AddRef()
 {
@@ -2094,6 +2036,9 @@ XPCShellDirProvider::GetFile(const char *prop, bool *persistent,
     if (mGREDir && !strcmp(prop, NS_GRE_DIR)) {
         *persistent = true;
         return mGREDir->Clone(result);
+    } else if (mAppFile && !strcmp(prop, XRE_EXECUTABLE_FILE)) {
+        *persistent = true;
+        return mAppFile->Clone(result);
     } else if (mGREDir && !strcmp(prop, NS_APP_PREF_DEFAULTS_50_DIR)) {
         nsCOMPtr<nsIFile> file;
         *persistent = true;
@@ -2103,6 +2048,46 @@ XPCShellDirProvider::GetFile(const char *prop, bool *persistent,
             return NS_ERROR_FAILURE;
         NS_ADDREF(*result = file);
         return NS_OK;
+    } else if (mAppFile && !strcmp(prop, XRE_UPDATE_ROOT_DIR)) {
+        // For xpcshell, we pretend that the update root directory is always
+        // the same as the GRE directory, except for Windows, where we immitate
+        // the algorithm defined in nsXREDirProvider::GetUpdateRootDir.
+        *persistent = true;
+#ifdef XP_WIN
+        char appData[MAX_PATH] = {'\0'};
+        char path[MAX_PATH] = {'\0'};
+        LPITEMIDLIST pItemIDList;
+        if (FAILED(SHGetSpecialFolderLocation(NULL, CSIDL_LOCAL_APPDATA, &pItemIDList)) ||
+            FAILED(SHGetPathFromIDListA(pItemIDList, appData))) {
+            return NS_ERROR_FAILURE;
+        }
+        nsAutoString pathName;
+        pathName.AssignASCII(appData);
+        nsCOMPtr<nsILocalFile> localFile;
+        nsresult rv = NS_NewLocalFile(pathName, true, getter_AddRefs(localFile));
+        if (NS_FAILED(rv)) {
+            return rv;
+        }
+
+#ifdef MOZ_APP_PROFILE
+        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_PROFILE));
+#else
+        // MOZ_APP_VENDOR and MOZ_APP_BASENAME are optional.
+#ifdef MOZ_APP_VENDOR
+        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_VENDOR));
+#endif
+#ifdef MOZ_APP_BASENAME
+        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_BASENAME));
+#endif
+        // However app name is always appended.
+        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_NAME));
+#endif
+        return localFile->Clone(result);
+#else
+        // Fail on non-Windows platforms, the caller is supposed to fal back on
+        // the app dir.
+        return NS_ERROR_FAILURE;
+#endif
     }
 
     return NS_ERROR_FAILURE;

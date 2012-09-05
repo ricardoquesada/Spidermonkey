@@ -1,42 +1,9 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=79 ft=cpp:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jsscript_h___
 #define jsscript_h___
@@ -75,30 +42,21 @@ struct JSTryNote {
     uint32_t        length;     /* length of the try statement or for-in loop */
 };
 
-typedef struct JSTryNoteArray {
-    JSTryNote       *vector;    /* array of indexed try notes */
-    uint32_t        length;     /* count of indexed try notes */
-} JSTryNoteArray;
-
-typedef struct JSObjectArray {
-    js::HeapPtrObject *vector;  /* array of indexed objects */
-    uint32_t        length;     /* count of indexed objects */
-} JSObjectArray;
-
-typedef struct JSConstArray {
-    js::HeapValue   *vector;    /* array of indexed constant values */
-    uint32_t        length;
-} JSConstArray;
-
 namespace js {
 
-struct GlobalSlotArray {
-    struct Entry {
-        uint32_t    atomIndex;  /* index into atom table */
-        uint32_t    slot;       /* global obj slot number */
-    };
-    Entry           *vector;
+struct ConstArray {
+    js::HeapValue   *vector;    /* array of indexed constant values */
     uint32_t        length;
+};
+
+struct ObjectArray {
+    js::HeapPtrObject *vector;  /* array of indexed objects */
+    uint32_t        length;     /* count of indexed objects */
+};
+
+struct TryNoteArray {
+    JSTryNote       *vector;    /* array of indexed try notes */
+    uint32_t        length;     /* count of indexed try notes */
 };
 
 struct ClosedSlotArray {
@@ -109,6 +67,13 @@ struct ClosedSlotArray {
 struct Shape;
 
 enum BindingKind { NONE, ARGUMENT, VARIABLE, CONSTANT };
+
+struct BindingName {
+    JSAtom *maybeAtom;
+    BindingKind kind;
+};
+
+typedef Vector<BindingName, 32> BindingNames;
 
 /*
  * Formal parameters and local variables are stored in a shape tree
@@ -210,7 +175,7 @@ class Bindings
     }
     bool addDestructuring(JSContext *cx, uint16_t *slotp) {
         *slotp = nargs;
-        return add(cx, RootedVarAtom(cx), ARGUMENT);
+        return add(cx, RootedAtom(cx), ARGUMENT);
     }
 
     void noteDup() { hasDup_ = true; }
@@ -238,7 +203,7 @@ class Bindings
      * The name at an element will be null when the element is for an argument
      * corresponding to a destructuring pattern.
      */
-    bool getLocalNameArray(JSContext *cx, Vector<JSAtom *> *namesp);
+    bool getLocalNameArray(JSContext *cx, BindingNames *namesp);
 
     /*
      * Protect stored bindings from mutation.  Subsequent attempts to add
@@ -261,19 +226,30 @@ class Bindings
 
     void trace(JSTracer *trc);
 
-    /* Rooter for stack allocated Bindings. */
-    struct StackRoot {
-        RootShape root;
-        StackRoot(JSContext *cx, Bindings *bindings)
-            : root(cx, (Shape **) &bindings->lastBinding)
-        {}
+    class AutoRooter : private AutoGCRooter
+    {
+      public:
+        explicit AutoRooter(JSContext *cx, Bindings *bindings_
+                            JS_GUARD_OBJECT_NOTIFIER_PARAM)
+          : AutoGCRooter(cx, BINDINGS), bindings(bindings_), skip(cx, bindings_)
+        {
+            JS_GUARD_OBJECT_NOTIFIER_INIT;
+        }
+
+        friend void AutoGCRooter::trace(JSTracer *trc);
+        void trace(JSTracer *trc);
+
+      private:
+        Bindings *bindings;
+        SkipRoot skip;
+        JS_DECL_USE_GUARD_OBJECT_NOTIFIER
     };
 };
 
 } /* namespace js */
 
 #define JS_OBJECT_ARRAY_SIZE(length)                                          \
-    (offsetof(JSObjectArray, vector) + sizeof(JSObject *) * (length))
+    (offsetof(ObjectArray, vector) + sizeof(JSObject *) * (length))
 
 #ifdef JS_METHODJIT
 namespace JSC {
@@ -354,8 +330,6 @@ typedef HashMap<JSScript *,
 
 } /* namespace js */
 
-static const uint32_t JS_SCRIPT_COOKIE = 0xc00cee;
-
 struct JSScript : public js::gc::Cell
 {
   private:
@@ -405,6 +379,26 @@ struct JSScript : public js::gc::Cell
 
         static void staticAsserts();
     };
+
+    // All the possible JITScripts that can simultaneously exist for a script.
+    struct JITScriptSet
+    {
+        JITScriptHandle jitHandleNormal;          // JIT info for normal scripts
+        JITScriptHandle jitHandleNormalBarriered; // barriered JIT info for normal scripts
+        JITScriptHandle jitHandleCtor;            // JIT info for constructors
+        JITScriptHandle jitHandleCtorBarriered;   // barriered JIT info for constructors
+
+        static size_t jitHandleOffset(bool constructing, bool barriers) {
+            return constructing
+                ? (barriers
+                   ? offsetof(JITScriptSet, jitHandleCtorBarriered)
+                   : offsetof(JITScriptSet, jitHandleCtor))
+                : (barriers
+                   ? offsetof(JITScriptSet, jitHandleNormalBarriered)
+                   : offsetof(JITScriptSet, jitHandleNormal));
+        }
+    };
+
 #endif  // JS_METHODJIT
 
     //
@@ -422,7 +416,7 @@ struct JSScript : public js::gc::Cell
 
   public:
     jsbytecode      *code;      /* bytecodes and their immediate operands */
-    uint8_t         *data;      /* pointer to variable-length data array (see 
+    uint8_t         *data;      /* pointer to variable-length data array (see
                                    comment above NewScript() for details) */
 
     const char      *filename;  /* source filename or null */
@@ -447,18 +441,12 @@ struct JSScript : public js::gc::Cell
     /* Persistent type information retained across GCs. */
     js::types::TypeScript *types;
 
-  public:
+  private:
 #ifdef JS_METHODJIT
-    JITScriptHandle jitHandleNormal; // extra JIT info for normal scripts
-    JITScriptHandle jitHandleCtor;   // extra JIT info for constructors
+    JITScriptSet *jitInfo;
 #endif
 
-  private:
     js::HeapPtrFunction function_;
-
-    size_t          useCount;   /* Number of times the script has been called
-                                 * or has had backedges taken. Reset if the
-                                 * script's JIT code is forcibly discarded. */
 
     // 32-bit fields.
 
@@ -472,17 +460,21 @@ struct JSScript : public js::gc::Cell
 
     uint32_t        natoms;     /* length of atoms array */
 
+  private:
+    uint32_t        useCount;   /* Number of times the script has been called
+                                 * or has had backedges taken. Reset if the
+                                 * script's JIT code is forcibly discarded. */
+
+#if JS_BITS_PER_WORD == 32
+    uint32_t        pad32;
+#endif
+
 #ifdef DEBUG
     // Unique identifier within the compartment for this script, used for
     // printing analysis information.
     uint32_t        id_;
   private:
     uint32_t        idpad;
-#endif
-
-#if JS_BITS_PER_WORD == 32
-  private:
-    uint32_t        pad32;
 #endif
 
     // 16-bit fields.
@@ -506,18 +498,24 @@ struct JSScript : public js::gc::Cell
     // 8-bit fields.
 
   public:
-    // Offsets to various array structures from the end of this script, or
-    // JSScript::INVALID_OFFSET if the array has length 0.
-    uint8_t         constsOffset;   /* offset to the array of constants */
-    uint8_t         objectsOffset;  /* offset to the array of nested function,
-                                       block, scope, xml and one-time regexps
-                                       objects */
-    uint8_t         regexpsOffset;  /* offset to the array of to-be-cloned
-                                       regexps  */
-    uint8_t         trynotesOffset; /* offset to the array of try notes */
-    uint8_t         globalsOffset;  /* offset to the array of global slots */
-    uint8_t         closedArgsOffset; /* offset to the array of closed args */
-    uint8_t         closedVarsOffset; /* offset to the array of closed vars */
+    // The kinds of the optional arrays.
+    enum ArrayKind {
+        CONSTS,
+        OBJECTS,
+        REGEXPS,
+        TRYNOTES,
+        CLOSED_ARGS,
+        CLOSED_VARS,
+        LIMIT
+    };
+
+    typedef uint8_t ArrayBitsT;
+
+  private:
+    // The bits in this field indicate the presence/non-presence of several
+    // optional arrays in |data|.  See the comments above NewScript() for
+    // details.
+    ArrayBitsT      hasArrayBits;
 
     // 1-bit fields.
 
@@ -526,8 +524,8 @@ struct JSScript : public js::gc::Cell
                                        expression statement */
     bool            savedCallerFun:1; /* can call getCallerFunction() */
     bool            strictModeCode:1; /* code is in strict mode */
-    bool            compileAndGo:1;   /* script was compiled with TCF_COMPILE_N_GO */
-    bool            bindingsAccessedDynamically:1; /* see TCF_BINDINGS_ACCESSED_DYNAMICALLY */
+    bool            compileAndGo:1;   /* see Parser::compileAndGo */
+    bool            bindingsAccessedDynamically:1; /* see ContextFlags' field of the same name */
     bool            warnedAboutTwoArgumentEval:1; /* have warned about use of
                                                      obsolete eval(s, o) in
                                                      this script */
@@ -580,12 +578,14 @@ struct JSScript : public js::gc::Cell
   public:
     static JSScript *NewScript(JSContext *cx, uint32_t length, uint32_t nsrcnotes, uint32_t natoms,
                                uint32_t nobjects, uint32_t nregexps,
-                               uint32_t ntrynotes, uint32_t nconsts, uint32_t nglobals,
+                               uint32_t ntrynotes, uint32_t nconsts,
                                uint16_t nClosedArgs, uint16_t nClosedVars, uint32_t nTypeSets,
                                JSVersion version);
     static JSScript *NewScriptFromEmitter(JSContext *cx, js::BytecodeEmitter *bce);
 
-    /* See TCF_ARGUMENTS_HAS_LOCAL_BINDING comment. */
+    void setVersion(JSVersion v) { version = v; }
+
+    /* See ContextFlags::funArgumentsHasLocalBinding comment. */
     bool argumentsHasLocalBinding() const { return argsHasLocalBinding_; }
     jsbytecode *argumentsBytecode() const { JS_ASSERT(code[0] == JSOP_ARGUMENTS); return code; }
     unsigned argumentsLocalSlot() const { JS_ASSERT(argsHasLocalBinding_); return argsSlot_; }
@@ -604,7 +604,20 @@ struct JSScript : public js::gc::Cell
     bool analyzedArgsUsage() const { return !needsArgsAnalysis_; }
     bool needsArgsObj() const { JS_ASSERT(analyzedArgsUsage()); return needsArgsObj_; }
     void setNeedsArgsObj(bool needsArgsObj);
-    bool applySpeculationFailed(JSContext *cx);
+    static bool applySpeculationFailed(JSContext *cx, JSScript *script);
+
+    /*
+     * Arguments access (via JSOP_*ARG* opcodes) must access the canonical
+     * location for the argument. If an arguments object exists AND this is a
+     * non-strict function (where 'arguments' aliases formals), then all access
+     * must go through the arguments object. Otherwise, the local slot is the
+     * canonical location for the arguments. Note: if a formal is aliased
+     * through the scope chain, then script->argLivesInCallObject and
+     * JSOP_*ARG* opcodes won't be emitted at all.
+     */
+    bool argsObjAliasesFormals() const {
+        return needsArgsObj() && !strictModeCode;
+    }
 
     /* Hash table chaining for JSCompartment::evalCache. */
     JSScript *&evalHashLink() { return *globalObject.unsafeGetUnioned(); }
@@ -656,7 +669,7 @@ struct JSScript : public js::gc::Cell
 
     /* Return creation time global or null. */
     js::GlobalObject *getGlobalObjectOrNull() const {
-        return isCachedEval ? NULL : globalObject.get();
+        return (isCachedEval || isActiveEval) ? NULL : globalObject.get();
     }
 
   private:
@@ -669,20 +682,27 @@ struct JSScript : public js::gc::Cell
     // accesses jitHandleNormal/jitHandleCtor, via jitHandleOffset().
     friend class js::mjit::CallCompiler;
 
-    static size_t jitHandleOffset(bool constructing) {
-        return constructing ? offsetof(JSScript, jitHandleCtor)
-                            : offsetof(JSScript, jitHandleNormal);
-    }
-
   public:
-    bool hasJITCode()   { return jitHandleNormal.isValid() || jitHandleCtor.isValid(); }
-
-    JITScriptHandle *jitHandle(bool constructing) {
-        return constructing ? &jitHandleCtor : &jitHandleNormal;
+    bool hasJITInfo() {
+        return jitInfo != NULL;
     }
 
-    js::mjit::JITScript *getJIT(bool constructing) {
-        JITScriptHandle *jith = jitHandle(constructing);
+    static size_t offsetOfJITInfo() { return offsetof(JSScript, jitInfo); }
+
+    inline bool ensureHasJITInfo(JSContext *cx);
+    inline void destroyJITInfo(js::FreeOp *fop);
+
+    JITScriptHandle *jitHandle(bool constructing, bool barriers) {
+        JS_ASSERT(jitInfo);
+        return constructing
+               ? (barriers ? &jitInfo->jitHandleCtorBarriered : &jitInfo->jitHandleCtor)
+               : (barriers ? &jitInfo->jitHandleNormalBarriered : &jitInfo->jitHandleNormal);
+    }
+
+    js::mjit::JITScript *getJIT(bool constructing, bool barriers) {
+        if (!jitInfo)
+            return NULL;
+        JITScriptHandle *jith = jitHandle(constructing, barriers);
         return jith->isValid() ? jith->getValid() : NULL;
     }
 
@@ -692,9 +712,9 @@ struct JSScript : public js::gc::Cell
     inline void **nativeMap(bool constructing);
     inline void *nativeCodeForPC(bool constructing, jsbytecode *pc);
 
-    size_t getUseCount() const  { return useCount; }
-    size_t incUseCount() { return ++useCount; }
-    size_t *addressOfUseCount() { return &useCount; }
+    uint32_t getUseCount() const  { return useCount; }
+    uint32_t incUseCount() { return ++useCount; }
+    uint32_t *addressOfUseCount() { return &useCount; }
     void resetUseCount() { useCount = 0; }
 
     /*
@@ -733,50 +753,62 @@ struct JSScript : public js::gc::Cell
     /* Script notes are allocated right after the code. */
     jssrcnote *notes() { return (jssrcnote *)(code + length); }
 
-    static const uint8_t INVALID_OFFSET = 0xFF;
-    static bool isValidOffset(uint8_t offset) { return offset != INVALID_OFFSET; }
+    bool hasArray(ArrayKind kind)           { return (hasArrayBits & (1 << kind)); }
+    void setHasArray(ArrayKind kind)        { hasArrayBits |= (1 << kind); }
+    void cloneHasArray(JSScript *script)    { hasArrayBits = script->hasArrayBits; }
 
-    JSConstArray *consts() {
-        JS_ASSERT(isValidOffset(constsOffset));
-        return reinterpret_cast<JSConstArray *>(data + constsOffset);
+    bool hasConsts()        { return hasArray(CONSTS);      }
+    bool hasObjects()       { return hasArray(OBJECTS);     }
+    bool hasRegexps()       { return hasArray(REGEXPS);     }
+    bool hasTrynotes()      { return hasArray(TRYNOTES);    }
+    bool hasClosedArgs()    { return hasArray(CLOSED_ARGS); }
+    bool hasClosedVars()    { return hasArray(CLOSED_VARS); }
+
+    #define OFF(fooOff, hasFoo, t)   (fooOff() + (hasFoo() ? sizeof(t) : 0))
+
+    size_t constsOffset()     { return 0; }
+    size_t objectsOffset()    { return OFF(constsOffset,     hasConsts,     js::ConstArray);      }
+    size_t regexpsOffset()    { return OFF(objectsOffset,    hasObjects,    js::ObjectArray);     }
+    size_t trynotesOffset()   { return OFF(regexpsOffset,    hasRegexps,    js::ObjectArray);     }
+    size_t closedArgsOffset() { return OFF(trynotesOffset,   hasTrynotes,   js::TryNoteArray);    }
+    size_t closedVarsOffset() { return OFF(closedArgsOffset, hasClosedArgs, js::ClosedSlotArray); }
+
+    js::ConstArray *consts() {
+        JS_ASSERT(hasConsts());
+        return reinterpret_cast<js::ConstArray *>(data + constsOffset());
     }
 
-    JSObjectArray *objects() {
-        JS_ASSERT(isValidOffset(objectsOffset));
-        return reinterpret_cast<JSObjectArray *>(data + objectsOffset);
+    js::ObjectArray *objects() {
+        JS_ASSERT(hasObjects());
+        return reinterpret_cast<js::ObjectArray *>(data + objectsOffset());
     }
 
-    JSObjectArray *regexps() {
-        JS_ASSERT(isValidOffset(regexpsOffset));
-        return reinterpret_cast<JSObjectArray *>(data + regexpsOffset);
+    js::ObjectArray *regexps() {
+        JS_ASSERT(hasRegexps());
+        return reinterpret_cast<js::ObjectArray *>(data + regexpsOffset());
     }
 
-    JSTryNoteArray *trynotes() {
-        JS_ASSERT(isValidOffset(trynotesOffset));
-        return reinterpret_cast<JSTryNoteArray *>(data + trynotesOffset);
-    }
-
-    js::GlobalSlotArray *globals() {
-        JS_ASSERT(isValidOffset(globalsOffset));
-        return reinterpret_cast<js::GlobalSlotArray *>(data + globalsOffset);
+    js::TryNoteArray *trynotes() {
+        JS_ASSERT(hasTrynotes());
+        return reinterpret_cast<js::TryNoteArray *>(data + trynotesOffset());
     }
 
     js::ClosedSlotArray *closedArgs() {
-        JS_ASSERT(isValidOffset(closedArgsOffset));
-        return reinterpret_cast<js::ClosedSlotArray *>(data + closedArgsOffset);
+        JS_ASSERT(hasClosedArgs());
+        return reinterpret_cast<js::ClosedSlotArray *>(data + closedArgsOffset());
     }
 
     js::ClosedSlotArray *closedVars() {
-        JS_ASSERT(isValidOffset(closedVarsOffset));
-        return reinterpret_cast<js::ClosedSlotArray *>(data + closedVarsOffset);
+        JS_ASSERT(hasClosedVars());
+        return reinterpret_cast<js::ClosedSlotArray *>(data + closedVarsOffset());
     }
 
     uint32_t numClosedArgs() {
-        return isValidOffset(closedArgsOffset) ? closedArgs()->length : 0;
+        return hasClosedArgs() ? closedArgs()->length : 0;
     }
 
     uint32_t numClosedVars() {
-        return isValidOffset(closedVarsOffset) ? closedVars()->length : 0;
+        return hasClosedVars() ? closedVars()->length : 0;
     }
 
     js::HeapPtrAtom &getAtom(size_t index) const {
@@ -789,7 +821,7 @@ struct JSScript : public js::gc::Cell
     }
 
     JSObject *getObject(size_t index) {
-        JSObjectArray *arr = objects();
+        js::ObjectArray *arr = objects();
         JS_ASSERT(index < arr->length);
         return arr->vector[index];
     }
@@ -804,7 +836,7 @@ struct JSScript : public js::gc::Cell
     inline JSObject *getRegExp(size_t index);
 
     const js::Value &getConst(size_t index) {
-        JSConstArray *arr = consts();
+        js::ConstArray *arr = consts();
         JS_ASSERT(index < arr->length);
         return arr->vector[index];
     }
@@ -831,9 +863,9 @@ struct JSScript : public js::gc::Cell
 
 #ifdef DEBUG
     bool varIsAliased(unsigned varSlot);
-    bool argIsAliased(unsigned argSlot);
-    bool argLivesInArgumentsObject(unsigned argSlot);
-    bool argLivesInCallObject(unsigned argSlot);
+    bool formalIsAliased(unsigned argSlot);
+    bool formalLivesInArgumentsObject(unsigned argSlot);
+    bool formalLivesInCallObject(unsigned argSlot);
 #endif
   private:
     /*
@@ -907,6 +939,8 @@ struct JSScript : public js::gc::Cell
     void markChildren(JSTracer *trc);
 };
 
+JS_STATIC_ASSERT(sizeof(JSScript::ArrayBitsT) * 8 >= JSScript::LIMIT);
+
 /* If this fails, add/remove padding within JSScript. */
 JS_STATIC_ASSERT(sizeof(JSScript) % js::gc::Cell::CellSize == 0);
 
@@ -933,14 +967,37 @@ CallDestroyScriptHook(FreeOp *fop, JSScript *script);
 extern const char *
 SaveScriptFilename(JSContext *cx, const char *filename);
 
-extern void
-MarkScriptFilename(const char *filename);
+struct ScriptFilenameEntry
+{
+    bool marked;
+    char filename[1];
+
+    static ScriptFilenameEntry *fromFilename(const char *filename) {
+        return (ScriptFilenameEntry *)(filename - offsetof(ScriptFilenameEntry, filename));
+    }
+};
+
+struct ScriptFilenameHasher
+{
+    typedef const char *Lookup;
+    static HashNumber hash(const char *l) { return JS_HashString(l); }
+    static bool match(const ScriptFilenameEntry *e, const char *l) {
+        return strcmp(e->filename, l) == 0;
+    }
+};
+
+typedef HashSet<ScriptFilenameEntry *,
+                ScriptFilenameHasher,
+                SystemAllocPolicy> ScriptFilenameTable;
+
+inline void
+MarkScriptFilename(JSRuntime *rt, const char *filename);
 
 extern void
-SweepScriptFilenames(JSCompartment *comp);
+SweepScriptFilenames(JSRuntime *rt);
 
 extern void
-FreeScriptFilenames(JSCompartment *comp);
+FreeScriptFilenames(JSRuntime *rt);
 
 struct ScriptAndCounts
 {

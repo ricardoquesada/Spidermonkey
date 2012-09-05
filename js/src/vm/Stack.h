@@ -1,47 +1,15 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=79 ft=cpp:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is SpiderMonkey JavaScript engine.
- *
- * The Initial Developer of the Original Code is
- * Mozilla Corporation.
- * Portions created by the Initial Developer are Copyright (C) 2009
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Luke Wagner <luke@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either the GNU General Public License Version 2 or later (the "GPL"), or
- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef Stack_h__
 #define Stack_h__
 
 #include "jsfun.h"
+#include "jsautooplen.h"
 
 struct JSContext;
 struct JSCompartment;
@@ -71,7 +39,7 @@ class DummyFrameGuard;
 class GeneratorFrameGuard;
 
 class CallIter;
-class FrameRegsIter;
+class ScriptFrameIter;
 class AllFramesIter;
 
 class ArgumentsObject;
@@ -172,11 +140,15 @@ namespace detail {
  *
  * An additional feature (perhaps not for much longer: bug 650361) is that
  * multiple independent "contexts" can interleave (LIFO) on a single contiguous
- * stack. "Independent" here means that neither context sees the other's
- * frames. Concretely, an embedding may enter the JS engine on cx1 and then,
- * from a native called by the JS engine, reenter the VM on cx2. Changing from
- * cx1 to cx2 causes a new segment to be started for cx2's stack on top of
- * cx1's current segment. These two segments are linked from the perspective of
+ * stack. "Independent" here means that each context has its own callstack.
+ * Note, though, that eval-in-frame allows one context's callstack to join
+ * another context's callstack. Thus, in general, the structure of calls in a
+ * StackSpace is a forest.
+ *
+ * More concretely, an embedding may enter the JS engine on cx1 and then, from
+ * a native called by the JS engine, reenter the VM on cx2. Changing from cx1
+ * to cx2 causes a new segment to be started for cx2's stack on top of cx1's
+ * current segment. These two segments are linked from the perspective of
  * StackSpace, since they are adjacent on the thread's stack, but not from the
  * perspective of cx1 and cx2. Thus, each segment has two links: prevInMemory
  * and prevInContext. Each independent stack is encapsulated and managed by
@@ -435,8 +407,8 @@ class StackFrame
         NoPostBarrier = false
     };
     template <class T, class U, TriggerPostBarriers doPostBarrier>
-    void stealFrameAndSlots(StackFrame *fp, T *vp, StackFrame *otherfp, U *othervp,
-                            Value *othersp);
+    void stealFrameAndSlots(JSContext *cx, StackFrame *fp, T *vp,
+                            StackFrame *otherfp, U *othervp, Value *othersp);
     void writeBarrierPost();
 
     /* Perhaps one fine day we will remove dummy frames. */
@@ -504,6 +476,14 @@ class StackFrame
         return isEvalFrame() && !script()->strictModeCode;
     }
 
+    bool isDirectEvalFrame() const {
+        return isEvalFrame() && script()->staticLevel > 0;
+    }
+
+    bool isNonStrictDirectEvalFrame() const {
+        return isNonStrictEvalFrame() && isDirectEvalFrame();
+    }
+
     /*
      * Previous frame
      *
@@ -525,6 +505,8 @@ class StackFrame
     inline void resetInlinePrev(StackFrame *prevfp, jsbytecode *prevpc);
 
     inline void initInlineFrame(JSFunction *fun, StackFrame *prevfp, jsbytecode *prevpc);
+
+    inline JSObject *createRestParameter(JSContext *cx);
 
     /*
      * Frame slots
@@ -582,7 +564,7 @@ class StackFrame
      *   for ( ...; fp; fp = fp->prev())
      *     ... fp->pcQuadratic(cx->stack);
      *
-     * Using next can avoid this, but in most cases prefer FrameRegsIter;
+     * Using next can avoid this, but in most cases prefer ScriptFrameIter;
      * it is amortized O(1).
      *
      *   When I get to the bottom I go back to the top of the stack
@@ -796,14 +778,14 @@ class StackFrame
      * Callee
      *
      * Only function frames have a callee. An eval frame in a function has the
-     * same caller as its containing function frame. maybeCalleev can be used
-     * to return a value that is either caller object (for function frames) or
+     * same callee as its containing function frame. maybeCalleev can be used
+     * to return a value that is either the callee object (for function frames) or
      * null (for global frames).
      */
 
-    JSObject &callee() const {
+    JSFunction &callee() const {
         JS_ASSERT(isFunctionFrame());
-        return calleev().toObject();
+        return *calleev().toObject().toFunction();
     }
 
     const Value &calleev() const {
@@ -861,7 +843,8 @@ class StackFrame
      *   !fp->hasCall() && fp->scopeChain().isCall()
      */
 
-    inline JSObject &scopeChain() const;
+    inline HandleObject scopeChain() const;
+    inline GlobalObject &global() const;
 
     bool hasCallObj() const {
         bool ret = !!(flags_ & HAS_CALL_OBJ);
@@ -870,50 +853,8 @@ class StackFrame
     }
 
     inline CallObject &callObj() const;
-    inline void setScopeChainNoCallObj(JSObject &obj);
-    inline void setScopeChainWithOwnCallObj(CallObject &obj);
-
-    /* Block chain */
-
-    bool hasBlockChain() const {
-        return (flags_ & HAS_BLOCKCHAIN) && blockChain_;
-    }
-
-    StaticBlockObject *maybeBlockChain() {
-        return (flags_ & HAS_BLOCKCHAIN) ? blockChain_ : NULL;
-    }
-
-    StaticBlockObject &blockChain() const {
-        JS_ASSERT(hasBlockChain());
-        return *blockChain_;
-    }
-
-    void setBlockChain(StaticBlockObject *obj) {
-        flags_ |= HAS_BLOCKCHAIN;
-        blockChain_ = obj;
-    }
-
-    /*
-     * Prologue for function frames: make a call object for heavyweight
-     * functions, and maintain type nesting invariants.
-     */
-    inline bool functionPrologue(JSContext *cx);
-
-    /*
-     * Epilogue for function frames: put any args or call object for the frame
-     * which may still be live, and maintain type nesting invariants. Note:
-     * this does mark the epilogue as having been completed, since the frame is
-     * about to be popped. Use updateEpilogueFlags for this.
-     */
-    inline void functionEpilogue();
-
-    /*
-     * If callObj() or argsObj() have already been put, update our flags
-     * accordingly. This call must be followed by a later functionEpilogue.
-     */
-    inline void updateEpilogueFlags();
-
-    inline bool maintainNestingState() const;
+    inline void initScopeChain(CallObject &callobj);
+    inline void setScopeChain(JSObject &obj);
 
     /*
      * Variables object
@@ -931,6 +872,50 @@ class StackFrame
      */
 
     inline JSObject &varObj();
+
+    /* Block chain */
+
+    bool hasBlockChain() const {
+        return (flags_ & HAS_BLOCKCHAIN) && blockChain_;
+    }
+
+    StaticBlockObject *maybeBlockChain() {
+        return (flags_ & HAS_BLOCKCHAIN) ? blockChain_ : NULL;
+    }
+
+    StaticBlockObject &blockChain() const {
+        JS_ASSERT(hasBlockChain());
+        return *blockChain_;
+    }
+
+    /* Enter/exit execution of a lexical block. */
+    bool pushBlock(JSContext *cx, StaticBlockObject &block);
+    void popBlock(JSContext *cx);
+
+    /* Exits (via execution or exception) a with block. */
+    void popWith(JSContext *cx);
+
+    /*
+     * Prologue for function frames: make a call object for heavyweight
+     * functions, and maintain type nesting invariants.
+     */
+    inline bool functionPrologue(JSContext *cx);
+
+    /*
+     * Epilogue for function frames: put any args or call object for the frame
+     * which may still be live, and maintain type nesting invariants. Note:
+     * this does mark the epilogue as having been completed, since the frame is
+     * about to be popped. Use updateEpilogueFlags for this.
+     */
+    inline void functionEpilogue(JSContext *cx);
+
+    /*
+     * If callObj() or argsObj() have already been put, update our flags
+     * accordingly. This call must be followed by a later functionEpilogue.
+     */
+    inline void updateEpilogueFlags();
+
+    inline bool maintainNestingState() const;
 
     /*
      * Frame compartment
@@ -1128,11 +1113,6 @@ class StackFrame
         return !!(flags_ & FINISHED_IN_INTERP);
     }
 
-#ifdef DEBUG
-    /* Poison scopeChain value set before a frame is flushed. */
-    static JSObject *const sInvalidScopeChain;
-#endif
-
   public:
     /* Public, but only for JIT use: */
 
@@ -1189,9 +1169,7 @@ class StackFrame
     }
 
 #ifdef JS_METHODJIT
-    mjit::JITScript *jit() {
-        return script()->getJIT(isConstructing());
-    }
+    inline mjit::JITScript *jit();
 #endif
 
     void methodjitStaticAsserts();
@@ -1287,12 +1265,24 @@ class FrameRegs
         fp_ = (StackFrame *) newfp;
     }
 
+    /* For EnterMethodJIT: */
+    void refreshFramePointer(StackFrame *fp) {
+        fp_ = fp;
+    }
+
     /* For stubs::CompileFunction, ContextStack: */
     void prepareToRun(StackFrame &fp, JSScript *script) {
         pc = script->code;
         sp = fp.slots() + script->nfixed;
         fp_ = &fp;
         inlined_ = NULL;
+    }
+
+    void setToEndOfScript() {
+        JSScript *script = fp()->script();
+        sp = fp()->base();
+        pc = script->code + script->length - JSOP_STOP_LENGTH;
+        JS_ASSERT(*pc == JSOP_STOP);
     }
 
     /* For pushDummyFrame: */
@@ -1551,6 +1541,10 @@ class StackSpace
 
     /* We only report the committed size;  uncommitted size is uninteresting. */
     JS_FRIEND_API(size_t) sizeOfCommitted();
+
+#ifdef DEBUG
+    bool containsSlow(StackFrame *fp);
+#endif
 };
 
 /*****************************************************************************/
@@ -1695,7 +1689,7 @@ class ContextStack
     inline JSScript *currentScriptWithDiagnostics(jsbytecode **pc = NULL) const;
 
     /* Get the scope chain for the topmost scripted call on the stack. */
-    inline JSObject *currentScriptedScopeChain() const;
+    inline HandleObject currentScriptedScopeChain() const;
 
     /*
      * Called by the methodjit for an arity mismatch. Arity mismatch can be
@@ -1783,10 +1777,10 @@ class GeneratorFrameGuard : public FrameGuard
 /*****************************************************************************/
 
 /*
- * Iterate through the callstack of the given context. Each element of said
- * callstack can either be the execution of a script (scripted function call,
- * global code, eval code, debugger code) or the invocation of a (C++) native.
- * Example usage:
+ * Iterate through the callstack (following fp->prev) of the given context.
+ * Each element of said callstack can either be the execution of a script
+ * (scripted function call, global code, eval code, debugger code) or the
+ * invocation of a (C++) native. Example usage:
  *
  *   for (Stackiter i(cx); !i.done(); ++i) {
  *     if (i.isScript()) {
@@ -1803,7 +1797,7 @@ class GeneratorFrameGuard : public FrameGuard
 class StackIter
 {
     friend class ContextStack;
-    JSContext    *cx_;
+    JSContext    *maybecx_;
   public:
     enum SavedOption { STOP_AT_SAVED, GO_THROUGH_SAVED };
   private:
@@ -1830,6 +1824,7 @@ class StackIter
 
   public:
     StackIter(JSContext *cx, SavedOption = STOP_AT_SAVED);
+    StackIter(JSRuntime *rt, StackSegment &seg);
 
     bool done() const { return state_ == DONE; }
     StackIter &operator++();
@@ -1850,41 +1845,32 @@ class StackIter
     bool isFunctionFrame() const;
     bool isEvalFrame() const;
     bool isNonEvalFunctionFrame() const;
+    bool isConstructing() const;
 
     StackFrame *fp() const { JS_ASSERT(isScript()); return fp_; }
     Value      *sp() const { JS_ASSERT(isScript()); return sp_; }
     jsbytecode *pc() const { JS_ASSERT(isScript()); return pc_; }
     JSScript   *script() const { JS_ASSERT(isScript()); return script_; }
-    JSObject   &callee() const;
+    JSFunction *callee() const;
     Value       calleev() const;
+    Value       thisv() const;
 
     CallArgs nativeArgs() const { JS_ASSERT(isNativeCall()); return args_; }
 };
 
 /* A filtering of the StackIter to only stop at scripts. */
-class FrameRegsIter
+class ScriptFrameIter : public StackIter
 {
-    StackIter iter_;
-
     void settle() {
-        while (!iter_.done() && !iter_.isScript())
-            ++iter_;
+        while (!done() && !isScript())
+            StackIter::operator++();
     }
 
   public:
-    FrameRegsIter(JSContext *cx, StackIter::SavedOption opt = StackIter::STOP_AT_SAVED)
-        : iter_(cx, opt) { settle(); }
+    ScriptFrameIter(JSContext *cx, StackIter::SavedOption opt = StackIter::STOP_AT_SAVED)
+        : StackIter(cx, opt) { settle(); }
 
-    bool done() const { return iter_.done(); }
-    FrameRegsIter &operator++() { ++iter_; settle(); return *this; }
-
-    bool operator==(const FrameRegsIter &rhs) const { return iter_ == rhs.iter_; }
-    bool operator!=(const FrameRegsIter &rhs) const { return iter_ != rhs.iter_; }
-
-    StackFrame *fp() const { return iter_.fp(); }
-    Value      *sp() const { return iter_.sp(); }
-    jsbytecode *pc() const { return iter_.pc(); }
-    JSScript   *script() const { return iter_.script(); }
+    ScriptFrameIter &operator++() { StackIter::operator++(); settle(); return *this; }
 };
 
 /*****************************************************************************/

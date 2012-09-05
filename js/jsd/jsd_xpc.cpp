@@ -1,41 +1,8 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is mozilla.org code.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Robert Ginda, <rginda@netscape.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either the GNU General Public License Version 2 or later (the "GPL"), or
- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jsdbgapi.h"
 #include "jslock.h"
@@ -55,6 +22,7 @@
 #include "jsdebug.h"
 #include "nsReadableUtils.h"
 #include "nsCRT.h"
+#include "nsCycleCollectionParticipant.h"
 
 /* XXX DOM dependency */
 #include "nsIScriptContext.h"
@@ -2240,7 +2208,7 @@ jsdValue::GetJsType (PRUint32 *_rval)
         *_rval = TYPE_VOID;
     else if (JSD_IsValueFunction (mCx, mValue))
         *_rval = TYPE_FUNCTION;
-    else if (JSVAL_IS_OBJECT(val))
+    else if (!JSVAL_IS_PRIMITIVE(val))
         *_rval = TYPE_OBJECT;
     else
         NS_ASSERTION (0, "Value has no discernible type.");
@@ -2450,7 +2418,42 @@ jsdValue::GetScript(jsdIScript **_rval)
 /******************************************************************************
  * debugger service implementation
  ******************************************************************************/
-NS_IMPL_THREADSAFE_ISUPPORTS1(jsdService, jsdIDebuggerService)
+
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(jsdService)
+  NS_INTERFACE_MAP_ENTRY(jsdIDebuggerService)
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, jsdIDebuggerService)
+NS_INTERFACE_MAP_END
+
+/* NS_IMPL_CYCLE_COLLECTION_10(jsdService, ...) */
+
+NS_IMPL_CYCLE_COLLECTION_CLASS(jsdService)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(jsdService)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(mErrorHook)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(mBreakpointHook)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(mDebugHook)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(mDebuggerHook)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(mInterruptHook)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(mScriptHook)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(mThrowHook)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(mTopLevelHook)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(mFunctionHook)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(mActivationCallback)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(jsdService)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(mErrorHook)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(mBreakpointHook)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(mDebugHook)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(mDebuggerHook)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(mInterruptHook)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(mScriptHook)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(mThrowHook)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(mTopLevelHook)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(mFunctionHook)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(mActivationCallback)
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+
+NS_IMPL_CYCLE_COLLECTING_ADDREF(jsdService)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(jsdService)
 
 NS_IMETHODIMP
 jsdService::GetJSDContext(JSDContext **_rval)
@@ -3358,7 +3361,6 @@ jsdService::~jsdService()
     mThrowHook = nsnull;
     mTopLevelHook = nsnull;
     mFunctionHook = nsnull;
-    gGCRunning = false;
     Off();
     gJsds = nsnull;
 }

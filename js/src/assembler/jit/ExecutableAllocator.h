@@ -468,8 +468,6 @@ public:
     {
         sync_instruction_memory((caddr_t)code, size);
     }
-#else
-    #error "The cacheFlush support is missing on this platform."
 #endif
 
 private:

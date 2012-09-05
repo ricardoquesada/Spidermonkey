@@ -10,10 +10,13 @@
 #include "jsfriendapi.h"
 #include "jsgc.h"
 #include "jsobj.h"
+#include "jsobjinlines.h"
 #include "jsprf.h"
 #include "jswrapper.h"
 
 #include "methodjit/MethodJIT.h"
+
+#include "vm/Stack-inl.h"
 
 using namespace js;
 using namespace JS;
@@ -141,6 +144,22 @@ GCParameter(JSContext *cx, unsigned argc, jsval *vp)
 }
 
 static JSBool
+IsProxy(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (argc != 1) {
+        JS_ReportError(cx, "the function takes exactly one argument");
+        return false;
+    }
+    if (!args[0].isObject()) {
+        args.rval().setBoolean(false);
+        return true;
+    }
+    args.rval().setBoolean(args[0].toObject().isProxy());
+    return true;
+}
+
+static JSBool
 InternalConst(JSContext *cx, unsigned argc, jsval *vp)
 {
     if (argc != 1) {
@@ -258,6 +277,20 @@ GCSlice(JSContext *cx, unsigned argc, jsval *vp)
     }
 
     GCDebugSlice(cx->runtime, limit, budget);
+    *vp = JSVAL_VOID;
+    return JS_TRUE;
+}
+
+static JSBool
+GCPreserveCode(JSContext *cx, unsigned argc, jsval *vp)
+{
+    if (argc != 0) {
+        ReportUsageError(cx, &JS_CALLEE(cx, vp).toObject(), "Wrong number of arguments");
+        return JS_FALSE;
+    }
+
+    cx->runtime->alwaysPreserveCode = true;
+
     *vp = JSVAL_VOID;
     return JS_TRUE;
 }
@@ -465,26 +498,15 @@ FinalizeCount(JSContext *cx, unsigned argc, jsval *vp)
 }
 
 JSBool
-MJitCodeStats(JSContext *cx, unsigned argc, jsval *vp)
-{
-#ifdef JS_METHODJIT
-    JSRuntime *rt = cx->runtime;
-    size_t n = 0;
-    for (JSCompartment **c = rt->compartments.begin(); c != rt->compartments.end(); ++c) {
-        n += (*c)->sizeOfMjitCode();
-    }
-    JS_SET_RVAL(cx, vp, INT_TO_JSVAL(n));
-#else
-    JS_SET_RVAL(cx, vp, JSVAL_VOID);
-#endif
-    return true;
-}
-
-JSBool
 MJitChunkLimit(JSContext *cx, unsigned argc, jsval *vp)
 {
     if (argc != 1) {
         ReportUsageError(cx, &JS_CALLEE(cx, vp).toObject(), "Wrong number of arguments");
+        return JS_FALSE;
+    }
+
+    if (cx->runtime->alwaysPreserveCode) {
+        JS_ReportError(cx, "Can't change chunk limit after gcPreserveCode()");
         return JS_FALSE;
     }
 
@@ -569,6 +591,10 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
 "gcslice(n)",
 "  Run an incremental GC slice that marks about n objects."),
 
+    JS_FN_HELP("gcPreserveCode", GCPreserveCode, 0, 0,
+"gcPreserveCode()",
+"  Preserve JIT code during garbage collections."),
+
     JS_FN_HELP("deterministicgc", DeterministicGC, 1, 0,
 "deterministicgc(true|false)",
 "  If true, only allow determinstic GCs to run."),
@@ -579,11 +605,9 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
 "  Query an internal constant for the engine. See InternalConst source for\n"
 "  the list of constant names."),
 
-#ifdef JS_METHODJIT
-    JS_FN_HELP("mjitcodestats", MJitCodeStats, 0, 0,
-"mjitcodestats()",
-"Return stats on mjit code memory usage."),
-#endif
+    JS_FN_HELP("isProxy", IsProxy, 1, 0,
+"isProxy(obj)",
+"  If true, obj is a proxy of some sort"),
 
     JS_FN_HELP("mjitChunkLimit", MJitChunkLimit, 1, 0,
 "mjitChunkLimit(N)",

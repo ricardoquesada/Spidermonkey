@@ -1,41 +1,8 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
  * JS atom table.
@@ -54,7 +21,6 @@
 #include "jsatom.h"
 #include "jscntxt.h"
 #include "jsgc.h"
-#include "jsgcmark.h"
 #include "jslock.h"
 #include "jsnum.h"
 #include "jsstr.h"
@@ -62,6 +28,7 @@
 #include "jsxml.h"
 
 #include "frontend/Parser.h"
+#include "gc/Marking.h"
 
 #include "jsstrinlines.h"
 #include "jsatominlines.h"
@@ -75,7 +42,6 @@ using namespace js;
 using namespace js::gc;
 
 const size_t JSAtomState::commonAtomsOffset = offsetof(JSAtomState, emptyAtom);
-const size_t JSAtomState::lazyAtomsOffset = offsetof(JSAtomState, lazy);
 
 /*
  * ATOM_HASH assumes that JSHashNumber is 32-bit even on 64-bit systems.
@@ -151,9 +117,6 @@ JSAtomState::checkStaticInvariants()
                      offsetof(JSAtomState, booleanAtoms) - commonAtomsOffset);
     JS_STATIC_ASSERT((1 + 2) * sizeof(JSAtom *) ==
                      offsetof(JSAtomState, typeAtoms) - commonAtomsOffset);
-
-    JS_STATIC_ASSERT(JS_ARRAY_LENGTH(js_common_atom_names) * sizeof(JSAtom *) ==
-                     lazyAtomsOffset - commonAtomsOffset);
 }
 
 /*
@@ -236,7 +199,6 @@ js::InitCommonAtoms(JSContext *cx)
         *atoms = atom->asPropertyName();
     }
 
-    state->clearLazyAtoms();
     cx->runtime->emptyString = state->emptyAtom;
     return true;
 }
@@ -280,15 +242,16 @@ js::SweepAtomState(JSRuntime *rt)
 
     for (AtomSet::Enum e(state->atoms); !e.empty(); e.popFront()) {
         AtomStateEntry entry = e.front();
+        JSAtom *atom = entry.asPtr();
+        bool isMarked = IsStringMarked(&atom);
 
-        if (entry.isTagged()) {
-            /* Pinned or interned key cannot be finalized. */
-            JS_ASSERT(!IsAboutToBeFinalized(entry.asPtr()));
-            continue;
-        }
+        /* Pinned or interned key cannot be finalized. */
+        JS_ASSERT_IF(entry.isTagged(), isMarked);
 
-        if (IsAboutToBeFinalized(entry.asPtr()))
+        if (!isMarked)
             e.removeFront();
+        else
+            e.rekeyFront(AtomHasher::Lookup(atom), AtomStateEntry(atom, entry.isTagged()));
     }
 }
 
@@ -339,6 +302,8 @@ AtomizeInline(JSContext *cx, const jschar **pchars, size_t length,
     SwitchToCompartment sc(cx, cx->runtime->atomsCompartment);
 
     JSFixedString *key;
+
+    SkipRoot skip(cx, &chars);
 
     if (ocb == TakeCharOwnership) {
         key = js_NewString(cx, const_cast<jschar *>(chars), length);
@@ -393,9 +358,6 @@ js_AtomizeString(JSContext *cx, JSString *str, InternBehavior ib)
         p->setTagged(bool(ib));
         return &atom;
     }
-
-    if (str->isAtom())
-        return &str->asAtom();
 
     size_t length = str->length();
     const jschar *chars = str->getChars(cx);
@@ -490,18 +452,6 @@ js_DumpAtoms(JSContext *cx, FILE *fp)
 }
 #endif
 
-#if JS_BITS_PER_WORD == 32
-# define TEMP_SIZE_START_LOG2   5
-#else
-# define TEMP_SIZE_START_LOG2   6
-#endif
-#define TEMP_SIZE_LIMIT_LOG2    (TEMP_SIZE_START_LOG2 + NUM_TEMP_FREELISTS)
-
-#define TEMP_SIZE_START         JS_BIT(TEMP_SIZE_START_LOG2)
-#define TEMP_SIZE_LIMIT         JS_BIT(TEMP_SIZE_LIMIT_LOG2)
-
-JS_STATIC_ASSERT(TEMP_SIZE_START >= sizeof(JSHashTable));
-
 namespace js {
 
 void
@@ -541,138 +491,65 @@ IndexToIdSlow(JSContext *cx, uint32_t index, jsid *idp)
     if (!atom)
         return false;
 
-    *idp = ATOM_TO_JSID(atom);
-    JS_ASSERT(js_CheckForStringIndex(*idp) == *idp);
+    *idp = JSID_FROM_BITS((size_t)atom);
+    return true;
+}
+
+bool
+InternNonIntElementId(JSContext *cx, JSObject *obj, const Value &idval,
+                      jsid *idp, Value *vp)
+{
+#if JS_HAS_XML_SUPPORT
+    if (idval.isObject()) {
+        JSObject *idobj = &idval.toObject();
+
+        if (obj && obj->isXML()) {
+            *idp = OBJECT_TO_JSID(idobj);
+            *vp = idval;
+            return true;
+        }
+
+        if (js_GetLocalNameFromFunctionQName(idobj, idp, cx)) {
+            *vp = IdToValue(*idp);
+            return true;
+        }
+
+        if (!obj && idobj->isXMLId()) {
+            *idp = OBJECT_TO_JSID(idobj);
+            *vp = idval;
+            return JS_TRUE;
+        }
+    }
+#endif
+
+    JSAtom *atom;
+    if (!js_ValueToAtom(cx, idval, &atom))
+        return false;
+
+    *idp = AtomToId(atom);
+    vp->setString(atom);
     return true;
 }
 
 } /* namespace js */
-
-/* JSBOXEDWORD_INT_MAX as a string */
-#define JSBOXEDWORD_INT_MAX_STRING "1073741823"
-
-/*
- * Convert string indexes that convert to int jsvals as ints to save memory.
- * Care must be taken to use this macro every time a property name is used, or
- * else double-sets, incorrect property cache misses, or other mistakes could
- * occur.
- */
-jsid
-js_CheckForStringIndex(jsid id)
-{
-    if (!JSID_IS_ATOM(id))
-        return id;
-
-    JSAtom *atom = JSID_TO_ATOM(id);
-    const jschar *s = atom->chars();
-    jschar ch = *s;
-
-    JSBool negative = (ch == '-');
-    if (negative)
-        ch = *++s;
-
-    if (!JS7_ISDEC(ch))
-        return id;
-
-    size_t n = atom->length() - negative;
-    if (n > sizeof(JSBOXEDWORD_INT_MAX_STRING) - 1)
-        return id;
-
-    const jschar *cp = s;
-    const jschar *end = s + n;
-
-    uint32_t index = JS7_UNDEC(*cp++);
-    uint32_t oldIndex = 0;
-    uint32_t c = 0;
-
-    if (index != 0) {
-        while (JS7_ISDEC(*cp)) {
-            oldIndex = index;
-            c = JS7_UNDEC(*cp);
-            index = 10 * index + c;
-            cp++;
-        }
-    }
-
-    /*
-     * Non-integer indexes can't be represented as integers.  Also, distinguish
-     * index "-0" from "0", because JSBOXEDWORD_INT cannot.
-     */
-    if (cp != end || (negative && index == 0))
-        return id;
-
-    if (negative) {
-        if (oldIndex < -(JSID_INT_MIN / 10) ||
-            (oldIndex == -(JSID_INT_MIN / 10) && c <= (-JSID_INT_MIN % 10)))
-        {
-            id = INT_TO_JSID(-int32_t(index));
-        }
-    } else {
-        if (oldIndex < JSID_INT_MAX / 10 ||
-            (oldIndex == JSID_INT_MAX / 10 && c <= (JSID_INT_MAX % 10)))
-        {
-            id = INT_TO_JSID(int32_t(index));
-        }
-    }
-
-    return id;
-}
-
-#if JS_HAS_XML_SUPPORT
-bool
-js_InternNonIntElementIdSlow(JSContext *cx, JSObject *obj, const Value &idval,
-                             jsid *idp)
-{
-    JS_ASSERT(idval.isObject());
-    if (obj->isXML()) {
-        *idp = OBJECT_TO_JSID(&idval.toObject());
-        return true;
-    }
-
-    if (js_GetLocalNameFromFunctionQName(&idval.toObject(), idp, cx))
-        return true;
-
-    return js_ValueToStringId(cx, idval, idp);
-}
-
-bool
-js_InternNonIntElementIdSlow(JSContext *cx, JSObject *obj, const Value &idval,
-                             jsid *idp, Value *vp)
-{
-    JS_ASSERT(idval.isObject());
-    if (obj->isXML()) {
-        JSObject &idobj = idval.toObject();
-        *idp = OBJECT_TO_JSID(&idobj);
-        vp->setObject(idobj);
-        return true;
-    }
-
-    if (js_GetLocalNameFromFunctionQName(&idval.toObject(), idp, cx)) {
-        *vp = IdToValue(*idp);
-        return true;
-    }
-
-    if (js_ValueToStringId(cx, idval, idp)) {
-        vp->setString(JSID_TO_STRING(*idp));
-        return true;
-    }
-    return false;
-}
-#endif
 
 template<XDRMode mode>
 bool
 js::XDRAtom(XDRState<mode> *xdr, JSAtom **atomp)
 {
     if (mode == XDR_ENCODE) {
-        JSString *str = *atomp;
-        return xdr->codeString(&str);
+        uint32_t nchars = (*atomp)->length();
+        if (!xdr->codeUint32(&nchars))
+            return false;
+
+        jschar *chars = const_cast<jschar *>((*atomp)->getChars(xdr->cx()));
+        if (!chars)
+            return false;
+
+        return xdr->codeChars(chars, nchars);
     }
 
-    /*
-     * Inline XDRState::codeString when decoding to avoid JSString allocation
-     * for already existing atoms. See bug 321985.
-     */
+    /* Avoid JSString allocation for already existing atoms. See bug 321985. */
     uint32_t nchars;
     if (!xdr->codeUint32(&nchars))
         return false;
@@ -687,7 +564,7 @@ js::XDRAtom(XDRState<mode> *xdr, JSAtom **atomp)
     /*
      * We must copy chars to a temporary buffer to convert between little and
      * big endian data.
-     */ 
+     */
     jschar *chars;
     jschar stackChars[256];
     if (nchars <= ArrayLength(stackChars)) {

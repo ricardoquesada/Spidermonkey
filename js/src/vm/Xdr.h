@@ -1,41 +1,9 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=78:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is SpiderMonkey string object code.
- *
- * The Initial Developer of the Original Code is
- * the Mozilla Foundation.
- * Portions created by the Initial Developer are Copyright (C) 2011
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef Xdr_h___
 #define Xdr_h___
@@ -43,6 +11,8 @@
 #include "jsapi.h"
 #include "jsprvtd.h"
 #include "jsnum.h"
+
+#include "vm/NumericConversions.h"
 
 namespace js {
 
@@ -55,7 +25,7 @@ namespace js {
  * and saved versions. If deserialization fails, the data should be
  * invalidated if possible.
  */
-static const uint32_t XDR_BYTECODE_VERSION = uint32_t(0xb973c0de - 114);
+static const uint32_t XDR_BYTECODE_VERSION = uint32_t(0xb973c0de - 117);
 
 class XDRBuffer {
   public:
@@ -212,25 +182,44 @@ class XDRState {
         return true;
     }
 
-    bool codeDouble(double *dp) {
-        jsdpun tmp;
+    bool codeUint64(uint64_t *n) {
         if (mode == XDR_ENCODE) {
-            uint8_t *ptr = buf.write(sizeof tmp);
+            uint8_t *ptr = buf.write(sizeof(*n));
             if (!ptr)
                 return false;
-            tmp.d = *dp;
-            tmp.s.lo = NormalizeByteOrder32(tmp.s.lo);
-            tmp.s.hi = NormalizeByteOrder32(tmp.s.hi);
-            memcpy(ptr, &tmp.s.lo, sizeof tmp.s.lo);
-            memcpy(ptr + sizeof tmp.s.lo, &tmp.s.hi, sizeof tmp.s.hi);
+            ptr[0] = (*n >>  0) & 0xFF;
+            ptr[1] = (*n >>  8) & 0xFF;
+            ptr[2] = (*n >> 16) & 0xFF;
+            ptr[3] = (*n >> 24) & 0xFF;
+            ptr[4] = (*n >> 32) & 0xFF;
+            ptr[5] = (*n >> 40) & 0xFF;
+            ptr[6] = (*n >> 48) & 0xFF;
+            ptr[7] = (*n >> 56) & 0xFF;
         } else {
-            const uint8_t *ptr = buf.read(sizeof tmp);
-            memcpy(&tmp.s.lo, ptr, sizeof tmp.s.lo);
-            memcpy(&tmp.s.hi, ptr + sizeof tmp.s.lo, sizeof tmp.s.hi);
-            tmp.s.lo = NormalizeByteOrder32(tmp.s.lo);
-            tmp.s.hi = NormalizeByteOrder32(tmp.s.hi);
-            *dp = tmp.d;
+            const uint8_t *ptr = buf.read(sizeof(*n));
+            *n = (uint64_t(ptr[0]) <<  0) |
+                 (uint64_t(ptr[1]) <<  8) |
+                 (uint64_t(ptr[2]) << 16) |
+                 (uint64_t(ptr[3]) << 24) |
+                 (uint64_t(ptr[4]) << 32) |
+                 (uint64_t(ptr[5]) << 40) |
+                 (uint64_t(ptr[6]) << 48) |
+                 (uint64_t(ptr[7]) << 56);
         }
+        return true;
+    }
+
+    bool codeDouble(double *dp) {
+        union DoublePun {
+            double d;
+            uint64_t u;
+        } pun;
+        if (mode == XDR_ENCODE)
+            pun.d = *dp;
+        if (!codeUint64(&pun.u))
+            return false;
+        if (mode == XDR_DECODE)
+            *dp = pun.d;
         return true;
     }
 
@@ -266,14 +255,13 @@ class XDRState {
     }
 
     bool codeChars(jschar *chars, size_t nchars);
-    bool codeString(JSString **strp);
 
     bool codeFunction(JSObject **objp);
     bool codeScript(JSScript **scriptp);
 
     void initScriptPrincipals(JSScript *script) {
         JS_ASSERT(mode == XDR_DECODE);
-        
+
         /* The origin principals must be normalized at this point. */
         JS_ASSERT_IF(principals, originPrincipals);
         JS_ASSERT(!script->principals);

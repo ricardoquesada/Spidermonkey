@@ -1,40 +1,7 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-/* ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is mozilla.org code.
- *
- * The Initial Developer of the Original Code is
- * the Mozilla Foundation.
- * Portions created by the Initial Developer are Copyright (C) 2010
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Zack Weinberg <zweinberg@mozilla.com>  (original author)
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either the GNU General Public License Version 2 or later (the "GPL"), or
- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jsperf.h"
 #include "jscntxt.h" /* for error messages */
@@ -53,7 +20,7 @@ static PerfMeasurement* GetPMFromThis(JSContext* cx, jsval* vp);
 
 #define GETTER(name)                                                    \
     static JSBool                                                       \
-    pm_get_##name(JSContext* cx, JSObject* obj, jsid /*unused*/, jsval* vp) \
+    pm_get_##name(JSContext* cx, JS::HandleObject obj, JS::HandleId /*unused*/, jsval* vp) \
     {                                                                   \
         PerfMeasurement* p = GetPM(cx, obj, #name);                     \
         if (!p)                                                         \
@@ -201,7 +168,7 @@ pm_construct(JSContext* cx, unsigned argc, jsval* vp)
     if (!JS_ConvertArguments(cx, argc, JS_ARGV(cx, vp), "u", &mask))
         return JS_FALSE;
 
-    JSObject *obj = JS_NewObjectForConstructor(cx, &pm_class, vp);
+    js::RootedObject obj(cx, JS_NewObjectForConstructor(cx, &pm_class, vp));
     if (!obj)
         return JS_FALSE;
 
@@ -257,14 +224,14 @@ namespace JS {
 JSObject*
 RegisterPerfMeasurement(JSContext *cx, JSObject *global)
 {
-    js::RootedVarObject prototype(cx);
+    js::RootedObject prototype(cx);
     prototype = JS_InitClass(cx, global, 0 /* parent */,
                              &pm_class, pm_construct, 1,
                              pm_props, pm_fns, 0, 0);
     if (!prototype)
         return 0;
 
-    js::RootedVarObject ctor(cx);
+    js::RootedObject ctor(cx);
     ctor = JS_GetConstructor(cx, prototype);
     if (!ctor)
         return 0;

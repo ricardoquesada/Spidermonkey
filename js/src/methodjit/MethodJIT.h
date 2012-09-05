@@ -1,40 +1,9 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=99:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla SpiderMonkey JavaScript 1.9 code, released
- * May 28, 2008.
- *
- * The Initial Developer of the Original Code is
- *   Brendan Eich <brendan@mozilla.org>
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL. 
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #if !defined jsjaeger_h__ && defined JS_METHODJIT
 #define jsjaeger_h__
@@ -466,30 +435,21 @@ JaegerStatusToSuccess(JaegerStatus status)
     return status == Jaeger_Returned;
 }
 
-/*
- * Method JIT compartment data. Currently, there is exactly one per
- * JS compartment. It would be safe for multiple JS compartments to
- * share a JaegerCompartment as long as only one thread can enter
- * the JaegerCompartment at a time.
- */
-class JaegerCompartment {
-    JSC::ExecutableAllocator *execAlloc_;    // allocator for jit code
+/* Method JIT data associated with the JSRuntime. */
+class JaegerRuntime
+{
     Trampolines              trampolines;    // force-return trampolines
     VMFrame                  *activeFrame_;  // current active VMFrame
     JaegerStatus             lastUnfinished_;// result status of last VM frame,
                                              // if unfinished
 
-    void Finish();
+    void finish();
 
   public:
-    bool Initialize(JSContext *cx);
+    bool init(JSContext *cx);
 
-    JaegerCompartment();
-    ~JaegerCompartment() { Finish(); }
-
-    JSC::ExecutableAllocator *execAlloc() {
-        return execAlloc_;
-    }
+    JaegerRuntime();
+    ~JaegerRuntime() { finish(); }
 
     VMFrame *activeFrame() {
         return activeFrame_;
@@ -680,10 +640,12 @@ struct JITChunk
      * Therefore, do not change the section ordering in finishThisUp() without
      * changing nMICs() et al as well.
      */
-    uint32_t        nNmapPairs;         /* The NativeMapEntrys are sorted by .bcOff.
+    uint32_t        nNmapPairs : 31;    /* The NativeMapEntrys are sorted by .bcOff.
                                            .ncode values may not be NULL. */
     uint32_t        nInlineFrames;
     uint32_t        nCallSites;
+    uint32_t        nRootedTemplates;
+    uint32_t        nRootedRegExps;
 #ifdef JS_MONOIC
     uint32_t        nGetGlobalNames;
     uint32_t        nSetGlobalNames;
@@ -708,6 +670,8 @@ struct JITChunk
     NativeMapEntry *nmap() const;
     js::mjit::InlineFrame *inlineFrames() const;
     js::mjit::CallSite *callSites() const;
+    JSObject **rootedTemplates() const;
+    RegExpShared **rootedRegExps() const;
 #ifdef JS_MONOIC
     ic::GetGlobalNameIC *getGlobalNames() const;
     ic::SetGlobalNameIC *setGlobalNames() const;
@@ -726,12 +690,13 @@ struct JITChunk
         return jcheck >= jitcode && jcheck < jitcode + code.m_size;
     }
 
-    void nukeScriptDependentICs();
-
     size_t computedSizeOfIncludingThis();
     size_t sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf);
 
     ~JITChunk();
+
+    void trace(JSTracer *trc);
+    void purgeCaches();
 
   private:
     /* Helpers used to navigate the variable-length sections. */
@@ -863,6 +828,9 @@ struct JITScript
 
     void destroy(FreeOp *fop);
     void destroyChunk(FreeOp *fop, unsigned chunkIndex, bool resetUses = true);
+
+    void trace(JSTracer *trc);
+    void purgeCaches();
 };
 
 /*
@@ -904,10 +872,18 @@ CanMethodJIT(JSContext *cx, JSScript *script, jsbytecode *pc,
 inline void
 ReleaseScriptCode(FreeOp *fop, JSScript *script)
 {
-    if (script->jitHandleCtor.isValid())
-        JSScript::ReleaseCode(fop, &script->jitHandleCtor);
-    if (script->jitHandleNormal.isValid())
-        JSScript::ReleaseCode(fop, &script->jitHandleNormal);
+    if (!script->hasJITInfo())
+        return;
+
+    for (int constructing = 0; constructing <= 1; constructing++) {
+        for (int barriers = 0; barriers <= 1; barriers++) {
+            JSScript::JITScriptHandle *jith = script->jitHandle((bool) constructing, (bool) barriers);
+            if (jith && jith->isValid())
+                JSScript::ReleaseCode(fop, jith);
+        }
+    }
+
+    script->destroyJITInfo(fop);
 }
 
 // Expand all stack frames inlined by the JIT within a compartment.
@@ -966,7 +942,7 @@ inline void * bsearch_nmap(NativeMapEntry *nmap, size_t nPairs, size_t bcOff)
         if (bcOff < bcOff_mid) {
             hi = mid-1;
             continue;
-        } 
+        }
         if (bcOff > bcOff_mid) {
             lo = mid+1;
             continue;
@@ -1021,7 +997,7 @@ VMFrame::pc()
 inline void *
 JSScript::nativeCodeForPC(bool constructing, jsbytecode *pc)
 {
-    js::mjit::JITScript *jit = getJIT(constructing);
+    js::mjit::JITScript *jit = getJIT(constructing, compartment()->needsBarrier());
     if (!jit)
         return NULL;
     js::mjit::JITChunk *chunk = jit->chunk(pc);

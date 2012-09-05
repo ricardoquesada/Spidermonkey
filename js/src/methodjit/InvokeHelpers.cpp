@@ -1,42 +1,9 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=99:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla SpiderMonkey JavaScript 1.9 code, released
- * May 28, 2008.
- *
- * The Initial Developer of the Original Code is
- *   Brendan Eich <brendan@mozilla.org>
- *
- * Contributor(s):
- *   David Anderson <danderson@mozilla.com>
- *   David Mandelin <dmandelin@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jscntxt.h"
 #include "jsscope.h"
@@ -78,7 +45,7 @@ FindExceptionHandler(JSContext *cx)
     StackFrame *fp = cx->fp();
     JSScript *script = fp->script();
 
-    if (!JSScript::isValidOffset(script->trynotesOffset))
+    if (!script->hasTrynotes())
         return NULL;
 
   error:
@@ -156,8 +123,8 @@ static void
 InlineReturn(VMFrame &f)
 {
     JS_ASSERT(f.fp() != f.entryfp);
-    JS_ASSERT(!IsActiveWithOrBlock(f.cx, f.fp()->scopeChain(), 0));
-    JS_ASSERT(!f.fp()->hasBlockChain());
+    AssertValidFunctionScopeChainAtExit(f.fp());
+
     f.cx->stack.popInlineFrame(f.regs);
 
     DebugOnly<JSOp> op = JSOp(*f.regs.pc);
@@ -348,7 +315,7 @@ UncachedInlineCall(VMFrame &f, InitialFrameFlags initial,
      * will be constructing a new type object for 'this'.
      */
     if (!newType) {
-        if (JITScript *jit = newscript->getJIT(regs.fp()->isConstructing())) {
+        if (JITScript *jit = newscript->getJIT(regs.fp()->isConstructing(), cx->compartment->needsBarrier())) {
             if (jit->invokeEntry) {
                 *pret = jit->invokeEntry;
 
@@ -430,7 +397,7 @@ stubs::Eval(VMFrame &f, uint32_t argc)
 {
     CallArgs args = CallArgsFromSp(argc, f.regs.sp);
 
-    if (!IsBuiltinEvalForScope(&f.fp()->scopeChain(), args.calleev())) {
+    if (!IsBuiltinEvalForScope(f.fp()->scopeChain(), args.calleev())) {
         if (!InvokeKernel(f.cx, args))
             THROW();
 
@@ -485,20 +452,20 @@ RemoveOrphanedNative(JSContext *cx, StackFrame *fp)
      * pools. We don't release pools piecemeal as a pool can be referenced by
      * multiple frames.
      */
-    JaegerCompartment *jc = cx->compartment->jaegerCompartment();
-    if (jc->orphanedNativeFrames.empty())
+    JaegerRuntime &jr = cx->jaegerRuntime();
+    if (jr.orphanedNativeFrames.empty())
         return;
-    for (unsigned i = 0; i < jc->orphanedNativeFrames.length(); i++) {
-        if (fp == jc->orphanedNativeFrames[i]) {
-            jc->orphanedNativeFrames[i] = jc->orphanedNativeFrames.back();
-            jc->orphanedNativeFrames.popBack();
+    for (unsigned i = 0; i < jr.orphanedNativeFrames.length(); i++) {
+        if (fp == jr.orphanedNativeFrames[i]) {
+            jr.orphanedNativeFrames[i] = jr.orphanedNativeFrames.back();
+            jr.orphanedNativeFrames.popBack();
             break;
         }
     }
-    if (jc->orphanedNativeFrames.empty()) {
-        for (unsigned i = 0; i < jc->orphanedNativePools.length(); i++)
-            jc->orphanedNativePools[i]->release();
-        jc->orphanedNativePools.clear();
+    if (jr.orphanedNativeFrames.empty()) {
+        for (unsigned i = 0; i < jr.orphanedNativePools.length(); i++)
+            jr.orphanedNativePools[i]->release();
+        jr.orphanedNativePools.clear();
     }
 }
 
@@ -542,7 +509,7 @@ js_InternalThrow(VMFrame &f)
                 case JSTRAP_RETURN:
                     cx->clearPendingException();
                     cx->fp()->setReturnValue(rval);
-                    return cx->jaegerCompartment()->forceReturnFromExternC();
+                    return cx->jaegerRuntime().forceReturnFromExternC();
 
                 case JSTRAP_THROW:
                     cx->setPendingException(rval);
@@ -565,16 +532,16 @@ js_InternalThrow(VMFrame &f)
         // property.
         JS_ASSERT(!f.fp()->finishedInInterpreter());
         UnwindScope(cx, 0);
-        f.regs.sp = f.fp()->base();
+        f.regs.setToEndOfScript();
 
         if (cx->compartment->debugMode()) {
             // This can turn a throw or error into a healthy return. Note that
             // we will run ScriptDebugEpilogue again (from AnyFrameEpilogue);
             // ScriptDebugEpilogue is prepared for this eventuality.
             if (js::ScriptDebugEpilogue(cx, f.fp(), false))
-                return cx->jaegerCompartment()->forceReturnFromExternC();
+                return cx->jaegerRuntime().forceReturnFromExternC();
         }
-                
+
 
         ScriptEpilogue(f.cx, f.fp(), false);
 
@@ -603,7 +570,7 @@ js_InternalThrow(VMFrame &f)
      * thus can only enter JIT code via EnterMethodJIT (which overwrites
      * its entry frame's ncode). See ClearAllFrames.
      */
-    cx->compartment->jaegerCompartment()->setLastUnfinished(Jaeger_Unfinished);
+    cx->jaegerRuntime().setLastUnfinished(Jaeger_Unfinished);
 
     if (!script->ensureRanAnalysis(cx, NULL)) {
         js_ReportOutOfMemory(cx);
@@ -620,15 +587,18 @@ js_InternalThrow(VMFrame &f)
     if (cx->isExceptionPending()) {
         JS_ASSERT(JSOp(*pc) == JSOP_ENTERBLOCK);
         StaticBlockObject &blockObj = script->getObject(GET_UINT32_INDEX(pc))->asStaticBlock();
+        if (!cx->regs().fp()->pushBlock(cx, blockObj))
+            return NULL;
         Value *vp = cx->regs().sp + blockObj.slotCount();
         SetValueRangeToUndefined(cx->regs().sp, vp);
         cx->regs().sp = vp;
+
         JS_ASSERT(JSOp(pc[JSOP_ENTERBLOCK_LENGTH]) == JSOP_EXCEPTION);
         cx->regs().sp[0] = cx->getPendingException();
         cx->clearPendingException();
         cx->regs().sp++;
+
         cx->regs().pc = pc + JSOP_ENTERBLOCK_LENGTH + JSOP_EXCEPTION_LENGTH;
-        cx->regs().fp()->setBlockChain(&blockObj);
     }
 
     *f.oldregs = f.regs;
@@ -641,7 +611,7 @@ stubs::CreateThis(VMFrame &f, JSObject *proto)
 {
     JSContext *cx = f.cx;
     StackFrame *fp = f.fp();
-    RootedVarObject callee(cx, &fp->callee());
+    RootedObject callee(cx, &fp->callee());
     JSObject *obj = js_CreateThisForFunctionWithProto(cx, callee, proto);
     if (!obj)
         THROW();
@@ -657,7 +627,7 @@ stubs::ScriptDebugPrologue(VMFrame &f)
       case JSTRAP_CONTINUE:
         break;
       case JSTRAP_RETURN:
-        *f.returnAddressLocation() = f.cx->jaegerCompartment()->forceReturnFromFastCall();
+        *f.returnAddressLocation() = f.cx->jaegerRuntime().forceReturnFromFastCall();
         return;
       case JSTRAP_ERROR:
       case JSTRAP_THROW:
@@ -903,7 +873,7 @@ js_InternalInterpret(void *returnData, void *returnType, void *returnReg, js::VM
         break;
 
       case REJOIN_THIS_PROTOTYPE: {
-        RootedVarObject callee(cx, &fp->callee());
+        RootedObject callee(cx, &fp->callee());
         JSObject *proto = f.regs.sp[0].isObject() ? &f.regs.sp[0].toObject() : NULL;
         JSObject *obj = js_CreateThisForFunctionWithProto(cx, callee, proto);
         if (!obj)
@@ -919,7 +889,7 @@ js_InternalInterpret(void *returnData, void *returnType, void *returnReg, js::VM
               case JSTRAP_CONTINUE:
                 break;
               case JSTRAP_RETURN:
-                *f.returnAddressLocation() = f.cx->jaegerCompartment()->forceReturnFromExternC();
+                *f.returnAddressLocation() = f.cx->jaegerRuntime().forceReturnFromExternC();
                 return NULL;
               case JSTRAP_THROW:
               case JSTRAP_ERROR:
@@ -954,7 +924,7 @@ js_InternalInterpret(void *returnData, void *returnType, void *returnReg, js::VM
         if (!ScriptPrologueOrGeneratorResume(cx, fp, types::UseNewTypeAtEntry(cx, fp)))
             return js_InternalThrow(f);
 
-        /* 
+        /*
          * Having called ScriptPrologueOrGeneratorResume, we would normally call
          * ScriptDebugPrologue here. But in debug mode, we only use JITted
          * functions' invokeEntry entry point, whereas CheckArgumentTypes
@@ -1102,7 +1072,7 @@ js_InternalInterpret(void *returnData, void *returnType, void *returnReg, js::VM
 
     /* Mark the entry frame as unfinished, and update the regs to resume at. */
     JaegerStatus status = skipTrap ? Jaeger_UnfinishedAtTrap : Jaeger_Unfinished;
-    cx->compartment->jaegerCompartment()->setLastUnfinished(status);
+    cx->jaegerRuntime().setLastUnfinished(status);
     *f.oldregs = f.regs;
 
     return NULL;

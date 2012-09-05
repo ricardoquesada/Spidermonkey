@@ -1,45 +1,8 @@
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1999
- * the Initial Developer. All Rights Reserved.
- *
- * Contributors:
- *   Mike Shaver <shaver@zeroknowledge.com>
- *   John Bandhauer <jband@netscape.com>
- *   IBM Corp.
- *   Robert Ginda <rginda@netscape.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/Attributes.h"
 
@@ -212,7 +175,7 @@ Dump(JSContext *cx, unsigned argc, jsval *vp)
 
     NS_ConvertUTF16toUTF8 utf8str(reinterpret_cast<const PRUnichar*>(chars));
 #ifdef ANDROID
-    __android_log_print(ANDROID_LOG_INFO, "Gecko", utf8str.get());
+    __android_log_print(ANDROID_LOG_INFO, "Gecko", "%s", utf8str.get());
 #endif
     fputs(utf8str.get(), stdout);
     fflush(stdout);
@@ -440,7 +403,7 @@ mozJSComponentLoader::ReallyInit()
         return NS_ERROR_OUT_OF_MEMORY;
 
     uint32_t options = JS_GetOptions(mContext);
-    JS_SetOptions(mContext, options | JSOPTION_XML);
+    JS_SetOptions(mContext, options | JSOPTION_ALLOW_XML | JSOPTION_MOAR_XML);
 
     // Always use the latest js version
     JS_SetVersion(mContext, JSVERSION_LATEST);
@@ -454,12 +417,9 @@ mozJSComponentLoader::ReallyInit()
     if (NS_FAILED(rv) || !mSystemPrincipal)
         return NS_ERROR_FAILURE;
 
-    if (!mModules.Init(32))
-        return NS_ERROR_OUT_OF_MEMORY;
-    if (!mImports.Init(32))
-        return NS_ERROR_OUT_OF_MEMORY;
-    if (!mInProgressImports.Init(32))
-        return NS_ERROR_OUT_OF_MEMORY;
+    mModules.Init(32);
+    mImports.Init(32);
+    mInProgressImports.Init(32);
 
     nsCOMPtr<nsIObserverService> obsSvc =
         do_GetService(kObserverServiceContractID, &rv);
@@ -607,8 +567,11 @@ mozJSComponentLoader::LoadModule(FileLocation &aFile)
     }
 
     // Cache this module for later
-    if (!mModules.Put(spec, entry))
-        return NULL;
+    mModules.Put(spec, entry);
+
+    // Set the location information for the new global, so that tools like
+    // about:memory may use that information
+    xpc::SetLocationForGlobal(entry->global, spec);
 
     // The hash owns the ModuleEntry now, forget about it
     return entry.forget();
@@ -657,9 +620,6 @@ mozJSComponentLoader::GlobalForLocation(nsILocalFile *aComponentFile,
 
     JS_AbortIfWrongThread(JS_GetRuntime(cx));
 
-    // preserve caller's compartment
-    js::AutoPreserveCompartment pc(cx);
-
     nsCOMPtr<nsIXPCScriptable> backstagePass;
     rv = mRuntimeService->GetBackstagePass(getter_AddRefs(backstagePass));
     NS_ENSURE_SUCCESS(rv, rv);
@@ -669,10 +629,6 @@ mozJSComponentLoader::GlobalForLocation(nsILocalFile *aComponentFile,
     nsCOMPtr<nsIXPConnect> xpc =
         do_GetService(kXPConnectServiceContractID, &rv);
     NS_ENSURE_SUCCESS(rv, rv);
-
-    // Make sure InitClassesWithNewWrappedGlobal() installs the
-    // backstage pass as the global in our compilation context.
-    JS_SetGlobalObject(cx, nsnull);
 
     nsCOMPtr<nsIXPConnectJSObjectHolder> holder;
     rv = xpc->InitClassesWithNewWrappedGlobal(cx, backstagePass,
@@ -1020,11 +976,12 @@ mozJSComponentLoader::Import(const nsACString& registryLocation,
 
     if (optionalArgc) {
         // The caller passed in the optional second argument. Get it.
-        if (!JSVAL_IS_OBJECT(targetObj)) {
+        if (targetObj.isObjectOrNull()) {
+            targetObject = targetObj.toObjectOrNull();
+        } else {
             return ReportOnCaller(cx, ERROR_SCOPE_OBJ,
-                                  PromiseFlatCString(registryLocation).get());
+                                  PromiseFlatCString(registryLocation).get());            
         }
-        targetObject = JSVAL_TO_OBJECT(targetObj);
     } else {
         // Our targetObject is the caller's global object. Find it by
         // walking the calling object's parent chain.
@@ -1147,8 +1104,9 @@ mozJSComponentLoader::ImportInto(const nsACString & aLocation,
     nsAutoPtr<ModuleEntry> newEntry;
     if (!mImports.Get(key, &mod) && !mInProgressImports.Get(key, &mod)) {
         newEntry = new ModuleEntry;
-        if (!newEntry || !mInProgressImports.Put(key, newEntry))
+        if (!newEntry)
             return NS_ERROR_OUT_OF_MEMORY;
+        mInProgressImports.Put(key, newEntry);
 
         JS::Anchor<jsval> exception(JSVAL_VOID);
         rv = GlobalForLocation(sourceLocalFile, resURI, &newEntry->global,
@@ -1172,13 +1130,16 @@ mozJSComponentLoader::ImportInto(const nsACString & aLocation,
             return NS_ERROR_FILE_NOT_FOUND;
         }
 
+        // Set the location information for the new global, so that tools like
+        // about:memory may use that information
+        xpc::SetLocationForGlobal(newEntry->global, aLocation);
+
         mod = newEntry;
     }
 
     NS_ASSERTION(mod->global, "Import table contains entry with no global");
     *_retval = mod->global;
 
-    jsval symbols;
     if (targetObj) {
         JSCLContextHelper cxhelper(this);
 
@@ -1186,19 +1147,20 @@ mozJSComponentLoader::ImportInto(const nsACString & aLocation,
         if (!ac.enter(mContext, mod->global))
             return NS_ERROR_FAILURE;
 
+        JS::Value symbols;
         if (!JS_GetProperty(mContext, mod->global,
                             "EXPORTED_SYMBOLS", &symbols)) {
             return ReportOnCaller(cxhelper, ERROR_NOT_PRESENT,
                                   PromiseFlatCString(aLocation).get());
         }
 
-        JSObject *symbolsObj = nsnull;
-        if (!JSVAL_IS_OBJECT(symbols) ||
-            !(symbolsObj = JSVAL_TO_OBJECT(symbols)) ||
-            !JS_IsArrayObject(mContext, symbolsObj)) {
+        if (!symbols.isObject() ||
+            !JS_IsArrayObject(mContext, &symbols.toObject())) {
             return ReportOnCaller(cxhelper, ERROR_NOT_AN_ARRAY,
                                   PromiseFlatCString(aLocation).get());
         }
+
+        JSObject *symbolsObj = &symbols.toObject();
 
         // Iterate over symbols array, installing symbols on targetObj:
 
@@ -1262,8 +1224,7 @@ mozJSComponentLoader::ImportInto(const nsACString & aLocation,
 
     // Cache this module for later
     if (newEntry) {
-        if (!mImports.Put(key, newEntry))
-            return NS_ERROR_OUT_OF_MEMORY;
+        mImports.Put(key, newEntry);
         newEntry.forget();
     }
 

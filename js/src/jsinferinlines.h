@@ -1,50 +1,18 @@
 /* -*- Mode: c++; c-basic-offset: 4; tab-width: 40; indent-tabs-mode: nil -*- */
 /* vim: set ts=40 sw=4 et tw=99: */
-/* ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is the Mozilla SpiderMonkey bytecode type inference
- *
- * The Initial Developer of the Original Code is
- *   Mozilla Foundation
- * Portions created by the Initial Developer are Copyright (C) 2010
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Brian Hackett <bhackett@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Inline members for javascript type inference. */
 
 #include "jsarray.h"
 #include "jsanalyze.h"
 #include "jscompartment.h"
-#include "jsgcmark.h"
 #include "jsinfer.h"
 #include "jsprf.h"
+
+#include "gc/Marking.h"
 #include "vm/GlobalObject.h"
 
 #include "vm/Stack-inl.h"
@@ -263,6 +231,7 @@ struct AutoEnterCompilation
         JS_ASSERT(!info.script);
         info.script = script;
         info.constructing = constructing;
+        info.barriers = cx->compartment->needsBarrier();
         info.chunkIndex = chunkIndex;
     }
 
@@ -271,6 +240,7 @@ struct AutoEnterCompilation
         JS_ASSERT(info.script);
         info.script = NULL;
         info.constructing = false;
+        info.barriers = false;
         info.chunkIndex = 0;
     }
 };
@@ -1013,6 +983,33 @@ HashSetLookup(U **values, unsigned count, T key)
     return NULL;
 }
 
+inline TypeObjectKey *
+Type::objectKey() const
+{
+    JS_ASSERT(isObject());
+    if (isTypeObject())
+        TypeObject::readBarrier((TypeObject *) data);
+    else
+        JSObject::readBarrier((JSObject *) (data ^ 1));
+    return (TypeObjectKey *) data;
+}
+
+inline JSObject *
+Type::singleObject() const
+{
+    JS_ASSERT(isSingleObject());
+    JSObject::readBarrier((JSObject *) (data ^ 1));
+    return (JSObject *) (data ^ 1);
+}
+
+inline TypeObject *
+Type::typeObject() const
+{
+    JS_ASSERT(isTypeObject());
+    TypeObject::readBarrier((TypeObject *) data);
+    return (TypeObject *) data;
+}
+
 inline bool
 TypeSet::hasType(Type type)
 {
@@ -1248,8 +1245,11 @@ TypeObject::getProperty(JSContext *cx, jsid id, bool assign)
 
     if (!*pprop) {
         setBasePropertyCount(propertyCount);
-        if (!addProperty(cx, id, pprop))
+        if (!addProperty(cx, id, pprop)) {
+            setBasePropertyCount(0);
+            propertySet = NULL;
             return NULL;
+        }
         if (propertyCount == OBJECT_FLAG_PROPERTY_COUNT_LIMIT) {
             markUnknown(cx);
             TypeSet *types = TypeSet::make(cx, "propertyOverflow");
@@ -1329,7 +1329,8 @@ TypeObject::setFlagsFromKey(JSContext *cx, JSProtoKey key)
                   key == JSProto_Uint32Array ||
                   key == JSProto_Float32Array ||
                   key == JSProto_Float64Array ||
-                  key == JSProto_Uint8ClampedArray);
+                  key == JSProto_Uint8ClampedArray ||
+                  key == JSProto_DataView);
         flags = OBJECT_FLAG_NON_DENSE_ARRAY
               | OBJECT_FLAG_NON_PACKED_ARRAY;
         break;
@@ -1432,9 +1433,10 @@ JSScript::ensureRanAnalysis(JSContext *cx, JSObject *scope)
     if (!self->ensureHasTypes(cx))
         return false;
     if (!self->types->hasScope()) {
-        js::RootObject objRoot(cx, &scope);
+        js::RootedObject scopeRoot(cx, scope);
         if (!js::types::TypeScript::SetScope(cx, self, scope))
             return false;
+        scope = scopeRoot;
     }
     if (!self->hasAnalysis() && !self->makeAnalysis(cx))
         return false;

@@ -1,42 +1,9 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=99:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Jaegermonkey.
- *
- * The Initial Developer of the Original Code is the Mozilla Foundation.
- *
- * Portions created by the Initial Developer are Copyright (C) 2010
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   Andrew Drake <drakedevel@gmail.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either the GNU General Public License Version 2 or later (the "GPL"), or
- * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifdef JS_METHODJIT
 
@@ -113,13 +80,14 @@ Recompiler::patchNative(JSCompartment *compartment, JITChunk *chunk, StackFrame 
      * for the IC so it doesn't get freed with the JITChunk, and patch up the
      * jump at the end to go to the interpoline.
      *
-     * When doing this, we do not reset the the IC itself; the JITChunk must
-     * be dead and about to be released due to the recompilation (or a GC).
+     * When doing this, we do not reset the the IC itself; there may be other
+     * native calls from this chunk on the stack and we need to find and patch
+     * all live stubs before purging the chunk's caches.
      */
     fp->setRejoin(StubRejoin(rejoin));
 
     /* :XXX: We might crash later if this fails. */
-    compartment->jaegerCompartment()->orphanedNativeFrames.append(fp);
+    compartment->rt->jaegerRuntime().orphanedNativeFrames.append(fp);
 
     DebugOnly<bool> found = false;
 
@@ -156,7 +124,7 @@ Recompiler::patchNative(JSCompartment *compartment, JITChunk *chunk, StackFrame 
         }
 
         /* :XXX: We leak the pool if this fails. Oh well. */
-        compartment->jaegerCompartment()->orphanedNativePools.append(stub.pool);
+        compartment->rt->jaegerRuntime().orphanedNativePools.append(stub.pool);
 
         /* Mark as stolen in case there are multiple calls on the stack. */
         stub.pool = NULL;
@@ -195,15 +163,15 @@ Recompiler::patchFrame(JSCompartment *compartment, VMFrame *f, JSScript *script)
             f->stubRejoin = 0;
         }
     } else {
-        if (script->jitHandleCtor.isValid()) {
-            JITChunk *chunk = script->jitHandleCtor.getValid()->findCodeChunk(*addr);
-            if (chunk)
-                patchCall(chunk, fp, addr);
-        }
-        if (script->jitHandleNormal.isValid()) {
-            JITChunk *chunk = script->jitHandleNormal.getValid()->findCodeChunk(*addr);
-            if (chunk)
-                patchCall(chunk, fp, addr);
+        for (int constructing = 0; constructing <= 1; constructing++) {
+            for (int barriers = 0; barriers <= 1; barriers++) {
+                JITScript *jit = script->getJIT((bool) constructing, (bool) barriers);
+                if (jit) {
+                    JITChunk *chunk = jit->findCodeChunk(*addr);
+                    if (chunk)
+                        patchCall(chunk, fp, addr);
+                }
+            }
         }
     }
 }
@@ -321,12 +289,15 @@ Recompiler::expandInlineFrames(JSCompartment *compartment,
 void
 ExpandInlineFrames(JSCompartment *compartment)
 {
-    if (!compartment || !compartment->hasJaegerCompartment())
+    if (!compartment || !compartment->rt->hasJaegerRuntime())
         return;
 
-    for (VMFrame *f = compartment->jaegerCompartment()->activeFrame();
+    for (VMFrame *f = compartment->rt->jaegerRuntime().activeFrame();
          f != NULL;
          f = f->previous) {
+
+        if (f->entryfp->compartment() != compartment)
+            continue;
 
         if (f->regs.inlined())
             mjit::Recompiler::expandInlineFrames(compartment, f->fp(), f->regs.inlined(), NULL, f);
@@ -357,16 +328,19 @@ ExpandInlineFrames(JSCompartment *compartment)
 void
 ClearAllFrames(JSCompartment *compartment)
 {
-    if (!compartment || !compartment->hasJaegerCompartment())
+    if (!compartment || !compartment->rt->hasJaegerRuntime())
         return;
 
     ExpandInlineFrames(compartment);
 
     compartment->types.recompilations++;
 
-    for (VMFrame *f = compartment->jaegerCompartment()->activeFrame();
+    for (VMFrame *f = compartment->rt->jaegerRuntime().activeFrame();
          f != NULL;
-         f = f->previous) {
+         f = f->previous)
+    {
+        if (f->entryfp->compartment() != compartment)
+            continue;
 
         Recompiler::patchFrame(compartment, f, f->fp()->script());
 
@@ -380,6 +354,21 @@ ClearAllFrames(JSCompartment *compartment)
 
         for (StackFrame *fp = f->fp(); fp != f->entryfp; fp = fp->prev())
             fp->setNativeReturnAddress(NULL);
+    }
+
+    // Purge all ICs in chunks for which we patched any native frames, see patchNative.
+    for (VMFrame *f = compartment->rt->jaegerRuntime().activeFrame();
+         f != NULL;
+         f = f->previous)
+    {
+        if (f->entryfp->compartment() != compartment)
+            continue;
+
+        JS_ASSERT(f->stubRejoin != REJOIN_NATIVE &&
+                  f->stubRejoin != REJOIN_NATIVE_LOWERED &&
+                  f->stubRejoin != REJOIN_NATIVE_GETTER);
+        if (f->stubRejoin == REJOIN_NATIVE_PATCHED && f->jit() && f->chunk())
+            f->chunk()->purgeCaches();
     }
 }
 
@@ -405,7 +394,7 @@ ClearAllFrames(JSCompartment *compartment)
 void
 Recompiler::clearStackReferences(FreeOp *fop, JSScript *script)
 {
-    JS_ASSERT(script->hasJITCode());
+    JS_ASSERT(script->hasJITInfo());
 
     JaegerSpew(JSpew_Recompile, "recompiling script (file \"%s\") (line \"%d\") (length \"%d\")\n",
                script->filename, script->lineno, script->length);
@@ -415,7 +404,7 @@ Recompiler::clearStackReferences(FreeOp *fop, JSScript *script)
 
     /*
      * The strategy for this goes as follows:
-     * 
+     *
      * 1) Scan the stack, looking at all return addresses that could go into JIT
      *    code.
      * 2) If an address corresponds to a call site registered by |callSite| during
@@ -425,9 +414,12 @@ Recompiler::clearStackReferences(FreeOp *fop, JSScript *script)
 
     // Find all JIT'd stack frames to account for return addresses that will
     // need to be patched after recompilation.
-    for (VMFrame *f = comp->jaegerCompartment()->activeFrame();
+    for (VMFrame *f = fop->runtime()->jaegerRuntime().activeFrame();
          f != NULL;
-         f = f->previous) {
+         f = f->previous)
+    {
+        if (f->entryfp->compartment() != comp)
+            continue;
 
         // Scan all frames owned by this VMFrame.
         StackFrame *end = f->entryfp->prev();
@@ -457,39 +449,20 @@ Recompiler::clearStackReferences(FreeOp *fop, JSScript *script)
     }
 
     comp->types.recompilations++;
-}
 
-void
-Recompiler::clearStackReferencesAndChunk(FreeOp *fop, JSScript *script,
-                                         JITScript *jit, size_t chunkIndex,
-                                         bool resetUses)
-{
-    Recompiler::clearStackReferences(fop, script);
-
-    bool releaseChunk = true;
-    if (jit->nchunks > 1) {
-        // If we are in the middle of a native call from a native or getter IC,
-        // we need to make sure all JIT code for the script is purged, as
-        // otherwise we will have orphaned the native stub but pointers to it
-        // still exist in the containing chunk.
-        for (VMFrame *f = script->compartment()->jaegerCompartment()->activeFrame();
-             f != NULL;
-             f = f->previous) {
-            if (f->fp()->script() == script) {
-                JS_ASSERT(f->stubRejoin != REJOIN_NATIVE &&
-                          f->stubRejoin != REJOIN_NATIVE_LOWERED &&
-                          f->stubRejoin != REJOIN_NATIVE_GETTER);
-                if (f->stubRejoin == REJOIN_NATIVE_PATCHED) {
-                    mjit::ReleaseScriptCode(fop, script);
-                    releaseChunk = false;
-                    break;
-                }
-            }
+    // Purge all ICs in chunks for which we patched any native frames, see patchNative.
+    for (VMFrame *f = fop->runtime()->jaegerRuntime().activeFrame();
+         f != NULL;
+         f = f->previous)
+    {
+        if (f->fp()->script() == script) {
+            JS_ASSERT(f->stubRejoin != REJOIN_NATIVE &&
+                      f->stubRejoin != REJOIN_NATIVE_LOWERED &&
+                      f->stubRejoin != REJOIN_NATIVE_GETTER);
+            if (f->stubRejoin == REJOIN_NATIVE_PATCHED && f->jit() && f->chunk())
+                f->chunk()->purgeCaches();
         }
     }
-
-    if (releaseChunk)
-        jit->destroyChunk(fop, chunkIndex, resetUses);
 }
 
 } /* namespace mjit */

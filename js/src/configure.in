@@ -1,63 +1,8 @@
 dnl -*- Mode: Autoconf; tab-width: 4; indent-tabs-mode: nil; -*-
 dnl vi: set tabstop=4 shiftwidth=4 expandtab syntax=m4:
-dnl ***** BEGIN LICENSE BLOCK *****
-dnl Version: MPL 1.1/GPL 2.0/LGPL 2.1
-dnl
-dnl The contents of this file are subject to the Mozilla Public License Version
-dnl 1.1 (the "License"); you may not use this file except in compliance with
-dnl the License. You may obtain a copy of the License at
-dnl http://www.mozilla.org/MPL/
-dnl
-dnl Software distributed under the License is distributed on an "AS IS" basis,
-dnl WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
-dnl for the specific language governing rights and limitations under the
-dnl License.
-dnl
-dnl The Original Code is this file as it was released upon August 6, 1998.
-dnl
-dnl The Initial Developer of the Original Code is
-dnl Christopher Seawood.
-dnl Portions created by the Initial Developer are Copyright (C) 1998-2001
-dnl the Initial Developer. All Rights Reserved.
-dnl
-dnl Contributor(s):
-dnl   Jamie Zawinski <jwz@jwz.org>
-dnl   gettimeofday args check
-dnl   Christopher Blizzard <blizzard@appliedtheory.com>
-dnl   gnomefe update & enable-pthreads
-dnl   Ramiro Estrugo <ramiro@netscape.com>
-dnl   X11 makedepend support
-dnl   Insure support.
-dnl   Henry Sobotka <sobotka@axess.com>
-dnl   OS/2 support
-dnl   Dan Mosedale <dmose@mozilla.org>
-dnl   LDAP support
-dnl   Seth Spitzer <sspitzer@netscape.com>
-dnl   xpctools support
-dnl   Benjamin Smedberg <benjamin@smedbergs.us>
-dnl   Howard Chu <hyc@symas.com>
-dnl   MSYS support
-dnl   Mark Mentovai <mark@moxienet.com>:
-dnl   Mac OS X 10.4 support
-dnl   Giorgio Maone <g.maone@informaction.com>
-dnl   MSVC l10n compatible version check
-dnl   Ben Turner <mozilla@songbirdnest.com>
-dnl   Windows x64 support
-dnl   Makoto Kato <m_kato@ga2.so-net.ne.jp>
-dnl
-dnl Alternatively, the contents of this file may be used under the terms of
-dnl either the GNU General Public License Version 2 or later (the "GPL"), or
-dnl the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
-dnl in which case the provisions of the GPL or the LGPL are applicable instead
-dnl of those above. If you wish to allow use of your version of this file only
-dnl under the terms of either the GPL or the LGPL, and not to allow others to
-dnl use your version of this file under the terms of the MPL, indicate your
-dnl decision by deleting the provisions above and replace them with the notice
-dnl and other provisions required by the GPL or the LGPL. If you do not delete
-dnl the provisions above, a recipient may use your version of this file under
-dnl the terms of any one of the MPL, the GPL or the LGPL.
-dnl
-dnl ***** END LICENSE BLOCK *****
+dnl This Source Code Form is subject to the terms of the Mozilla Public
+dnl License, v. 2.0. If a copy of the MPL was not distributed with this
+dnl file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 dnl Process this file with autoconf to produce a configure script.
 dnl ========================================================
@@ -173,40 +118,7 @@ MOZ_ARG_WITH_STRING(dist-dir,
     TOP_DIST=dist)
 AC_SUBST(TOP_DIST)
 
-dnl Default to MSVC for win32
-dnl ==============================================================
-if test -z "$CROSS_COMPILE"; then
-case "$target" in
-*-mingw*)
-    if test -z "$CC"; then CC=cl; fi
-    if test -z "$CXX"; then CXX=cl; fi
-    if test -z "$CPP"; then CPP="cl -E -nologo"; fi
-    if test -z "$CXXCPP"; then CXXCPP="cl -TP -E -nologo"; ac_cv_prog_CXXCPP="$CXXCPP"; fi
-    if test -z "$LD"; then LD=link; fi
-    if test -z "$AS"; then
-        case "${target_cpu}" in
-        i*86)
-            AS=ml;
-            ;;
-        x86_64)
-            AS=ml64;
-            ;;
-        esac
-    fi
-    if test -z "$MIDL"; then MIDL=midl; fi
-
-    # need override this flag since we don't use $(LDFLAGS) for this.
-    if test -z "$HOST_LDFLAGS" ; then
-        HOST_LDFLAGS=" "
-    fi
-    ;;
-*-darwin*)
-    # prefer gcc-4.2 to default cc on older xcode
-    MOZ_PATH_PROGS(CC, $CC gcc-4.2 gcc)
-    MOZ_PATH_PROGS(CXX, $CXX g++-4.2 g++)
-    ;;
-esac
-fi
+MOZ_DEFAULT_COMPILER
 
 COMPILE_ENVIRONMENT=1
 MOZ_ARG_DISABLE_BOOL(compile-environment,
@@ -270,7 +182,7 @@ MOZ_ARG_WITH_STRING(android-ndk,
 
 MOZ_ARG_WITH_STRING(android-toolchain,
 [  --with-android-toolchain=DIR
-                          location of the android toolchain, default NDK/build/prebuilt/HOST/arm-eabi-4.4.0],
+                          location of the android toolchain],
     android_toolchain=$withval)
 
 
@@ -287,24 +199,18 @@ MOZ_ARG_WITH_STRING(android-sdk,
 
 MOZ_ARG_WITH_STRING(android-platform,
 [  --with-android-platform=DIR
-                           location of platform dir, default NDK/build/platforms/android-5/arch-arm],
+                           location of platform dir],
     android_platform=$withval)
-
-MOZ_ARG_ENABLE_BOOL(android-libstdcxx,
-[  --enable-android-libstdcxx
-                          use GNU libstdc++ instead of STLPort for NDK >= 5],
-    MOZ_ANDROID_LIBSTDCXX=1,
-    MOZ_ANDROID_LIBSTDCXX= )
 
 case "$target" in
 arm-linux*-android*|*-linuxandroid*)
     android_tool_prefix="arm-linux-androideabi"
     ;;
-arm-android-eabi)
-    android_tool_prefix="arm-eabi"
-    ;;
 i?86-*android*)
     android_tool_prefix="i686-android-linux"
+    ;;
+mipsel-*android*)
+    android_tool_prefix="mipsel-linux-android"
     ;;
 *)
     android_tool_prefix="$target_os"
@@ -337,7 +243,16 @@ if test -n "$gonkdir" ; then
     STLPORT_CPPFLAGS="-I$gonkdir/external/stlport/stlport"
     STLPORT_LIBS="-lstlport"
 
-    CPPFLAGS="-DANDROID -isystem $gonkdir/bionic/libc/include/ -isystem $gonkdir/bionic/libc/kernel/common -isystem $gonkdir/bionic/libc/arch-arm/include -isystem $gonkdir/bionic/libc/kernel/arch-arm -isystem $gonkdir/bionic/libm/include -I$gonkdir/frameworks/base/native/include -I$gonkdir/system/core/include -isystem $gonkdir/bionic $CPPFLAGS"
+    case "$target_cpu" in
+    arm)
+        ARCH_DIR=arch-arm
+        ;;
+    i?86)
+        ARCH_DIR=arch-x86
+        ;;
+    esac
+
+    CPPFLAGS="-DANDROID -isystem $gonkdir/bionic/libc/$ARCH_DIR/include -isystem $gonkdir/bionic/libc/include/ -isystem $gonkdir/bionic/libc/kernel/common -isystem $gonkdir/bionic/libc/kernel/$ARCH_DIR -isystem $gonkdir/bionic/libm/include -I$gonkdir/frameworks/base/native/include -I$gonkdir/system/core/include -isystem $gonkdir/bionic $CPPFLAGS"
     CFLAGS="-mandroid -fno-short-enums -fno-exceptions $CFLAGS"
     CXXFLAGS="-mandroid -fno-short-enums -fno-exceptions $CXXFLAGS $STLPORT_CPPFLAGS"
     LIBS="$LIBS $STLPORT_LIBS"
@@ -411,12 +326,18 @@ case "$target" in
 
         kernel_name=`uname -s | tr "[[:upper:]]" "[[:lower:]]"`
 
-        android_toolchain="$android_ndk"/build/prebuilt/$kernel_name-x86/arm-eabi-4.4.0
-
-        # With newer NDK, the toolchain path has changed.
-        if ! test -d "$android_toolchain" ; then
-            android_toolchain="$android_ndk"/toolchains/arm-$kernel_name-androideabi-4.4.3/prebuilt/$kernel_name-x86
-        fi
+        case "$target_cpu" in
+        arm)
+            target_name=arm-linux-androideabi-4.4.3
+            ;;
+        i?86)
+            target_name=x86-4.4.3
+            ;;
+        mipsel)
+            target_name=mipsel-linux-android-4.4.3
+            ;;
+        esac
+        android_toolchain="$android_ndk"/toolchains/$target_name/prebuilt/$kernel_name-x86
 
         if test -d "$android_toolchain" ; then
             AC_MSG_RESULT([$android_toolchain])
@@ -428,12 +349,19 @@ case "$target" in
     if test -z "$android_platform" ; then
         AC_MSG_CHECKING([for android platform directory])
 
-        android_platform="$android_ndk"/build/platforms/android-"$android_version"/arch-"$target_cpu"
+        case "$target_cpu" in
+        arm)
+            target_name=arm
+            ;;
+        i?86)
+            target_name=x86
+            ;;
+        mipsel)
+            target_name=mips
+            ;;
+        esac
 
-        # With newer NDK, the platform path has changed.
-        if ! test -d "$android_platform" ; then
-            android_platform="$android_ndk"/platforms/android-"$android_version"/arch-"$target_cpu"
-        fi
+        android_platform="$android_ndk"/platforms/android-"$android_version"/arch-"$target_name"
 
         if test -d "$android_platform" ; then
             AC_MSG_RESULT([$android_platform])
@@ -454,7 +382,8 @@ case "$target" in
 
     CPPFLAGS="-isystem $android_platform/usr/include $CPPFLAGS"
     CFLAGS="-mandroid -fno-short-enums -fno-exceptions $CFLAGS"
-    CXXFLAGS="-mandroid -fno-short-enums -fno-exceptions $CXXFLAGS"
+    CXXFLAGS="-mandroid -fno-short-enums -fno-exceptions -Wno-psabi $CXXFLAGS"
+    ASFLAGS="-isystem $android_platform/usr/include -DANDROID $ASFLAGS"
 
     dnl Add -llog by default, since we use it all over the place.
     dnl Add --allow-shlib-undefined, because libGLESv2 links to an
@@ -489,7 +418,6 @@ case "$target" in
     CROSS_COMPILE=1
     MOZ_CHROME_FILE_FORMAT=omni
     ;;
-
 dnl === PATCH FOR iOS
 arm-apple*)
     dnl test for Xcode 4.3.1
@@ -751,25 +679,49 @@ fi
 
 dnl Special win32 checks
 dnl ========================================================
-WINVER=502
-dnl Target the Windows 7 SDK by default
-WINSDK_TARGETVER=601
+
+# With win8, sdk target=602, WINVER=602
+MOZ_ARG_ENABLE_BOOL(metro,
+[  --enable-metro           Enable Windows Metro build targets],
+    MOZ_METRO=1,
+    MOZ_METRO=)
+if test -n "$MOZ_METRO"; then
+    AC_DEFINE(MOZ_METRO)
+    # Target the Windows 8 Kit
+    WINSDK_TARGETVER=602
+    # Allow a higher api set
+    WINVER=602
+else
+    # Target the Windows 7 SDK by default
+    WINSDK_TARGETVER=601
+    WINVER=502
+fi
+
+if test -n "$MOZ_METRO"; then
+  case "$target" in
+  *-mingw*)
+    ;;
+  *)
+    AC_MSG_ERROR([Metro builds only valid on the windows platform.]);
+    ;;
+  esac
+fi
 
 MOZ_ARG_WITH_STRING(windows-version,
 [  --with-windows-version=WINSDK_TARGETVER
-                          Highest Windows version to target using this SDK
-                              601: Windows 7],
+                          Windows SDK version to target. Lowest version
+                          currently allowed is 601, highest is 602],
   WINSDK_TARGETVER=$withval)
 
+# Currently only two sdk versions allowed, 601 and 602
 case "$WINSDK_TARGETVER" in
-601)
+601|602)
     MOZ_WINSDK_TARGETVER=0${WINSDK_TARGETVER}0000
     ;;
 
 *)
-    AC_MSG_ERROR([Invalid value for --with-windows-version ($WINSDK_TARGETVER), must be 601]);
+    AC_MSG_ERROR([Invalid value for --with-windows-version ($WINSDK_TARGETVER)]);
     ;;
-
 esac
 
 case "$target" in
@@ -1618,19 +1570,15 @@ if test "$OS_TARGET" = "Android"; then
     x86-*)
       ANDROID_CPU_ARCH=x86
       ;;
+    mips-*) # When target_cpu is mipsel, CPU_ARCH is mips
+      ANDROID_CPU_ARCH=mips
+      ;;
     esac
 fi
 
 if test "$OS_TARGET" = "Android" -a -z "$gonkdir"; then
     if test -z "$STLPORT_CPPFLAGS$STLPORT_LDFLAGS$STLPORT_LIBS"; then
-        if test -n "$MOZ_ANDROID_LIBSTDCXX" ; then
-            if test ! -e "$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/libstdc++.a" ; then
-                AC_MSG_ERROR([Cannot find path to libstdc++ (NDK version >= 5?)])
-            fi
-            STLPORT_CPPFLAGS="-I$android_ndk/sources/cxx-stl/gnu-libstdc++/include -I$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/include -D_GLIBCXX_PERMIT_BACKWARD_HASH"
-            STLPORT_LDFLAGS="-L$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH"
-            STLPORT_LIBS="-lstdc++"
-        elif test -e "$android_ndk/sources/cxx-stl/stlport/libs/$ANDROID_CPU_ARCH/libstlport_static.a" ; then
+        if test -e "$android_ndk/sources/cxx-stl/stlport/libs/$ANDROID_CPU_ARCH/libstlport_static.a" ; then
             STLPORT_CPPFLAGS="-I$android_ndk/sources/cxx-stl/stlport/stlport"
             STLPORT_LDFLAGS="-L$android_ndk/sources/cxx-stl/stlport/libs/$ANDROID_CPU_ARCH/"
             STLPORT_LIBS="-lstlport_static"
@@ -1728,7 +1676,7 @@ if test "$GNU_CC"; then
     MOZ_C_SUPPORTS_WARNING(-W, error=return-type, ac_c_has_werror_return_type)
     MOZ_C_SUPPORTS_WARNING(-W, type-limits, ac_c_has_wtype_limits)
     MOZ_C_SUPPORTS_WARNING(-W, empty-body, ac_c_has_wempty_body)
-    
+
     # Turn off the following warnings that -Wall/-pedantic turn on:
     # -Wno-unused - lots of violations in third-party code
     # -Wno-overlength-strings - we exceed the minimum maximum length frequently
@@ -2254,7 +2202,7 @@ ia64*-hpux*)
         # Use temp file for windres (bug 213281)
         RCFLAGS='-O coff --use-temp-file'
         # mingw doesn't require kernel32, user32, and advapi32 explicitly
-        LIBS="$LIBS -lgdi32 -lwinmm -lwsock32"
+        LIBS="$LIBS -lgdi32 -lwinmm -lwsock32 -lpsapi"
         MOZ_JS_LIBS='-L$(libdir) -lmozjs'
         MOZ_FIX_LINK_PATHS=
         DYNAMIC_XPCOM_LIBS='-L$(LIBXUL_DIST)/lib -lxpcom -lxpcom_core -lmozalloc'
@@ -2299,7 +2247,7 @@ ia64*-hpux*)
         # make 'foo == bar;' error out
         CFLAGS="$CFLAGS -we4553"
         CXXFLAGS="$CXXFLAGS -we4553"
-        LIBS="$LIBS kernel32.lib user32.lib gdi32.lib winmm.lib wsock32.lib advapi32.lib"
+        LIBS="$LIBS kernel32.lib user32.lib gdi32.lib winmm.lib wsock32.lib advapi32.lib psapi.lib"
         MOZ_DEBUG_FLAGS='-Zi'
         MOZ_DEBUG_LDFLAGS='-DEBUG -DEBUGTYPE:CV'
         WARNINGS_AS_ERRORS='-WX'
@@ -2712,13 +2660,13 @@ arm*-*)
         fi
         ;;
     *)
-        ENABLE_METHODJIT=1
-        ENABLE_MONOIC=1
-        ENABLE_POLYIC=1
-        ENABLE_POLYIC_TYPED_ARRAY=1
-        AC_DEFINE(JS_CPU_ARM)
-        AC_DEFINE(JS_NUNBOX32)
     esac
+    ENABLE_METHODJIT=1
+    ENABLE_MONOIC=1
+    ENABLE_POLYIC=1
+    ENABLE_POLYIC_TYPED_ARRAY=1
+    AC_DEFINE(JS_CPU_ARM)
+    AC_DEFINE(JS_NUNBOX32)
     ;;
 sparc*-*)
     if test ! "$HAVE_64BIT_OS" ; then
@@ -2758,6 +2706,7 @@ MOZ_ARG_ENABLE_BOOL(methodjit-spew,
   ENABLE_METHODJIT_SPEW= )
 
 AC_SUBST(ENABLE_METHODJIT)
+AC_SUBST(ENABLE_METHODJIT_SPEW)
 
 if test "$ENABLE_METHODJIT"; then
     AC_DEFINE(JS_METHODJIT)
@@ -2773,10 +2722,6 @@ fi
 
 if test "$ENABLE_METHODJIT_TYPED_ARRAY"; then
     AC_DEFINE(JS_METHODJIT_TYPED_ARRAY)
-fi
-
-if test "$ENABLE_METHODJIT_SPEW"; then
-    AC_DEFINE(JS_METHODJIT_SPEW)
 fi
 
 if test -z "$SKIP_COMPILER_CHECKS"; then
@@ -3972,6 +3917,7 @@ MOZ_ARG_ENABLE_STRING(debug,
                            (using compiler flags DBG)],
 [ if test "$enableval" != "no"; then
     MOZ_DEBUG=1
+    ENABLE_METHODJIT_SPEW=1
     if test -n "$enableval" -a "$enableval" != "yes"; then
         MOZ_DEBUG_FLAGS=`echo $enableval | sed -e 's|\\\ | |g'`
         _MOZ_DEBUG_FLAGS_SET=1
@@ -4005,6 +3951,10 @@ if test -n "$MOZ_DEBUG"; then
         AC_MSG_ERROR([These compiler flags are invalid: $MOZ_DEBUG_FLAGS])
     fi
     CFLAGS=$_SAVE_CFLAGS
+fi
+
+if test "$ENABLE_METHODJIT_SPEW"; then
+    AC_DEFINE(JS_METHODJIT_SPEW)
 fi
 
 dnl ========================================================
@@ -4470,14 +4420,6 @@ dnl ========================================================
 MOZ_ARG_HEADER(Profiling and Instrumenting)
 
 dnl ========================================================
-dnl = Support for Quantify (Windows)
-dnl ========================================================
-MOZ_ARG_ENABLE_BOOL(quantify,
-[  --enable-quantify       Enable Quantify support (Windows only) ],
-    MOZ_QUANTIFY=1,
-    MOZ_QUANTIFY= )
-
-dnl ========================================================
 dnl = Support for demangling undefined symbols
 dnl ========================================================
 if test -z "$SKIP_LIBRARY_CHECKS"; then
@@ -4518,6 +4460,15 @@ MOZ_ARG_WITH_STRING(jitreport-granularity,
   JITREPORT_GRANULARITY=3)
 
 AC_DEFINE_UNQUOTED(JS_DEFAULT_JITREPORT_GRANULARITY, $JITREPORT_GRANULARITY)
+
+dnl ========================================================
+dnl = E4X support (ECMA-357)
+dnl ========================================================
+JS_HAS_XML_SUPPORT=1
+MOZ_ARG_DISABLE_BOOL(e4x,
+[  --disable-e4x Disable JS support for XML (ECMA-357)],
+    JS_HAS_XML_SUPPORT=0 )
+AC_DEFINE_UNQUOTED(JS_HAS_XML_SUPPORT, $JS_HAS_XML_SUPPORT)
 
 dnl ========================================================
 dnl =
@@ -4883,7 +4834,6 @@ AC_SUBST(MOZ_DEBUG_DISABLE_DEFS)
 AC_SUBST(MOZ_DEBUG_FLAGS)
 AC_SUBST(MOZ_DEBUG_LDFLAGS)
 AC_SUBST(WARNINGS_AS_ERRORS)
-AC_SUBST(MOZ_LEAKY)
 AC_SUBST(MOZ_JPROF)
 AC_SUBST(MOZ_SHARK)
 AC_SUBST(MOZ_CALLGRIND)
@@ -4961,6 +4911,7 @@ AC_SUBST(COMPILE_CXXFLAGS)
 AC_SUBST(LDFLAGS)
 AC_SUBST(LIBS)
 AC_SUBST(CROSS_COMPILE)
+AC_SUBST(MOZ_METRO)
 
 AC_SUBST(HOST_CC)
 AC_SUBST(HOST_CXX)

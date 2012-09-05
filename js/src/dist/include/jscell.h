@@ -1,1 +1,0 @@
-/Users/rquesada/progs/Spidermonkey/js/src/jscell.h

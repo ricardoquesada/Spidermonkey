@@ -1,42 +1,8 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *   IBM Corp.
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
  * JS number type and wrapper class.
@@ -79,6 +45,7 @@
 
 #include "vm/GlobalObject.h"
 #include "vm/MethodGuard.h"
+#include "vm/NumericConversions.h"
 #include "vm/StringBuffer.h"
 
 #include "jsatominlines.h"
@@ -383,7 +350,7 @@ js::num_parseInt(JSContext *cx, unsigned argc, Value *vp)
         return true;
     }
 
-    if (args.length() == 1 || 
+    if (args.length() == 1 ||
         (args[1].isInt32() && (args[1].toInt32() == 0 || args[1].toInt32() == 10))) {
         if (args[0].isInt32()) {
             args.rval() = args[0];
@@ -396,7 +363,7 @@ js::num_parseInt(JSContext *cx, unsigned argc, Value *vp)
          *
          * To preserve this behaviour, we can't use the fast-path when string >
          * 1e21, or else the result would be |NeM|.
-         * 
+         *
          * The same goes for values smaller than 1.0e-6, because the string would be in
          * the form of "Ne-M".
          */
@@ -453,11 +420,6 @@ js::num_parseInt(JSContext *cx, unsigned argc, Value *vp)
     args.rval().setNumber(number);
     return true;
 }
-
-const char js_isNaN_str[]      = "isNaN";
-const char js_isFinite_str[]   = "isFinite";
-const char js_parseFloat_str[] = "parseFloat";
-const char js_parseInt_str[]   = "parseInt";
 
 static JSFunctionSpec number_functions[] = {
     JS_FN(js_isNaN_str,         num_isNaN,           1,0),
@@ -874,6 +836,27 @@ static JSFunctionSpec number_methods[] = {
     JS_FS_END
 };
 
+
+// ES6 draft ES6 15.7.3.10
+static JSBool
+Number_isNaN(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() < 1 || !args[0].isDouble()) {
+        args.rval().setBoolean(false);
+        return true;
+    }
+    args.rval().setBoolean(MOZ_DOUBLE_IS_NaN(args[0].toDouble()));
+    return true;
+}
+
+
+static JSFunctionSpec number_static_methods[] = {
+    JS_FN("isNaN", Number_isNaN, 1, 0),
+    JS_FS_END
+};
+
+
 /* NB: Keep this in synch with number_constants[]. */
 enum nc_slot {
     NC_NaN,
@@ -1017,15 +1000,15 @@ js_InitNumberClass(JSContext *cx, JSObject *obj)
     /* XXX must do at least once per new thread, so do it per JSContext... */
     FIX_FPU();
 
-    RootedVar<GlobalObject*> global(cx, &obj->asGlobal());
+    Rooted<GlobalObject*> global(cx, &obj->asGlobal());
 
-    RootedVarObject numberProto(cx, global->createBlankPrototype(cx, &NumberClass));
+    RootedObject numberProto(cx, global->createBlankPrototype(cx, &NumberClass));
     if (!numberProto)
         return NULL;
     numberProto->asNumber().setPrimitiveValue(0);
 
-    RootedVarFunction ctor(cx);
-    ctor = global->createConstructor(cx, Number, CLASS_ATOM(cx, Number), 1);
+    RootedFunction ctor(cx);
+    ctor = global->createConstructor(cx, Number, CLASS_NAME(cx, Number), 1);
     if (!ctor)
         return NULL;
 
@@ -1036,6 +1019,9 @@ js_InitNumberClass(JSContext *cx, JSObject *obj)
     if (!JS_DefineConstDoubles(cx, ctor, number_constants))
         return NULL;
 
+    if (!DefinePropertiesAndBrand(cx, ctor, NULL, number_static_methods))
+        return NULL;
+
     if (!DefinePropertiesAndBrand(cx, numberProto, NULL, number_methods))
         return NULL;
 
@@ -1043,10 +1029,10 @@ js_InitNumberClass(JSContext *cx, JSObject *obj)
         return NULL;
 
     /* ES5 15.1.1.1, 15.1.1.2 */
-    if (!DefineNativeProperty(cx, global, ATOM_TO_JSID(cx->runtime->atomState.NaNAtom),
+    if (!DefineNativeProperty(cx, global, cx->runtime->atomState.NaNAtom,
                               cx->runtime->NaNValue, JS_PropertyStub, JS_StrictPropertyStub,
                               JSPROP_PERMANENT | JSPROP_READONLY, 0, 0) ||
-        !DefineNativeProperty(cx, global, ATOM_TO_JSID(cx->runtime->atomState.InfinityAtom),
+        !DefineNativeProperty(cx, global, cx->runtime->atomState.InfinityAtom,
                               cx->runtime->positiveInfinityValue,
                               JS_PropertyStub, JS_StrictPropertyStub,
                               JSPROP_PERMANENT | JSPROP_READONLY, 0, 0))
@@ -1227,6 +1213,25 @@ NumberValueToStringBuffer(JSContext *cx, const Value &v, StringBuffer &sb)
 JS_PUBLIC_API(bool)
 ToNumberSlow(JSContext *cx, Value v, double *out)
 {
+#ifdef DEBUG
+    /*
+     * MSVC bizarrely miscompiles this, complaining about the first brace below
+     * being unmatched (!).  The error message points at both this opening brace
+     * and at the corresponding SkipRoot constructor.  The error seems to derive
+     * from the presence guard-object macros on the SkipRoot class/constructor,
+     * which seems well in the weeds for an unmatched-brace syntax error.
+     * Otherwise the problem is inscrutable, and I haven't found a workaround.
+     * So for now just disable it when compiling with MSVC -- not ideal, but at
+     * least Windows debug shell builds complete again.
+     */
+#ifndef _MSC_VER
+    {
+        SkipRoot skip(cx, &v);
+        MaybeCheckStackRoots(cx);
+    }
+#endif
+#endif
+
     JS_ASSERT(!v.isNumber());
     goto skip_int_double;
     for (;;) {
@@ -1274,7 +1279,7 @@ ToInt32Slow(JSContext *cx, const Value &v, int32_t *out)
         if (!ToNumberSlow(cx, v, &d))
             return false;
     }
-    *out = js_DoubleToECMAInt32(d);
+    *out = ToInt32(d);
     return true;
 }
 
@@ -1289,27 +1294,7 @@ ToUint32Slow(JSContext *cx, const Value &v, uint32_t *out)
         if (!ToNumberSlow(cx, v, &d))
             return false;
     }
-    *out = js_DoubleToECMAUint32(d);
-    return true;
-}
-
-bool
-NonstandardToInt32Slow(JSContext *cx, const Value &v, int32_t *out)
-{
-    JS_ASSERT(!v.isInt32());
-    double d;
-    if (v.isDouble()) {
-        d = v.toDouble();
-    } else if (!ToNumberSlow(cx, v, &d)) {
-        return false;
-    }
-
-    if (MOZ_DOUBLE_IS_NaN(d) || d <= -2147483649.0 || 2147483648.0 <= d) {
-        js_ReportValueError(cx, JSMSG_CANT_CONVERT,
-                            JSDVG_SEARCH_STACK, v, NULL);
-        return false;
-    }
-    *out = (int32_t) floor(d + 0.5);  /* Round to nearest */
+    *out = ToUint32(d);
     return true;
 }
 

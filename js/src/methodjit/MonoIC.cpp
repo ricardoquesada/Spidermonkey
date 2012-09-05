@@ -1,56 +1,26 @@
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=99:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla SpiderMonkey JavaScript 1.9 code, released
- * May 28, 2008.
- *
- * The Initial Developer of the Original Code is
- *   Brendan Eich <brendan@mozilla.org>
- *
- * Contributor(s):
- *   David Anderson <danderson@mozilla.com>
- *   David Mandelin <dmandelin@mozilla.com>
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
-#include "jsscope.h"
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#include "jscntxt.h"
 #include "jsnum.h"
-#include "MonoIC.h"
-#include "StubCalls.h"
-#include "StubCalls-inl.h"
+#include "jsobj.h"
+#include "jsscope.h"
+
 #include "assembler/assembler/LinkBuffer.h"
 #include "assembler/assembler/MacroAssembler.h"
 #include "assembler/assembler/CodeLocation.h"
+
 #include "methodjit/CodeGenIncludes.h"
 #include "methodjit/Compiler.h"
 #include "methodjit/ICRepatcher.h"
+#include "methodjit/InlineFrameAssembler.h"
+#include "methodjit/MonoIC.h"
 #include "methodjit/PolyIC.h"
-#include "InlineFrameAssembler.h"
-#include "jsobj.h"
+#include "methodjit/StubCalls.h"
 
 #include "builtin/RegExp.h"
 
@@ -58,6 +28,8 @@
 #include "jsobjinlines.h"
 #include "jsscopeinlines.h"
 #include "jsscriptinlines.h"
+
+#include "methodjit/StubCalls-inl.h"
 
 using namespace js;
 using namespace js::mjit;
@@ -86,12 +58,12 @@ PatchGetFallback(VMFrame &f, ic::GetGlobalNameIC *ic)
 void JS_FASTCALL
 ic::GetGlobalName(VMFrame &f, ic::GetGlobalNameIC *ic)
 {
-    JSObject &obj = f.fp()->scopeChain().global();
+    JSObject &obj = f.fp()->global();
     PropertyName *name = f.script()->getName(GET_UINT32_INDEX(f.pc()));
 
     RecompilationMonitor monitor(f.cx);
 
-    const Shape *shape = obj.nativeLookup(f.cx, js_CheckForStringIndex(ATOM_TO_JSID(name)));
+    const Shape *shape = obj.nativeLookup(f.cx, NameToId(name));
 
     if (monitor.recompiled()) {
         stubs::Name(f);
@@ -143,15 +115,6 @@ PatchSetFallback(VMFrame &f, ic::SetGlobalNameIC *ic)
 }
 
 void
-SetGlobalNameIC::patchExtraShapeGuard(Repatcher &repatcher, const Shape *shape)
-{
-    JS_ASSERT(hasExtraStub);
-
-    JSC::CodeLocationLabel label(JSC::MacroAssemblerCodePtr(extraStub.start()));
-    repatcher.repatch(label.dataLabelPtrAtOffset(extraShapeGuard), shape);
-}
-
-void
 SetGlobalNameIC::patchInlineShapeGuard(Repatcher &repatcher, const Shape *shape)
 {
     JSC::CodeLocationDataLabelPtr label = fastPathStart.dataLabelPtrAtOffset(shapeOffset);
@@ -190,13 +153,13 @@ UpdateSetGlobalName(VMFrame &f, ic::SetGlobalNameIC *ic, JSObject *obj, const Sh
 void JS_FASTCALL
 ic::SetGlobalName(VMFrame &f, ic::SetGlobalNameIC *ic)
 {
-    JSObject &obj = f.fp()->scopeChain().global();
+    JSObject &obj = f.fp()->global();
     JSScript *script = f.script();
     PropertyName *name = script->getName(GET_UINT32_INDEX(f.pc()));
 
     RecompilationMonitor monitor(f.cx);
 
-    const Shape *shape = obj.nativeLookup(f.cx, ATOM_TO_JSID(name));
+    const Shape *shape = obj.nativeLookup(f.cx, NameToId(name));
 
     if (!monitor.recompiled()) {
         LookupStatus status = UpdateSetGlobalName(f, ic, &obj, shape);
@@ -242,7 +205,7 @@ class EqualityCompiler : public BaseCompiler
     Vector<Jump, 4, SystemAllocPolicy> jumpList;
     Jump trueJump;
     Jump falseJump;
-    
+
   public:
     EqualityCompiler(VMFrame &f, EqualityICInfo &ic)
         : BaseCompiler(f.cx), f(f), ic(ic), jumpList(SystemAllocPolicy())
@@ -263,7 +226,7 @@ class EqualityCompiler : public BaseCompiler
     {
         falseJump = j;
     }
-    
+
     void generateStringPath(Assembler &masm)
     {
         const ValueRemat &lvr = ic.lvr;
@@ -276,17 +239,17 @@ class EqualityCompiler : public BaseCompiler
             Jump lhsFail = masm.testString(Assembler::NotEqual, lvr.typeReg());
             linkToStub(lhsFail);
         }
-        
+
         if (!rvr.isType(JSVAL_TYPE_STRING)) {
             Jump rhsFail = masm.testString(Assembler::NotEqual, rvr.typeReg());
             linkToStub(rhsFail);
         }
 
         RegisterID tmp = ic.tempReg;
-        
+
         /* JSString::isAtom === (lengthAndFlags & ATOM_MASK == 0) */
         Imm32 atomMask(JSString::ATOM_MASK);
-        
+
         masm.load32(Address(lvr.dataReg(), JSString::offsetOfLengthAndFlags()), tmp);
         Jump lhsNotAtomized = masm.branchTest32(Assembler::NonZero, tmp, atomMask);
         linkToStub(lhsNotAtomized);
@@ -315,12 +278,12 @@ class EqualityCompiler : public BaseCompiler
     {
         ValueRemat &lvr = ic.lvr;
         ValueRemat &rvr = ic.rvr;
-        
+
         if (!lvr.isConstant() && !lvr.isType(JSVAL_TYPE_OBJECT)) {
             Jump lhsFail = masm.testObject(Assembler::NotEqual, lvr.typeReg());
             linkToStub(lhsFail);
         }
-        
+
         if (!rvr.isConstant() && !rvr.isType(JSVAL_TYPE_OBJECT)) {
             Jump rhsFail = masm.testObject(Assembler::NotEqual, rvr.typeReg());
             linkToStub(rhsFail);
@@ -384,7 +347,7 @@ class EqualityCompiler : public BaseCompiler
             Assembler masm;
             Value rval = f.regs.sp[-1];
             Value lval = f.regs.sp[-2];
-            
+
             if (rval.isObject() && lval.isObject()) {
                 generateObjectPath(masm);
                 ic.generated = true;
@@ -521,7 +484,7 @@ mjit::NativeStubEpilogue(VMFrame &f, Assembler &masm, NativeStubLinker::FinalJum
 /*
  * Calls have an inline path and an out-of-line path. The inline path is used
  * in the fastest case: the method has JIT'd code, and |argc == nargs|.
- * 
+ *
  * The inline path and OOL path are separated by a guard on the identity of
  * the callee object. This guard starts as NULL and always fails on the first
  * hit. On the OOL path, the callee is verified to be both a function and a
@@ -612,10 +575,13 @@ class CallCompiler : public BaseCompiler
         masm.loadPtr(scriptAddr, t0);
 
         // Test that:
-        // - script->jitHandle{Ctor,Normal}->value is neither NULL nor UNJITTABLE, and
-        // - script->jitHandle{Ctor,Normal}->value->arityCheckEntry is not NULL.
-        //
-        size_t offset = JSScript::jitHandleOffset(callingNew);
+        // - script->jitInfo is not NULL
+        // - script->jitInfo->jitHandle{Ctor,Normal}->value is neither NULL nor UNJITTABLE, and
+        // - script->jitInfo->jitHandle{Ctor,Normal}->value->arityCheckEntry is not NULL.
+        masm.loadPtr(Address(t0, JSScript::offsetOfJITInfo()), t0);
+        Jump hasNoJitInfo = masm.branchPtr(Assembler::Equal, t0, ImmPtr(NULL));
+        size_t offset = JSScript::JITScriptSet::jitHandleOffset(callingNew,
+                                                                f.cx->compartment->needsBarrier());
         masm.loadPtr(Address(t0, offset), t0);
         Jump hasNoJitCode = masm.branchPtr(Assembler::BelowOrEqual, t0,
                                            ImmPtr(JSScript::JITScriptHandle::UNJITTABLE));
@@ -624,6 +590,7 @@ class CallCompiler : public BaseCompiler
 
         Jump hasCode = masm.branchPtr(Assembler::NotEqual, t0, ImmPtr(0));
 
+        hasNoJitInfo.linkTo(masm.label(), &masm);
         hasNoJitCode.linkTo(masm.label(), &masm);
 
         /*
@@ -699,7 +666,7 @@ class CallCompiler : public BaseCompiler
     bool patchInlinePath(JSScript *script, JSObject *obj)
     {
         JS_ASSERT(ic.frameSize.isStatic());
-        JITScript *jit = script->getJIT(callingNew);
+        JITScript *jit = script->getJIT(callingNew, f.cx->compartment->needsBarrier());
 
         /* Very fast path. */
         Repatcher repatch(f.chunk());
@@ -982,7 +949,7 @@ class CallCompiler : public BaseCompiler
                 disable();
             return NULL;
         }
-            
+
         JSFunction *fun = ucr.fun;
         JS_ASSERT(fun);
         JSScript *script = fun->script();
@@ -1117,7 +1084,7 @@ ic::SplatApplyArgs(VMFrame &f)
     }
 
     /* Steps 4-5. */
-    JSObject *aobj = &args[1].toObject();
+    RootedObject aobj(cx, &args[1].toObject());
     uint32_t length;
     if (!js_GetLengthProperty(cx, aobj, &length))
         THROWV(false);

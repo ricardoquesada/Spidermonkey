@@ -1,40 +1,7 @@
 #
-# ***** BEGIN LICENSE BLOCK *****
-# Version: MPL 1.1/GPL 2.0/LGPL 2.1
-#
-# The contents of this file are subject to the Mozilla Public License Version
-# 1.1 (the "License"); you may not use this file except in compliance with
-# the License. You may obtain a copy of the License at
-# http://www.mozilla.org/MPL/
-#
-# Software distributed under the License is distributed on an "AS IS" basis,
-# WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
-# for the specific language governing rights and limitations under the
-# License.
-#
-# The Original Code is mozilla.org code.
-#
-# The Initial Developer of the Original Code is
-# Netscape Communications Corporation.
-# Portions created by the Initial Developer are Copyright (C) 1998
-# the Initial Developer. All Rights Reserved.
-#
-# Contributor(s):
-#   Benjamin Smedberg <benjamin@smedbergs.us>
-#
-# Alternatively, the contents of this file may be used under the terms of
-# either of the GNU General Public License Version 2 or later (the "GPL"),
-# or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
-# in which case the provisions of the GPL or the LGPL are applicable instead
-# of those above. If you wish to allow use of your version of this file only
-# under the terms of either the GPL or the LGPL, and not to allow others to
-# use your version of this file under the terms of the MPL, indicate your
-# decision by deleting the provisions above and replace them with the notice
-# and other provisions required by the GPL or the LGPL. If you do not delete
-# the provisions above, a recipient may use your version of this file under
-# the terms of any one of the MPL, the GPL or the LGPL.
-#
-# ***** END LICENSE BLOCK *****
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 #
 # config.mk
@@ -221,17 +188,6 @@ OS_LDFLAGS += -DEBUG -OPT:REF
 endif
 endif
 
-ifdef MOZ_QUANTIFY
-# -FIXED:NO is needed for Quantify to work, but it increases the size
-# of executables, so only use it if building for Quantify.
-WIN32_EXE_LDFLAGS += -FIXED:NO
-
-# We need -OPT:NOICF to prevent identical methods from being merged together.
-# Otherwise, Quantify doesn't know which method was actually called when it's
-# showing you the profile.
-OS_LDFLAGS += -OPT:NOICF
-endif
-
 #
 # Handle trace-malloc in optimized builds.
 # No opt to give sane callstacks.
@@ -384,13 +340,16 @@ MAKE_JARS_FLAGS += --both-manifests
 endif
 
 TAR_CREATE_FLAGS = -cvhf
+TAR_CREATE_FLAGS_QUIET = -chf
 
 ifeq ($(OS_ARCH),BSD_OS)
 TAR_CREATE_FLAGS = -cvLf
+TAR_CREATE_FLAGS_QUIET = -cLf
 endif
 
 ifeq ($(OS_ARCH),OS2)
 TAR_CREATE_FLAGS = -cvf
+TAR_CREATE_FLAGS_QUIET = -cf
 endif
 
 #
@@ -403,8 +362,6 @@ MY_RULES	:= $(DEPTH)/config/myrules.mk
 # Default command macros; can be overridden in <arch>.mk.
 #
 CCC = $(CXX)
-PURIFY = purify $(PURIFYOPTIONS)
-QUANTIFY = quantify $(QUANTIFYOPTIONS)
 XPIDL_LINK = $(PYTHON) $(LIBXUL_DIST)/sdk/bin/xpt.py link
 
 # Java macros
@@ -661,12 +618,6 @@ endif
 -include $(MY_CONFIG)
 
 ######################################################################
-# Now test variables that might have been set or overridden by $(MY_CONFIG).
-
-DEFINES		+= -DOSTYPE=\"$(OS_CONFIG)\"
-DEFINES		+= -DOSARCH=$(OS_ARCH)
-
-######################################################################
 
 GARBAGE		+= $(DEPENDENCIES) $(MKDEPENDENCIES) $(MKDEPENDENCIES).bak core $(wildcard core.[0-9]*) $(wildcard *.err) $(wildcard *.pure) $(wildcard *_pure_*.o) Templates.DB
 
@@ -719,7 +670,9 @@ endif # WINNT/OS2
 AB_CD = $(MOZ_UI_LOCALE)
 
 ifndef L10NBASEDIR
-L10NBASEDIR = $(error L10NBASEDIR not defined by configure)
+  L10NBASEDIR = $(error L10NBASEDIR not defined by configure)
+else
+  IS_LANGUAGE_REPACK = 1
 endif
 
 EXPAND_LOCALE_SRCDIR = $(if $(filter en-US,$(AB_CD)),$(topsrcdir)/$(1)/en-US,$(call core_realpath,$(L10NBASEDIR))/$(AB_CD)/$(subst /locales,,$(1)))
@@ -795,6 +748,9 @@ ifdef STDCXX_COMPAT
 ifneq ($(OS_ARCH),Darwin)
 CHECK_STDCXX = objdump -p $(1) | grep -e 'GLIBCXX_3\.4\.\(9\|[1-9][0-9]\)' > /dev/null && echo "TEST-UNEXPECTED-FAIL | | We don't want these libstdc++ symbols to be used:" && objdump -T $(1) | grep -e 'GLIBCXX_3\.4\.\(9\|[1-9][0-9]\)' && exit 1 || exit 0
 endif
+
+EXTRA_LIBS += $(call EXPAND_LIBNAME_PATH,stdc++compat,$(DEPTH)/build/unix/stdc++compat)
+HOST_EXTRA_LIBS += $(call EXPAND_LIBNAME_PATH,host_stdc++compat,$(DEPTH)/build/unix/stdc++compat)
 endif
 
 # autoconf.mk sets OBJ_SUFFIX to an error to avoid use before including

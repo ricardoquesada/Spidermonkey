@@ -1,42 +1,9 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=78:
  *
- * ***** BEGIN LICENSE BLOCK *****
- * Version: MPL 1.1/GPL 2.0/LGPL 2.1
- *
- * The contents of this file are subject to the Mozilla Public License Version
- * 1.1 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- * http://www.mozilla.org/MPL/
- *
- * Software distributed under the License is distributed on an "AS IS" basis,
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
- * for the specific language governing rights and limitations under the
- * License.
- *
- * The Original Code is Mozilla Communicator client code, released
- * March 31, 1998.
- *
- * The Initial Developer of the Original Code is
- * Netscape Communications Corporation.
- * Portions created by the Initial Developer are Copyright (C) 1998
- * the Initial Developer. All Rights Reserved.
- *
- * Contributor(s):
- *
- * Alternatively, the contents of this file may be used under the terms of
- * either of the GNU General Public License Version 2 or later (the "GPL"),
- * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
- * in which case the provisions of the GPL or the LGPL are applicable instead
- * of those above. If you wish to allow use of your version of this file only
- * under the terms of either the GPL or the LGPL, and not to allow others to
- * use your version of this file under the terms of the MPL, indicate your
- * decision by deleting the provisions above and replace them with the notice
- * and other provisions required by the GPL or the LGPL. If you do not delete
- * the provisions above, a recipient may use your version of this file under
- * the terms of any one of the MPL, the GPL or the LGPL.
- *
- * ***** END LICENSE BLOCK ***** */
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef Parser_h__
 #define Parser_h__
@@ -53,8 +20,7 @@
 
 #include "frontend/ParseMaps.h"
 #include "frontend/ParseNode.h"
-
-#define NUM_TEMP_FREELISTS      6U      /* 32 to 2048 byte size classes (32 bit) */
+#include "frontend/TreeContext.h"
 
 typedef struct BindData BindData;
 
@@ -69,49 +35,47 @@ enum VarContext { HoistVars, DontHoistVars };
 struct Parser : private AutoGCRooter
 {
     JSContext           *const context; /* FIXME Bug 551291: use AutoGCRooter::context? */
-    void                *tempFreeList[NUM_TEMP_FREELISTS];
+    StrictModeGetter    strictModeGetter; /* used by tokenStream to test for strict mode */
     TokenStream         tokenStream;
     void                *tempPoolMark;  /* initial JSContext.tempLifoAlloc mark */
     JSPrincipals        *principals;    /* principals associated with source */
     JSPrincipals        *originPrincipals;   /* see jsapi.h 'originPrincipals' comment */
     StackFrame          *const callerFrame;  /* scripted caller frame for eval and dbgapi */
-    JSObject            *const callerVarObj; /* callerFrame's varObj */
     ParseNodeAllocator  allocator;
-    uint32_t            functionCount;  /* number of functions in current unit */
     ObjectBox           *traceListHead; /* list of parsed object for GC tracing */
 
-    /* This is a TreeContext or a BytecodeEmitter; see the comment on TCF_COMPILING. */
     TreeContext         *tc;            /* innermost tree context (stack-allocated) */
 
     /* Root atoms and objects allocated for the parsed tree. */
     AutoKeepAtoms       keepAtoms;
 
     /* Perform constant-folding; must be true when interfacing with the emitter. */
-    bool                foldConstants;
+    const bool          foldConstants:1;
 
-    Parser(JSContext *cx, JSPrincipals *prin = NULL, JSPrincipals *originPrin = NULL,
-           StackFrame *cfp = NULL, bool fold = true);
+    /* Script can optimize name references based on scope chain. */
+    const bool          compileAndGo:1;
+
+    Parser(JSContext *cx, JSPrincipals *prin, JSPrincipals *originPrin,
+           const jschar *chars, size_t length, const char *fn, unsigned ln, JSVersion version,
+           StackFrame *cfp, bool foldConstants, bool compileAndGo);
     ~Parser();
 
     friend void AutoGCRooter::trace(JSTracer *trc);
     friend struct TreeContext;
 
     /*
-     * Initialize a parser. Parameters are passed on to init tokenStream. The
-     * compiler owns the arena pool "tops-of-stack" space above the current
-     * JSContext.tempLifoAlloc mark. This means you cannot allocate from
-     * tempLifoAlloc and save the pointer beyond the next Parser destructor
-     * invocation.
+     * Initialize a parser. The compiler owns the arena pool "tops-of-stack"
+     * space above the current JSContext.tempLifoAlloc mark. This means you
+     * cannot allocate from tempLifoAlloc and save the pointer beyond the next
+     * Parser destructor invocation.
      */
-    bool init(const jschar *base, size_t length, const char *filename, unsigned lineno,
-              JSVersion version);
+    bool init();
 
     void setPrincipals(JSPrincipals *prin, JSPrincipals *originPrin);
 
     const char *getFilename() const { return tokenStream.getFilename(); }
     JSVersion versionWithFlags() const { return tokenStream.versionWithFlags(); }
     JSVersion versionNumber() const { return tokenStream.versionNumber(); }
-    bool hasXML() const { return tokenStream.hasXML(); }
 
     /*
      * Parse a top-level JS script.
@@ -181,6 +145,8 @@ struct Parser : private AutoGCRooter
     enum FunctionBodyType { StatementListBody, ExpressionBody };
     ParseNode *functionBody(FunctionBodyType type);
 
+    bool checkForArgumentsAndRest();
+
   private:
     /*
      * JS parsers, from lowest to highest precedence.
@@ -200,7 +166,7 @@ struct Parser : private AutoGCRooter
      */
     ParseNode *functionStmt();
     ParseNode *functionExpr();
-    ParseNode *statements();
+    ParseNode *statements(bool *hasFunctionStmt = NULL);
 
     ParseNode *switchStatement();
     ParseNode *forStatement();
@@ -214,6 +180,7 @@ struct Parser : private AutoGCRooter
                          VarContext varContext = HoistVars);
     ParseNode *expr();
     ParseNode *assignExpr();
+    ParseNode *assignExprWithoutYield(unsigned err);
     ParseNode *condExpr1();
     ParseNode *orExpr1();
     ParseNode *andExpr1i();
@@ -243,7 +210,7 @@ struct Parser : private AutoGCRooter
      * Additional JS parsers.
      */
     enum FunctionType { Getter, Setter, Normal };
-    bool functionArguments(TreeContext &funtc, FunctionBox *funbox, ParseNode **list);
+    bool functionArguments(ParseNode **list, bool &hasRest);
 
     ParseNode *functionDef(HandlePropertyName name, FunctionType type, FunctionSyntaxKind kind);
 
@@ -264,6 +231,9 @@ struct Parser : private AutoGCRooter
     ParseNode *identifierName(bool afterDoubleDot);
 
 #if JS_HAS_XML_SUPPORT
+    // True if E4X syntax is allowed in the current syntactic context.
+    bool allowsXML() const { return !tc->sc->inStrictMode() && tokenStream.allowsXML(); }
+
     ParseNode *endBracketedExpr();
 
     ParseNode *propertySelector();
@@ -296,7 +266,7 @@ Parser::reportErrorNumber(ParseNode *pn, unsigned flags, unsigned errorNumber, .
 }
 
 bool
-DefineArg(ParseNode *pn, JSAtom *atom, unsigned i, TreeContext *tc);
+DefineArg(ParseNode *pn, JSAtom *atom, unsigned i, Parser *parser);
 
 } /* namespace js */
 
