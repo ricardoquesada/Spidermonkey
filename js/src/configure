@@ -1577,7 +1577,7 @@ arm-apple*)
 
     xcode_base="/Applications/Xcode.app/Contents/Developer/Platforms"
     ios_sdk_root=""
-    ios_toolchain="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+    ios_toolchain="/usr/bin"
 
         ios_sdk_root="$xcode_base"/$ios_target.platform/Developer/SDKs/$ios_target"$ios_sdk_version".sdk
     if ! test -d "$ios_sdk_root" ; then

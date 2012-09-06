@@ -110,7 +110,7 @@ ToInt32(double d)
     }
 
     return int32_t(du.d);
-#elif defined (__arm__) && defined (__GNUC__)
+#elif defined (__arm__) && defined (__GNUC__) && defined(IGNORE_BECAUSE_IT_DOES_NOT_COMPILE)
     int32_t i;
     uint32_t    tmp0;
     uint32_t    tmp1;
