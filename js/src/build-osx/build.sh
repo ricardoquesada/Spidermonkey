@@ -2,10 +2,7 @@
 
 # configure
 ../configure --disable-tests \
-             --enable-debug \
-             --disable-methodjit \
-             --disable-monoic \
-             --disable-polyic
+             --enable-debug
 
 # make
 make -j4
