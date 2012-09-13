@@ -31,12 +31,14 @@ exit 0
 esac
 done
 
+host_os=`uname -s | tr "[:upper:]" "[:lower:]"`
+
 # configure
 ../configure --with-android-ndk=$HOME/bin/android-ndk \
              --with-android-sdk=$HOME/bin/android-sdk \
              --with-android-version=14 \
-             --with-android-toolchain=$HOME/bin/android-ndk/toolchains/arm-linux-androideabi-4.6/prebuilt/linux-x86 \
              --enable-application=mobile/android \
+             --with-android-toolchain=$HOME/bin/android-ndk/toolchains/arm-linux-androideabi-4.6/prebuilt/${host_os}-x86 \
              --target=arm-linux-androideabi \
              --disable-shared-js \
              --disable-tests \
@@ -52,7 +54,7 @@ make -j4
 
 if [[ $develop ]]; then
     rm -rf ../../../dist
-    ln -s -f "$PWD"/dist -t ../../..
+    ln -s -f "$PWD"/dist ../../..
 fi
 
 if [[ $release ]]; then
@@ -65,5 +67,6 @@ if [[ $release ]]; then
     cp -RL dist/lib/libjs_static.a ../../../dist/lib/libjs_static.a
 
 # strip unneeded symbols
-    $HOME/bin/android-ndk/toolchains/arm-linux-androideabi-4.6/prebuilt/linux-x86/bin/arm-linux-androideabi-strip --strip-unneeded ../../../dist/lib/libjs_static.a
+    $HOME/bin/android-ndk/toolchains/arm-linux-androideabi-4.6/prebuilt/${host_os}-x86/bin/arm-linux-androideabi-strip \
+        --strip-unneeded ../../../dist/lib/libjs_static.a
 fi
