@@ -31,6 +31,8 @@ exit 0
 esac
 done
 
+set -x
+
 host_os=`uname -s | tr "[:upper:]" "[:lower:]"`
 
 # configure
@@ -53,20 +55,23 @@ host_os=`uname -s | tr "[:upper:]" "[:lower:]"`
 make -j4
 
 if [[ $develop ]]; then
-    rm -rf ../../../dist
-    ln -s -f "$PWD"/dist ../../..
+    rm -rf ../../../include
+    rm -rf ../../../lib
+
+    ln -s -f "$PWD"/dist/include ../../..
+    ln -s -f "$PWD"/dist/lib ../../..
 fi
 
 if [[ $release ]]; then
 # copy specific files from dist
-    rm -rf ../../../dist
-    mkdir -p ../../../dist
-    mkdir -p ../../../dist/include
-    cp -RL dist/include/* ../../../dist/include/
-    mkdir -p ../../../dist/lib
-    cp -RL dist/lib/libjs_static.a ../../../dist/lib/libjs_static.a
+    rm -rf ../../../include
+    rm -rf ../../../lib
+    mkdir -p ../../../include
+    cp -RL dist/include/* ../../../include/
+    mkdir -p ../../../lib
+    cp -RL dist/lib/libjs_static.a ../../../lib/libjs_static.a
 
 # strip unneeded symbols
     $HOME/bin/android-ndk/toolchains/arm-linux-androideabi-4.6/prebuilt/${host_os}-x86/bin/arm-linux-androideabi-strip \
-        --strip-unneeded ../../../dist/lib/libjs_static.a
+        --strip-unneeded ../../../lib/libjs_static.a
 fi
