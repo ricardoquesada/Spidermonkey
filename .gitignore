@@ -41,3 +41,10 @@ Backup[ ]of[ ]*.pages/
 Backup[ ]of[ ]*.key/
 Backup[ ]of[ ]*.numbers/
 
+# Ignore the entire build-android directory
+# Note : to override .gitignore and commit changes to files in this directory
+# use "git commit -f <filename>"
+js/src/build-android
+
+# Ignore temporary python file
+js/src/config/expandlibs.pyc
