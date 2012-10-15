@@ -50,7 +50,7 @@ bool
 HashableValue::setValue(JSContext *cx, const Value &v)
 {
     if (v.isString() && v.toString()->isRope()) {
-        /* Flatten this rope so that equals() is infallible. */
+        // Flatten this rope so that equals() is infallible.
         JSString *str = v.toString()->ensureLinear(cx);
         if (!str)
             return false;
@@ -59,10 +59,10 @@ HashableValue::setValue(JSContext *cx, const Value &v)
         double d = v.toDouble();
         int32_t i;
         if (MOZ_DOUBLE_IS_INT32(d, &i)) {
-            /* Normalize int32-valued doubles to int32 for faster hashing and testing. */
+            // Normalize int32-valued doubles to int32 for faster hashing and testing.
             value = Int32Value(i);
         } else if (MOZ_DOUBLE_IS_NaN(d)) {
-            /* NaNs with different bits must hash and test identically. */
+            // NaNs with different bits must hash and test identically.
             value = DoubleValue(js_NaN);
         } else {
             value = v;
@@ -79,17 +79,15 @@ HashableValue::setValue(JSContext *cx, const Value &v)
 HashNumber
 HashableValue::hash() const
 {
-    /*
-     * HashableValue::setValue normalizes values so that the SameValue relation
-     * on HashableValues is the same as the == relationship on
-     * value.data.asBits, except for strings.
-     */
+    // HashableValue::setValue normalizes values so that the SameValue relation
+    // on HashableValues is the same as the == relationship on
+    // value.data.asBits, except for strings.
     if (value.isString()) {
         JSLinearString &s = value.toString()->asLinear();
         return HashChars(s.chars(), s.length());
     }
 
-    /* Having dispensed with strings, we can just hash asBits. */
+    // Having dispensed with strings, we can just hash asBits.
     uint64_t u = value.asRawBits();
     return HashNumber((u >> 3) ^ (u >> (32 + 3)) ^ (u << (32 - 3)));
 }
@@ -97,7 +95,7 @@ HashableValue::hash() const
 bool
 HashableValue::equals(const HashableValue &other) const
 {
-    /* Two HashableValues are equal if they have equal bits or they're equal strings. */
+    // Two HashableValues are equal if they have equal bits or they're equal strings.
     bool b = (value.asRawBits() == other.value.asRawBits()) ||
               (value.isString() &&
                other.value.isString() &&
@@ -128,18 +126,18 @@ Class MapObject::class_ = {
     "Map",
     JSCLASS_HAS_PRIVATE | JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_CACHED_PROTO(JSProto_Map),
-    JS_PropertyStub,         /* addProperty */
-    JS_PropertyStub,         /* delProperty */
-    JS_PropertyStub,         /* getProperty */
-    JS_StrictPropertyStub,   /* setProperty */
+    JS_PropertyStub,         // addProperty
+    JS_PropertyStub,         // delProperty
+    JS_PropertyStub,         // getProperty
+    JS_StrictPropertyStub,   // setProperty
     JS_EnumerateStub,
     JS_ResolveStub,
     JS_ConvertStub,
     finalize,
-    NULL,                    /* checkAccess */
-    NULL,                    /* call        */
-    NULL,                    /* construct   */
-    NULL,                    /* hasInstance */
+    NULL,                    // checkAccess
+    NULL,                    // call
+    NULL,                    // construct
+    NULL,                    // hasInstance
     mark
 };
 
@@ -155,8 +153,8 @@ JSFunctionSpec MapObject::methods[] = {
 JSObject *
 MapObject::initClass(JSContext *cx, JSObject *obj)
 {
-    return InitClass(cx, Rooted<GlobalObject*>(cx, &obj->asGlobal()),
-                     &class_, JSProto_Map, construct, methods);
+    Rooted<GlobalObject*> global(cx, &obj->asGlobal());
+    return InitClass(cx, global, &class_, JSProto_Map, construct, methods);
 }
 
 void
@@ -179,39 +177,6 @@ MapObject::finalize(FreeOp *fop, JSObject *obj)
         fop->delete_(map);
 }
 
-class AddToMap {
-  private:
-    ValueMap *map;
-
-  public:
-    AddToMap(ValueMap *map) : map(map) {}
-
-    bool operator()(JSContext *cx, const Value &v) {
-        JSObject *pairobj = js_ValueToNonNullObject(cx, v);
-        if (!pairobj)
-            return false;
-
-        Value key;
-        if (!pairobj->getElement(cx, 0, &key))
-            return false;
-        HashableValue hkey;
-        if (!hkey.setValue(cx, key))
-            return false;
-
-        HashableValue::AutoRooter hkeyRoot(cx, &hkey);
-
-        Value val;
-        if (!pairobj->getElement(cx, 1, &val))
-            return false;
-
-        if (!map->put(hkey, val)) {
-            js_ReportOutOfMemory(cx);
-            return false;
-        }
-        return true;
-    }
-};
-
 JSBool
 MapObject::construct(JSContext *cx, unsigned argc, Value *vp)
 {
@@ -230,7 +195,31 @@ MapObject::construct(JSContext *cx, unsigned argc, Value *vp)
 
     CallArgs args = CallArgsFromVp(argc, vp);
     if (args.hasDefined(0)) {
-        if (!ForOf(cx, args[0], AddToMap(map)))
+        ForOfIterator iter(cx, args[0]);
+        while (iter.next()) {
+            JSObject *pairobj = js_ValueToNonNullObject(cx, iter.value());
+            if (!pairobj)
+                return false;
+
+            Value key;
+            if (!pairobj->getElement(cx, 0, &key))
+                return false;
+            HashableValue hkey;
+            if (!hkey.setValue(cx, key))
+                return false;
+
+            HashableValue::AutoRooter hkeyRoot(cx, &hkey);
+
+            Value val;
+            if (!pairobj->getElement(cx, 1, &val))
+                return false;
+
+            if (!map->put(hkey, val)) {
+                js_ReportOutOfMemory(cx);
+                return false;
+            }
+        }
+        if (!iter.close())
             return false;
     }
 
@@ -331,18 +320,18 @@ Class SetObject::class_ = {
     "Set",
     JSCLASS_HAS_PRIVATE | JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_CACHED_PROTO(JSProto_Set),
-    JS_PropertyStub,         /* addProperty */
-    JS_PropertyStub,         /* delProperty */
-    JS_PropertyStub,         /* getProperty */
-    JS_StrictPropertyStub,   /* setProperty */
+    JS_PropertyStub,         // addProperty
+    JS_PropertyStub,         // delProperty
+    JS_PropertyStub,         // getProperty
+    JS_StrictPropertyStub,   // setProperty
     JS_EnumerateStub,
     JS_ResolveStub,
     JS_ConvertStub,
     finalize,
-    NULL,                    /* checkAccess */
-    NULL,                    /* call        */
-    NULL,                    /* construct   */
-    NULL,                    /* hasInstance */
+    NULL,                    // checkAccess
+    NULL,                    // call
+    NULL,                    // construct
+    NULL,                    // hasInstance
     mark
 };
 
@@ -357,8 +346,8 @@ JSFunctionSpec SetObject::methods[] = {
 JSObject *
 SetObject::initClass(JSContext *cx, JSObject *obj)
 {
-    return InitClass(cx, Rooted<GlobalObject*>(cx, &obj->asGlobal()),
-                     &class_, JSProto_Set, construct, methods);
+    Rooted<GlobalObject*> global(cx, &obj->asGlobal());
+    return InitClass(cx, global, &class_, JSProto_Set, construct, methods);
 }
 
 void
@@ -379,25 +368,6 @@ SetObject::finalize(FreeOp *fop, JSObject *obj)
         fop->delete_(set);
 }
 
-class AddToSet {
-  private:
-    ValueSet *set;
-
-  public:
-    AddToSet(ValueSet *set) : set(set) {}
-
-    bool operator()(JSContext *cx, const Value &v) {
-        HashableValue key;
-        if (!key.setValue(cx, v))
-            return false;
-        if (!set->put(key)) {
-            js_ReportOutOfMemory(cx);
-            return false;
-        }
-        return true;
-    }
-};
-
 JSBool
 SetObject::construct(JSContext *cx, unsigned argc, Value *vp)
 {
@@ -416,7 +386,17 @@ SetObject::construct(JSContext *cx, unsigned argc, Value *vp)
 
     CallArgs args = CallArgsFromVp(argc, vp);
     if (args.hasDefined(0)) {
-        if (!ForOf(cx, args[0], AddToSet(set)))
+        ForOfIterator iter(cx, args[0]);
+        while (iter.next()) {
+            HashableValue key;
+            if (!key.setValue(cx, iter.value()))
+                return false;
+            if (!set->put(key)) {
+                js_ReportOutOfMemory(cx);
+                return false;
+            }
+        }
+        if (!iter.close())
             return false;
     }
 

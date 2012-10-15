@@ -28,38 +28,33 @@ namespace js {
  */
 class UpvarCookie
 {
-    uint32_t value;
-
-    static const uint32_t FREE_VALUE = 0xfffffffful;
+    uint16_t level_;
+    uint16_t slot_;
 
     void checkInvariants() {
         JS_STATIC_ASSERT(sizeof(UpvarCookie) == sizeof(uint32_t));
-        JS_STATIC_ASSERT(UPVAR_LEVEL_LIMIT < FREE_LEVEL);
     }
 
   public:
-    /*
-     * All levels above-and-including FREE_LEVEL are reserved so that
-     * FREE_VALUE can be used as a special value.
-     */
-    static const uint16_t FREE_LEVEL = 0x3fff;
+    // FREE_LEVEL is a distinguished value used to indicate the cookie is free.
+    static const uint16_t FREE_LEVEL = 0xffff;
 
-    /*
-     * If a function has a higher static level than this limit, we will not
-     * optimize it using UPVAR opcodes.
-     */
-    static const uint16_t UPVAR_LEVEL_LIMIT = 16;
     static const uint16_t CALLEE_SLOT = 0xffff;
-    static bool isLevelReserved(uint16_t level) { return level >= FREE_LEVEL; }
 
-    bool isFree() const { return value == FREE_VALUE; }
-    /* isFree check should be performed before using these accessors. */
-    uint16_t level() const { JS_ASSERT(!isFree()); return uint16_t(value >> 16); }
-    uint16_t slot() const { JS_ASSERT(!isFree()); return uint16_t(value); }
+    static bool isLevelReserved(uint16_t level) { return level == FREE_LEVEL; }
 
-    void set(const UpvarCookie &other) { set(other.level(), other.slot()); }
-    void set(uint16_t newLevel, uint16_t newSlot) { value = (uint32_t(newLevel) << 16) | newSlot; }
-    void makeFree() { set(0xffff, 0xffff); JS_ASSERT(isFree()); }
+    bool isFree() const { return level_ == FREE_LEVEL; }
+    uint16_t level() const { JS_ASSERT(!isFree()); return level_; }
+    uint16_t slot()  const { JS_ASSERT(!isFree()); return slot_; }
+
+    // This fails and issues an error message if newLevel is too large.
+    bool set(JSContext *cx, unsigned newLevel, uint16_t newSlot);
+
+    void makeFree() {
+        level_ = FREE_LEVEL;
+        slot_ = 0;      // value doesn't matter, won't be used
+        JS_ASSERT(isFree());
+    }
 };
 
 /*
@@ -164,6 +159,7 @@ enum ParseNodeKind {
     PNK_FORHEAD,
     PNK_ARGSBODY,
     PNK_UPVARS,
+    PNK_SPREAD,
 
     /*
      * The following parse node kinds occupy contiguous ranges to enable easy
@@ -240,6 +236,7 @@ enum ParseNodeKind {
  *                            defined (free variables, either global property
  *                            references or reference errors).
  *                          pn_tree: PNK_ARGSBODY or PNK_STATEMENTLIST node
+ * PNK_SPREAD   unary       pn_kid: expression being spread
  *
  * <Statements>
  * PNK_STATEMENTLIST list   pn_head: list of pn_count statements
@@ -603,7 +600,7 @@ struct ParseNode {
         } binary;
         struct {                        /* one kid if unary */
             ParseNode   *kid;
-            JSBool      hidden;         /* hidden genexp-induced JSOP_YIELD
+            bool        hidden;         /* hidden genexp-induced JSOP_YIELD
                                            or directive prologue member (as
                                            pn_prologue) */
         } unary;
@@ -739,6 +736,10 @@ struct ParseNode {
                                            optimizable via an upvar opcode */
 #define PND_CLOSED      0x200           /* variable is closed over */
 #define PND_DEFAULT     0x400           /* definition is an arg with a default */
+#define PND_IMPLICITARGUMENTS 0x800     /* the definition is a placeholder for
+                                           'arguments' that has been converted
+                                           into a definition after the function
+                                           body has been parsed. */
 
 /* Flags to propagate from uses to definition. */
 #define PND_USE2DEF_FLAGS (PND_ASSIGNED | PND_CLOSED)
@@ -785,6 +786,7 @@ struct ParseNode {
     bool isDeoptimized() const  { return test(PND_DEOPTIMIZED); }
     bool isAssigned() const     { return test(PND_ASSIGNED); }
     bool isClosed() const       { return test(PND_CLOSED); }
+    bool isImplicitArguments() const { return test(PND_IMPLICITARGUMENTS); }
 
     /*
      * True iff this definition creates a top-level binding in the overall
@@ -810,48 +812,6 @@ struct ParseNode {
                isKind(PNK_TRUE) ||
                isKind(PNK_FALSE) ||
                isKind(PNK_NULL);
-    }
-
-    /*
-     * True if this statement node could be a member of a Directive Prologue: an
-     * expression statement consisting of a single string literal.
-     *
-     * This considers only the node and its children, not its context. After
-     * parsing, check the node's pn_prologue flag to see if it is indeed part of
-     * a directive prologue.
-     *
-     * Note that a Directive Prologue can contain statements that cannot
-     * themselves be directives (string literals that include escape sequences
-     * or escaped newlines, say). This member function returns true for such
-     * nodes; we use it to determine the extent of the prologue.
-     * isEscapeFreeStringLiteral, below, checks whether the node itself could be
-     * a directive.
-     */
-    bool isStringExprStatement() const {
-        if (getKind() == PNK_SEMI) {
-            JS_ASSERT(pn_arity == PN_UNARY);
-            ParseNode *kid = pn_kid;
-            return kid && kid->getKind() == PNK_STRING && !kid->pn_parens;
-        }
-        return false;
-    }
-
-    /*
-     * Return true if this node, known to be an unparenthesized string literal,
-     * could be the string of a directive in a Directive Prologue. Directive
-     * strings never contain escape sequences or line continuations.
-     */
-    bool isEscapeFreeStringLiteral() const {
-        JS_ASSERT(isKind(PNK_STRING) && !pn_parens);
-
-        /*
-         * If the string's length in the source code is its length as a value,
-         * accounting for the quotes, then it must not contain any escape
-         * sequences or line continuations.
-         */
-        JSString *str = pn_atom;
-        return (pn_pos.begin.lineno == pn_pos.end.lineno &&
-                pn_pos.begin.index + str->length() + 2 == pn_pos.end.index);
     }
 
     /* Return true if this node appears in a Directive Prologue. */
@@ -925,6 +885,12 @@ struct ParseNode {
         pn_tail = &pn->pn_next;
         pn_count++;
     }
+
+    void checkListConsistency()
+#ifndef DEBUG
+    {}
+#endif
+    ;
 
     bool getConstantValue(JSContext *cx, bool strictChecks, Value *vp);
     inline bool isConstant();
@@ -1034,9 +1000,9 @@ struct FunctionNode : public ParseNode {
 };
 
 struct NameNode : public ParseNode {
-    static NameNode *create(ParseNodeKind kind, JSAtom *atom, Parser *parser, SharedContext *sc);
+    static NameNode *create(ParseNodeKind kind, JSAtom *atom, Parser *parser, TreeContext *tc);
 
-    inline void initCommon(SharedContext *sc);
+    inline void initCommon(TreeContext *tc);
 
 #ifdef DEBUG
     inline void dump(int indent);
@@ -1501,8 +1467,6 @@ struct ObjectBox {
     ObjectBox(ObjectBox *traceLink, JSObject *obj);
 };
 
-#define JSFB_LEVEL_BITS 14
-
 struct FunctionBox : public ObjectBox
 {
     ParseNode       *node;
@@ -1510,9 +1474,9 @@ struct FunctionBox : public ObjectBox
     FunctionBox     *kids;
     FunctionBox     *parent;
     Bindings        bindings;               /* bindings for this function */
-    uint32_t        level:JSFB_LEVEL_BITS;
+    uint16_t        level;
     uint16_t        ndefaults;
-    bool            queued:1;
+    StrictMode::StrictModeState strictModeState;
     bool            inLoop:1;               /* in a loop in parent function */
     bool            inWith:1;               /* some enclosing scope is a with-statement
                                                or E4X filter-expression */
@@ -1520,7 +1484,8 @@ struct FunctionBox : public ObjectBox
 
     ContextFlags    cxFlags;
 
-    FunctionBox(ObjectBox* traceListHead, JSObject *obj, ParseNode *fn, TreeContext *tc);
+    FunctionBox(ObjectBox* traceListHead, JSObject *obj, ParseNode *fn, TreeContext *tc,
+                StrictMode::StrictModeState sms);
 
     bool funIsHeavyweight()      const { return cxFlags.funIsHeavyweight; }
     bool funIsGenerator()        const { return cxFlags.funIsGenerator; }
@@ -1535,43 +1500,8 @@ struct FunctionBox : public ObjectBox
      * filter-expression, or a function that uses direct eval.
      */
     bool inAnyDynamicScope() const;
-};
 
-struct FunctionBoxQueue {
-    FunctionBox         **vector;
-    size_t              head, tail;
-    size_t              lengthMask;
-
-    size_t count()  { return head - tail; }
-    size_t length() { return lengthMask + 1; }
-
-    FunctionBoxQueue()
-      : vector(NULL), head(0), tail(0), lengthMask(0) { }
-
-    bool init(uint32_t count) {
-        lengthMask = JS_BITMASK(JS_CEILING_LOG2W(count));
-        vector = (FunctionBox **) OffTheBooks::malloc_(sizeof(FunctionBox) * length());
-        return !!vector;
-    }
-
-    ~FunctionBoxQueue() { UnwantedForeground::free_(vector); }
-
-    void push(FunctionBox *funbox) {
-        if (!funbox->queued) {
-            JS_ASSERT(count() < length());
-            vector[head++ & lengthMask] = funbox;
-            funbox->queued = true;
-        }
-    }
-
-    FunctionBox *pull() {
-        if (tail == head)
-            return NULL;
-        JS_ASSERT(tail < head);
-        FunctionBox *funbox = vector[tail++ & lengthMask];
-        funbox->queued = false;
-        return funbox;
-    }
+    void recursivelySetStrictMode(StrictMode::StrictModeState strictness);
 };
 
 } /* namespace js */

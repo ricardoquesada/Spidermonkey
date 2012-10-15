@@ -9,6 +9,7 @@
 #include "xpcprivate.h"
 #include "mozilla/dom/DOMJSClass.h"
 #include "mozilla/dom/BindingUtils.h"
+#include "mozilla/Attributes.h"
 
 /***************************************************************************/
 // nsJSID
@@ -203,7 +204,7 @@ nsJSID::NewID(const nsID& id)
 // helper is not sufficient to convey the information that we don't want
 // static properties enumerated on the shared proto.
 
-class SharedScriptableHelperForJSIID : public nsIXPCScriptable
+class SharedScriptableHelperForJSIID MOZ_FINAL : public nsIXPCScriptable
 {
 public:
     NS_DECL_ISUPPORTS
@@ -484,13 +485,11 @@ nsJSIID::HasInstance(nsIXPConnectWrappedNative *wrapper,
         if (mozilla::dom::binding::instanceIsProxy(obj)) {
             identity =
                 static_cast<nsISupports*>(js::GetProxyPrivate(obj).toPrivate());
-        } else if (mozilla::dom::IsDOMClass(js::GetObjectJSClass(obj))) {
-            NS_ASSERTION(mozilla::dom::DOMJSClass::FromJSClass(
-                              js::GetObjectJSClass(obj))->mDOMObjectIsISupports,
-                         "This only works on nsISupports classes!");
+        } else if (mozilla::dom::IsDOMClass(js::GetObjectJSClass(obj)) &&
+                   mozilla::dom::DOMJSClass::FromJSClass(
+                        js::GetObjectJSClass(obj))->mDOMObjectIsISupports) {
             identity =
-                mozilla::dom::UnwrapDOMObject<nsISupports>(obj,
-                                                           js::GetObjectJSClass(obj));
+                mozilla::dom::UnwrapDOMObject<nsISupports>(obj);
         } else {
             identity = nsnull;
         }

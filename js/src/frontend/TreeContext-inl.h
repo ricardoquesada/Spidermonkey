@@ -17,59 +17,61 @@ namespace js {
 
 inline
 SharedContext::SharedContext(JSContext *cx, JSObject *scopeChain, JSFunction *fun,
-                             FunctionBox *funbox)
+                             FunctionBox *funbox, StrictMode::StrictModeState sms)
   : context(cx),
-    bodyid(0),
-    blockidGen(0),
-    topStmt(NULL),
-    topScopeStmt(NULL),
-    blockChain(cx),
     fun_(cx, fun),
     funbox_(funbox),
     scopeChain_(cx, scopeChain),
-    staticLevel(0),
-    bindings(cx),
+    bindings(),
     bindingsRoot(cx, &bindings),
-    cxFlags(cx)
+    cxFlags(cx),
+    strictModeState(sms)
 {
     JS_ASSERT((fun && !scopeChain_) || (!fun && !funbox));
 }
 
+inline bool
+SharedContext::inStrictMode()
+{
+    JS_ASSERT(strictModeState != StrictMode::UNKNOWN);
+    JS_ASSERT_IF(inFunction() && funbox(), funbox()->strictModeState == strictModeState);
+    return strictModeState == StrictMode::STRICT;
+}
+
 inline unsigned
-SharedContext::blockid()
+TreeContext::blockid()
 {
     return topStmt ? topStmt->blockid : bodyid;
 }
 
 inline bool
-SharedContext::atBodyLevel()
+TreeContext::atBodyLevel()
 {
-    return !topStmt || (topStmt->flags & SIF_BODY_BLOCK);
+    return !topStmt || topStmt->isFunctionBodyBlock;
 }
 
 inline bool
-SharedContext::needStrictChecks() {
-    return context->hasStrictOption() || inStrictMode();
-}
-
-inline unsigned
-SharedContext::argumentsLocalSlot() const {
-    PropertyName *arguments = context->runtime->atomState.argumentsAtom;
-    unsigned slot;
-    DebugOnly<BindingKind> kind = bindings.lookup(context, arguments, &slot);
-    JS_ASSERT(kind == VARIABLE || kind == CONSTANT);
-    return slot;
+SharedContext::needStrictChecks()
+{
+    return context->hasStrictOption() || strictModeState != StrictMode::NOTSTRICT;
 }
 
 inline
-TreeContext::TreeContext(Parser *prs, SharedContext *sc)
+TreeContext::TreeContext(Parser *prs, SharedContext *sc, unsigned staticLevel, uint32_t bodyid)
   : sc(sc),
+    bodyid(0),           // initialized in init()
+    blockidGen(bodyid),  // used to set |bodyid| and subsequently incremented in init()
+    topStmt(NULL),
+    topScopeStmt(NULL),
+    blockChain(prs->context),
+    staticLevel(staticLevel),
     parenDepth(0),
     yieldCount(0),
     blockNode(NULL),
     decls(prs->context),
     yieldNode(NULL),
     functionList(NULL),
+    queuedStrictModeError(NULL),
     parserTC(&prs->tc),
     lexdeps(prs->context),
     parent(prs->tc),
@@ -86,12 +88,19 @@ TreeContext::TreeContext(Parser *prs, SharedContext *sc)
 inline bool
 TreeContext::init()
 {
+    if (!frontend::GenerateBlockId(this, this->bodyid))
+        return false;
+
     return decls.init() && lexdeps.ensureMap(sc->context);
 }
 
-// For functions the tree context is constructed and destructed a second
-// time during code generation. To avoid a redundant stats update in such
-// cases, we store UINT16_MAX in maxScopeDepth.
+inline void
+TreeContext::setQueuedStrictModeError(CompileError *e)
+{
+    JS_ASSERT(!queuedStrictModeError);
+    queuedStrictModeError = e;
+}
+
 inline
 TreeContext::~TreeContext()
 {
@@ -100,6 +109,89 @@ TreeContext::~TreeContext()
     JS_ASSERT(*parserTC == this);
     *parserTC = this->parent;
     sc->context->delete_(funcStmts);
+    if (queuedStrictModeError) {
+        // If the parent context is looking for strict mode violations, pass
+        // ours up. Otherwise, free it.
+        if (parent && parent->sc->strictModeState == StrictMode::UNKNOWN &&
+            !parent->queuedStrictModeError)
+            parent->queuedStrictModeError = queuedStrictModeError;
+        else
+            sc->context->delete_(queuedStrictModeError);
+    }
+}
+
+template <class ContextT>
+void
+frontend::PushStatement(ContextT *ct, typename ContextT::StmtInfo *stmt, StmtType type)
+{
+    stmt->type = type;
+    stmt->isBlockScope = false;
+    stmt->isForLetBlock = false;
+    stmt->label = NULL;
+    stmt->blockObj = NULL;
+    stmt->down = ct->topStmt;
+    ct->topStmt = stmt;
+    if (stmt->linksScope()) {
+        stmt->downScope = ct->topScopeStmt;
+        ct->topScopeStmt = stmt;
+    } else {
+        stmt->downScope = NULL;
+    }
+}
+
+template <class ContextT>
+void
+frontend::FinishPushBlockScope(ContextT *ct, typename ContextT::StmtInfo *stmt,
+                               StaticBlockObject &blockObj)
+{
+    stmt->isBlockScope = true;
+    stmt->downScope = ct->topScopeStmt;
+    ct->topScopeStmt = stmt;
+    ct->blockChain = &blockObj;
+    stmt->blockObj = &blockObj;
+}
+
+template <class ContextT>
+void
+frontend::FinishPopStatement(ContextT *ct)
+{
+    typename ContextT::StmtInfo *stmt = ct->topStmt;
+    ct->topStmt = stmt->down;
+    if (stmt->linksScope()) {
+        ct->topScopeStmt = stmt->downScope;
+        if (stmt->isBlockScope)
+            ct->blockChain = stmt->blockObj->enclosingBlock();
+    }
+}
+
+template <class ContextT>
+typename ContextT::StmtInfo *
+frontend::LexicalLookup(ContextT *ct, HandleAtom atom, int *slotp, typename ContextT::StmtInfo *stmt)
+{
+    if (!stmt)
+        stmt = ct->topScopeStmt;
+    for (; stmt; stmt = stmt->downScope) {
+        if (stmt->type == STMT_WITH)
+            break;
+
+        // Skip "maybe scope" statements that don't contain let bindings.
+        if (!stmt->isBlockScope)
+            continue;
+
+        StaticBlockObject &blockObj = *stmt->blockObj;
+        Shape *shape = blockObj.nativeLookup(ct->sc->context, AtomToId(atom));
+        if (shape) {
+            JS_ASSERT(shape->hasShortID());
+
+            if (slotp)
+                *slotp = blockObj.stackDepth() + shape->shortid();
+            return stmt;
+        }
+    }
+
+    if (slotp)
+        *slotp = -1;
+    return stmt;
 }
 
 } // namespace js

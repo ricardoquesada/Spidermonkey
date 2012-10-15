@@ -288,4 +288,3 @@ BEGIN_TEST(testHashRekeyManualRemoval)
     return true;
 }
 END_TEST(testHashRekeyManualRemoval)
-

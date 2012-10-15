@@ -65,6 +65,9 @@ extern JS_FRIEND_API(JSObject*)
 js_NewDateObject(JSContext* cx, int year, int mon, int mday,
                  int hour, int min, int sec);
 
+extern void
+js_ClearDateCaches();
+
 extern JS_FRIEND_API(int)
 js_DateGetYear(JSContext *cx, JSObject* obj);
 
@@ -82,11 +85,6 @@ js_DateGetMinutes(JSContext *cx, JSObject* obj);
 
 extern JS_FRIEND_API(int)
 js_DateGetSeconds(JSContext *cx, JSObject* obj);
-
-typedef uint32_t JSIntervalTime;
-
-extern JS_FRIEND_API(JSIntervalTime)
-js_IntervalNow();
 
 /* Date constructor native. Exposed only so the JIT can know its address. */
 JSBool

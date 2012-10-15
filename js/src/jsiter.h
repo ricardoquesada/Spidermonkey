@@ -1,4 +1,4 @@
-/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sw=4 et tw=78:
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
@@ -33,7 +33,7 @@ struct NativeIterator {
     HeapPtr<JSFlatString> *props_array;
     HeapPtr<JSFlatString> *props_cursor;
     HeapPtr<JSFlatString> *props_end;
-    const Shape **shapes_array;
+    Shape **shapes_array;
     uint32_t  shapes_length;
     uint32_t  shapes_key;
     uint32_t  flags;
@@ -212,48 +212,77 @@ Next(JSContext *cx, HandleObject iter, Value *vp)
 }
 
 /*
- * Imitate a for-of loop. This does the equivalent of the JS code:
+ * Convenience class for imitating a JS level for-of loop. Typical usage:
  *
- *     for (let v of iterable)
- *         op(v);
+ *     ForOfIterator it(cx, iterable);
+ *     while (it.next()) {
+ *        if (!DoStuff(cx, it.value()))
+ *            return false;
+ *     }
+ *     if (!it.close())
+ *         return false;
  *
- * But the actual signature of op must be:
- *     bool op(JSContext *cx, const Value &v);
+ * The final it.close() check is needed in order to check for cases where
+ * any of the iterator operations fail.
  *
- * There is no feature like JS 'break'. op must return false only
- * in case of exception or error.
+ * it.close() may be skipped only if something in the body of the loop fails
+ * and the failure is allowed to propagate on cx, as in this example if DoStuff
+ * fails. In that case, ForOfIterator's destructor does all necessary cleanup.
  */
-template <class Op>
-bool
-ForOf(JSContext *cx, const Value &iterable, Op op)
-{
-    Value iterv(iterable);
-    if (!ValueToIterator(cx, JSITER_FOR_OF, &iterv))
-        return false;
-    RootedObject iter(cx, &iterv.toObject());
+class ForOfIterator {
+  private:
+    JSContext *cx;
+    RootedObject iterator;
+    RootedValue currentValue;
+    bool ok;
+    bool closed;
 
-    bool ok = true;
-    while (ok) {
-        Value v;
-        ok = Next(cx, iter, &v);
-        if (ok) {
-            if (v.isMagic(JS_NO_ITER_VALUE))
-                break;
-            ok = op(cx, v);
+    ForOfIterator(const ForOfIterator &) MOZ_DELETE;
+    ForOfIterator &operator=(const ForOfIterator &) MOZ_DELETE;
+
+  public:
+    ForOfIterator(JSContext *cx, const Value &iterable)
+        : cx(cx), iterator(cx, NULL), currentValue(cx), closed(false)
+    {
+        RootedValue iterv(cx, iterable);
+        ok = ValueToIterator(cx, JSITER_FOR_OF, iterv.address());
+        iterator = ok ? &iterv.get().toObject() : NULL;
+    }
+
+    ~ForOfIterator() {
+        if (!closed)
+            close();
+    }
+
+    bool next() {
+        JS_ASSERT(!closed);
+        ok = ok && Next(cx, iterator, currentValue.address());
+        return ok && !currentValue.get().isMagic(JS_NO_ITER_VALUE);
+    }
+
+    Value &value() {
+        JS_ASSERT(ok);
+        JS_ASSERT(!closed);
+        return currentValue.get();
+    }
+
+    bool close() {
+        JS_ASSERT(!closed);
+        closed = true;
+        if (!iterator)
+            return false;
+        bool throwing = cx->isExceptionPending();
+        RootedValue exc(cx);
+        if (throwing) {
+            exc = cx->getPendingException();
+            cx->clearPendingException();
         }
+        bool closedOK = CloseIterator(cx, iterator);
+        if (throwing && closedOK)
+            cx->setPendingException(exc);
+        return ok && !throwing && closedOK;
     }
-
-    bool throwing = !ok && cx->isExceptionPending();
-    Value exc;
-    if (throwing) {
-        exc = cx->getPendingException();
-        cx->clearPendingException();
-    }
-    bool closedOK = CloseIterator(cx, iter);
-    if (throwing && closedOK)
-        cx->setPendingException(exc);
-    return ok && closedOK;
-}
+};
 
 } /* namespace js */
 
@@ -262,65 +291,35 @@ ForOf(JSContext *cx, const Value &iterable, Op op)
 /*
  * Generator state codes.
  */
-typedef enum JSGeneratorState {
+enum JSGeneratorState
+{
     JSGEN_NEWBORN,  /* not yet started */
     JSGEN_OPEN,     /* started by a .next() or .send(undefined) call */
     JSGEN_RUNNING,  /* currently executing via .next(), etc., call */
     JSGEN_CLOSING,  /* close method is doing asynchronous return */
     JSGEN_CLOSED    /* closed, cannot be started or closed again */
-} JSGeneratorState;
+};
 
-struct JSGenerator {
+struct JSGenerator
+{
     js::HeapPtrObject   obj;
     JSGeneratorState    state;
     js::FrameRegs       regs;
     JSObject            *enumerators;
-    js::StackFrame      *floating;
-    js::HeapValue       floatingStack[1];
-
-    js::StackFrame *floatingFrame() {
-        return floating;
-    }
-
-    js::StackFrame *liveFrame() {
-        JS_ASSERT((state == JSGEN_RUNNING || state == JSGEN_CLOSING) ==
-                  (regs.fp() != floatingFrame()));
-        return regs.fp();
-    }
+    JSGenerator         *prevGenerator;
+    js::StackFrame      *fp;
+    js::HeapValue       stackSnapshot[1];
 };
 
 extern JSObject *
 js_NewGenerator(JSContext *cx);
 
-/*
- * Generator stack frames do not have stable pointers since they get copied to
- * and from the generator object and the stack (see SendToGenerator). This is a
- * problem for Block and With objects, which need to store a pointer to the
- * enclosing stack frame. The solution is for Block and With objects to store
- * a pointer to the "floating" stack frame stored in the generator object,
- * since it is stable, and maintain, in the generator object, a pointer to the
- * "live" stack frame (either a copy on the stack or the floating frame). Thus,
- * Block and With objects must "normalize" to and from the floating/live frames
- * in the case of generators using the following functions.
- */
-inline js::StackFrame *
-js_FloatingFrameIfGenerator(JSContext *cx, js::StackFrame *fp)
-{
-    if (JS_UNLIKELY(fp->isGeneratorFrame()))
-        return cx->generatorFor(fp)->floatingFrame();
-    return fp;
-}
+namespace js {
 
-/* Given a floating frame, given the JSGenerator containing it. */
-extern JSGenerator *
-js_FloatingFrameToGenerator(js::StackFrame *fp);
+bool
+GeneratorHasMarkableFrame(JSGenerator *gen);
 
-inline js::StackFrame *
-js_LiveFrameIfGenerator(js::StackFrame *fp)
-{
-    return fp->isGeneratorFrame() ? js_FloatingFrameToGenerator(fp)->liveFrame() : fp;
-}
-
+} /* namespace js */
 #endif
 
 extern JSObject *

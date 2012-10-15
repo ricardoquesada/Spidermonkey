@@ -32,6 +32,16 @@ class nsScriptNameSpaceManager;
 #define BAD_TLS_INDEX ((PRUint32) -1)
 #endif
 
+namespace xpc {
+JSObject *
+TransplantObject(JSContext *cx, JSObject *origobj, JSObject *target);
+
+JSObject *
+TransplantObjectWithWrapper(JSContext *cx,
+                            JSObject *origobj, JSObject *origwrapper,
+                            JSObject *targetobj, JSObject *targetwrapper);
+} /* namespace xpc */
+
 nsresult
 xpc_CreateGlobalObject(JSContext *cx, JSClass *clasp,
                        nsIPrincipal *principal, nsISupports *ptr,
@@ -236,9 +246,7 @@ bool NonVoidStringToJsval(JSContext *cx, nsAString &str, JS::Value *rval);
 
 nsIPrincipal *GetCompartmentPrincipal(JSCompartment *compartment);
 
-#ifdef DEBUG
 void DumpJSHeap(FILE* file);
-#endif
 
 void SetLocationForGlobal(JSObject *global, const nsACString& location);
 void SetLocationForGlobal(JSObject *global, nsIURI *locationURI);
@@ -268,9 +276,9 @@ DOM_DefineQuickStubs(JSContext *cx, JSObject *proto, PRUint32 flags,
 // (which isn't all of them).
 nsresult
 ReportJSRuntimeExplicitTreeStats(const JS::RuntimeStats &rtStats,
-                                 const nsACString &pathPrefix,
+                                 const nsACString &rtPath,
                                  nsIMemoryMultiReporterCallback *cb,
-                                 nsISupports *closure);
+                                 nsISupports *closure, size_t *rtTotal = NULL);
 
 /**
  * Convert a jsval to PRInt64. Return true on success.
@@ -342,6 +350,9 @@ bool
 Throw(JSContext *cx, nsresult rv);
 
 } // namespace xpc
+
+nsCycleCollectionParticipant *
+xpc_JSCompartmentParticipant();
 
 namespace mozilla {
 namespace dom {

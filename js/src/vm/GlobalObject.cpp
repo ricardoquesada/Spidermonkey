@@ -14,12 +14,14 @@
 #include "json.h"
 #include "jsweakmap.h"
 
+#include "builtin/Eval.h"
 #include "builtin/MapObject.h"
 #include "builtin/RegExp.h"
 #include "frontend/BytecodeEmitter.h"
 #include "vm/GlobalObject-inl.h"
 
 #include "jsobjinlines.h"
+
 #include "vm/RegExpObject-inl.h"
 #include "vm/RegExpStatics-inl.h"
 
@@ -111,13 +113,18 @@ GlobalObject::initFunctionAndObjectClasses(JSContext *cx)
         JS_ASSERT(proto == functionProto);
         functionProto->flags |= JSFUN_PROTOTYPE;
 
-        JSScript *script =
-            JSScript::NewScript(cx, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, JSVERSION_DEFAULT);
-        if (!script)
+        Rooted<JSScript*> script(cx, JSScript::Create(cx,
+                                                      /* enclosingScope = */ NullPtr(),
+                                                      /* savedCallerFun = */ false,
+                                                      /* principals = */ NULL,
+                                                      /* originPrincipals = */ NULL,
+                                                      /* compileAndGo = */ false,
+                                                      /* noScriptRval = */ true,
+                                                      JSVERSION_DEFAULT,
+                                                      /* staticLevel = */ 0));
+        if (!script || !JSScript::fullyInitTrivial(cx, script))
             return NULL;
-        script->noScriptRval = true;
-        script->code[0] = JSOP_STOP;
-        script->code[1] = SRC_NULL;
+
         functionProto->initScript(script);
         functionProto->getType(cx)->interpretedFunction = functionProto;
         script->setFunction(functionProto);
@@ -155,8 +162,8 @@ GlobalObject::initFunctionAndObjectClasses(JSContext *cx)
     /* Create |Function| so it and |Function.prototype| can be installed. */
     RootedFunction functionCtor(cx);
     {
-        JSObject *ctor =
-            NewObjectWithGivenProto(cx, &FunctionClass, functionProto, self);
+        // Note that ctor is rooted purely for the JS_ASSERT at the end
+        RootedObject ctor(cx, NewObjectWithGivenProto(cx, &FunctionClass, functionProto, self));
         if (!ctor)
             return NULL;
         functionCtor = js_NewFunction(cx, ctor, Function, 1, JSFUN_CONSTRUCTOR, self,
@@ -198,7 +205,7 @@ GlobalObject::initFunctionAndObjectClasses(JSContext *cx)
 
     /* ES5 15.1.2.1. */
     RootedId id(cx, NameToId(cx->runtime->atomState.evalAtom));
-    JSObject *evalobj = js_DefineFunction(cx, self, id, eval, 1, JSFUN_STUB_GSOPS);
+    JSObject *evalobj = js_DefineFunction(cx, self, id, IndirectEval, 1, JSFUN_STUB_GSOPS);
     if (!evalobj)
         return NULL;
     self->setOriginalEval(evalobj);
@@ -236,24 +243,25 @@ GlobalObject::create(JSContext *cx, Class *clasp)
 {
     JS_ASSERT(clasp->flags & JSCLASS_IS_GLOBAL);
 
-    Rooted<GlobalObject*> obj(cx);
-
-    JSObject *obj_ = NewObjectWithGivenProto(cx, clasp, NULL, NULL);
-    if (!obj_)
+    JSObject *obj = NewObjectWithGivenProto(cx, clasp, NULL, NULL);
+    if (!obj)
         return NULL;
-    obj = &obj_->asGlobal();
 
-    if (!obj->setSingletonType(cx) || !obj->setVarObj(cx))
+    Rooted<GlobalObject *> global(cx, &obj->asGlobal());
+
+    cx->compartment->initGlobal(*global);
+
+    if (!global->setSingletonType(cx) || !global->setVarObj(cx))
         return NULL;
 
     /* Construct a regexp statics object for this global object. */
-    JSObject *res = RegExpStatics::create(cx, obj);
+    JSObject *res = RegExpStatics::create(cx, global);
     if (!res)
         return NULL;
-    obj->initSlot(REGEXP_STATICS, ObjectValue(*res));
-    obj->initFlags(0);
+    global->initSlot(REGEXP_STATICS, ObjectValue(*res));
+    global->initFlags(0);
 
-    return obj;
+    return global;
 }
 
 /* static */ bool
@@ -373,7 +381,7 @@ CreateBlankProto(JSContext *cx, Class *clasp, JSObject &proto, GlobalObject &glo
     JS_ASSERT(clasp != &ObjectClass);
     JS_ASSERT(clasp != &FunctionClass);
 
-    JSObject *blankProto = NewObjectWithGivenProto(cx, clasp, &proto, &global);
+    RootedObject blankProto(cx, NewObjectWithGivenProto(cx, clasp, &proto, &global));
     if (!blankProto || !blankProto->setSingletonType(cx))
         return NULL;
 
@@ -383,11 +391,12 @@ CreateBlankProto(JSContext *cx, Class *clasp, JSObject &proto, GlobalObject &glo
 JSObject *
 GlobalObject::createBlankPrototype(JSContext *cx, Class *clasp)
 {
+    Rooted<GlobalObject*> self(cx, this);
     JSObject *objectProto = getOrCreateObjectPrototype(cx);
     if (!objectProto)
         return NULL;
 
-    return CreateBlankProto(cx, clasp, *objectProto, *this);
+    return CreateBlankProto(cx, clasp, *objectProto, *self.get());
 }
 
 JSObject *

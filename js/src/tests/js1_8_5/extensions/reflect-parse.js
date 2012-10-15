@@ -24,15 +24,20 @@ function throwStmt(expr) Pattern({ type: "ThrowStatement", argument: expr })
 function returnStmt(expr) Pattern({ type: "ReturnStatement", argument: expr })
 function yieldExpr(expr) Pattern({ type: "YieldExpression", argument: expr })
 function lit(val) Pattern({ type: "Literal", value: val })
+function spread(val) Pattern({ type: "SpreadExpression", expression: val})
 var thisExpr = Pattern({ type: "ThisExpression" });
-function funDecl(id, params, body) Pattern({ type: "FunctionDeclaration",
-                                             id: id,
-                                             params: params,
-                                             body: body,
-                                             generator: false })
+function funDecl(id, params, body, defaults=[], rest=null) Pattern(
+    { type: "FunctionDeclaration",
+      id: id,
+      params: params,
+      defaults: defaults,
+      body: body,
+      rest: rest,
+      generator: false })
 function genFunDecl(id, params, body) Pattern({ type: "FunctionDeclaration",
                                                 id: id,
                                                 params: params,
+                                                defaults: [],
                                                 body: body,
                                                 generator: true })
 function varDecl(decls) Pattern({ type: "VariableDeclaration", declarations: decls, kind: "var" })
@@ -213,6 +218,14 @@ assertDecl("function foo() { }",
 assertDecl("function foo() { return 42 }",
            funDecl(ident("foo"), [], blockStmt([returnStmt(lit(42))])));
 
+assertDecl("function foo(...rest) { }",
+           funDecl(ident("foo"), [], blockStmt([]), [], ident("rest")));
+
+assertDecl("function foo(a=4) { }", funDecl(ident("foo"), [ident("a")], blockStmt([]), [lit(4)]));
+assertDecl("function foo(a, b=4) { }", funDecl(ident("foo"), [ident("a"), ident("b")], blockStmt([]), [lit(4)]));
+assertDecl("function foo(a, b=4, ...rest) { }",
+           funDecl(ident("foo"), [ident("a"), ident("b")], blockStmt([]), [lit(4)], ident("rest")));
+
 
 // Bug 591437: rebound args have their defs turned into uses
 assertDecl("function f(a) { function a() { } }",
@@ -317,6 +330,8 @@ assertExpr("[,,,1,2,3,]", arrExpr([,,,lit(1),lit(2),lit(3),]));
 assertExpr("[,,,1,2,3,,]", arrExpr([,,,lit(1),lit(2),lit(3),,]));
 assertExpr("[,,,1,2,3,,,]", arrExpr([,,,lit(1),lit(2),lit(3),,,]));
 assertExpr("[,,,,,]", arrExpr([,,,,,]));
+assertExpr("[1, ...a, 2]", arrExpr([lit(1), spread(ident("a")), lit(2)]));
+assertExpr("[,, ...a,, ...b, 42]", arrExpr([,, spread(ident("a")),, spread(ident("b")), lit(42)]));
 assertExpr("({})", objExpr([]));
 assertExpr("({x:1})", objExpr([{ key: ident("x"), value: lit(1) }]));
 assertExpr("({x:1, y:2})", objExpr([{ key: ident("x"), value: lit(1) },

@@ -15,6 +15,22 @@
 
 namespace js {
 
+inline bool
+UpvarCookie::set(JSContext *cx, unsigned newLevel, uint16_t newSlot)
+{
+    // This is an unsigned-to-uint16_t conversion, test for too-high values.
+    // In practice, recursion in Parser and/or BytecodeEmitter will blow the
+    // stack if we nest functions more than a few hundred deep, so this will
+    // never trigger.  Oh well.
+    if (newLevel >= FREE_LEVEL) {
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_TOO_DEEP, js_function_str);
+        return false;
+    }
+    level_ = newLevel;
+    slot_ = newSlot;
+    return true;
+}
+
 inline PropertyName *
 ParseNode::atom() const
 {
@@ -167,14 +183,14 @@ NameNode::dump(int indent)
 #endif
 
 inline void
-NameNode::initCommon(SharedContext *sc)
+NameNode::initCommon(TreeContext *tc)
 {
     pn_expr = NULL;
     pn_cookie.makeFree();
-    pn_dflags = (!sc->topStmt || sc->topStmt->type == STMT_BLOCK)
+    pn_dflags = (!tc->topStmt || tc->topStmt->type == STMT_BLOCK)
                 ? PND_BLOCKCHILD
                 : 0;
-    pn_blockid = sc->blockid();
+    pn_blockid = tc->blockid();
 }
 
 } /* namespace js */

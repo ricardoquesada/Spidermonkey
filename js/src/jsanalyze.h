@@ -363,12 +363,11 @@ static inline uint32_t GetBytecodeSlot(JSScript *script, jsbytecode *pc)
       case JSOP_CALLALIASEDVAR:
       case JSOP_SETALIASEDVAR:
       {
-          ScopeCoordinate sc = ScopeCoordinate(pc);
-          return script->bindings.bindingIsArg(sc.binding)
-                 ? ArgSlot(script->bindings.bindingToArg(sc.binding))
-                 : LocalSlot(script, script->bindings.bindingToLocal(sc.binding));
+        unsigned index;
+        return ScopeCoordinateToFrameIndex(script, pc, &index) == FrameIndex_Local
+               ? LocalSlot(script, index)
+               : ArgSlot(index);
       }
-
 
       case JSOP_THIS:
         return ThisSlot();
@@ -844,8 +843,6 @@ class ScriptAnalysis
     bool usesThisValue_:1;
     bool hasFunctionCalls_:1;
     bool modifiesArguments_:1;
-    bool extendsScope_:1;
-    bool addsScopeObjects_:1;
     bool localsAliasStack_:1;
     bool isInlineable:1;
     bool isJaegerCompileable:1;
@@ -900,15 +897,6 @@ class ScriptAnalysis
      * object cannot escape, the arguments are never modified within the script.
      */
     bool modifiesArguments() { return modifiesArguments_; }
-
-    /*
-     * True if the script may extend declarations in its top level scope with
-     * dynamic fun/var declarations or through eval.
-     */
-    bool extendsScope() { return extendsScope_; }
-
-    /* True if the script may add block or with objects to its scope chain. */
-    bool addsScopeObjects() { return addsScopeObjects_; }
 
     /*
      * True if there are any LOCAL opcodes aliasing values on the stack (above
@@ -1118,25 +1106,6 @@ class ScriptAnalysis
         return lifetimes[slot];
     }
 
-    /*
-     * If a NAME or similar opcode is definitely accessing a particular slot
-     * of a script this one is nested in, get that script/slot.
-     */
-    struct NameAccess {
-        JSScript *script;
-        types::TypeScriptNesting *nesting;
-        uint32_t slot;
-
-        /* Decompose the slot above. */
-        bool arg;
-        uint32_t index;
-
-        const Value **basePointer() const {
-            return arg ? &nesting->argArray : &nesting->varArray;
-        }
-    };
-    NameAccess resolveNameAccess(JSContext *cx, jsid id, bool addDependency = false);
-
     void printSSA(JSContext *cx);
     void printTypes(JSContext *cx);
 
@@ -1206,8 +1175,10 @@ class ScriptAnalysis
 
     /* Type inference helpers */
     bool analyzeTypesBytecode(JSContext *cx, unsigned offset, TypeInferenceState &state);
-    bool needsArgsObj(NeedsArgsObjState &state, const SSAValue &v);
-    bool needsArgsObj(NeedsArgsObjState &state, SSAUseChain *use);
+
+    typedef Vector<SSAValue, 16> SeenVector;
+    bool needsArgsObj(JSContext *cx, SeenVector &seen, const SSAValue &v);
+    bool needsArgsObj(JSContext *cx, SeenVector &seen, SSAUseChain *use);
     bool needsArgsObj(JSContext *cx);
 
   public:

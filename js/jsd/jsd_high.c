@@ -106,9 +106,9 @@ _newJSDContext(JSRuntime*         jsrt,
         goto label_newJSDContext_failure;
 
     JS_BeginRequest(jsdc->dumbContext);
-    JS_SetOptions(jsdc->dumbContext, JS_GetOptions(jsdc->dumbContext) | JSOPTION_ALLOW_XML);
+    JS_SetOptions(jsdc->dumbContext, JS_GetOptions(jsdc->dumbContext));
 
-    jsdc->glob = JS_NewCompartmentAndGlobalObject(jsdc->dumbContext, &global_class, NULL);
+    jsdc->glob = JS_NewGlobalObject(jsdc->dumbContext, &global_class, NULL);
 
     if( ! jsdc->glob )
         goto label_newJSDContext_failure;

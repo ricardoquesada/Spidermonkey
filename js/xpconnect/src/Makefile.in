@@ -19,6 +19,7 @@ EXPORTS = \
 		qsObjectHelper.h \
 		xpcObjectHelper.h \
 		xpcpublic.h \
+		XPCJSMemoryReporter.h \
 		dombindings.h \
 		dombindings_gen.h
 
@@ -40,7 +41,7 @@ CPPSRCS		= \
 		XPCRuntimeService.cpp  \
 		XPCStack.cpp \
 		XPCString.cpp \
-		XPCThreadContext.cpp \
+		XPCJSContextStack.cpp \
 		XPCThrower.cpp \
 		XPCWrappedJS.cpp \
 		XPCVariant.cpp \

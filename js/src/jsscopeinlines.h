@@ -122,10 +122,14 @@ StackBaseShape::updateGetterSetter(uint8_t attrs,
                                    StrictPropertyOp rawSetter)
 {
     flags &= ~(BaseShape::HAS_GETTER_OBJECT | BaseShape::HAS_SETTER_OBJECT);
-    if ((attrs & JSPROP_GETTER) && rawGetter)
+    if ((attrs & JSPROP_GETTER) && rawGetter) {
+        JS_ASSERT(!IsPoisonedPtr(rawGetter));
         flags |= BaseShape::HAS_GETTER_OBJECT;
-    if ((attrs & JSPROP_SETTER) && rawSetter)
+    }
+    if ((attrs & JSPROP_SETTER) && rawSetter) {
+        JS_ASSERT(!IsPoisonedPtr(rawSetter));
         flags |= BaseShape::HAS_SETTER_OBJECT;
+    }
 
     this->rawGetter = rawGetter;
     this->rawSetter = rawSetter;
@@ -259,13 +263,13 @@ Shape::getUserId(JSContext *cx, jsid *idp) const
             return ValueToId(cx, Int32Value(id), idp);
         *idp = INT_TO_JSID(id);
     } else {
-        *idp = propid();
+        *idp = self->propid();
     }
     return true;
 }
 
 inline bool
-Shape::get(JSContext* cx, HandleObject receiver, JSObject* obj, JSObject *pobj, Value* vp) const
+Shape::get(JSContext* cx, HandleObject receiver, JSObject* obj, JSObject *pobj, Value* vp)
 {
     JS_ASSERT(!hasDefaultGetter());
 
@@ -274,28 +278,30 @@ Shape::get(JSContext* cx, HandleObject receiver, JSObject* obj, JSObject *pobj, 
         return InvokeGetterOrSetter(cx, receiver, fval, 0, 0, vp);
     }
 
+    Rooted<Shape *> self(cx, this);
     RootedId id(cx);
-    if (!getUserId(cx, id.address()))
+    if (!self->getUserId(cx, id.address()))
         return false;
 
-    return CallJSPropertyOp(cx, getterOp(), receiver, id, vp);
+    return CallJSPropertyOp(cx, self->getterOp(), receiver, id, vp);
 }
 
 inline bool
-Shape::set(JSContext* cx, HandleObject obj, bool strict, Value* vp) const
+Shape::set(JSContext* cx, HandleObject obj, HandleObject receiver, bool strict, Value* vp)
 {
     JS_ASSERT_IF(hasDefaultSetter(), hasGetterValue());
 
     if (attrs & JSPROP_SETTER) {
         Value fval = setterValue();
-        return InvokeGetterOrSetter(cx, obj, fval, 1, vp, vp);
+        return InvokeGetterOrSetter(cx, receiver, fval, 1, vp, vp);
     }
 
     if (attrs & JSPROP_GETTER)
         return js_ReportGetterOnlyAssignment(cx);
 
+    Rooted<Shape *> self(cx, this);
     RootedId id(cx);
-    if (!getUserId(cx, id.address()))
+    if (!self->getUserId(cx, id.address()))
         return false;
 
     /*
@@ -304,10 +310,10 @@ Shape::set(JSContext* cx, HandleObject obj, bool strict, Value* vp) const
      */
     if (obj->isWith()) {
         RootedObject nobj(cx, &obj->asWith().object());
-        return CallJSPropertyOpSetter(cx, setterOp(), nobj, id, strict, vp);
+        return CallJSPropertyOpSetter(cx, self->setterOp(), nobj, id, strict, vp);
     }
 
-    return CallJSPropertyOpSetter(cx, setterOp(), obj, id, strict, vp);
+    return CallJSPropertyOpSetter(cx, self->setterOp(), obj, id, strict, vp);
 }
 
 inline void
@@ -377,7 +383,7 @@ EmptyShape::EmptyShape(UnownedBaseShape *base, uint32_t nfixed)
 }
 
 inline void
-Shape::writeBarrierPre(const js::Shape *shape)
+Shape::writeBarrierPre(Shape *shape)
 {
 #ifdef JSGC_INCREMENTAL
     if (!shape)
@@ -393,12 +399,12 @@ Shape::writeBarrierPre(const js::Shape *shape)
 }
 
 inline void
-Shape::writeBarrierPost(const js::Shape *shape, void *addr)
+Shape::writeBarrierPost(Shape *shape, void *addr)
 {
 }
 
 inline void
-Shape::readBarrier(const Shape *shape)
+Shape::readBarrier(Shape *shape)
 {
 #ifdef JSGC_INCREMENTAL
     JSCompartment *comp = shape->compartment();

@@ -24,12 +24,12 @@
 namespace js {
 
 inline
-Bindings::Bindings(JSContext *cx)
+Bindings::Bindings()
     : lastBinding(NULL), nargs(0), nvars(0), hasDup_(false)
 {}
 
 inline void
-Bindings::transfer(JSContext *cx, Bindings *bindings)
+Bindings::transfer(Bindings *bindings)
 {
     JS_ASSERT(!lastBinding);
     JS_ASSERT(!bindings->lastBinding || !bindings->lastBinding->inDictionary());
@@ -38,15 +38,6 @@ Bindings::transfer(JSContext *cx, Bindings *bindings)
 #ifdef DEBUG
     bindings->lastBinding = NULL;
 #endif
-}
-
-inline void
-Bindings::clone(JSContext *cx, Bindings *bindings)
-{
-    JS_ASSERT(!lastBinding);
-    JS_ASSERT(!bindings->lastBinding || !bindings->lastBinding->inDictionary());
-
-    *this = *bindings;
 }
 
 Shape *
@@ -61,11 +52,11 @@ Shape *
 Bindings::initialShape(JSContext *cx) const
 {
     /* Get an allocation kind to match an empty call object. */
-    gc::AllocKind kind = gc::FINALIZE_OBJECT4;
-    JS_ASSERT(gc::GetGCKindSlots(kind) == CallObject::RESERVED_SLOTS + 1);
+    gc::AllocKind kind = gc::FINALIZE_OBJECT2_BACKGROUND;
+    JS_ASSERT(gc::GetGCKindSlots(kind) == CallObject::RESERVED_SLOTS);
 
-    return EmptyShape::getInitialShape(cx, &CallClass, NULL, NULL, kind,
-                                       BaseShape::VAROBJ);
+    return EmptyShape::getInitialShape(cx, &CallClass, NULL, cx->global(),
+                                       kind, BaseShape::VAROBJ);
 }
 
 bool
@@ -83,6 +74,30 @@ bool
 Bindings::extensibleParents()
 {
     return lastBinding && lastBinding->extensibleParents();
+}
+
+uint16_t
+Bindings::formalIndexToSlot(uint16_t i)
+{
+    JS_ASSERT(i < nargs);
+    return CallObject::RESERVED_SLOTS + i;
+}
+
+uint16_t
+Bindings::varIndexToSlot(uint16_t i)
+{
+    JS_ASSERT(i < nvars);
+    return CallObject::RESERVED_SLOTS + i + nargs;
+}
+
+unsigned
+Bindings::argumentsVarIndex(JSContext *cx) const
+{
+    PropertyName *arguments = cx->runtime->atomState.argumentsAtom;
+    unsigned i;
+    DebugOnly<BindingKind> kind = lookup(cx, arguments, &i);
+    JS_ASSERT(kind == VARIABLE || kind == CONSTANT);
+    return i;
 }
 
 extern void
@@ -176,41 +191,24 @@ JSScript::hasGlobal() const
      * which have had their scopes cleared. compileAndGo code should not run
      * anymore against such globals.
      */
-    JS_ASSERT(types && types->hasScope());
-    js::GlobalObject *obj = types->global;
-    return obj && !obj->isCleared();
+    return compileAndGo && !global().isCleared();
 }
 
-inline js::GlobalObject *
+inline js::GlobalObject &
 JSScript::global() const
 {
-    JS_ASSERT(hasGlobal());
-    return types->global;
+    /*
+     * A JSScript always marks its compartment's global (via bindings) so we
+     * can assert that maybeGlobal is non-null here.
+     */
+    return *compartment()->maybeGlobal();
 }
 
 inline bool
 JSScript::hasClearedGlobal() const
 {
-    JS_ASSERT(types && types->hasScope());
-    js::GlobalObject *obj = types->global;
-    return obj && obj->isCleared();
-}
-
-inline js::types::TypeScriptNesting *
-JSScript::nesting() const
-{
-    JS_ASSERT(function() && types && types->hasScope());
-    return types->nesting;
-}
-
-inline void
-JSScript::clearNesting()
-{
-    js::types::TypeScriptNesting *nesting = this->nesting();
-    if (nesting) {
-        js::Foreground::delete_(nesting);
-        types->nesting = NULL;
-    }
+    JS_ASSERT(types);
+    return global().isCleared();
 }
 
 #ifdef JS_METHODJIT
@@ -240,7 +238,7 @@ JSScript::writeBarrierPre(JSScript *script)
 
     JSCompartment *comp = script->compartment();
     if (comp->needsBarrier()) {
-        JS_ASSERT(!comp->rt->gcRunning);
+        JS_ASSERT(!comp->rt->isHeapBusy());
         JSScript *tmp = script;
         MarkScriptUnbarriered(comp->barrierTracer(), &tmp, "write barrier");
         JS_ASSERT(tmp == script);

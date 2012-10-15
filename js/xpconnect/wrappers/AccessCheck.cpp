@@ -32,8 +32,9 @@ GetCompartmentPrincipal(JSCompartment *compartment)
     return nsJSPrincipals::get(JS_GetCompartmentPrincipals(compartment));
 }
 
+// Does the principal of compartment a subsume the principal of compartment b?
 bool
-AccessCheck::isSameOrigin(JSCompartment *a, JSCompartment *b)
+AccessCheck::subsumes(JSCompartment *a, JSCompartment *b)
 {
     nsIPrincipal *aprin = GetCompartmentPrincipal(a);
     nsIPrincipal *bprin = GetCompartmentPrincipal(b);
@@ -44,14 +45,28 @@ AccessCheck::isSameOrigin(JSCompartment *a, JSCompartment *b)
     if (!aprin || !bprin)
         return true;
 
-    bool equals;
-    nsresult rv = aprin->EqualsIgnoringDomain(bprin, &equals);
-    if (NS_FAILED(rv)) {
-        NS_ERROR("unable to ask about equality");
-        return false;
-    }
+    bool subsumes;
+    nsresult rv = aprin->Subsumes(bprin, &subsumes);
+    NS_ENSURE_SUCCESS(rv, false);
 
-    return equals;
+    return subsumes;
+}
+
+// Same as above, but ignoring document.domain.
+bool
+AccessCheck::subsumesIgnoringDomain(JSCompartment *a, JSCompartment *b)
+{
+    nsIPrincipal *aprin = GetCompartmentPrincipal(a);
+    nsIPrincipal *bprin = GetCompartmentPrincipal(b);
+
+    if (!aprin || !bprin)
+        return false;
+
+    bool subsumes;
+    nsresult rv = aprin->SubsumesIgnoringDomain(bprin, &subsumes);
+    NS_ENSURE_SUCCESS(rv, false);
+
+    return subsumes;
 }
 
 bool
@@ -76,10 +91,8 @@ AccessCheck::isLocationObjectSameOrigin(JSContext *cx, JSObject *wrapper)
     obj = JS_ObjectToInnerObject(cx, obj);
 
     // Which lets us compare the current compartment against the old one.
-    return obj &&
-           (isSameOrigin(js::GetObjectCompartment(wrapper),
-                         js::GetObjectCompartment(obj)) ||
-            documentDomainMakesSameOrigin(cx, obj));
+    return obj && subsumes(js::GetObjectCompartment(wrapper),
+                           js::GetObjectCompartment(obj));
 }
 
 bool
@@ -93,6 +106,17 @@ AccessCheck::isChrome(JSCompartment *compartment)
     bool privileged;
     nsIPrincipal *principal = GetCompartmentPrincipal(compartment);
     return NS_SUCCEEDED(ssm->IsSystemPrincipal(principal, &privileged)) && privileged;
+}
+
+bool
+AccessCheck::callerIsChrome()
+{
+    nsIScriptSecurityManager *ssm = XPCWrapper::GetSecurityManager();
+    if (!ssm)
+        return false;
+    bool subjectIsSystem;
+    nsresult rv = ssm->SubjectPrincipalIsSystem(&subjectIsSystem);
+    return NS_SUCCEEDED(rv) && subjectIsSystem;
 }
 
 nsIPrincipal *
@@ -184,67 +208,6 @@ IsWindow(const char *name)
     return name[0] == 'W' && !strcmp(name, "Window");
 }
 
-static bool
-IsLocation(const char *name)
-{
-    return name[0] == 'L' && !strcmp(name, "Location");
-}
-
-static nsIPrincipal *
-GetPrincipal(JSObject *obj)
-{
-    NS_ASSERTION(!IS_SLIM_WRAPPER(obj), "global object is a slim wrapper?");
-    NS_ASSERTION(js::GetObjectClass(obj)->flags & JSCLASS_IS_GLOBAL,
-                 "Not a global object?");
-    NS_ASSERTION(!(js::GetObjectClass(obj)->flags & JSCLASS_IS_DOMJSCLASS),
-                 "Not sure what we should do with these yet!");
-    if (!IS_WN_WRAPPER(obj)) {
-        NS_ASSERTION(!(~js::GetObjectClass(obj)->flags &
-                       (JSCLASS_PRIVATE_IS_NSISUPPORTS | JSCLASS_HAS_PRIVATE)),
-                     "bad object");
-        nsCOMPtr<nsIScriptObjectPrincipal> objPrin =
-            do_QueryInterface((nsISupports*)xpc_GetJSPrivate(obj));
-        NS_ASSERTION(objPrin, "global isn't nsIScriptObjectPrincipal?");
-        return objPrin->GetPrincipal();
-    }
-
-    nsIXPConnect *xpc = nsXPConnect::GetRuntimeInstance()->GetXPConnect();
-    return xpc->GetPrincipal(obj, true);
-}
-
-bool
-AccessCheck::documentDomainMakesSameOrigin(JSContext *cx, JSObject *obj)
-{
-    JSObject *scope = JS_GetScriptedGlobal(cx);
-
-    nsIPrincipal *subject;
-    nsIPrincipal *object;
-
-    {
-        JSAutoEnterCompartment ac;
-
-        if (!ac.enter(cx, scope))
-            return false;
-
-        subject = GetPrincipal(scope);
-    }
-
-    if (!subject)
-        return false;
-
-    {
-        JSAutoEnterCompartment ac;
-
-        if (!ac.enter(cx, obj))
-            return false;
-
-        object = GetPrincipal(JS_GetGlobalForObject(cx, obj));
-    }
-
-    bool subsumes;
-    return NS_SUCCEEDED(subject->Subsumes(object, &subsumes)) && subsumes;
-}
-
 bool
 AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapper, jsid id,
                                           Wrapper::Action act)
@@ -257,13 +220,9 @@ AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapper, jsid
 
     JSObject *obj = Wrapper::wrappedObject(wrapper);
 
-    // LocationPolicy checks PUNCTURE first, so we should never get here for
-    // Location wrappers. For all other wrappers interested in cross-origin
-    // semantics, we want to allow puncturing only for the same-origin
-    // document.domain case.
+    // PUNCTURE Is always denied for cross-origin access.
     if (act == Wrapper::PUNCTURE) {
-        MOZ_ASSERT(!WrapperFactory::IsLocationObject(obj));
-        return documentDomainMakesSameOrigin(cx, obj);
+        return nsContentUtils::CallerHasUniversalXPConnect();
     }
 
     const char *name;
@@ -280,16 +239,6 @@ AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapper, jsid
     }
 
     if (IsWindow(name) && IsFrameId(cx, obj, id))
-        return true;
-
-    // Do the dynamic document.domain check.
-    //
-    // Location also needs a dynamic access check, but it's a different one, and
-    // we do it in LocationPolicy::check. Before LocationPolicy::check does that
-    // though, it first calls this function to check whether the property is
-    // accessible to anyone regardless of origin. So make sure not to do the
-    // document.domain check in that case.
-    if (!IsLocation(name) && documentDomainMakesSameOrigin(cx, obj))
         return true;
 
     return (act == Wrapper::SET)
@@ -434,6 +383,12 @@ PermitIfUniversalXPConnect(JSContext *cx, jsid id, Wrapper::Action act,
     if (!ssm) {
         return false;
     }
+
+    // Double-check that the subject principal according to CAPS is a content
+    // principal rather than the system principal. If it isn't, this check is
+    // meaningless.
+    NS_ASSERTION(!AccessCheck::callerIsChrome(), "About to do a meaningless security check!");
+
     bool privileged;
     if (NS_SUCCEEDED(ssm->IsCapabilityEnabled("UniversalXPConnect", &privileged)) &&
         privileged) {
@@ -455,19 +410,24 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
         perm = PermitObjectAccess;
         return true;
     }
-    if (act == Wrapper::PUNCTURE) {
-        perm = DenyAccess;
-        return false;
-    }
 
     perm = DenyAccess;
+    if (act == Wrapper::PUNCTURE)
+        return PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
 
     jsid exposedPropsId = GetRTIdByIndex(cx, XPCJSRuntime::IDX_EXPOSEDPROPS);
 
-    JSBool found = false;
+    // We need to enter the wrappee's compartment to look at __exposedProps__,
+    // but we need to be in the wrapper's compartment to check UniversalXPConnect.
+    //
+    // Unfortunately, |cx| can be in either compartment when we call ::check. :-(
     JSAutoEnterCompartment ac;
-    if (!ac.enter(cx, wrappedObject) ||
-        !JS_HasPropertyById(cx, wrappedObject, exposedPropsId, &found))
+    JSAutoEnterCompartment wrapperAC;
+    if (!ac.enter(cx, wrappedObject))
+        return false;
+
+    JSBool found = false;
+    if (!JS_HasPropertyById(cx, wrappedObject, exposedPropsId, &found))
         return false;
 
     // Always permit access to "length" and indexed properties of arrays.
@@ -480,13 +440,14 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
 
     // If no __exposedProps__ existed, deny access.
     if (!found) {
+        // Everything below here needs to be done in the wrapper's compartment.
+        if (!wrapperAC.enter(cx, wrapper))
+            return false;
+
         // For now, only do this on functions.
         if (!JS_ObjectIsFunction(cx, wrappedObject)) {
 
             // This little loop hole will go away soon! See bug 553102.
-            JSAutoEnterCompartment innerAc;
-            if (!innerAc.enter(cx, wrapper))
-                return false;
             nsCOMPtr<nsPIDOMWindow> win =
                 do_QueryInterface(nsJSUtils::GetStaticScriptGlobal(cx, wrapper));
             if (win) {
@@ -515,7 +476,8 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
         return false;
 
     if (exposedProps.isNullOrUndefined()) {
-        return PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
+        return wrapperAC.enter(cx, wrapper) &&
+               PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
     }
 
     if (!exposedProps.isObject()) {
@@ -528,11 +490,13 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
     Access access = NO_ACCESS;
 
     JSPropertyDescriptor desc;
+    memset(&desc, 0, sizeof(desc));
     if (!JS_GetPropertyDescriptorById(cx, hallpass, id, JSRESOLVE_QUALIFIED, &desc)) {
         return false; // Error
     }
     if (desc.obj == NULL || !(desc.attrs & JSPROP_ENUMERATE)) {
-        return PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
+        return wrapperAC.enter(cx, wrapper) &&
+               PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
     }
 
     if (!JSVAL_IS_STRING(desc.value)) {
@@ -577,7 +541,8 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
 
     if ((act == Wrapper::SET && !(access & WRITE)) ||
         (act != Wrapper::SET && !(access & READ))) {
-        return PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
+        return wrapperAC.enter(cx, wrapper) &&
+               PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
     }
 
     perm = PermitPropertyAccess;

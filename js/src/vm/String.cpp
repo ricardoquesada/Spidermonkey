@@ -334,7 +334,10 @@ JSDependentString::undepend(JSContext *cx)
     s[n] = 0;
     d.u1.chars = s;
 
-    /* TODO: explain why undepended. */
+    /*
+     * Transform *this into an undepended string so 'base' will remain rooted
+     * for the benefit of any other dependent string that depends on *this.
+     */
     d.lengthAndFlags = buildLengthAndFlags(n, UNDEPENDED_FLAGS);
 
     return &this->asFixed();
@@ -405,9 +408,9 @@ JSFlatString::isIndexSlow(uint32_t *indexp) const
  * This is used when we generate our table of short strings, so the compiler is
  * happier if we use |c| as few times as possible.
  */
-#define FROM_SMALL_CHAR(c) ((c) + ((c) < 10 ? '0' :      \
-                                   (c) < 36 ? 'a' - 10 : \
-                                   'A' - 36))
+#define FROM_SMALL_CHAR(c) jschar((c) + ((c) < 10 ? '0' :      \
+                                         (c) < 36 ? 'a' - 10 : \
+                                         'A' - 36))
 
 /*
  * Declare length-2 strings. We only store strings where both characters are
@@ -429,7 +432,7 @@ StaticStrings::init(JSContext *cx)
     SwitchToCompartment sc(cx, cx->runtime->atomsCompartment);
 
     for (uint32_t i = 0; i < UNIT_STATIC_LIMIT; i++) {
-        jschar buffer[] = { i, 0x00 };
+        jschar buffer[] = { jschar(i), '\0' };
         JSFixedString *s = js_NewStringCopyN(cx, buffer, 1);
         if (!s)
             return false;
@@ -437,7 +440,7 @@ StaticStrings::init(JSContext *cx)
     }
 
     for (uint32_t i = 0; i < NUM_SMALL_CHARS * NUM_SMALL_CHARS; i++) {
-        jschar buffer[] = { FROM_SMALL_CHAR(i >> 6), FROM_SMALL_CHAR(i & 0x3F), 0x00 };
+        jschar buffer[] = { FROM_SMALL_CHAR(i >> 6), FROM_SMALL_CHAR(i & 0x3F), '\0' };
         JSFixedString *s = js_NewStringCopyN(cx, buffer, 2);
         if (!s)
             return false;
@@ -452,7 +455,10 @@ StaticStrings::init(JSContext *cx)
                 TO_SMALL_CHAR((i % 10) + '0');
             intStaticTable[i] = length2StaticTable[index];
         } else {
-            jschar buffer[] = { (i / 100) + '0', ((i / 10) % 10) + '0', (i % 10) + '0', 0x00 };
+            jschar buffer[] = { jschar('0' + (i / 100)),
+                                jschar('0' + ((i / 10) % 10)),
+                                jschar('0' + (i % 10)),
+                                '\0' };
             JSFixedString *s = js_NewStringCopyN(cx, buffer, 3);
             if (!s)
                 return false;

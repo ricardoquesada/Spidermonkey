@@ -256,15 +256,14 @@ class BaseShape : public js::gc::Cell
 
         EXTENSIBLE_PARENTS =    0x8,
         DELEGATE           =   0x10,
-        SYSTEM             =   0x20,
-        NOT_EXTENSIBLE     =   0x40,
-        INDEXED            =   0x80,
-        BOUND_FUNCTION     =  0x100,
-        VAROBJ             =  0x200,
-        WATCHED            =  0x400,
-        ITERATED_SINGLETON =  0x800,
-        NEW_TYPE_UNKNOWN   = 0x1000,
-        UNCACHEABLE_PROTO  = 0x2000,
+        NOT_EXTENSIBLE     =   0x20,
+        INDEXED            =   0x40,
+        BOUND_FUNCTION     =   0x80,
+        VAROBJ             =  0x100,
+        WATCHED            =  0x200,
+        ITERATED_SINGLETON =  0x400,
+        NEW_TYPE_UNKNOWN   =  0x800,
+        UNCACHEABLE_PROTO  = 0x1000,
 
         OBJECT_FLAG_MASK   = 0x3ff8
     };
@@ -506,9 +505,7 @@ struct Shape : public js::gc::Cell
     static inline Shape *search(JSContext *cx, Shape *start, jsid id,
                                 Shape ***pspp, bool adding = false);
 
-#ifdef DEBUG
-    static inline Shape *searchNoAllocation(JSContext *cx, Shape *start, jsid id);
-#endif
+    static inline Shape *searchNoAllocation(Shape *start, jsid id);
 
     inline void removeFromDictionary(JSObject *obj);
     inline void insertIntoDictionary(HeapPtrShape *dictp);
@@ -559,16 +556,16 @@ struct Shape : public js::gc::Cell
     class Range {
       protected:
         friend struct Shape;
-        const Shape *cursor;
+        Shape *cursor;
 
       public:
-        Range(const Shape *shape) : cursor(shape) { }
+        Range(Shape *shape) : cursor(shape) { }
 
         bool empty() const {
             return cursor->isEmptyShape();
         }
 
-        const Shape &front() const {
+        Shape &front() const {
             JS_ASSERT(!empty());
             return *cursor;
         }
@@ -598,7 +595,7 @@ struct Shape : public js::gc::Cell
         };
     };
 
-    Range all() const {
+    Range all() {
         return Range(this);
     }
 
@@ -700,8 +697,8 @@ struct Shape : public js::gc::Cell
                                      uint32_t aslot, unsigned aattrs, unsigned aflags,
                                      int ashortid) const;
 
-    bool get(JSContext* cx, HandleObject receiver, JSObject *obj, JSObject *pobj, js::Value* vp) const;
-    bool set(JSContext* cx, HandleObject obj, bool strict, js::Value* vp) const;
+    bool get(JSContext* cx, HandleObject receiver, JSObject *obj, JSObject *pobj, js::Value* vp);
+    bool set(JSContext* cx, HandleObject obj, HandleObject receiver, bool strict, js::Value* vp);
 
     BaseShape *base() const { return base_; }
 
@@ -780,6 +777,16 @@ struct Shape : public js::gc::Cell
         return (attrs & (JSPROP_SETTER | JSPROP_GETTER)) != 0;
     }
 
+    PropDesc::Writability writability() const {
+        return (attrs & JSPROP_READONLY) ? PropDesc::NonWritable : PropDesc::Writable;
+    }
+    PropDesc::Enumerability enumerability() const {
+        return (attrs & JSPROP_ENUMERATE) ? PropDesc::Enumerable : PropDesc::NonEnumerable;
+    }
+    PropDesc::Configurability configurability() const {
+        return (attrs & JSPROP_PERMANENT) ? PropDesc::NonConfigurable : PropDesc::Configurable;
+    }
+
     /*
      * For ES5 compatibility, we allow properties with PropertyOp-flavored
      * setters to be shadowed when set. The "own" property thereby created in
@@ -837,20 +844,20 @@ struct Shape : public js::gc::Cell
     static Shape *setExtensibleParents(JSContext *cx, Shape *shape);
     bool extensibleParents() const { return !!(base()->flags & BaseShape::EXTENSIBLE_PARENTS); }
 
-    uint32_t entryCount() const {
+    uint32_t entryCount() {
         if (hasTable())
             return table().entryCount;
 
-        const js::Shape *shape = this;
+        js::Shape *shape = this;
         uint32_t count = 0;
         for (js::Shape::Range r = shape->all(); !r.empty(); r.popFront())
             ++count;
         return count;
     }
 
-    bool isBigEnoughForAShapeTable() const {
+    bool isBigEnoughForAShapeTable() {
         JS_ASSERT(!hasTable());
-        const js::Shape *shape = this;
+        js::Shape *shape = this;
         uint32_t count = 0;
         for (js::Shape::Range r = shape->all(); !r.empty(); r.popFront()) {
             ++count;
@@ -868,19 +875,24 @@ struct Shape : public js::gc::Cell
     void finalize(FreeOp *fop);
     void removeChild(js::Shape *child);
 
-    static inline void writeBarrierPre(const Shape *shape);
-    static inline void writeBarrierPost(const Shape *shape, void *addr);
+    static inline void writeBarrierPre(Shape *shape);
+    static inline void writeBarrierPost(Shape *shape, void *addr);
 
     /*
      * All weak references need a read barrier for incremental GC. This getter
      * method implements the read barrier. It's used to obtain initial shapes
      * from the compartment.
      */
-    static inline void readBarrier(const Shape *shape);
+    static inline void readBarrier(Shape *shape);
 
     static inline ThingRootKind rootKind() { return THING_ROOT_SHAPE; }
 
     inline void markChildren(JSTracer *trc);
+
+    inline Shape *search(JSContext *cx, jsid id) {
+        Shape **_;
+        return search(cx, this, id, &_);
+    }
 
     /* For JIT usage */
     static inline size_t offsetOfBase() { return offsetof(Shape, base_); }
@@ -903,7 +915,10 @@ class AutoRooterGetterSetter
             : AutoGCRooter(cx, GETTERSETTER), attrs(attrs),
               pgetter(pgetter_), psetter(psetter_),
               getterRoot(cx, pgetter_), setterRoot(cx, psetter_)
-        {}
+        {
+            JS_ASSERT_IF(attrs & JSPROP_GETTER, !IsPoisonedPtr(*pgetter));
+            JS_ASSERT_IF(attrs & JSPROP_SETTER, !IsPoisonedPtr(*psetter));
+        }
 
         friend void AutoGCRooter::trace(JSTracer *trc);
 
@@ -1089,6 +1104,14 @@ namespace js {
 inline Shape *
 Shape::search(JSContext *cx, Shape *start, jsid id, Shape ***pspp, bool adding)
 {
+#ifdef DEBUG
+    {
+        SkipRoot skip0(cx, &start);
+        SkipRoot skip1(cx, &id);
+        MaybeCheckStackRoots(cx);
+    }
+#endif
+
     if (start->inDictionary()) {
         *pspp = start->table().search(id, adding);
         return SHAPE_FETCH(*pspp);
@@ -1105,8 +1128,8 @@ Shape::search(JSContext *cx, Shape *start, jsid id, Shape ***pspp, bool adding)
         if (start->isBigEnoughForAShapeTable()) {
             RootedShape startRoot(cx, start);
             RootedId idRoot(cx, id);
-            if (start->hashify(cx)) {
-                Shape **spp = start->table().search(id, adding);
+            if (startRoot->hashify(cx)) {
+                Shape **spp = startRoot->table().search(idRoot, adding);
                 return SHAPE_FETCH(spp);
             }
             start = startRoot;
@@ -1129,9 +1152,8 @@ Shape::search(JSContext *cx, Shape *start, jsid id, Shape ***pspp, bool adding)
     return NULL;
 }
 
-#ifdef DEBUG
 /* static */ inline Shape *
-Shape::searchNoAllocation(JSContext *cx, Shape *start, jsid id)
+Shape::searchNoAllocation(Shape *start, jsid id)
 {
     if (start->hasTable()) {
         Shape **spp = start->table().search(id, false);
@@ -1145,7 +1167,9 @@ Shape::searchNoAllocation(JSContext *cx, Shape *start, jsid id)
 
     return NULL;
 }
-#endif /* DEBUG */
+
+void
+MarkNonNativePropertyFound(HandleObject obj, MutableHandleShape propp);
 
 } // namespace js
 

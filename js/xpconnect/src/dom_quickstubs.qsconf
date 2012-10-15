@@ -50,9 +50,7 @@ members = [
     'nsIDOMScreen.width',
     'nsIDOMScreen.left',
     'nsIDOMClientRect.*',
-    'nsIDOMClientRectList.*',
     'nsIDOMPaintRequest.*',
-    'nsIDOMPaintRequestList.*',
     # nsLocationSH has ~ALLOW_PROP_MODS_TO_PROTOTYPE, so don't try.
     #'nsIDOMLocation.hostname',
     #'nsIDOMLocation.href',
@@ -135,14 +133,11 @@ members = [
     'nsIDOMNamedNodeMap.item',
     'nsIDOMNamedNodeMap.length',
     'nsIDOMNode.*',
-    'nsIDOMNodeList.*',
     'nsIDOMNodeSelector.querySelector',
     'nsIDOMNodeSelector.querySelectorAll',
     'nsIDOMText.splitText',
     'nsIDOMDOMImplementation.*',
     'nsIDOMDOMStringList.*',
-    'nsIDOMDOMTokenList.*',
-    'nsIDOMDOMSettableTokenList.*',
     'nsIDOMXULDocument.getBoxObjectFor',
     'nsIDOMMutationRecord.*',
 
@@ -157,7 +152,18 @@ members = [
     'nsIDOMEventTarget.removeEventListener',
     'nsIDOMEventTarget.dispatchEvent',
 
-    'nsIDOMEvent.*',
+    'nsIDOMEvent.type',
+    'nsIDOMEvent.target',
+    'nsIDOMEvent.currentTarget',
+    'nsIDOMEvent.eventPhase',
+    'nsIDOMEvent.bubbles',
+    'nsIDOMEvent.cancelable',
+    'nsIDOMEvent.timeStamp',
+    'nsIDOMEvent.stopPropagation',
+    'nsIDOMEvent.preventDefault',
+    'nsIDOMEvent.initEvent',
+    'nsIDOMEvent.defaultPrevented',
+    'nsIDOMEvent.stopImmediatePropagation',
     'nsIDOMMouseEvent.*',
     'nsIDOMKeyEvent.*',
     'nsIDOMMutationEvent.*',
@@ -199,11 +205,6 @@ members = [
     'nsIDOMHTMLButtonElement.form',
     'nsIDOMHTMLButtonElement.value',
     'nsIDOMHTMLButtonElement.disabled',
-    'nsIDOMHTMLCollection.item',
-    # This is shadowed by nsIDOMHTMLOptionsCollection.length,
-    # but it is also present in other objects where it isn't shadowed.
-    # Quick stubs handle the shadowing the same as XPConnect.
-    'nsIDOMHTMLCollection.length',
     'nsIDOMHTMLCommandElement.*',
     'nsIDOMHTMLDocument.body',
     'nsIDOMHTMLDocument.getElementsByName',
@@ -219,7 +220,33 @@ members = [
     'nsIDOMHTMLDocument.getSelection',
     'nsIDOMHTMLDocument.designMode',
     'nsIDOMHTMLDocument.head',
-    'nsIDOMHTMLElement.*',
+    # We can't quick stub nsIDOMHTMLElement.* because we don't 
+    # generate quick stubs for nsIVariant attributes.
+    'nsIDOMHTMLElement.id',
+    'nsIDOMHTMLElement.title',
+    'nsIDOMHTMLElement.lang',
+    'nsIDOMHTMLElement.dir',
+    'nsIDOMHTMLElement.className',
+    'nsIDOMHTMLElement.dataset',
+    'nsIDOMHTMLElement.itemScope',
+    'nsIDOMHTMLElement.itemId',
+    'nsIDOMHTMLElement.properties',
+    'nsIDOMHTMLElement.hidden',
+    'nsIDOMHTMLElement.tabIndex',
+    'nsIDOMHTMLElement.accessKey',
+    'nsIDOMHTMLElement.accessKeyLabel',
+    'nsIDOMHTMLElement.draggable',
+    'nsIDOMHTMLElement.contentEditable',
+    'nsIDOMHTMLElement.isContentEditable',
+    'nsIDOMHTMLElement.contextMenu',
+    'nsIDOMHTMLElement.spellcheck',
+    'nsIDOMHTMLElement.innerHTML',
+    'nsIDOMHTMLElement.outerHTML',
+    'nsIDOMHTMLElement.offsetParent',
+    'nsIDOMHTMLElement.offsetTop',
+    'nsIDOMHTMLElement.offsetLeft',
+    'nsIDOMHTMLElement.offsetWidth',
+    'nsIDOMHTMLElement.offsetHeight',
     'nsIDOMHTMLFormElement.elements',
     'nsIDOMHTMLFormElement.name',
     'nsIDOMHTMLFormElement.submit',
@@ -256,6 +283,7 @@ members = [
     'nsIDOMHTMLInputElement.selectionDirection',
     'nsIDOMHTMLInputElement.setSelectionRange',
     'nsIDOMHTMLLinkElement.disabled',
+    'nsIDOMHTMLMeterElement.*',
     'nsIDOMHTMLMenuElement.*',
     'nsIDOMHTMLMenuItemElement.*',
     'nsIDOMHTMLOptionElement.index',
@@ -266,8 +294,6 @@ members = [
     'nsIDOMHTMLOptionElement.value',
     'nsIDOMHTMLOptionElement.label',
     'nsIDOMHTMLOptionElement.disabled',
-    'nsIDOMHTMLOptionsCollection.item',
-    'nsIDOMHTMLOptionsCollection.length',
     'nsIDOMHTMLProgressElement.*',
     'nsIDOMHTMLSelectElement.name',
     'nsIDOMHTMLSelectElement.form',
@@ -323,8 +349,6 @@ members = [
     'nsIDOMHTMLCanvasElement.height',
     'nsIDOMHTMLCanvasElement.getContext',
     'nsIDOMHTMLCanvasElement.toDataURL',
-    'nsIDOMHTMLOptionsCollection.selectedIndex',
-    'nsIDOMHTMLOptionsCollection.add',
 
     # dom/interfaces/json - None.
     # All methods of nsIJSON call GetCurrentNativeCallContext.
@@ -499,7 +523,6 @@ customIncludes = [
     'nsINode.h',
     'nsIContent.h',
     'nsIDocument.h',
-    'nsINodeList.h',
     'nsCSSPropertiesQS.h',
     'nsDocument.h',
     'nsDOMTokenList.h',
@@ -643,16 +666,8 @@ customMethodCalls = {
         'code': 'nsString result = self->LocalName();',
         'canFail': False
         },
-    'nsIDOMNodeList_Item': {
-        'thisType': 'nsINodeList',
-        'code': '    nsINode *result = self->GetNodeAt(arg0);',
-        'canFail': False
-        },
     'nsIDOMHTMLDocument_': {
         'thisType': 'nsHTMLDocument'
-        },
-    'nsIDOMNodeList_GetLength': {
-        'thisType': 'nsINodeList'
         },
     'nsIDOMHTMLDocument_Write': {
         'thisType': 'nsHTMLDocument',

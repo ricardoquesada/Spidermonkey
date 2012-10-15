@@ -18,6 +18,7 @@
 #include "CodeGenIncludes.h"
 #include "jsobjinlines.h"
 #include "jsscopeinlines.h"
+#include "jstypedarrayinlines.h"
 
 namespace js {
 namespace mjit {
@@ -159,7 +160,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
         loadPtr(Address(obj, JSObject::offsetOfShape()), shape);
     }
 
-    Jump guardShape(RegisterID objReg, const Shape *shape) {
+    Jump guardShape(RegisterID objReg, Shape *shape) {
         return branchPtr(NotEqual, Address(objReg, JSObject::offsetOfShape()), ImmPtr(shape));
     }
 
@@ -559,7 +560,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
         // that make 12 insufficent.  In case 16 is also insufficent, I've bumped
         // it to 20.
         ensureSpace(20);
-        int initFlushCount = flushCount();
+        DebugOnly<int> initFlushCount = flushCount();
 #endif
         // [Bug 614953]: This can only be made conditional once the ARM back-end
         // is able to distinguish and patch both call sequences. Other
@@ -611,10 +612,10 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
                               pc, pinlined, fd);                              \
     }
 
-    STUB_CALL_TYPE(JSObjStub);
-    STUB_CALL_TYPE(VoidPtrStubUInt32);
-    STUB_CALL_TYPE(VoidStubUInt32);
-    STUB_CALL_TYPE(VoidStub);
+    STUB_CALL_TYPE(JSObjStub)
+    STUB_CALL_TYPE(VoidPtrStubUInt32)
+    STUB_CALL_TYPE(VoidStubUInt32)
+    STUB_CALL_TYPE(VoidStub)
 
 #undef STUB_CALL_TYPE
 
@@ -898,7 +899,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
     }
 
     void loadObjProp(JSObject *obj, RegisterID objReg,
-                     const js::Shape *shape,
+                     js::Shape *shape,
                      RegisterID typeReg, RegisterID dataReg)
     {
         if (obj->isFixedSlot(shape->slot()))
@@ -1374,7 +1375,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
 };
 
 /* Return f<true> if the script is strict mode code, f<false> otherwise. */
-#define STRICT_VARIANT(f)                                                     \
+#define STRICT_VARIANT(script, f)                                             \
     (FunctionTemplateConditional(script->strictModeCode,                      \
                                  f<true>, f<false>))
 

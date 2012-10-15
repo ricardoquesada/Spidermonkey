@@ -72,6 +72,7 @@ struct JSFunction : public JSObject
     bool isNullClosure()     const { return kind() == JSFUN_NULL_CLOSURE; }
     bool isFunctionPrototype() const { return flags & JSFUN_PROTOTYPE; }
     bool isInterpretedConstructor() const { return isInterpreted() && !isFunctionPrototype(); }
+    bool isNamedLambda()     const { return (flags & JSFUN_LAMBDA) && atom; }
 
     uint16_t kind()          const { return flags & JSFUN_KINDMASK; }
     void setKind(uint16_t k) {
@@ -143,21 +144,11 @@ struct JSFunction : public JSObject
     }
 
 #if JS_BITS_PER_WORD == 32
-# ifdef JS_THREADSAFE
     static const js::gc::AllocKind FinalizeKind = js::gc::FINALIZE_OBJECT2_BACKGROUND;
     static const js::gc::AllocKind ExtendedFinalizeKind = js::gc::FINALIZE_OBJECT4_BACKGROUND;
-# else
-    static const js::gc::AllocKind FinalizeKind = js::gc::FINALIZE_OBJECT2;
-    static const js::gc::AllocKind ExtendedFinalizeKind = js::gc::FINALIZE_OBJECT4;
-# endif
 #else
-# ifdef JS_THREADSAFE
     static const js::gc::AllocKind FinalizeKind = js::gc::FINALIZE_OBJECT4_BACKGROUND;
     static const js::gc::AllocKind ExtendedFinalizeKind = js::gc::FINALIZE_OBJECT8_BACKGROUND;
-# else
-    static const js::gc::AllocKind FinalizeKind = js::gc::FINALIZE_OBJECT4;
-    static const js::gc::AllocKind ExtendedFinalizeKind = js::gc::FINALIZE_OBJECT8;
-# endif
 #endif
 
     inline void trace(JSTracer *trc);
@@ -187,6 +178,9 @@ struct JSFunction : public JSObject
     inline void initializeExtended();
     inline void setExtendedSlot(size_t which, const js::Value &val);
     inline const js::Value &getExtendedSlot(size_t which) const;
+
+    /* Constructs a new type for the function if necessary. */
+    bool setTypeForScriptedFunction(JSContext *cx, bool singleton = false);
 
   private:
     /*
@@ -229,24 +223,6 @@ js_DefineFunction(JSContext *cx, js::HandleObject obj, js::HandleId id, JSNative
                   unsigned nargs, unsigned flags,
                   js::gc::AllocKind kind = JSFunction::FinalizeKind);
 
-/*
- * Flags for js_ValueToFunction and js_ReportIsNotFunction.
- */
-#define JSV2F_CONSTRUCT         INITIAL_CONSTRUCT
-#define JSV2F_SEARCH_STACK      0x10000
-
-extern JSFunction *
-js_ValueToFunction(JSContext *cx, const js::Value *vp, unsigned flags);
-
-extern JSObject *
-js_ValueToCallableObject(JSContext *cx, js::Value *vp, unsigned flags);
-
-extern void
-js_ReportIsNotFunction(JSContext *cx, const js::Value *vp, unsigned flags);
-
-extern void
-js_PutCallObject(js::StackFrame *fp, js::CallObject &callobj);
-
 namespace js {
 
 /*
@@ -278,20 +254,15 @@ JSFunction::toExtended() const
     return static_cast<const js::FunctionExtended *>(this);
 }
 
-extern void
-js_PutArgsObject(js::StackFrame *fp);
-
-inline bool
-js_IsNamedLambda(JSFunction *fun) { return (fun->flags & JSFUN_LAMBDA) && fun->atom; }
-
 namespace js {
 
 template<XDRMode mode>
 bool
-XDRInterpretedFunction(XDRState<mode> *xdr, JSObject **objp, JSScript *parentScript);
+XDRInterpretedFunction(XDRState<mode> *xdr, HandleObject enclosingScope,
+                       HandleScript enclosingScript, JSObject **objp);
 
 extern JSObject *
-CloneInterpretedFunction(JSContext *cx, JSFunction *fun);
+CloneInterpretedFunction(JSContext *cx, HandleObject enclosingScope, HandleFunction fun);
 
 } /* namespace js */
 

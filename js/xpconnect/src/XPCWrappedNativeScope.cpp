@@ -223,9 +223,9 @@ XPCWrappedNativeScope::SetGlobal(XPCCallContext& ccx, JSObject* aGlobal,
             // Our global has an nsISupports native pointer.  Let's
             // see whether it's what we want.
             priv = static_cast<nsISupports*>(xpc_GetJSPrivate(aGlobal));
-        } else if ((jsClass->flags & JSCLASS_IS_DOMJSCLASS) &&
+        } else if (dom::IsDOMClass(jsClass) &&
                    dom::DOMJSClass::FromJSClass(jsClass)->mDOMObjectIsISupports) {
-            priv = dom::UnwrapDOMObject<nsISupports>(aGlobal, jsClass);
+            priv = dom::UnwrapDOMObject<nsISupports>(aGlobal);
         } else {
             priv = nsnull;
         }
@@ -319,18 +319,15 @@ WrappedNativeJSGCThingTracer(JSDHashTable *table, JSDHashEntryHdr *hdr,
                              uint32_t number, void *arg)
 {
     XPCWrappedNative* wrapper = ((Native2WrappedNativeMap::Entry*)hdr)->value;
-    if (wrapper->HasExternalReference() && !wrapper->IsWrapperExpired()) {
-        JSTracer* trc = (JSTracer *)arg;
-        JS_CALL_OBJECT_TRACER(trc, wrapper->GetFlatJSObjectPreserveColor(),
-                              "XPCWrappedNative::mFlatJSObject");
-    }
+    if (wrapper->HasExternalReference() && !wrapper->IsWrapperExpired())
+        wrapper->TraceSelf((JSTracer *)arg);
 
     return JS_DHASH_NEXT;
 }
 
 // static
 void
-XPCWrappedNativeScope::TraceJS(JSTracer* trc, XPCJSRuntime* rt)
+XPCWrappedNativeScope::TraceWrappedNativesInAllScopes(JSTracer* trc, XPCJSRuntime* rt)
 {
     // FIXME The lock may not be necessary during tracing as that serializes
     // access to JS runtime. See bug 380139.

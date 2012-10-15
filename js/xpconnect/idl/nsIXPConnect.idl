@@ -366,15 +366,9 @@ interface nsIXPCFunctionThisTranslator : nsISupports
 #define NS_XPCONNECT_CID \
 { 0xcb6593e0, 0xf9b2, 0x11d2, \
     { 0xbd, 0xd6, 0x0, 0x0, 0x64, 0x65, 0x73, 0x74 } }
-
-enum nsGCType {
-    nsGCNormal,
-    nsGCShrinking,
-    nsGCIncremental
-};
 %}
 
-[uuid(1239b432-b835-4d28-9dc0-53063cb7f60f)]
+[uuid(bd300b18-1c34-4589-8285-23a12cc580ea)]
 interface nsIXPConnect : nsISupports
 {
 %{ C++
@@ -410,7 +404,7 @@ interface nsIXPConnect : nsISupports
                   in PRUint32     aFlags);
 
     const PRUint32 INIT_JS_STANDARD_CLASSES  = 1 << 0;
-    const PRUint32 FLAG_SYSTEM_GLOBAL_OBJECT = 1 << 1;
+    // Free bit here!
     const PRUint32 OMIT_COMPONENTS_OBJECT    = 1 << 2;
 
     /**
@@ -429,9 +423,6 @@ interface nsIXPConnect : nsISupports
     *     as an nsIXPConnectWrappedNative.
     *  2) The xpcom object is in fact a nsIXPConnectWrappedJS and thus already
     *     has an underlying JSObject.
-    *  3) The xpcom object implements nsIScriptObjectOwner; i.e. is an idlc
-    *     style DOM object for which we can call GetScriptObject to get the
-    *     JSObject it uses to represent itself into JavaScript.
     *
     * It *might* be possible to QueryInterface the nsIXPConnectJSObjectHolder
     * returned by the method into a nsIXPConnectWrappedNative or a
@@ -561,8 +552,6 @@ interface nsIXPConnect : nsISupports
 
     readonly attribute nsIStackFrame                CurrentJSStack;
     readonly attribute nsAXPCNativeCallContextPtr   CurrentNativeCallContext;
-    /* pass nsnull to clear pending exception */
-             attribute nsIException                 PendingException;
 
     void debugDump(in short depth);
     void debugDumpObject(in nsISupports aCOMObj, in short depth);
@@ -682,6 +671,13 @@ interface nsIXPConnect : nsISupports
     [noscript] void removeJSHolder(in voidPtr aHolder);
 
     /**
+     * Test to see if a JS holder is in our hashtable.
+     * Only available in debug builds.
+     * @param aHolder The object to test for.
+     */
+    [noscript] bool testJSHolder(in voidPtr aHolder);
+
+    /**
      * Note aJSContext as a child to the cycle collector.
      * @param aJSContext The JSContext to note.
      * @param aCb The cycle collection traversal callback.
@@ -700,9 +696,8 @@ interface nsIXPConnect : nsISupports
     /**
      * Trigger a JS garbage collection.
      * Use a js::gcreason::Reason from jsfriendapi.h for the kind.
-     * Use the nsGCType enum for the kind.
      */
-    void GarbageCollect(in PRUint32 reason, in PRUint32 kind);
+    void GarbageCollect(in PRUint32 reason);
 
     /**
      * Signals a good place to do an incremental GC slice, because the

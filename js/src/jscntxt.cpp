@@ -291,7 +291,7 @@ js::DestroyContext(JSContext *cx, DestroyContextMode mode)
     JS_REMOVE_LINK(&cx->link);
     bool last = !rt->hasContexts();
     if (last) {
-        JS_ASSERT(!rt->gcRunning);
+        JS_ASSERT(!rt->isHeapBusy());
 
         /*
          * Dump remaining type inference results first. This printing
@@ -311,7 +311,7 @@ js::DestroyContext(JSContext *cx, DestroyContextMode mode)
         PrepareForFullGC(rt);
         GC(rt, GC_NORMAL, gcreason::LAST_CONTEXT);
     } else if (mode == DCM_FORCE_GC) {
-        JS_ASSERT(!rt->gcRunning);
+        JS_ASSERT(!rt->isHeapBusy());
         PrepareForFullGC(rt);
         GC(rt, GC_NORMAL, gcreason::DESTROY_CONTEXT);
     }
@@ -327,7 +327,7 @@ AutoResolving::alreadyStartedSlow() const
     AutoResolving *cursor = link;
     do {
         JS_ASSERT(this != cursor);
-        if (object == cursor->object && id == cursor->id && kind == cursor->kind)
+        if (object.get() == cursor->object && id.get() == cursor->id && kind == cursor->kind)
             return true;
     } while (!!(cursor = cursor->link));
     return false;
@@ -362,6 +362,15 @@ ReportError(JSContext *cx, const char *message, JSErrorReport *reportp,
         !js_ErrorToException(cx, message, reportp, callback, userRef)) {
         js_ReportErrorAgain(cx, message, reportp);
     } else if (JSDebugErrorHook hook = cx->runtime->debugHooks.debugErrorHook) {
+        /*
+         * If we've already chewed up all the C stack, don't call into the
+         * error reporter since this may trigger an infinite recursion where
+         * the reporter triggers an over-recursion.
+         */
+        int stackDummy;
+        if (!JS_CHECK_STACK_SIZE(cx->runtime->nativeStackLimit, &stackDummy))
+            return;
+
         if (cx->errorReporter)
             hook(cx, message, reportp, cx->runtime->debugHooks.debugErrorHookData);
     }
@@ -533,7 +542,7 @@ ReportUsageError(JSContext *cx, JSObject *callee, const char *msg)
 {
     const char *usageStr = "usage";
     PropertyName *usageAtom = js_Atomize(cx, usageStr, strlen(usageStr))->asPropertyName();
-    DebugOnly<const Shape *> shape = callee->nativeLookup(cx, NameToId(usageAtom));
+    DebugOnly<Shape *> shape = callee->nativeLookup(cx, NameToId(usageAtom));
     JS_ASSERT(!shape->configurable());
     JS_ASSERT(!shape->writable());
     JS_ASSERT(shape->hasDefaultGetter());
@@ -969,6 +978,9 @@ JSContext::JSContext(JSRuntime *rt)
     localeCallbacks(NULL),
     resolvingList(NULL),
     generatingError(false),
+#ifdef DEBUG
+    rootingUnnecessary(false),
+#endif
     compartment(NULL),
     stack(thisDuringConstruction()),  /* depends on cx->thread_ */
     parseMapPool_(NULL),
@@ -994,9 +1006,9 @@ JSContext::JSContext(JSRuntime *rt)
     functionCallback(NULL),
 #endif
     enumerators(NULL),
+    innermostGenerator_(NULL),
 #ifdef DEBUG
     stackIterAssertionEnabled(true),
-    okToAccessUnaliasedBindings(0),
 #endif
     activeCompilations(0)
 {
@@ -1028,6 +1040,30 @@ JSContext::~JSContext()
 
     JS_ASSERT(!resolvingList);
 }
+
+#ifdef DEBUG
+namespace JS {
+
+JS_FRIEND_API(void)
+SetRootingUnnecessaryForContext(JSContext *cx, bool value)
+{
+    cx->rootingUnnecessary = value;
+}
+
+JS_FRIEND_API(bool)
+IsRootingUnnecessaryForContext(JSContext *cx)
+{
+    return cx->rootingUnnecessary;
+}
+
+JS_FRIEND_API(bool)
+RelaxRootChecksForContext(JSContext *cx)
+{
+    return cx->runtime->relaxRootChecks;
+}
+
+} /* namespace JS */
+#endif
 
 void
 JSContext::resetCompartment()
@@ -1080,25 +1116,23 @@ JSContext::wrapPendingException()
         setPendingException(v);
 }
 
-JSGenerator *
-JSContext::generatorFor(StackFrame *fp) const
+
+void
+JSContext::enterGenerator(JSGenerator *gen)
 {
-    JS_ASSERT(stack.containsSlow(fp));
-    JS_ASSERT(fp->isGeneratorFrame());
-    JS_ASSERT(!fp->isFloatingGenerator());
-    JS_ASSERT(!genStack.empty());
-
-    if (JS_LIKELY(fp == genStack.back()->liveFrame()))
-        return genStack.back();
-
-    /* General case; should only be needed for debug APIs. */
-    for (size_t i = 0; i < genStack.length(); ++i) {
-        if (genStack[i]->liveFrame() == fp)
-            return genStack[i];
-    }
-    JS_NOT_REACHED("no matching generator");
-    return NULL;
+    JS_ASSERT(!gen->prevGenerator);
+    gen->prevGenerator = innermostGenerator_;
+    innermostGenerator_ = gen;
 }
+
+void
+JSContext::leaveGenerator(JSGenerator *gen)
+{
+    JS_ASSERT(innermostGenerator_ == gen);
+    innermostGenerator_ = innermostGenerator_->prevGenerator;
+    gen->prevGenerator = NULL;
+}
+
 
 bool
 JSContext::runningWithTrustedPrincipals() const
@@ -1140,7 +1174,7 @@ JSRuntime::onTooMuchMalloc()
 JS_FRIEND_API(void *)
 JSRuntime::onOutOfMemory(void *p, size_t nbytes, JSContext *cx)
 {
-    if (gcRunning)
+    if (isHeapBusy())
         return NULL;
 
     /*
@@ -1148,12 +1182,7 @@ JSRuntime::onOutOfMemory(void *p, size_t nbytes, JSContext *cx)
      * all the allocations and released the empty GC chunks.
      */
     ShrinkGCBuffers(this);
-#ifdef JS_THREADSAFE
-    {
-        AutoLockGC lock(this);
-        gcHelperThread.waitBackgroundSweepOrAllocEnd();
-    }
-#endif
+    gcHelperThread.waitBackgroundSweepOrAllocEnd();
     if (!p)
         p = OffTheBooks::malloc_(nbytes);
     else if (p == reinterpret_cast<void *>(1))
@@ -1292,7 +1321,7 @@ namespace JS {
 AutoCheckRequestDepth::AutoCheckRequestDepth(JSContext *cx)
     : cx(cx)
 {
-    JS_ASSERT(cx->runtime->requestDepth || cx->runtime->gcRunning);
+    JS_ASSERT(cx->runtime->requestDepth || cx->runtime->isHeapBusy());
     JS_ASSERT(cx->runtime->onOwnerThread());
     cx->runtime->checkRequestDepth++;
 }

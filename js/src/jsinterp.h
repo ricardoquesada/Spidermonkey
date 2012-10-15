@@ -18,31 +18,6 @@
 
 namespace js {
 
-/*
- * ScriptPrologue/ScriptEpilogue must be called in pairs. ScriptPrologue
- * must be called before the script executes. ScriptEpilogue must be called
- * after the script returns or exits via exception.
- */
-
-inline bool
-ScriptPrologue(JSContext *cx, StackFrame *fp, JSScript *script);
-
-inline bool
-ScriptEpilogue(JSContext *cx, StackFrame *fp, bool ok);
-
-/*
- * It is not valid to call ScriptPrologue when a generator is resumed or to
- * call ScriptEpilogue when a generator yields. However, the debugger still
- * needs LIFO notification of generator start/stop. This pair of functions does
- * the right thing based on the state of 'fp'.
- */
-
-inline bool
-ScriptPrologueOrGeneratorResume(JSContext *cx, StackFrame *fp);
-
-inline bool
-ScriptEpilogueOrGeneratorYield(JSContext *cx, StackFrame *fp, bool ok);
-
 /* Implemented in jsdbgapi: */
 
 /*
@@ -106,6 +81,25 @@ enum MaybeConstruct {
     CONSTRUCT = INITIAL_CONSTRUCT
 };
 
+extern bool
+ReportIsNotFunction(JSContext *cx, const Value &v, MaybeConstruct construct = NO_CONSTRUCT);
+
+extern bool
+ReportIsNotFunction(JSContext *cx, const Value *vp, MaybeConstruct construct = NO_CONSTRUCT);
+
+extern JSObject *
+ValueToCallable(JSContext *cx, const Value *vp, MaybeConstruct construct = NO_CONSTRUCT);
+
+inline JSFunction *
+ReportIfNotFunction(JSContext *cx, const Value &v, MaybeConstruct construct = NO_CONSTRUCT)
+{
+    if (v.isObject() && v.toObject().isFunction())
+        return v.toObject().toFunction();
+
+    ReportIsNotFunction(cx, v, construct);
+    return NULL;
+}
+
 /*
  * InvokeKernel assumes that the given args have been pushed on the top of the
  * VM stack. Additionally, if 'args' is contained in a CallArgsList, that they
@@ -149,7 +143,7 @@ InvokeGetterOrSetter(JSContext *cx, JSObject *obj, const Value &fval, unsigned a
  * (e.g. 'new') handling the the creation of the new 'this' object.
  */
 extern bool
-InvokeConstructorKernel(JSContext *cx, const CallArgs &args);
+InvokeConstructorKernel(JSContext *cx, CallArgs args);
 
 /* See the InvokeArgsGuard overload of Invoke. */
 inline bool
@@ -273,9 +267,6 @@ UnwindForUncatchableException(JSContext *cx, const FrameRegs &regs);
 
 extern bool
 OnUnknownMethod(JSContext *cx, HandleObject obj, Value idval, Value *vp);
-
-inline void
-AssertValidFunctionScopeChainAtExit(StackFrame *fp);
 
 class TryNoteIter
 {

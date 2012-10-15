@@ -190,13 +190,13 @@ class Debugger {
      * Allocate and initialize a Debugger.Script instance whose referent is
      * |script|.
      */
-    JSObject *newDebuggerScript(JSContext *cx, Handle<JSScript*> script);
+    JSObject *newDebuggerScript(JSContext *cx, HandleScript script);
 
     /*
      * Receive a "new script" event from the engine. A new script was compiled
      * or deserialized.
      */
-    void fireNewScript(JSContext *cx, Handle<JSScript*> script);
+    void fireNewScript(JSContext *cx, HandleScript script);
 
     static inline Debugger *fromLinks(JSCList *links);
     inline Breakpoint *firstBreakpoint() const;
@@ -337,7 +337,7 @@ class Debugger {
      * needed. The context |cx| must be in the debugger compartment; |script|
      * must be a script in a debuggee compartment.
      */
-    JSObject *wrapScript(JSContext *cx, Handle<JSScript*> script);
+    JSObject *wrapScript(JSContext *cx, HandleScript script);
 
   private:
     Debugger(const Debugger &) MOZ_DELETE;
@@ -355,13 +355,6 @@ class BreakpointSite {
     jsbytecode * const pc;
 
   private:
-    /*
-     * The holder object for script, if known, else NULL.  This is NULL for
-     * cached eval scripts and for JSD1 traps. It is always non-null for JSD2
-     * breakpoints in held scripts.
-     */
-    GlobalObject *scriptGlobal;
-
     JSCList breakpoints;  /* cyclic list of all js::Breakpoints at this instruction */
     size_t enabledCount;  /* number of breakpoints in the list that are enabled */
     JSTrapHandler trapHandler;  /* jsdbgapi trap state */
@@ -374,7 +367,6 @@ class BreakpointSite {
     Breakpoint *firstBreakpoint() const;
     bool hasBreakpoint(Breakpoint *bp);
     bool hasTrap() const { return !!trapHandler; }
-    GlobalObject *getScriptGlobal() const { return scriptGlobal; }
 
     void inc(FreeOp *fop);
     void dec(FreeOp *fop);

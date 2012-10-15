@@ -6,3 +6,6 @@
 
 # make
 make -j4
+
+# strip
+strip -S libjs_static.a

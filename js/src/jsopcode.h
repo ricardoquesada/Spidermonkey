@@ -60,7 +60,7 @@ typedef enum JSOp {
 #define JOF_INT8          18      /* int8_t immediate operand */
 #define JOF_ATOMOBJECT    19      /* uint16_t constant index + object index */
 #define JOF_UINT16PAIR    20      /* pair of uint16_t immediates */
-#define JOF_SCOPECOORD    21      /* pair of uint16_t immediates followed by atom index */
+#define JOF_SCOPECOORD    21      /* pair of uint16_t immediates followed by block index */
 #define JOF_TYPEMASK      0x001f  /* mask for above immediate types */
 
 #define JOF_NAME          (1U<<5) /* name operation */
@@ -79,7 +79,7 @@ typedef enum JSOp {
 #define JOF_DETECTING    (1U<<14) /* object detection for JSNewResolveOp */
 #define JOF_BACKPATCH    (1U<<15) /* backpatch placeholder during codegen */
 #define JOF_LEFTASSOC    (1U<<16) /* left-associative operator */
-#define JOF_DECLARING    (1U<<17) /* var, const, or function declaration op */
+/* (1U<<17) is unused */
 /* (1U<<18) is unused */
 #define JOF_PARENHEAD    (1U<<20) /* opcode consumes value of expression in
                                      parenthesized statement head */
