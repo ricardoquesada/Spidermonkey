@@ -6,8 +6,6 @@ import errno, os, sys, select
 from datetime import datetime, timedelta
 from results import TestOutput
 
-PROGRESS_BAR_GRANULARITY = 0.1 #sec
-
 class Task(object):
     def __init__(self, test, pid, stdout, stderr):
         self.test = test
@@ -42,29 +40,32 @@ def spawn_test(test):
     cmd = test.get_command(test.js_cmd_prefix)
     os.execvp(cmd[0], cmd)
 
+def total_seconds(td):
+    """
+    Return the total number of seconds contained in the duration as a float
+    """
+    return (float(td.microseconds) + (td.seconds + td.days * 24 * 3600) * 10**6) / 10**6
+
 def get_max_wait(tasks, results, timeout):
     """
     Return the maximum time we can wait before any task should time out.
     """
-    now = datetime.now()
-    wait = timedelta(0)
-    for task in tasks:
-        remaining = timedelta(seconds=timeout) - (now - task.start)
-        if remaining > wait:
-            wait = remaining
-    wait = wait.total_seconds()
-
-    # The test harness uses a timeout of 0 to indicate we should wait forever,
-    # but for select(), a timeout of 0 indicates a zero-length wait.  Instead,
-    # translate the timeout into None to tell select to wait forever.
-    if wait == 0:
-        return None
 
     # If we have a progress-meter, we need to wake up to update it frequently.
-    if results.pb is not None:
-        wait = min(wait, PROGRESS_BAR_GRANULARITY)
+    wait = results.pb.update_granularity()
 
-    return wait
+    # If a timeout is supplied, we need to wake up for the first task to
+    # timeout if that is sooner.
+    if timeout:
+        now = datetime.now()
+        timeout_delta = timedelta(seconds=timeout)
+        for task in tasks:
+            remaining = task.start + timeout_delta - now
+            if remaining < wait:
+                wait = remaining
+
+    # Return the wait time in seconds, clamped to zero.
+    return max(total_seconds(wait), 0)
 
 def flush_input(fd, frags):
     """
@@ -164,7 +165,7 @@ def reap_zombies(tasks, results, timeout):
                    ''.join(ended.out),
                    ''.join(ended.err),
                    returncode,
-                   (datetime.now() - ended.start).total_seconds(),
+                   total_seconds(datetime.now() - ended.start),
                    timed_out(ended, timeout))
         results.push(out)
     return tasks
@@ -195,8 +196,6 @@ def run_all_tests(tests, results, options):
         kill_undead(tasks, results, options.timeout)
         tasks = reap_zombies(tasks, results, options.timeout)
 
-        if results.pb:
-            results.pb.update(results.n)
+        results.pb.poke()
 
     return True
-

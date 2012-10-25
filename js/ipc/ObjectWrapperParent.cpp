@@ -139,17 +139,17 @@ const js::Class ObjectWrapperParent::sCPOW_JSClass = {
       (JSResolveOp) ObjectWrapperParent::CPOW_NewResolve,
       ObjectWrapperParent::CPOW_Convert,
       ObjectWrapperParent::CPOW_Finalize,
-      nsnull, // checkAccess
+      nullptr, // checkAccess
       ObjectWrapperParent::CPOW_Call,
       ObjectWrapperParent::CPOW_HasInstance,
       ObjectWrapperParent::CPOW_Construct,
-      nsnull, // trace
+      nullptr, // trace
       {
           ObjectWrapperParent::CPOW_Equality,
-          nsnull, // outerObject
-          nsnull, // innerObject
-          nsnull, // iteratorObject
-          nsnull, // wrappedObject
+          nullptr, // outerObject
+          nullptr, // innerObject
+          nullptr, // iteratorObject
+          nullptr, // wrappedObject
     }
 };
 
@@ -270,7 +270,8 @@ ObjectWrapperParent::jsval_from_JSVariant(JSContext* cx, const JSVariant& from,
         *to = INT_TO_JSVAL(from.get_int());
         return true;
     case JSVariant::Tdouble:
-        return !!JS_NewNumberValue(cx, from.get_double(), to);
+        *to = JS_NumberValue(from.get_double());
+        return true;
     case JSVariant::Tbool:
         *to = BOOLEAN_TO_JSVAL(from.get_bool());
         return true;
@@ -354,7 +355,7 @@ jsval_to_nsString(JSContext* cx, jsid from, nsString* to)
 
 /*static*/ JSBool
 ObjectWrapperParent::CPOW_AddProperty(JSContext *cx, JSHandleObject obj, JSHandleId id,
-                                      jsval *vp)
+                                      JSMutableHandleValue vp)
 {
     CPOW_LOG(("Calling CPOW_AddProperty (%s)...",
               JSVAL_TO_CSTR(cx, id)));
@@ -381,7 +382,7 @@ ObjectWrapperParent::CPOW_AddProperty(JSContext *cx, JSHandleObject obj, JSHandl
 
 /*static*/ JSBool
 ObjectWrapperParent::CPOW_GetProperty(JSContext *cx, JSHandleObject obj, JSHandleId id,
-                                      jsval *vp)
+                                      JSMutableHandleValue vp)
 {
     CPOW_LOG(("Calling CPOW_GetProperty (%s)...",
               JSVAL_TO_CSTR(cx, id)));
@@ -403,12 +404,12 @@ ObjectWrapperParent::CPOW_GetProperty(JSContext *cx, JSHandleObject obj, JSHandl
             self->CallGetProperty(in_id,
                                   aco.StatusPtr(), &out_v) &&
             aco.Ok() &&
-            self->jsval_from_JSVariant(cx, out_v, vp));
+            self->jsval_from_JSVariant(cx, out_v, vp.address()));
 }
 
 /*static*/ JSBool
 ObjectWrapperParent::CPOW_SetProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, 
-                                      JSBool strict, jsval *vp)
+                                      JSBool strict, JSMutableHandleValue vp)
 {
     CPOW_LOG(("Calling CPOW_SetProperty (%s)...",
               JSVAL_TO_CSTR(cx, id)));
@@ -423,7 +424,7 @@ ObjectWrapperParent::CPOW_SetProperty(JSContext *cx, JSHandleObject obj, JSHandl
     JSVariant in_v;
 
     if (!jsval_to_nsString(cx, id, &in_id) ||
-        !self->jsval_to_JSVariant(cx, *vp, &in_v))
+        !self->jsval_to_JSVariant(cx, vp, &in_v))
         return JS_FALSE;
 
     JSVariant out_v;
@@ -432,12 +433,12 @@ ObjectWrapperParent::CPOW_SetProperty(JSContext *cx, JSHandleObject obj, JSHandl
             self->CallSetProperty(in_id, in_v,
                                   aco.StatusPtr(), &out_v) &&
             aco.Ok() &&
-            self->jsval_from_JSVariant(cx, out_v, vp));
+            self->jsval_from_JSVariant(cx, out_v, vp.address()));
 }    
     
 /*static*/ JSBool
 ObjectWrapperParent::CPOW_DelProperty(JSContext *cx, JSHandleObject obj, JSHandleId id,
-                                      jsval *vp)
+                                      JSMutableHandleValue vp)
 {
     CPOW_LOG(("Calling CPOW_DelProperty (%s)...",
               JSVAL_TO_CSTR(cx, id)));
@@ -459,7 +460,7 @@ ObjectWrapperParent::CPOW_DelProperty(JSContext *cx, JSHandleObject obj, JSHandl
             self->CallDelProperty(in_id,
                                   aco.StatusPtr(), &out_v) &&
             aco.Ok() &&
-            jsval_from_JSVariant(cx, out_v, vp));
+            jsval_from_JSVariant(cx, out_v, vp.address()));
 }
 
 JSBool
@@ -580,7 +581,7 @@ ObjectWrapperParent::CPOW_NewResolve(JSContext *cx, JSHandleObject obj, JSHandle
 
 /*static*/ JSBool
 ObjectWrapperParent::CPOW_Convert(JSContext *cx, JSHandleObject obj, JSType type,
-                                  jsval *vp)
+                                  JSMutableHandleValue vp)
 {
     CPOW_LOG(("Calling CPOW_Convert (to %s)...",
               JS_GetTypeName(cx, type)));
@@ -589,7 +590,7 @@ ObjectWrapperParent::CPOW_Convert(JSContext *cx, JSHandleObject obj, JSType type
     if (!self)
         return with_error(cx, JS_FALSE, "Unwrapping failed in CPOW_Convert");
 
-    *vp = OBJECT_TO_JSVAL(obj);
+    vp.set(OBJECT_TO_JSVAL(obj));
 
     return JS_TRUE;
 }

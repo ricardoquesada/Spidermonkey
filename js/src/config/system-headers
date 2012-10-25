@@ -404,7 +404,6 @@ libgnomevfs/gnome-vfs-mime-utils.h
 libgnomevfs/gnome-vfs-ops.h
 libgnomevfs/gnome-vfs-standard-callbacks.h
 lib$routines.h
-libnotify/notify.h
 limits
 limits.h
 link.h
@@ -595,6 +594,7 @@ psap.h
 Pt.h
 pthread.h
 pthread_np.h
+pulse/pulseaudio.h
 pwd.h
 Python.h
 QDOffscreen.h
@@ -646,8 +646,10 @@ signal.h
 SimpleGameSound.h
 SIOUX.h
 size_t.h
+sndio.h
 someincludefile.h
 Sound.h
+soundcard.h
 sqlite3.h
 ssdef.h
 sslerr.h

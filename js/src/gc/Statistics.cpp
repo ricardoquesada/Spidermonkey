@@ -25,8 +25,8 @@
 namespace js {
 namespace gcstats {
 
-/* Except for the first and last, slices of less than 12ms are not reported. */
-static const int64_t SLICE_MIN_REPORT_TIME = 12 * PRMJ_USEC_PER_MSEC;
+/* Except for the first and last, slices of less than 42ms are not reported. */
+static const int64_t SLICE_MIN_REPORT_TIME = 42 * PRMJ_USEC_PER_MSEC;
 
 class StatisticsSerializer
 {
@@ -313,15 +313,35 @@ FormatPhaseTimes(StatisticsSerializer &ss, const char *name, int64_t *times)
     ss.endObject();
 }
 
+void
+Statistics::gcDuration(int64_t *total, int64_t *maxPause)
+{
+    *total = *maxPause = 0;
+    for (SliceData *slice = slices.begin(); slice != slices.end(); slice++) {
+        *total += slice->duration();
+        if (slice->duration() > *maxPause)
+            *maxPause = slice->duration();
+    }
+}
+
+void
+Statistics::sccDurations(int64_t *total, int64_t *maxPause)
+{
+    *total = *maxPause = 0;
+    for (size_t i = 0; i < sccTimes.length(); i++) {
+        *total += sccTimes[i];
+        *maxPause = Max(*maxPause, sccTimes[i]);
+    }
+}
+
 bool
 Statistics::formatData(StatisticsSerializer &ss, uint64_t timestamp)
 {
-    int64_t total = 0, longest = 0;
-    for (SliceData *slice = slices.begin(); slice != slices.end(); slice++) {
-        total += slice->duration();
-        if (slice->duration() > longest)
-            longest = slice->duration();
-    }
+    int64_t total, longest;
+    gcDuration(&total, &longest);
+
+    int64_t sccTotal, sccLongest;
+    sccDurations(&sccTotal, &sccLongest);
 
     double mmu20 = computeMMU(20 * PRMJ_USEC_PER_MSEC);
     double mmu50 = computeMMU(50 * PRMJ_USEC_PER_MSEC);
@@ -334,6 +354,8 @@ Statistics::formatData(StatisticsSerializer &ss, uint64_t timestamp)
     ss.appendNumber("Total Compartments", "%d", "", compartmentCount);
     ss.appendNumber("MMU (20ms)", "%d", "%", int(mmu20 * 100));
     ss.appendNumber("MMU (50ms)", "%d", "%", int(mmu50 * 100));
+    ss.appendDecimal("SCC Sweep Total", "ms", t(sccTotal));
+    ss.appendDecimal("SCC Sweep Max Pause", "ms", t(sccLongest));
     if (slices.length() > 1 || ss.isJSON())
         ss.appendDecimal("Max Pause", "ms", t(longest));
     else
@@ -451,12 +473,6 @@ Statistics::~Statistics()
     }
 }
 
-int64_t
-Statistics::gcDuration()
-{
-    return slices.back().end - slices[0].start;
-}
-
 void
 Statistics::printStats()
 {
@@ -469,8 +485,11 @@ Statistics::printStats()
             js_free(msg);
         }
     } else {
+        int64_t total, longest;
+        gcDuration(&total, &longest);
+
         fprintf(fp, "%f %f %f\n",
-                t(gcDuration()),
+                t(total),
                 t(phaseTimes[PHASE_MARK]),
                 t(phaseTimes[PHASE_SWEEP]));
     }
@@ -484,6 +503,7 @@ Statistics::beginGC()
     PodArrayZero(phaseTimes);
 
     slices.clearAndFree();
+    sccTimes.clearAndFree();
     nonincrementalReason = NULL;
 
     preBytes = runtime->gcBytes;
@@ -501,12 +521,23 @@ Statistics::endGC()
         phaseTotals[i] += phaseTimes[i];
 
     if (JSAccumulateTelemetryDataCallback cb = runtime->telemetryCallback) {
+        int64_t total, longest;
+        gcDuration(&total, &longest);
+
+        int64_t sccTotal, sccLongest;
+        sccDurations(&sccTotal, &sccLongest);
+
         (*cb)(JS_TELEMETRY_GC_IS_COMPARTMENTAL, collectedCount == compartmentCount ? 0 : 1);
-        (*cb)(JS_TELEMETRY_GC_MS, t(gcDuration()));
+        (*cb)(JS_TELEMETRY_GC_MS, t(total));
+        (*cb)(JS_TELEMETRY_GC_MAX_PAUSE_MS, t(longest));
         (*cb)(JS_TELEMETRY_GC_MARK_MS, t(phaseTimes[PHASE_MARK]));
         (*cb)(JS_TELEMETRY_GC_SWEEP_MS, t(phaseTimes[PHASE_SWEEP]));
+        (*cb)(JS_TELEMETRY_GC_MARK_ROOTS_MS, t(phaseTimes[PHASE_MARK_ROOTS]));
+        (*cb)(JS_TELEMETRY_GC_MARK_GRAY_MS, t(phaseTimes[PHASE_MARK_GRAY]));
         (*cb)(JS_TELEMETRY_GC_NON_INCREMENTAL, !!nonincrementalReason);
         (*cb)(JS_TELEMETRY_GC_INCREMENTAL_DISABLED, !runtime->gcIncrementalEnabled);
+        (*cb)(JS_TELEMETRY_GC_SCC_SWEEP_TOTAL_MS, t(sccTotal));
+        (*cb)(JS_TELEMETRY_GC_SCC_SWEEP_MAX_PAUSE_MS, t(sccLongest));
 
         double mmu50 = computeMMU(50 * PRMJ_USEC_PER_MSEC);
         (*cb)(JS_TELEMETRY_GC_MMU_50, mmu50 * 100);
@@ -593,6 +624,21 @@ Statistics::endPhase(Phase phase)
         Probes::GCEndMarkPhase();
     else if (phase == gcstats::PHASE_SWEEP)
         Probes::GCEndSweepPhase();
+}
+
+int64_t
+Statistics::beginSCC()
+{
+    return PRMJ_Now();
+}
+
+void
+Statistics::endSCC(unsigned scc, int64_t start)
+{
+    if (scc >= sccTimes.length() && !sccTimes.resize(scc + 1))
+        return;
+
+    sccTimes[scc] += PRMJ_Now() - start;
 }
 
 /*

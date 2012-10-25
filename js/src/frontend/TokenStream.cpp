@@ -32,7 +32,6 @@
 
 #include "frontend/Parser.h"
 #include "frontend/TokenStream.h"
-#include "frontend/TreeContext.h"
 #include "vm/RegExpObject.h"
 #include "vm/StringBuffer.h"
 
@@ -43,6 +42,7 @@
 #endif
 
 using namespace js;
+using namespace js::frontend;
 using namespace js::unicode;
 
 #define JS_KEYWORD(keyword, type, op, version) \
@@ -58,7 +58,7 @@ static const KeywordInfo keywords[] = {
 };
 
 const KeywordInfo *
-js::FindKeyword(const jschar *s, size_t length)
+frontend::FindKeyword(const jschar *s, size_t length)
 {
     JS_ASSERT(length != 0);
 
@@ -95,7 +95,7 @@ js::FindKeyword(const jschar *s, size_t length)
 }
 
 bool
-js::IsIdentifier(JSLinearString *str)
+frontend::IsIdentifier(JSLinearString *str)
 {
     const jschar *chars = str->chars();
     size_t length = str->length();
@@ -120,14 +120,13 @@ js::IsIdentifier(JSLinearString *str)
 #endif
 
 /* Initialize members that aren't initialized in |init|. */
-TokenStream::TokenStream(JSContext *cx, JSPrincipals *prin, JSPrincipals *originPrin,
-                         const jschar *base, size_t length, const char *fn, unsigned ln,
-                         JSVersion v, StrictModeGetter *smg)
+TokenStream::TokenStream(JSContext *cx, const CompileOptions &options,
+                         const jschar *base, size_t length, StrictModeGetter *smg)
   : tokens(),
     tokensRoot(cx, &tokens),
     cursor(),
     lookahead(),
-    lineno(ln),
+    lineno(options.lineno),
     flags(),
     linebase(base),
     prevLinebase(NULL),
@@ -135,15 +134,16 @@ TokenStream::TokenStream(JSContext *cx, JSPrincipals *prin, JSPrincipals *origin
     prevLinebaseRoot(cx, &prevLinebase),
     userbuf(base, length),
     userbufRoot(cx, &userbuf),
-    filename(fn),
+    filename(options.filename),
     sourceMap(NULL),
     listenerTSData(),
     tokenbuf(cx),
-    version(v),
-    allowXML(VersionHasAllowXML(v)),
-    moarXML(VersionHasMoarXML(v)),
+    version(options.version),
+    allowXML(VersionHasAllowXML(options.version)),
+    moarXML(VersionHasMoarXML(options.version)),
     cx(cx),
-    originPrincipals(JSScript::normalizeOriginPrincipals(prin, originPrin)),
+    originPrincipals(JSScript::normalizeOriginPrincipals(options.principals,
+                                                         options.originPrincipals)),
     strictModeGetter(smg)
 {
     if (originPrincipals)
@@ -153,7 +153,7 @@ TokenStream::TokenStream(JSContext *cx, JSPrincipals *prin, JSPrincipals *origin
     void *listenerData = cx->runtime->debugHooks.sourceHandlerData;
 
     if (listener)
-        listener(fn, ln, base, length, &listenerTSData, listenerData);
+        listener(options.filename, options.lineno, base, length, &listenerTSData, listenerData);
 
     /*
      * This table holds all the token kinds that satisfy these properties:
@@ -208,7 +208,7 @@ TokenStream::TokenStream(JSContext *cx, JSPrincipals *prin, JSPrincipals *origin
      * parser needing it (the so-called "pump-priming" model) might be a better
      * way to address the dependency from statements on the current token.
      */
-    tokens[0].pos.begin.lineno = tokens[0].pos.end.lineno = ln;
+    tokens[0].pos.begin.lineno = tokens[0].pos.end.lineno = options.lineno;
 }
 
 #ifdef _MSC_VER
@@ -377,11 +377,11 @@ TokenStream::peekChars(int n, jschar *cp)
 const jschar *
 TokenStream::TokenBuf::findEOLMax(const jschar *p, size_t max)
 {
-    JS_ASSERT(base <= p && p <= limit);
+    JS_ASSERT(base_ <= p && p <= limit_);
 
     size_t n = 0;
     while (true) {
-        if (p >= limit)
+        if (p >= limit_)
             break;
         if (n >= max)
             break;
@@ -1047,8 +1047,8 @@ TokenStream::getXMLMarkup(TokenKind *ttp, Token **tpp)
         if (contentIndex < 0) {
             data = cx->runtime->atomState.emptyAtom;
         } else {
-            data = js_AtomizeChars(cx, tokenbuf.begin() + contentIndex,
-                                   tokenbuf.length() - contentIndex);
+            data = AtomizeChars(cx, tokenbuf.begin() + contentIndex,
+                                tokenbuf.length() - contentIndex);
             if (!data)
                 goto error;
         }
@@ -1122,6 +1122,31 @@ TokenStream::matchUnicodeEscapeIdent(int32_t *cp)
         return true;
     }
     return false;
+}
+
+size_t
+TokenStream::endOffset(const Token &tok)
+{
+    uint32_t lineno = tok.pos.begin.lineno;
+    JS_ASSERT(lineno <= tok.pos.end.lineno);
+    const jschar *end;
+    if (lineno < tok.pos.end.lineno) {
+        TokenBuf buf(tok.ptr, userbuf.addressOfNextRawChar() - userbuf.base());
+        for (; lineno < tok.pos.end.lineno; lineno++) {
+            jschar c;
+            do {
+                JS_ASSERT(buf.hasRawChars());
+                c = buf.getRawChar();
+            } while (!TokenBuf::isRawEOLChar(c));
+            if (c == '\r' && buf.hasRawChars())
+                buf.matchRawChar('\n');
+        }
+        end = buf.addressOfNextRawChar() + tok.pos.end.index;
+    } else {
+        end = tok.ptr + (tok.pos.end.index - tok.pos.begin.index);
+    }
+    JS_ASSERT(end <= userbuf.addressOfNextRawChar());
+    return end - userbuf.base();
 }
 
 /*
@@ -1203,34 +1228,35 @@ TokenStream::getAtLine()
 bool
 TokenStream::getAtSourceMappingURL()
 {
-    jschar peeked[18];
+    /* Match comments of the form "//@ sourceMappingURL=<url>" */
 
-    /* Match comments of the form @sourceMappingURL=<url> */
-    if (peekChars(18, peeked) && CharsMatch(peeked, "@sourceMappingURL=")) {
-        skipChars(18);
+    jschar peeked[19];
+    int32_t c;
+
+    if (peekChars(19, peeked) && CharsMatch(peeked, "@ sourceMappingURL=")) {
+        skipChars(19);
         tokenbuf.clear();
 
-        jschar c;
-        while (!IsSpaceOrBOM2((c = getChar())) &&
-               c && c != jschar(EOF))
+        while ((c = peekChar()) && c != EOF && !IsSpaceOrBOM2(c)) {
+            getChar();
             tokenbuf.append(c);
+        }
 
         if (tokenbuf.empty())
             /* The source map's URL was missing, but not quite an exception that
              * we should stop and drop everything for, though. */
             return true;
 
-        int len = tokenbuf.length();
+        size_t sourceMapLength = tokenbuf.length();
 
         if (sourceMap)
             cx->free_(sourceMap);
-        sourceMap = (jschar *) cx->malloc_(sizeof(jschar) * (len + 1));
+        sourceMap = static_cast<jschar *>(cx->malloc_(sizeof(jschar) * (sourceMapLength + 1)));
         if (!sourceMap)
             return false;
 
-        for (int i = 0; i < len; i++)
-            sourceMap[i] = tokenbuf[i];
-        sourceMap[len] = '\0';
+        PodCopy(sourceMap, tokenbuf.begin(), sourceMapLength);
+        sourceMap[sourceMapLength] = '\0';
     }
     return true;
 }
@@ -1249,7 +1275,7 @@ TokenStream::newToken(ptrdiff_t adjust)
 JS_ALWAYS_INLINE JSAtom *
 TokenStream::atomize(JSContext *cx, CharBuffer &cb)
 {
-    return js_AtomizeChars(cx, cb.begin(), cb.length());
+    return AtomizeChars(cx, cb.begin(), cb.length());
 }
 
 #ifdef DEBUG
@@ -1408,6 +1434,8 @@ TokenStream::getTokenInternal()
     const jschar *identStart;
     bool hadUnicodeEscape;
 
+    SkipRoot skipNum(cx, &numStart), skipIdent(cx, &identStart);
+
 #if JS_HAS_XML_SUPPORT
     /*
      * Look for XML text and tags.
@@ -1542,7 +1570,7 @@ TokenStream::getTokenInternal()
          */
         JSAtom *atom;
         if (!hadUnicodeEscape)
-            atom = js_AtomizeChars(cx, identStart, userbuf.addressOfNextRawChar() - identStart);
+            atom = AtomizeChars(cx, identStart, userbuf.addressOfNextRawChar() - identStart);
         else
             atom = atomize(cx, tokenbuf);
         if (!atom)
@@ -2123,6 +2151,14 @@ TokenStream::getTokenInternal()
     tp->pos.end.index = tp->pos.begin.index + 1;
     tp->type = TOK_ERROR;
     JS_ASSERT(IsTokenSane(tp));
+    onError();
+    return TOK_ERROR;
+}
+
+void
+TokenStream::onError()
+{
+    flags |= TSF_HAD_ERROR;
 #ifdef DEBUG
     /*
      * Poisoning userbuf on error establishes an invariant: once an erroneous
@@ -2135,7 +2171,6 @@ TokenStream::getTokenInternal()
      */
     userbuf.poison();
 #endif
-    return TOK_ERROR;
 }
 
 JS_FRIEND_API(int)

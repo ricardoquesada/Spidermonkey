@@ -79,7 +79,10 @@ class PropertyId
     SpecialId asSpecial() const {
         return JSID_TO_SPECIALID(id);
     }
-    jsid asId() const {
+    const jsid &asId() const {
+        return id;
+    }
+    jsid &asId() {
         return id;
     }
 
@@ -228,9 +231,9 @@ struct PropDesc {
         return (attrs & JSPROP_READONLY) == 0;
     }
 
-    const Value & value() const {
+    HandleValue value() const {
         MOZ_ASSERT(hasValue());
-        return value_;
+        return HandleValue::fromMarkedLocation(&value_);
     }
 
     JSObject * getterObject() const {
@@ -244,15 +247,15 @@ struct PropDesc {
         return set_.isUndefined() ? NULL : &set_.toObject();
     }
 
-    const Value & getterValue() const {
+    HandleValue getterValue() const {
         MOZ_ASSERT(!isUndefined());
         MOZ_ASSERT(hasGet());
-        return get_;
+        return HandleValue::fromMarkedLocation(&get_);
     }
-    const Value & setterValue() const {
+    HandleValue setterValue() const {
         MOZ_ASSERT(!isUndefined());
         MOZ_ASSERT(hasSet());
-        return set_;
+        return HandleValue::fromMarkedLocation(&set_);
     }
 
     /*
@@ -1202,6 +1205,7 @@ class ObjectImpl : public gc::Cell
 
     inline void setSlot(uint32_t slot, const Value &value);
     inline void initSlot(uint32_t slot, const Value &value);
+    inline void initCrossCompartmentSlot(uint32_t slot, const js::Value &value);
     inline void initSlotUnchecked(uint32_t slot, const Value &value);
 
     /* For slots which are known to always be fixed, due to the way they are allocated. */
@@ -1267,7 +1271,7 @@ class ObjectImpl : public gc::Cell
     static inline void writeBarrierPre(ObjectImpl *obj);
     static inline void writeBarrierPost(ObjectImpl *obj, void *addr);
     inline void privateWriteBarrierPre(void **oldval);
-    inline void privateWriteBarrierPost(void **oldval);
+    inline void privateWriteBarrierPost(void **pprivate);
     void markChildren(JSTracer *trc);
 
     /* Private data accessors. */
@@ -1277,6 +1281,7 @@ class ObjectImpl : public gc::Cell
     inline bool hasPrivate() const;
     inline void *getPrivate() const;
     inline void setPrivate(void *data);
+    inline void setPrivateGCThing(gc::Cell *cell);
     inline void setPrivateUnbarriered(void *data);
     inline void initPrivate(void *data);
 

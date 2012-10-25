@@ -4,7 +4,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DEPTH		= .
+DEPTH		= @DEPTH@
 topsrcdir	= @top_srcdir@
 srcdir		= @srcdir@
 
@@ -82,7 +82,6 @@ CPPSRCS		= \
 		jsfun.cpp \
 		jsgc.cpp \
 		jscrashreport.cpp \
-		jshash.cpp \
 		jsinfer.cpp \
 		jsinterp.cpp \
 		jsiter.cpp \
@@ -115,20 +114,19 @@ CPPSRCS		= \
 		ScopeObject.cpp \
 		Debugger.cpp \
 		GlobalObject.cpp \
-		MethodGuard.cpp \
 		ObjectImpl.cpp \
 		Stack.cpp \
 		String.cpp \
 		BytecodeCompiler.cpp \
 		BytecodeEmitter.cpp \
 		FoldConstants.cpp \
+		NameFunctions.cpp \
+		ParallelArray.cpp \
 		ParseMaps.cpp \
 		ParseNode.cpp \
 		Parser.cpp \
-		SemanticAnalysis.cpp \
 		SPSProfiler.cpp \
 		TokenStream.cpp \
-		TreeContext.cpp \
 		TestingFunctions.cpp \
 		LifoAlloc.cpp \
 		Eval.cpp \
@@ -140,6 +138,7 @@ CPPSRCS		= \
 		Marking.cpp \
 		Memory.cpp \
 		Statistics.cpp \
+		StoreBuffer.cpp \
 		StringBuffer.cpp \
 		Unicode.cpp \
 		Xdr.cpp \
@@ -162,7 +161,6 @@ INSTALLED_HEADERS = \
 		jsdhash.h \
 		jsfriendapi.h \
 		jsgc.h \
-		jshash.h \
 		jslock.h \
 		json.h \
 		jsproxy.h \
@@ -192,6 +190,7 @@ EXPORTS_gc = \
 		Heap.h \
 		Root.h \
 		Statistics.h \
+		StoreBuffer.h \
 		$(NULL)
 
 ######################################################
@@ -325,6 +324,7 @@ endif
 
 ifneq (,$(filter arm% sparc %86 x86_64 mips%,$(TARGET_CPU)))
 ENABLE_YARR_JIT = 1
+DEFINES += -DENABLE_YARR_JIT=1
 
 VPATH += 	$(srcdir)/assembler/assembler \
 		$(srcdir)/methodjit \
@@ -453,6 +453,8 @@ HOST_CPPSRCS += jsoplengen.cpp
 HOST_SIMPLE_PROGRAMS += host_jsoplengen$(HOST_BIN_SUFFIX)
 GARBAGE += jsautooplen.h host_jsoplengen$(HOST_BIN_SUFFIX)
 
+GARBAGE += selfhosted.out.h
+
 USE_HOST_CXX = 1
 
 ifdef HAVE_DTRACE
@@ -487,29 +489,6 @@ export::
 distclean clean::
 		$(call SUBMAKE,$@,ctypes/libffi)
 endif
-endif
-
-# Because the SpiderMonkey can be distributed and built independently
-# of the Mozilla source tree, it contains its own copies of many of
-# the files used by the top-level Mozilla build process, from the
-# 'config' and 'build' subtrees.
-#
-# To make it simpler to keep the copies in sync, we follow the policy
-# that the SpiderMonkey copies must always be exact copies of those in
-# the containing Mozilla tree.  If you've made a change in one, it
-# belongs in the other as well.  If the change isn't right for both
-# places, then that's something to bring up with the other developers.
-#
-# Some files are reasonable to diverge; for  example,
-# js/config/autoconf.mk.in doesn't need most of the stuff in
-# config/autoconf.mk.in.
-check-sync-dirs-cmd = $(PYTHON) $(srcdir)/config/check-sync-dirs.py
-check-sync-dirs:
-	$(check-sync-dirs-cmd) $(srcdir)/config $(MOZ_SYNC_BUILD_FILES)/config
-	$(check-sync-dirs-cmd) $(srcdir)/build $(MOZ_SYNC_BUILD_FILES)/build
-
-ifdef MOZ_SYNC_BUILD_FILES
-check:: check-sync-dirs
 endif
 
 # The "find any vanilla new/new[] calls" script is tailored to Linux, so
@@ -667,6 +646,12 @@ endif
 
 CFLAGS += $(MOZ_ZLIB_CFLAGS)
 EXTRA_LIBS += $(MOZ_ZLIB_LIBS)
+# Enable zlib usage if zlib has been located. When building the browser on
+# Windows, MOZ_ZLIB_LIBS is empty because zlib is part of libmozglue. We thus
+# also enable zlib if mozglue is present.
+ifneq (,$(MOZ_ZLIB_LIBS)$(MOZ_GLUE_LDFLAGS))
+DEFINES += -DUSE_ZLIB
+endif
 
 # Prevent floating point errors caused by VC++ optimizations
 ifdef _MSC_VER
@@ -835,6 +820,28 @@ $(CURDIR)/javascript-trace.h: $(srcdir)/javascript-trace.d
 # we have to list them explicitly.
 $(addsuffix .$(OBJ_SUFFIX),jsprobes jsinterp jsobj): $(CURDIR)/javascript-trace.h
 endif
+
+ifdef HAVE_LINUX_PERF_EVENT_H
+pm_linux.$(OBJ_SUFFIX): CXXFLAGS += $(LINUX_HEADERS_INCLUDES)
+endif
+
+# Prepare self-hosted JS code for embedding
+export:: selfhosted.out.h
+
+selfhosting_srcs := \
+  $(srcdir)/builtin/array.js \
+  $(NULL)
+
+selfhosted_out_h_deps := \
+  $(selfhosting_srcs) \
+  $(srcdir)/js.msg \
+  $(srcdir)/builtin/macros.py \
+  $(srcdir)/builtin/js2c.py \
+  $(srcdir)/builtin/embedjs.py
+
+selfhosted.out.h: $(selfhosted_out_h_deps)
+	$(PYTHON) $(srcdir)/builtin/embedjs.py $@ $(srcdir)/js.msg \
+	  $(srcdir)/builtin/macros.py $(selfhosting_srcs)
 
 ###############################################
 # BEGIN kludges for the Nitro assembler

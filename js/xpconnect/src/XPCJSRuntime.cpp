@@ -22,6 +22,7 @@
 #include "mozilla/Preferences.h"
 #include "mozilla/Telemetry.h"
 
+#include "nsLayoutStatics.h"
 #include "nsContentUtils.h"
 #include "nsCCUncollectableMarker.h"
 #include "jsfriendapi.h"
@@ -47,6 +48,7 @@ const char* XPCJSRuntime::mStrings[] = {
     "constructor",          // IDX_CONSTRUCTOR
     "toString",             // IDX_TO_STRING
     "toSource",             // IDX_TO_SOURCE
+    "valueOf",              // IDX_VALUE_OF
     "lastResult",           // IDX_LAST_RESULT
     "returnCode",           // IDX_RETURN_CODE
     "value",                // IDX_VALUE
@@ -64,29 +66,11 @@ const char* XPCJSRuntime::mStrings[] = {
     "__scriptOnly__",       // IDX_SCRIPTONLY
     "baseURIObject",        // IDX_BASEURIOBJECT
     "nodePrincipal",        // IDX_NODEPRINCIPAL
-    "documentURIObject"     // IDX_DOCUMENTURIOBJECT
+    "documentURIObject",    // IDX_DOCUMENTURIOBJECT
+    "mozMatchesSelector"    // IDX_MOZMATCHESSELECTOR
 };
 
 /***************************************************************************/
-
-static JSDHashOperator
-WrappedJSDyingJSObjectFinder(JSDHashTable *table, JSDHashEntryHdr *hdr,
-                             uint32_t number, void *arg)
-{
-    nsTArray<nsXPCWrappedJS*>* array = static_cast<nsTArray<nsXPCWrappedJS*>*>(arg);
-    nsXPCWrappedJS* wrapper = ((JSObject2WrappedJSMap::Entry*)hdr)->value;
-    NS_ASSERTION(wrapper, "found a null JS wrapper!");
-
-    // walk the wrapper chain and find any whose JSObject is to be finalized
-    while (wrapper) {
-        if (wrapper->IsSubjectToFinalization()) {
-            if (JS_IsAboutToBeFinalized(wrapper->GetJSObjectPreserveColor()))
-                array->AppendElement(wrapper);
-        }
-        wrapper = wrapper->GetNextWrapper();
-    }
-    return JS_DHASH_NEXT;
-}
 
 struct CX_AND_XPCRT_Data
 {
@@ -94,7 +78,7 @@ struct CX_AND_XPCRT_Data
     XPCJSRuntime* rt;
 };
 
-static void * const UNMARK_ONLY = nsnull;
+static void * const UNMARK_ONLY = nullptr;
 static void * const UNMARK_AND_SWEEP = (void *)1;
 
 static JSDHashOperator
@@ -150,8 +134,8 @@ NativeSetSweeper(JSDHashTable *table, JSDHashEntryHdr *hdr,
 
 #ifdef XPC_REPORT_NATIVE_INTERFACE_AND_SET_FLUSHING
     printf("- Destroying XPCNativeSet for:\n");
-    PRUint16 count = set->GetInterfaceCount();
-    for (PRUint16 k = 0; k < count; k++) {
+    uint16_t count = set->GetInterfaceCount();
+    for (uint16_t k = 0; k < count; k++) {
         XPCNativeInterface* iface = set->GetInterfaceAt(k);
         fputs("    ", stdout);
         JS_PutString(JSVAL_TO_STRING(iface->GetName()), stdout);
@@ -245,7 +229,7 @@ CompartmentDestroyedCallback(JSFreeOp *fop, JSCompartment *compartment)
     // Get the current compartment private into an AutoPtr (which will do the
     // cleanup for us), and null out the private (which may already be null).
     nsAutoPtr<CompartmentPrivate> priv(GetCompartmentPrivate(compartment));
-    JS_SetCompartmentPrivate(compartment, nsnull);
+    JS_SetCompartmentPrivate(compartment, nullptr);
 
     // JSD creates compartments in our runtime without going through our creation
     // code. This means that those compartments aren't in our set, and don't have
@@ -373,7 +357,7 @@ TraceDOMExpandos(nsPtrHashKey<JSObject> *expando, void *aClosure)
 
 void XPCJSRuntime::TraceXPConnectRoots(JSTracer *trc)
 {
-    JSContext *iter = nsnull;
+    JSContext *iter = nullptr;
     while (JSContext *acx = JS_ContextIterator(GetJSRuntime(), &iter)) {
         JS_ASSERT(js::HasUnrootedGlobal(acx));
         if (JSObject *global = JS_GetGlobalObject(acx))
@@ -464,16 +448,15 @@ SuspectDOMExpandos(nsPtrHashKey<JSObject> *key, void *arg)
 {
     Closure *closure = static_cast<Closure*>(arg);
     JSObject* obj = key->GetKey();
-    nsISupports* native = nsnull;
-    if (js::IsProxy(obj)) {
-        NS_ASSERTION(dom::binding::instanceIsProxy(obj),
-                     "Not a DOM proxy?");
+    nsISupports* native = nullptr;
+    if (dom::oldproxybindings::instanceIsProxy(obj)) {
         native = static_cast<nsISupports*>(js::GetProxyPrivate(obj).toPrivate());
     }
     else {
-        NS_ASSERTION(dom::DOMJSClass::FromJSClass(JS_GetClass(obj))->mDOMObjectIsISupports,
-                     "Someone added a wrapper for a non-nsISupports native to DOMExpandos!");
-        native = dom::UnwrapDOMObject<nsISupports>(obj);
+        const dom::DOMClass* clasp;
+        dom::DOMObjectSlot slot = GetDOMClass(obj, clasp);
+        MOZ_ASSERT(slot != dom::eNonDOMObject && clasp->mDOMObjectIsISupports);
+        native = dom::UnwrapDOMObject<nsISupports>(obj, slot);
     }
     closure->cb->NoteXPCOMRoot(native);
     return PL_DHASH_NEXT;
@@ -490,7 +473,7 @@ XPCJSRuntime::AddXPConnectRoots(nsCycleCollectionTraversalCallback &cb)
     // roots were marked by the JS GC and will be colored correctly in the cycle
     // collector.
 
-    JSContext *iter = nsnull, *acx;
+    JSContext *iter = nullptr, *acx;
     while ((acx = JS_ContextIterator(GetJSRuntime(), &iter))) {
         cb.NoteNativeRoot(acx, nsXPConnect::JSContextParticipant());
     }
@@ -555,7 +538,7 @@ XPCJSRuntime::UnmarkSkippableJSHolders()
 {
     XPCAutoLock lock(mMapLock);
     if (mJSHolders.ops) {             
-        JS_DHashTableEnumerate(&mJSHolders, UnmarkJSHolder, nsnull);
+        JS_DHashTableEnumerate(&mJSHolders, UnmarkJSHolder, nullptr);
     }
 }
 
@@ -572,7 +555,7 @@ template<class T> static void
 DoDeferredRelease(nsTArray<T> &array)
 {
     while (1) {
-        PRUint32 count = array.Length();
+        uint32_t count = array.Length();
         if (!count) {
             array.Compact();
             break;
@@ -581,6 +564,103 @@ DoDeferredRelease(nsTArray<T> &array)
         array.RemoveElementAt(count-1);
         NS_RELEASE(wrapper);
     }
+}
+
+class XPCIncrementalReleaseRunnable : public nsRunnable
+{
+    XPCJSRuntime *runtime;
+    nsTArray<nsISupports *> items;
+
+    static const PRTime SliceMillis = 10; /* ms */
+
+  public:
+    XPCIncrementalReleaseRunnable(XPCJSRuntime *rt, nsTArray<nsISupports *> &items);
+    virtual ~XPCIncrementalReleaseRunnable();
+
+    void ReleaseNow(bool limited);
+
+    NS_DECL_NSIRUNNABLE
+};
+
+XPCIncrementalReleaseRunnable::XPCIncrementalReleaseRunnable(XPCJSRuntime *rt,
+                                                             nsTArray<nsISupports *> &items)
+  : runtime(rt)
+{
+    nsLayoutStatics::AddRef();
+    this->items.SwapElements(items);
+}
+
+XPCIncrementalReleaseRunnable::~XPCIncrementalReleaseRunnable()
+{
+    MOZ_ASSERT(this != runtime->mReleaseRunnable);
+    nsLayoutStatics::Release();
+}
+
+void
+XPCIncrementalReleaseRunnable::ReleaseNow(bool limited)
+{
+    MOZ_ASSERT(NS_IsMainThread());
+
+    TimeDuration sliceTime = TimeDuration::FromMilliseconds(SliceMillis);
+    TimeStamp started = TimeStamp::Now();
+    uint32_t counter = 0;
+    while (1) {
+        uint32_t count = items.Length();
+        if (!count)
+            break;
+
+        nsISupports *wrapper = items[count - 1];
+        items.RemoveElementAt(count - 1);
+        NS_RELEASE(wrapper);
+
+        if (limited) {
+            /* We don't want to read the clock too often. */
+            counter++;
+            if (counter == 100) {
+                counter = 0;
+                if (TimeStamp::Now() - started >= sliceTime)
+                    break;
+            }
+        }
+    }
+
+    MOZ_ASSERT_IF(items.Length(), limited);
+
+    if (!items.Length()) {
+        MOZ_ASSERT(runtime->mReleaseRunnable == this);
+        runtime->mReleaseRunnable = nullptr;
+    }
+}
+
+NS_IMETHODIMP
+XPCIncrementalReleaseRunnable::Run()
+{
+    if (runtime->mReleaseRunnable != this) {
+        /* These items were already processed synchronously in JSGC_BEGIN. */
+        MOZ_ASSERT(!items.Length());
+        return NS_OK;
+    }
+
+    ReleaseNow(true);
+
+    if (items.Length()) {
+        nsresult rv = NS_DispatchToMainThread(this);
+        if (NS_FAILED(rv))
+            ReleaseNow(false);
+    }
+
+    return NS_OK;
+}
+
+void
+XPCJSRuntime::ReleaseIncrementally(nsTArray<nsISupports *> &array)
+{
+    MOZ_ASSERT(!mReleaseRunnable);
+    mReleaseRunnable = new XPCIncrementalReleaseRunnable(this, array);
+
+    nsresult rv = NS_DispatchToMainThread(mReleaseRunnable);
+    if (NS_FAILED(rv))
+        mReleaseRunnable->ReleaseNow(false);
 }
 
 /* static */ void
@@ -613,7 +693,7 @@ XPCJSRuntime::GCCallback(JSRuntime *rt, JSGCStatus status)
         {
             // We seem to sometime lose the unrooted global flag. Restore it
             // here. FIXME: bug 584495.
-            JSContext *iter = nsnull;
+            JSContext *iter = nullptr;
             while (JSContext *acx = JS_ContextIterator(rt, &iter)) {
                 if (!js::HasUnrootedGlobal(acx))
                     JS_ToggleOptions(acx, JSOPTION_UNROOTED_GLOBAL);
@@ -622,15 +702,21 @@ XPCJSRuntime::GCCallback(JSRuntime *rt, JSGCStatus status)
         }
         case JSGC_END:
         {
+            /*
+             * If the previous GC created a runnable to release objects
+             * incrementally, and if it hasn't finished yet, finish it now. We
+             * don't want these to build up. We also don't want to allow any
+             * existing incremental release runnables to run after a
+             * non-incremental GC, since they are often used to detect leaks.
+             */
+            if (self->mReleaseRunnable)
+                self->mReleaseRunnable->ReleaseNow(false);
+
             // Do any deferred releases of native objects.
-#ifdef XPC_TRACK_DEFERRED_RELEASES
-            printf("XPC - Begin deferred Release of %d nsISupports pointers\n",
-                   self->mNativesToReleaseArray.Length());
-#endif
-            DoDeferredRelease(self->mNativesToReleaseArray);
-#ifdef XPC_TRACK_DEFERRED_RELEASES
-            printf("XPC - End deferred Releases\n");
-#endif
+            if (js::WasIncrementalGC(rt))
+                self->ReleaseIncrementally(self->mNativesToReleaseArray);
+            else
+                DoDeferredRelease(self->mNativesToReleaseArray);
 
             self->GetXPConnect()->ClearGCBeforeCC();
             break;
@@ -638,7 +724,7 @@ XPCJSRuntime::GCCallback(JSRuntime *rt, JSGCStatus status)
     }
 
     nsTArray<JSGCCallback> callbacks(self->extraGCCallbacks);
-    for (PRUint32 i = 0; i < callbacks.Length(); ++i)
+    for (uint32_t i = 0; i < callbacks.Length(); ++i)
         callbacks[i](rt, status);
 }
 
@@ -670,8 +756,7 @@ XPCJSRuntime::FinalizeCallback(JSFreeOp *fop, JSFinalizeStatus status, JSBool is
             // We add them to the array now and Release the array members
             // later to avoid the posibility of doing any JS GCThing
             // allocations during the gc cycle.
-            self->mWrappedJSMap->
-                Enumerate(WrappedJSDyingJSObjectFinder, dyingWrappedJSArray);
+            self->mWrappedJSMap->FindDyingJSObjects(dyingWrappedJSArray);
 
             // Find dying scopes.
             XPCWrappedNativeScope::StartFinalizationPhaseOfGC(fop, self);
@@ -709,7 +794,7 @@ XPCJSRuntime::FinalizeCallback(JSFreeOp *fop, JSFinalizeStatus status, JSBool is
             XPCWrappedNativeScope::MarkAllWrappedNativesAndProtos();
 
             self->mDetachedWrappedNativeProtoMap->
-                Enumerate(DetachedWrappedNativeProtoMarker, nsnull);
+                Enumerate(DetachedWrappedNativeProtoMarker, nullptr);
 
             DOM_MarkInterfaces();
 
@@ -771,7 +856,7 @@ XPCJSRuntime::FinalizeCallback(JSFreeOp *fop, JSFinalizeStatus status, JSBool is
 
             if (!isCompartmentGC) {
                 self->mClassInfo2NativeSetMap->
-                    Enumerate(NativeUnMarkedSetRemover, nsnull);
+                    Enumerate(NativeUnMarkedSetRemover, nullptr);
             }
 
             self->mNativeSetMap->
@@ -850,7 +935,7 @@ XPCJSRuntime::FinalizeCallback(JSFreeOp *fop, JSFinalizeStatus status, JSBool is
             // So, we can safely delete all the protos in the list.
 
             self->mDyingWrappedNativeProtoMap->
-                Enumerate(DyingProtoKiller, nsnull);
+                Enumerate(DyingProtoKiller, nullptr);
 
 
             // mThreadRunningGC indicates that GC is running.
@@ -858,7 +943,7 @@ XPCJSRuntime::FinalizeCallback(JSFreeOp *fop, JSFinalizeStatus status, JSBool is
             { // scoped lock
                 XPCAutoLock lock(self->GetMapLock());
                 NS_ASSERTION(self->mThreadRunningGC == PR_GetCurrentThread(), "bad state");
-                self->mThreadRunningGC = nsnull;
+                self->mThreadRunningGC = nullptr;
                 xpc_NotifyAll(self->GetMapLock());
             }
 
@@ -964,18 +1049,6 @@ DEBUG_WrapperChecker(JSDHashTable *table, JSDHashEntryHdr *hdr,
 #endif
 
 static JSDHashOperator
-WrappedJSShutdownMarker(JSDHashTable *table, JSDHashEntryHdr *hdr,
-                        uint32_t number, void *arg)
-{
-    JSRuntime* rt = (JSRuntime*) arg;
-    nsXPCWrappedJS* wrapper = ((JSObject2WrappedJSMap::Entry*)hdr)->value;
-    NS_ASSERTION(wrapper, "found a null JS wrapper!");
-    NS_ASSERTION(wrapper->IsValid(), "found an invalid JS wrapper!");
-    wrapper->SystemIsBeingShutDown(rt);
-    return JS_DHASH_NEXT;
-}
-
-static JSDHashOperator
 DetachedWrappedNativeProtoShutdownMarker(JSDHashTable *table, JSDHashEntryHdr *hdr,
                                          uint32_t number, void *arg)
 {
@@ -989,7 +1062,7 @@ DetachedWrappedNativeProtoShutdownMarker(JSDHashTable *table, JSDHashEntryHdr *h
 void XPCJSRuntime::DestroyJSContextStack()
 {
     delete mJSContextStack;
-    mJSContextStack = nsnull;
+    mJSContextStack = nullptr;
 }
 
 void XPCJSRuntime::SystemIsBeingShutDown()
@@ -998,7 +1071,7 @@ void XPCJSRuntime::SystemIsBeingShutDown()
 
     if (mDetachedWrappedNativeProtoMap)
         mDetachedWrappedNativeProtoMap->
-            Enumerate(DetachedWrappedNativeProtoShutdownMarker, nsnull);
+            Enumerate(DetachedWrappedNativeProtoShutdownMarker, nullptr);
 }
 
 JSContext *
@@ -1007,13 +1080,15 @@ XPCJSRuntime::GetJSCycleCollectionContext()
     if (!mJSCycleCollectionContext) {
         mJSCycleCollectionContext = JS_NewContext(mJSRuntime, 0);
         if (!mJSCycleCollectionContext)
-            return nsnull;
+            return nullptr;
     }
     return mJSCycleCollectionContext;
 }
 
 XPCJSRuntime::~XPCJSRuntime()
 {
+    MOZ_ASSERT(!mReleaseRunnable);
+
     js::SetGCSliceCallback(mJSRuntime, mPrevGCSliceCallback);
 
     if (mWatchdogWakeup) {
@@ -1024,14 +1099,14 @@ XPCJSRuntime::~XPCJSRuntime()
         {
             AutoLockWatchdog lock(this);
             if (mWatchdogThread) {
-                mWatchdogThread = nsnull;
+                mWatchdogThread = nullptr;
                 PR_NotifyCondVar(mWatchdogWakeup);
                 PR_WaitCondVar(mWatchdogWakeup, PR_INTERVAL_NO_TIMEOUT);
             }
         }
         PR_DestroyCondVar(mWatchdogWakeup);
         PR_DestroyLock(mWatchdogLock);
-        mWatchdogWakeup = nsnull;
+        mWatchdogWakeup = nullptr;
     }
 
     if (mJSCycleCollectionContext)
@@ -1043,7 +1118,7 @@ XPCJSRuntime::~XPCJSRuntime()
 #ifdef XPC_DUMP_AT_SHUTDOWN
     {
     // count the total JSContexts in use
-    JSContext* iter = nsnull;
+    JSContext* iter = nullptr;
     int count = 0;
     while (JS_ContextIterator(mJSRuntime, &iter))
         count ++;
@@ -1059,7 +1134,7 @@ XPCJSRuntime::~XPCJSRuntime()
         if (count)
             printf("deleting XPCJSRuntime with %d live wrapped JSObject\n", (int)count);
 #endif
-        mWrappedJSMap->Enumerate(WrappedJSShutdownMarker, mJSRuntime);
+        mWrappedJSMap->ShutdownMarker(mJSRuntime);
         delete mWrappedJSMap;
     }
 
@@ -1151,7 +1226,7 @@ XPCJSRuntime::~XPCJSRuntime()
 
     if (mJSHolders.ops) {
         JS_DHashTableFinish(&mJSHolders);
-        mJSHolders.ops = nsnull;
+        mJSHolders.ops = nullptr;
     }
 
     if (mJSRuntime) {
@@ -1164,7 +1239,7 @@ XPCJSRuntime::~XPCJSRuntime()
 }
 
 static void
-GetCompartmentName(JSCompartment *c, nsCString &name)
+GetCompartmentName(JSCompartment *c, nsCString &name, bool replaceSlashes)
 {
     if (js::IsAtomsCompartment(c)) {
         name.AssignLiteral("atoms");
@@ -1183,21 +1258,22 @@ GetCompartmentName(JSCompartment *c, nsCString &name)
                 name.Append(location);
             }
         }
-        
+
         // A hack: replace forward slashes with '\\' so they aren't
         // treated as path separators.  Users of the reporters
         // (such as about:memory) have to undo this change.
-        name.ReplaceChar('/', '\\');
+        if (replaceSlashes)
+            name.ReplaceChar('/', '\\');
     } else {
         name.AssignLiteral("null-principal");
     }
 }
 
-static PRInt64
+static int64_t
 GetGCChunkTotalBytes()
 {
     JSRuntime *rt = nsXPConnect::GetRuntimeInstance()->GetJSRuntime();
-    return PRInt64(JS_GetGCParameter(rt, JSGC_TOTAL_CHUNKS)) * js::gc::ChunkSize;
+    return int64_t(JS_GetGCParameter(rt, JSGC_TOTAL_CHUNKS)) * js::gc::ChunkSize;
 }
 
 // Telemetry relies on this memory reporter being a single-reporter (rather
@@ -1209,13 +1285,13 @@ NS_MEMORY_REPORTER_IMPLEMENT(XPConnectJSGCHeap,
                              nsIMemoryReporter::UNITS_BYTES,
                              GetGCChunkTotalBytes,
                              "Memory used by the garbage-collected JavaScript heap.")
-static PRInt64
+static int64_t
 GetJSSystemCompartmentCount()
 {
     return JS::SystemCompartmentCount(nsXPConnect::GetRuntimeInstance()->GetJSRuntime());
 }
 
-static PRInt64
+static int64_t
 GetJSUserCompartmentCount()
 {
     return JS::UserCompartmentCount(nsXPConnect::GetRuntimeInstance()->GetJSRuntime());
@@ -1596,6 +1672,10 @@ ReportJSRuntimeExplicitTreeStats(const JS::RuntimeStats &rtStats,
                   nsIMemoryReporter::KIND_HEAP, rtStats.runtime.scriptFilenames,
                   "Memory used for the table holding script filenames.");
 
+    RREPORT_BYTES(rtPath + NS_LITERAL_CSTRING("runtime/script-sources"),
+                  nsIMemoryReporter::KIND_HEAP, rtStats.runtime.scriptSources,
+                  "Memory use for storing JavaScript source code.");
+
     RREPORT_BYTES(rtPath + NS_LITERAL_CSTRING("runtime/compartment-objects"),
                   nsIMemoryReporter::KIND_HEAP, rtStats.runtime.compartmentObjects,
                   "Memory used for JSCompartment objects.  These are fairly "
@@ -1659,7 +1739,7 @@ class JSCompartmentsMultiReporter MOZ_FINAL : public nsIMemoryMultiReporter
         // silently ignore OOM errors
         Paths *paths = static_cast<Paths *>(data);
         nsCString path;
-        GetCompartmentName(c, path);
+        GetCompartmentName(c, path, true);
         path.Insert(js::IsSystemCompartment(c)
                     ? NS_LITERAL_CSTRING("compartments/system/")
                     : NS_LITERAL_CSTRING("compartments/user/"),
@@ -1692,7 +1772,7 @@ class JSCompartmentsMultiReporter MOZ_FINAL : public nsIMemoryMultiReporter
     }
 
     NS_IMETHOD
-    GetExplicitNonHeap(PRInt64 *n)
+    GetExplicitNonHeap(int64_t *n)
     {
         // This reporter does neither "explicit" nor NONHEAP measurements.
         *n = 0;
@@ -1772,7 +1852,7 @@ class XPCJSRuntimeStats : public JS::RuntimeStats
                                            JS::CompartmentStats *cstats) MOZ_OVERRIDE {
         nsCAutoString cJSPathPrefix, cDOMPathPrefix;
         nsCString cName;
-        GetCompartmentName(c, cName);
+        GetCompartmentName(c, cName, true);
 
         // Get the compartment's global.
         nsXPConnect *xpc = nsXPConnect::GetXPConnect();
@@ -1780,27 +1860,22 @@ class XPCJSRuntimeStats : public JS::RuntimeStats
         if (JSObject *global = JS_GetGlobalForCompartmentOrNull(cx, c)) {
             // Need to enter the compartment, otherwise GetNativeOfWrapper()
             // might crash.
-            JSAutoEnterCompartment aec;
-            if (aec.enter(cx, global)) {
-                nsISupports *native = xpc->GetNativeOfWrapper(cx, global);
-                if (nsCOMPtr<nsPIDOMWindow> piwindow = do_QueryInterface(native)) {
-                    // The global is a |window| object.  Use the path prefix that
-                    // we should have already created for it.
-                    if (mWindowPaths->Get(piwindow->WindowID(), &cJSPathPrefix)) {
-                        cDOMPathPrefix.Assign(cJSPathPrefix);
-                        cDOMPathPrefix.AppendLiteral("/dom/");
-                        cJSPathPrefix.AppendLiteral("/js/");
-                    } else {
-                        cJSPathPrefix.AssignLiteral("explicit/js-non-window/compartments/unknown-window-global/");
-                        cDOMPathPrefix.AssignLiteral("explicit/dom/?!/");
-                    }
+            JSAutoCompartment ac(cx, global);
+            nsISupports *native = xpc->GetNativeOfWrapper(cx, global);
+            if (nsCOMPtr<nsPIDOMWindow> piwindow = do_QueryInterface(native)) {
+                // The global is a |window| object.  Use the path prefix that
+                // we should have already created for it.
+                if (mWindowPaths->Get(piwindow->WindowID(), &cJSPathPrefix)) {
+                    cDOMPathPrefix.Assign(cJSPathPrefix);
+                    cDOMPathPrefix.AppendLiteral("/dom/");
+                    cJSPathPrefix.AppendLiteral("/js/");
                 } else {
-                    cJSPathPrefix.AssignLiteral("explicit/js-non-window/compartments/non-window-global/");
+                    cJSPathPrefix.AssignLiteral("explicit/js-non-window/compartments/unknown-window-global/");
                     cDOMPathPrefix.AssignLiteral("explicit/dom/?!/");
                 }
             } else {
-                cJSPathPrefix.AssignLiteral("explicit/js-non-window/compartments/unentered/");
-                cDOMPathPrefix.AssignLiteral("explicit/dom/unentered/");
+                cJSPathPrefix.AssignLiteral("explicit/js-non-window/compartments/non-window-global/");
+                cDOMPathPrefix.AssignLiteral("explicit/dom/?!/");
             }
         } else {
             cJSPathPrefix.AssignLiteral("explicit/js-non-window/compartments/no-global/");
@@ -1934,7 +2009,7 @@ JSMemoryMultiReporter::CollectReports(WindowPaths *windowPaths,
 }
 
 nsresult
-JSMemoryMultiReporter::GetExplicitNonHeap(PRInt64 *n)
+JSMemoryMultiReporter::GetExplicitNonHeap(int64_t *n)
 {
     JSRuntime *rt = nsXPConnect::GetRuntimeInstance()->GetJSRuntime();
     *reinterpret_cast<int64_t*>(n) = JS::GetExplicitNonHeapForRuntime(rt, JsMallocSizeOf);
@@ -1964,11 +2039,20 @@ AccumulateTelemetryCallback(int id, uint32_t sample)
       case JS_TELEMETRY_GC_MS:
         Telemetry::Accumulate(Telemetry::GC_MS, sample);
         break;
+      case JS_TELEMETRY_GC_MAX_PAUSE_MS:
+        Telemetry::Accumulate(Telemetry::GC_MAX_PAUSE_MS, sample);
+        break;
       case JS_TELEMETRY_GC_MARK_MS:
         Telemetry::Accumulate(Telemetry::GC_MARK_MS, sample);
         break;
       case JS_TELEMETRY_GC_SWEEP_MS:
         Telemetry::Accumulate(Telemetry::GC_SWEEP_MS, sample);
+        break;
+      case JS_TELEMETRY_GC_MARK_ROOTS_MS:
+        Telemetry::Accumulate(Telemetry::GC_MARK_ROOTS_MS, sample);
+        break;
+      case JS_TELEMETRY_GC_MARK_GRAY_MS:
+        Telemetry::Accumulate(Telemetry::GC_MARK_GRAY_MS, sample);
         break;
       case JS_TELEMETRY_GC_SLICE_MS:
         Telemetry::Accumulate(Telemetry::GC_SLICE_MS, sample);
@@ -1985,7 +2069,24 @@ AccumulateTelemetryCallback(int id, uint32_t sample)
       case JS_TELEMETRY_GC_NON_INCREMENTAL:
         Telemetry::Accumulate(Telemetry::GC_NON_INCREMENTAL, sample);
         break;
+      case JS_TELEMETRY_GC_SCC_SWEEP_TOTAL_MS:
+        Telemetry::Accumulate(Telemetry::GC_SCC_SWEEP_TOTAL_MS, sample);
+        break;
+      case JS_TELEMETRY_GC_SCC_SWEEP_MAX_PAUSE_MS:
+        Telemetry::Accumulate(Telemetry::GC_SCC_SWEEP_MAX_PAUSE_MS, sample);
+        break;
     }
+}
+
+static void
+CompartmentNameCallback(JSRuntime *rt, JSCompartment *comp,
+                        char *buf, size_t bufsize)
+{
+    nsCString name;
+    GetCompartmentName(comp, name, false);
+    if (name.Length() >= bufsize)
+        name.Truncate(bufsize - 1);
+    memcpy(buf, name.get(), name.Length() + 1);
 }
 
 bool XPCJSRuntime::gNewDOMBindingsEnabled;
@@ -2007,13 +2108,13 @@ bool PreserveWrapper(JSContext *cx, JSObject *obj)
 
 XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
  : mXPConnect(aXPConnect),
-   mJSRuntime(nsnull),
+   mJSRuntime(nullptr),
    mJSContextStack(new XPCJSContextStack()),
-   mJSCycleCollectionContext(nsnull),
-   mCallContext(nsnull),
-   mAutoRoots(nsnull),
+   mJSCycleCollectionContext(nullptr),
+   mCallContext(nullptr),
+   mAutoRoots(nullptr),
    mResolveName(JSID_VOID),
-   mResolvingWrapper(nsnull),
+   mResolvingWrapper(nullptr),
    mWrappedJSMap(JSObject2WrappedJSMap::newMap(XPC_JS_MAP_SIZE)),
    mWrappedJSClassMap(IID2WrappedJSClassMap::newMap(XPC_JS_CLASS_MAP_SIZE)),
    mIID2NativeInterfaceMap(IID2NativeInterfaceMap::newMap(XPC_NATIVE_INTERFACE_MAP_SIZE)),
@@ -2024,23 +2125,24 @@ XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
    mDyingWrappedNativeProtoMap(XPCWrappedNativeProtoMap::newMap(XPC_DYING_NATIVE_PROTO_MAP_SIZE)),
    mDetachedWrappedNativeProtoMap(XPCWrappedNativeProtoMap::newMap(XPC_DETACHED_NATIVE_PROTO_MAP_SIZE)),
    mMapLock(XPCAutoLock::NewLock("XPCJSRuntime::mMapLock")),
-   mThreadRunningGC(nsnull),
+   mThreadRunningGC(nullptr),
    mWrappedJSToReleaseArray(),
    mNativesToReleaseArray(),
    mDoingFinalization(false),
-   mVariantRoots(nsnull),
-   mWrappedJSRoots(nsnull),
-   mObjectHolderRoots(nsnull),
-   mWatchdogLock(nsnull),
-   mWatchdogWakeup(nsnull),
-   mWatchdogThread(nsnull),
+   mVariantRoots(nullptr),
+   mWrappedJSRoots(nullptr),
+   mObjectHolderRoots(nullptr),
+   mWatchdogLock(nullptr),
+   mWatchdogWakeup(nullptr),
+   mWatchdogThread(nullptr),
    mWatchdogHibernating(false),
    mLastActiveTime(-1),
+   mReleaseRunnable(nullptr),
    mExceptionManagerNotAvailable(false)
 {
 #ifdef XPC_CHECK_WRAPPERS_AT_SHUTDOWN
     DEBUG_WrappedNativeHashtable =
-        JS_NewDHashTable(JS_DHashGetStubOps(), nsnull,
+        JS_NewDHashTable(JS_DHashGetStubOps(), nullptr,
                          sizeof(JSDHashEntryStub), 128);
 #endif
     NS_TIME_FUNCTION;
@@ -2075,6 +2177,7 @@ XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
 #endif
     JS_SetContextCallback(mJSRuntime, ContextCallback);
     JS_SetDestroyCompartmentCallback(mJSRuntime, CompartmentDestroyedCallback);
+    JS_SetCompartmentNameCallback(mJSRuntime, CompartmentNameCallback);
     JS_SetGCCallback(mJSRuntime, GCCallback);
     mPrevGCSliceCallback = js::SetGCSliceCallback(mJSRuntime, GCSliceCallback);
     JS_SetFinalizeCallback(mJSRuntime, FinalizeCallback);
@@ -2100,9 +2203,9 @@ XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
     NS_RegisterMemoryReporter(new NS_MEMORY_REPORTER_NAME(XPConnectJSUserCompartmentCount));
     NS_RegisterMemoryMultiReporter(new JSCompartmentsMultiReporter);
 
-    if (!JS_DHashTableInit(&mJSHolders, JS_DHashGetStubOps(), nsnull,
+    if (!JS_DHashTableInit(&mJSHolders, JS_DHashGetStubOps(), nullptr,
                            sizeof(ObjectHolder), 512))
-        mJSHolders.ops = nsnull;
+        mJSHolders.ops = nullptr;
 
     mCompartmentSet.init();
 
@@ -2157,7 +2260,7 @@ XPCJSRuntime::newXPCJSRuntime(nsXPConnect* aXPConnect)
     NS_RUNTIMEABORT("new XPCJSRuntime failed to initialize.");
 
     delete self;
-    return nsnull;
+    return nullptr;
 }
 
 // InternStaticDictionaryJSVals is automatically generated.
@@ -2187,7 +2290,8 @@ XPCJSRuntime::OnJSContextNew(JSContext *cx)
             }
         }
 
-        ok = mozilla::dom::binding::DefineStaticJSVals(cx);
+        ok = mozilla::dom::DefineStaticJSVals(cx) &&
+             mozilla::dom::oldproxybindings::DefineStaticJSVals(cx);
         if (!ok)
             return false;
 
@@ -2217,7 +2321,7 @@ XPCJSRuntime::DeferredRelease(nsISupports* obj)
         // of incremental grows.  We compact it down when we're done.
         mNativesToReleaseArray.SetCapacity(256);
     }
-    return mNativesToReleaseArray.AppendElement(obj) != nsnull;
+    return mNativesToReleaseArray.AppendElement(obj) != nullptr;
 }
 
 /***************************************************************************/
@@ -2227,27 +2331,20 @@ static JSDHashOperator
 WrappedJSClassMapDumpEnumerator(JSDHashTable *table, JSDHashEntryHdr *hdr,
                                 uint32_t number, void *arg)
 {
-    ((IID2WrappedJSClassMap::Entry*)hdr)->value->DebugDump(*(PRInt16*)arg);
-    return JS_DHASH_NEXT;
-}
-static JSDHashOperator
-WrappedJSMapDumpEnumerator(JSDHashTable *table, JSDHashEntryHdr *hdr,
-                           uint32_t number, void *arg)
-{
-    ((JSObject2WrappedJSMap::Entry*)hdr)->value->DebugDump(*(PRInt16*)arg);
+    ((IID2WrappedJSClassMap::Entry*)hdr)->value->DebugDump(*(int16_t*)arg);
     return JS_DHASH_NEXT;
 }
 static JSDHashOperator
 NativeSetDumpEnumerator(JSDHashTable *table, JSDHashEntryHdr *hdr,
                         uint32_t number, void *arg)
 {
-    ((NativeSetMap::Entry*)hdr)->key_value->DebugDump(*(PRInt16*)arg);
+    ((NativeSetMap::Entry*)hdr)->key_value->DebugDump(*(int16_t*)arg);
     return JS_DHASH_NEXT;
 }
 #endif
 
 void
-XPCJSRuntime::DebugDump(PRInt16 depth)
+XPCJSRuntime::DebugDump(int16_t depth)
 {
 #ifdef DEBUG
     depth--;
@@ -2262,12 +2359,12 @@ XPCJSRuntime::DebugDump(PRInt16 depth)
                         mWrappedJSToReleaseArray.Length()));
 
         int cxCount = 0;
-        JSContext* iter = nsnull;
+        JSContext* iter = nullptr;
         while (JS_ContextIterator(mJSRuntime, &iter))
             ++cxCount;
         XPC_LOG_ALWAYS(("%d JS context(s)", cxCount));
 
-        iter = nsnull;
+        iter = nullptr;
         while (JS_ContextIterator(mJSRuntime, &iter)) {
             XPCContext *xpc = XPCContext::GetXPCContext(iter);
             XPC_LOG_INDENT();
@@ -2290,7 +2387,7 @@ XPCJSRuntime::DebugDump(PRInt16 depth)
         // iterate wrappers...
         if (depth && mWrappedJSMap && mWrappedJSMap->Count()) {
             XPC_LOG_INDENT();
-            mWrappedJSMap->Enumerate(WrappedJSMapDumpEnumerator, &depth);
+            mWrappedJSMap->Dump(depth);
             XPC_LOG_OUTDENT();
         }
 
@@ -2354,8 +2451,8 @@ XPCRootSetElem::RemoveFromRootSet(XPCLock *lock)
     if (mNext)
         mNext->mSelfp = mSelfp;
 #ifdef DEBUG
-    mSelfp = nsnull;
-    mNext = nsnull;
+    mSelfp = nullptr;
+    mNext = nullptr;
 #endif
 }
 

@@ -20,11 +20,12 @@
 
 #include "frontend/Parser.h"
 #include "frontend/ParseMaps.h"
-#include "frontend/TreeContext.h"
+#include "frontend/SharedContext.h"
 
 #include "vm/ScopeObject.h"
 
 namespace js {
+namespace frontend {
 
 struct TryNode {
     JSTryNote       note;
@@ -51,7 +52,7 @@ class GCConstList {
     void finish(ConstArray *array);
 };
 
-class StmtInfoBCE;
+struct StmtInfoBCE;
 
 struct BytecodeEmitter
 {
@@ -72,6 +73,8 @@ struct BytecodeEmitter
         unsigned    noteLimit;      /* limit number for source notes in notePool */
         ptrdiff_t   lastNoteOffset; /* code offset for last source note */
         unsigned    currentLine;    /* line number for tree-based srcnote gen */
+        unsigned    lastColumn;     /* zero-based column index on currentLine of
+                                       last SRC_COLSPAN-annotated opcode */
     } prolog, main, *current;
 
     Parser          *const parser;  /* the parser */
@@ -105,23 +108,23 @@ struct BytecodeEmitter
     CGObjectList    regexpList;     /* list of emitted regexp that will be
                                        cloned during execution */
 
-    /* Vectors of pn_cookie slot values. */
-    typedef Vector<uint32_t, 8> SlotVector;
-    SlotVector      closedArgs;
-    SlotVector      closedVars;
-
     uint16_t        typesetCount;   /* Number of JOF_TYPESET opcodes generated */
 
     bool            hasSingletons:1;    /* script contains singleton initializer JSOP_OBJECT */
 
-    bool            inForInit:1;        /* emitting init expr of for; exclude 'in' */
+    bool            emittingForInit:1;  /* true while emitting init expr of for; exclude 'in' */
 
     const bool      hasGlobalScope:1;   /* frontend::CompileScript's scope chain is the
                                            global object */
 
+    const bool      selfHostingMode:1;  /* Emit JSOP_CALLINTRINSIC instead of JSOP_NAME
+                                           and assert that JSOP_NAME and JSOP_*GNAME
+                                           don't ever get emitted. See the comment for
+                                           the field |selfHostingMode| in Parser.h for details. */
+
     BytecodeEmitter(BytecodeEmitter *parent, Parser *parser, SharedContext *sc,
                     HandleScript script, StackFrame *callerFrame, bool hasGlobalScope,
-                    unsigned lineno);
+                    unsigned lineno, bool selfHostingMode = false);
     bool init();
 
     /*
@@ -133,9 +136,6 @@ struct BytecodeEmitter
     ~BytecodeEmitter();
 
     bool isAliasedName(ParseNode *pn);
-    bool shouldNoteClosedName(ParseNode *pn);
-    bool noteClosedVar(ParseNode *pn);
-    bool noteClosedArg(ParseNode *pn);
 
     JS_ALWAYS_INLINE
     bool makeAtomIndex(JSAtom *atom, jsatomid *indexp) {
@@ -176,6 +176,7 @@ struct BytecodeEmitter
     unsigned noteLimit() const { return current->noteLimit; }
     ptrdiff_t lastNoteOffset() const { return current->lastNoteOffset; }
     unsigned currentLine() const { return current->currentLine; }
+    unsigned lastColumn() const { return current->lastColumn; }
 
     inline ptrdiff_t countFinalSourceNotes();
 
@@ -183,8 +184,6 @@ struct BytecodeEmitter
     bool reportStrictWarning(ParseNode *pn, unsigned errorNumber, ...);
     bool reportStrictModeError(ParseNode *pn, unsigned errorNumber, ...);
 };
-
-namespace frontend {
 
 /*
  * Emit one bytecode.
@@ -253,7 +252,7 @@ EmitFunctionScript(JSContext *cx, BytecodeEmitter *bce, ParseNode *body);
  *              +---------+-----+           +---+-----------+
  *
  * At most one "gettable" note (i.e., a note of type other than SRC_NEWLINE,
- * SRC_SETLINE, and SRC_XDELTA) applies to a given bytecode.
+ * SRC_COLSPAN, SRC_SETLINE, and SRC_XDELTA) applies to a given bytecode.
  *
  * NB: the js_SrcNoteSpec array in BytecodeEmitter.cpp is indexed by this
  * enum, so its initializers need to match the order here.
@@ -314,7 +313,7 @@ enum SrcNoteType {
     SRC_SWITCHBREAK = 18,       /* JSOP_GOTO is a break in a switch */
     SRC_FUNCDEF     = 19,       /* JSOP_NOP for function f() with atomid */
     SRC_CATCH       = 20,       /* catch block has guard */
-                                /* 21 is unused */
+    SRC_COLSPAN     = 21,       /* number of columns this opcode spans */
     SRC_NEWLINE     = 22,       /* bytecode follows a source newline */
     SRC_SETLINE     = 23,       /* a file-absolute source line number note */
     SRC_XDELTA      = 24        /* 24-31 are for extended delta notes */
@@ -350,7 +349,7 @@ enum SrcNoteType {
                                                    ? SRC_XDELTA               \
                                                    : *(sn) >> SN_DELTA_BITS))
 #define SN_SET_TYPE(sn,type)    SN_MAKE_NOTE(sn, type, SN_DELTA(sn))
-#define SN_IS_GETTABLE(sn)      (SN_TYPE(sn) < SRC_NEWLINE)
+#define SN_IS_GETTABLE(sn)      (SN_TYPE(sn) < SRC_COLSPAN)
 
 #define SN_DELTA(sn)            ((ptrdiff_t)(SN_IS_XDELTA(sn)                 \
                                              ? *(sn) & SN_XDELTA_MASK         \
@@ -369,6 +368,19 @@ enum SrcNoteType {
  */
 #define SN_3BYTE_OFFSET_FLAG    0x80
 #define SN_3BYTE_OFFSET_MASK    0x7f
+
+/*
+ * Negative SRC_COLSPAN offsets are rare, but can arise with for(;;) loops and
+ * other constructs that generate code in non-source order. They can also arise
+ * due to failure to update pn->pn_pos.end to be the last child's end -- such
+ * failures are bugs to fix.
+ *
+ * Source note offsets in general must be non-negative and less than 0x800000,
+ * per the above SN_3BYTE_* definitions. To encode negative colspans, we bias
+ * them by the offset domain size and restrict non-negative colspans to less
+ * than half this domain.
+ */
+#define SN_COLSPAN_DOMAIN       ptrdiff_t(SN_3BYTE_OFFSET_FLAG << 16)
 
 #define SN_MAX_OFFSET ((size_t)((ptrdiff_t)SN_3BYTE_OFFSET_FLAG << 16) - 1)
 
@@ -409,8 +421,6 @@ FinishTakingSrcNotes(JSContext *cx, BytecodeEmitter *bce, jssrcnote *notes);
 
 void
 FinishTakingTryNotes(BytecodeEmitter *bce, TryNoteArray *array);
-
-} /* namespace frontend */
 
 /*
  * Finish taking source notes in cx's notePool, copying final notes to the new
@@ -466,6 +476,7 @@ inline bool LetDataToGroupAssign(ptrdiff_t w)
     return size_t(w) & 1;
 }
 
+} /* namespace frontend */
 } /* namespace js */
 
 struct JSSrcNoteSpec {

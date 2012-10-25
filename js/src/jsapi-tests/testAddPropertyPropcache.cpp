@@ -14,7 +14,7 @@ static const int expectedCount = 100;
 static int callCount = 0;
 
 static JSBool
-addProperty(JSContext *cx, JS::HandleObject obj, JS::HandleId id, jsval *vp)
+addProperty(JSContext *cx, JS::HandleObject obj, JS::HandleId id, JS::MutableHandleValue vp)
 {
   callCount++;
   return true;
@@ -34,28 +34,26 @@ JSClass addPropertyClass = {
 
 BEGIN_TEST(testAddPropertyHook)
 {
-    jsvalRoot proto(cx);
-    JSObject *obj = JS_NewObject(cx, NULL, NULL, NULL);
+    JS::RootedObject obj(cx, JS_NewObject(cx, NULL, NULL, NULL));
     CHECK(obj);
-    proto = OBJECT_TO_JSVAL(obj);
+    JS::RootedValue proto(cx, OBJECT_TO_JSVAL(obj));
     JS_InitClass(cx, global, obj, &addPropertyClass, NULL, 0, NULL, NULL, NULL,
                  NULL);
 
-    jsvalRoot arr(cx);
     obj = JS_NewArrayObject(cx, 0, NULL);
     CHECK(obj);
-    arr = OBJECT_TO_JSVAL(obj);
+    JS::RootedValue arr(cx, OBJECT_TO_JSVAL(obj));
 
     CHECK(JS_DefineProperty(cx, global, "arr", arr,
                             JS_PropertyStub, JS_StrictPropertyStub,
                             JSPROP_ENUMERATE));
 
     for (int i = 0; i < expectedCount; ++i) {
-        jsvalRoot vobj(cx);
         obj = JS_NewObject(cx, &addPropertyClass, NULL, NULL);
         CHECK(obj);
-        vobj = OBJECT_TO_JSVAL(obj);
-        CHECK(JS_DefineElement(cx, JSVAL_TO_OBJECT(arr), i, vobj,
+        JS::RootedValue vobj(cx, OBJECT_TO_JSVAL(obj));
+        JS::RootedObject arrObj(cx, JSVAL_TO_OBJECT(arr));
+        CHECK(JS_DefineElement(cx, arrObj, i, vobj,
                                JS_PropertyStub, JS_StrictPropertyStub,
                                JSPROP_ENUMERATE));
     }

@@ -21,13 +21,13 @@ struct WatchKey {
     WatchKey() {}
     WatchKey(JSObject *obj, jsid id) : object(obj), id(id) {}
     WatchKey(const WatchKey &key) : object(key.object.get()), id(key.id.get()) {}
-    HeapPtrObject object;
-    HeapId id;
+    EncapsulatedPtrObject object;
+    EncapsulatedId id;
 };
 
 struct Watchpoint {
     JSWatchPointHandler handler;
-    HeapPtrObject closure;
+    RelocatablePtrObject closure;
     bool held;  /* true if currently running handler */
 };
 
@@ -53,7 +53,7 @@ class WatchpointMap {
     void unwatchObject(JSObject *obj);
     void clear();
 
-    bool triggerWatchpoint(JSContext *cx, HandleObject obj, HandleId id, Value *vp);
+    bool triggerWatchpoint(JSContext *cx, HandleObject obj, HandleId id, MutableHandleValue vp);
 
     static bool markAllIteratively(JSTracer *trc);
     bool markIteratively(JSTracer *trc);

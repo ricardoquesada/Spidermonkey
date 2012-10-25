@@ -37,6 +37,10 @@ namespace mjit {
     struct JITScript;
 }
 
+namespace analyze {
+    struct ScriptLiveness;
+}
+
 struct VMFrame
 {
 #if defined(JS_CPU_SPARC)
@@ -299,6 +303,9 @@ enum RejoinState {
      * .prototype property has been fetched.
      */
     REJOIN_THIS_PROTOTYPE,
+
+    /* As above, after the 'this' object has been created. */
+    REJOIN_THIS_CREATED,
 
     /*
      * Type check on arguments failed during prologue, need stack check and
@@ -595,8 +602,13 @@ struct NativeMapEntry {
 
 /* Per-op counts of performance metrics. */
 struct PCLengthEntry {
-    double          codeLength; /* amount of inline code generated */
-    double          picsLength; /* amount of PIC stub code generated */
+    double          inlineLength; /* amount of inline code generated */
+    double          picsLength;   /* amount of PIC stub code generated */
+    double          stubLength;   /* amount of stubcc code generated */
+    double          codeLengthAugment; /* augment to inlineLength to be added
+                                          at runtime, represents instrumentation
+                                          taken out or common stubcc accounted
+                                          for (instead of just adding inlineLength) */
 };
 
 /*
@@ -644,6 +656,8 @@ struct JITChunk
     uint32_t        nCallSites;
     uint32_t        nRootedTemplates;
     uint32_t        nRootedRegExps;
+    uint32_t        nMonitoredBytecodes;
+    uint32_t        nTypeBarrierBytecodes;
 #ifdef JS_MONOIC
     uint32_t        nGetGlobalNames;
     uint32_t        nSetGlobalNames;
@@ -662,6 +676,8 @@ struct JITChunk
     ExecPoolVector execPools;
 #endif
 
+    types::RecompileInfo recompileInfo;
+
     // Additional ExecutablePools for native call and getter stubs.
     Vector<NativeCallStub, 0, SystemAllocPolicy> nativeCallStubs;
 
@@ -670,6 +686,15 @@ struct JITChunk
     js::mjit::CallSite *callSites() const;
     JSObject **rootedTemplates() const;
     RegExpShared **rootedRegExps() const;
+
+    /*
+     * Offsets of bytecodes which were monitored or had type barriers at the
+     * point of compilation. Used to avoid unnecessary recompilation after
+     * analysis purges.
+     */
+    uint32_t *monitoredBytecodes() const;
+    uint32_t *typeBarrierBytecodes() const;
+
 #ifdef JS_MONOIC
     ic::GetGlobalNameIC *getGlobalNames() const;
     ic::SetGlobalNameIC *setGlobalNames() const;
@@ -779,6 +804,12 @@ struct JITScript
      */
     JSC::ExecutablePool *shimPool;
 
+    /*
+     * Optional liveness information attached to the JITScript if the analysis
+     * information is purged while retaining JIT info.
+     */
+    analyze::ScriptLiveness *liveness;
+
 #ifdef JS_MONOIC
     /* Inline cache at function entry for checking this/argument types. */
     JSC::CodeLocationLabel argsCheckStub;
@@ -870,7 +901,7 @@ CanMethodJIT(JSContext *cx, JSScript *script, jsbytecode *pc,
 inline void
 ReleaseScriptCode(FreeOp *fop, JSScript *script)
 {
-    if (!script->hasJITInfo())
+    if (!script->hasMJITInfo())
         return;
 
     for (int constructing = 0; constructing <= 1; constructing++) {
@@ -881,7 +912,7 @@ ReleaseScriptCode(FreeOp *fop, JSScript *script)
         }
     }
 
-    script->destroyJITInfo(fop);
+    script->destroyMJITInfo(fop);
 }
 
 // Expand all stack frames inlined by the JIT within a compartment.
@@ -995,7 +1026,7 @@ VMFrame::pc()
 inline void *
 JSScript::nativeCodeForPC(bool constructing, jsbytecode *pc)
 {
-    js::mjit::JITScript *jit = getJIT(constructing, compartment()->needsBarrier());
+    js::mjit::JITScript *jit = getJIT(constructing, compartment()->compileBarriers());
     if (!jit)
         return NULL;
     js::mjit::JITChunk *chunk = jit->chunk(pc);

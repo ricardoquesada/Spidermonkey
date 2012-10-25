@@ -17,6 +17,50 @@
 #include "jsgcinlines.h"
 #include "jsobjinlines.h"
 #include "gc/Barrier-inl.h"
+#include "gc/StoreBuffer.h"
+
+namespace js {
+
+static JS_ALWAYS_INLINE JSFixedString *
+NewShortString(JSContext *cx, const jschar *chars, size_t length)
+{
+    SkipRoot skip(cx, &chars);
+
+    /*
+     * Don't bother trying to find a static atom; measurement shows that not
+     * many get here (for one, Atomize is catching them).
+     */
+    JS_ASSERT(JSShortString::lengthFits(length));
+    JSInlineString *str = JSInlineString::lengthFits(length)
+                          ? JSInlineString::new_(cx)
+                          : JSShortString::new_(cx);
+    if (!str)
+        return NULL;
+
+    jschar *storage = str->init(length);
+    PodCopy(storage, chars, length);
+    storage[length] = 0;
+    Probes::createString(cx, str, length);
+    return str;
+}
+
+static inline void
+StringWriteBarrierPost(JSCompartment *comp, JSString **strp)
+{
+#ifdef JSGC_GENERATIONAL
+    comp->gcStoreBuffer.putRelocatableCell(reinterpret_cast<gc::Cell **>(strp));
+#endif
+}
+
+static inline void
+StringWriteBarrierPostRemove(JSCompartment *comp, JSString **strp)
+{
+#ifdef JSGC_GENERATIONAL
+    comp->gcStoreBuffer.removeRelocatableCell(reinterpret_cast<gc::Cell **>(strp));
+#endif
+}
+
+} /* namespace js */
 
 inline void
 JSString::writeBarrierPre(JSString *str)
@@ -37,6 +81,11 @@ JSString::writeBarrierPre(JSString *str)
 inline void
 JSString::writeBarrierPost(JSString *str, void *addr)
 {
+#ifdef JSGC_GENERATIONAL
+    if (!str)
+        return;
+    str->compartment()->gcStoreBuffer.putCell((Cell **)addr);
+#endif
 }
 
 inline bool
@@ -76,11 +125,11 @@ JSString::validateLength(JSContext *cx, size_t length)
 JS_ALWAYS_INLINE void
 JSRope::init(JSString *left, JSString *right, size_t length)
 {
-    d.lengthAndFlags = buildLengthAndFlags(length, ROPE_BIT);
+    d.lengthAndFlags = buildLengthAndFlags(length, ROPE_FLAGS);
     d.u1.left = left;
     d.s.u2.right = right;
-    JSString::writeBarrierPost(d.u1.left, &d.u1.left);
-    JSString::writeBarrierPost(d.s.u2.right, &d.s.u2.right);
+    js::StringWriteBarrierPost(compartment(), &d.u1.left);
+    js::StringWriteBarrierPost(compartment(), &d.s.u2.right);
 }
 
 JS_ALWAYS_INLINE JSRope *
@@ -109,10 +158,10 @@ JSDependentString::init(JSLinearString *base, const jschar *chars, size_t length
     d.lengthAndFlags = buildLengthAndFlags(length, DEPENDENT_FLAGS);
     d.u1.chars = chars;
     d.s.u2.base = base;
-    JSString::writeBarrierPost(d.s.u2.base, &d.s.u2.base);
+    js::StringWriteBarrierPost(compartment(), reinterpret_cast<JSString **>(&d.s.u2.base));
 }
 
-JS_ALWAYS_INLINE JSDependentString *
+JS_ALWAYS_INLINE JSLinearString *
 JSDependentString::new_(JSContext *cx, JSLinearString *base_, const jschar *chars, size_t length)
 {
     JS::Rooted<JSLinearString*> base(cx, base_);
@@ -126,11 +175,12 @@ JSDependentString::new_(JSContext *cx, JSLinearString *base_, const jschar *char
     JS_ASSERT(length <= base->length() - (chars - base->chars()));
 
     /*
-     * The characters may be an internal pointer to a GC thing, so prevent them
-     * from being overwritten. For now this prevents strings used as dependent
-     * bases of other strings from being moved by the GC.
+     * Do not create a string dependent on inline chars from another string,
+     * both to avoid the awkward moving-GC hazard this introduces and because it
+     * is more efficient to immediately undepend here.
      */
-    JS::SkipRoot charsRoot(cx, &chars);
+    if (JSShortString::lengthFits(base->length()))
+        return js::NewShortString(cx, chars, length);
 
     JSDependentString *str = (JSDependentString *)js_NewGCString(cx);
     if (!str)
@@ -155,7 +205,7 @@ JSFlatString::toPropertyName(JSContext *cx)
 #endif
     if (isAtom())
         return asAtom().asPropertyName();
-    JSAtom *atom = js_AtomizeString(cx, this);
+    JSAtom *atom = js::AtomizeString(cx, this);
     if (!atom)
         return NULL;
     return atom->asPropertyName();
@@ -185,7 +235,7 @@ JSFixedString::new_(JSContext *cx, const jschar *chars, size_t length)
 JS_ALWAYS_INLINE JSAtom *
 JSFixedString::morphAtomizedStringIntoAtom()
 {
-    d.lengthAndFlags = buildLengthAndFlags(length(), NON_STATIC_ATOM_FLAGS);
+    d.lengthAndFlags = buildLengthAndFlags(length(), ATOM_BIT);
     return &asAtom();
 }
 
@@ -410,32 +460,5 @@ JSExternalString::finalize(js::FreeOp *fop)
     const JSStringFinalizer *fin = externalFinalizer();
     fin->finalize(fin, const_cast<jschar *>(chars()));
 }
-
-namespace js {
-
-static JS_ALWAYS_INLINE JSFixedString *
-NewShortString(JSContext *cx, const jschar *chars, size_t length)
-{
-    SkipRoot skip(cx, &chars);
-
-    /*
-     * Don't bother trying to find a static atom; measurement shows that not
-     * many get here (for one, Atomize is catching them).
-     */
-    JS_ASSERT(JSShortString::lengthFits(length));
-    JSInlineString *str = JSInlineString::lengthFits(length)
-                          ? JSInlineString::new_(cx)
-                          : JSShortString::new_(cx);
-    if (!str)
-        return NULL;
-
-    jschar *storage = str->init(length);
-    PodCopy(storage, chars, length);
-    storage[length] = 0;
-    Probes::createString(cx, str, length);
-    return str;
-}
-
-} /* namespace js */
 
 #endif

@@ -7,9 +7,7 @@
 /* An implementaion of nsIException. */
 
 #include "xpcprivate.h"
-#include "nsNetError.h"
-#include "mozStorage.h"
-#include "nsPluginError.h"
+#include "nsError.h"
 #include "nsIUnicodeDecoder.h"
 
 /***************************************************************************/
@@ -27,7 +25,7 @@ static struct ResultMap
     {(val), #val, format},
 #include "xpc.msg"
 #undef XPC_MSG_DEF
-    {0,0,0}   // sentinel to mark end of array
+    {NS_OK,0,0}   // sentinel to mark end of array
 };
 
 #define RESULT_COUNT ((sizeof(map) / sizeof(map[0]))-1)
@@ -62,7 +60,7 @@ nsXPCException::IterateNSResults(nsresult* rv,
     else
         p++;
     if (!p->name)
-        p = nsnull;
+        p = nullptr;
     else {
         if (rv)
             *rv = p->rv;
@@ -76,7 +74,7 @@ nsXPCException::IterateNSResults(nsresult* rv,
 }
 
 // static
-PRUint32
+uint32_t
 nsXPCException::GetNSResultCount()
 {
     return RESULT_COUNT;
@@ -99,14 +97,14 @@ NS_IMPL_THREADSAFE_RELEASE(nsXPCException)
 NS_IMPL_CI_INTERFACE_GETTER1(nsXPCException, nsIXPCException)
 
 nsXPCException::nsXPCException()
-    : mMessage(nsnull),
-      mResult(0),
-      mName(nsnull),
-      mLocation(nsnull),
-      mData(nsnull),
-      mFilename(nsnull),
+    : mMessage(nullptr),
+      mResult(NS_OK),
+      mName(nullptr),
+      mLocation(nullptr),
+      mData(nullptr),
+      mFilename(nullptr),
       mLineNumber(0),
-      mInner(nsnull),
+      mInner(nullptr),
       mInitialized(false)
 {
     MOZ_COUNT_CTOR(nsXPCException);
@@ -120,7 +118,7 @@ nsXPCException::~nsXPCException()
 
 /* [noscript] xpcexJSVal stealJSVal (); */
 NS_IMETHODIMP
-nsXPCException::StealJSVal(jsval *vp NS_OUTPARAM)
+nsXPCException::StealJSVal(jsval *vp)
 {
     if (mThrownJSVal.IsHeld()) {
         *vp = mThrownJSVal.Release();
@@ -145,17 +143,17 @@ nsXPCException::Reset()
 {
     if (mMessage) {
         nsMemory::Free(mMessage);
-        mMessage = nsnull;
+        mMessage = nullptr;
     }
     if (mName) {
         nsMemory::Free(mName);
-        mName = nsnull;
+        mName = nullptr;
     }
     if (mFilename) {
         nsMemory::Free(mFilename);
-        mFilename = nsnull;
+        mFilename = nullptr;
     }
-    mLineNumber = (PRUint32)-1;
+    mLineNumber = (uint32_t)-1;
     NS_IF_RELEASE(mLocation);
     NS_IF_RELEASE(mData);
     NS_IF_RELEASE(mInner);
@@ -191,7 +189,7 @@ nsXPCException::GetName(char * *aName)
 
     const char* name = mName;
     if (!name)
-        NameAndFormatForNSResult(mResult, &name, nsnull);
+        NameAndFormatForNSResult(mResult, &name, nullptr);
 
     XPC_STRING_GETTER_BODY(aName, name);
 }
@@ -204,8 +202,8 @@ NS_IMETHODIMP nsXPCException::GetFilename(char * *aFilename)
     XPC_STRING_GETTER_BODY(aFilename, mFilename);
 }
 
-/* readonly attribute PRUint32 lineNumber; */
-NS_IMETHODIMP nsXPCException::GetLineNumber(PRUint32 *aLineNumber)
+/* readonly attribute uint32_t lineNumber; */
+NS_IMETHODIMP nsXPCException::GetLineNumber(uint32_t *aLineNumber)
 {
     if (!aLineNumber)
         return NS_ERROR_NULL_POINTER;
@@ -215,8 +213,8 @@ NS_IMETHODIMP nsXPCException::GetLineNumber(PRUint32 *aLineNumber)
     return NS_OK;
 }
 
-/* readonly attribute PRUint32 columnNumber; */
-NS_IMETHODIMP nsXPCException::GetColumnNumber(PRUint32 *aColumnNumber)
+/* readonly attribute uint32_t columnNumber; */
+NS_IMETHODIMP nsXPCException::GetColumnNumber(uint32_t *aColumnNumber)
 {
     NS_ENSURE_ARG_POINTER(aColumnNumber);
     if (!mInitialized)
@@ -334,7 +332,7 @@ nsXPCException::ToString(char **_retval)
     static const char format[] =
  "[Exception... \"%s\"  nsresult: \"0x%x (%s)\"  location: \"%s\"  data: %s]";
 
-    char* indicatedLocation = nsnull;
+    char* indicatedLocation = nullptr;
 
     if (mLocation) {
         // we need to free this if it does not fail
@@ -343,12 +341,12 @@ nsXPCException::ToString(char **_retval)
             return rv;
     }
 
-    const char* msg = mMessage ? mMessage : nsnull;
+    const char* msg = mMessage ? mMessage : nullptr;
     const char* location = indicatedLocation ?
                                 indicatedLocation : defaultLocation;
     const char* resultName = mName;
     if (!resultName && !NameAndFormatForNSResult(mResult, &resultName,
-                                                 (!msg) ? &msg : nsnull)) {
+                                                 (!msg) ? &msg : nullptr)) {
         if (!msg)
             msg = defaultMsg;
         resultName = "<unknown>";
@@ -359,7 +357,7 @@ nsXPCException::ToString(char **_retval)
     if (indicatedLocation)
         nsMemory::Free(indicatedLocation);
 
-    char* final = nsnull;
+    char* final = nullptr;
     if (temp) {
         final = (char*) nsMemory::Clone(temp, sizeof(char)*(strlen(temp)+1));
         JS_smprintf_free(temp);
@@ -421,8 +419,8 @@ nsXPCException::NewException(const char *aMessage,
         // We want to trim off any leading native 'dataless' frames
         if (location)
             while (1) {
-                PRUint32 language;
-                PRInt32 lineNumber;
+                uint32_t language;
+                int32_t lineNumber;
                 if (NS_FAILED(location->GetLanguage(&language)) ||
                     language == nsIProgrammingLanguage::JAVASCRIPT ||
                     NS_FAILED(location->GetLineNumber(&lineNumber)) ||
@@ -437,7 +435,7 @@ nsXPCException::NewException(const char *aMessage,
             }
         // at this point we have non-null location with one extra addref,
         // or no location at all
-        rv = e->Initialize(aMessage, aResult, nsnull, location, aData, nsnull);
+        rv = e->Initialize(aMessage, aResult, nullptr, location, aData, nullptr);
         NS_IF_RELEASE(location);
         if (NS_FAILED(rv))
             NS_RELEASE(e);

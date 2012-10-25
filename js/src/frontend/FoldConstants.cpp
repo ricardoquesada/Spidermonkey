@@ -15,15 +15,14 @@
 #include "frontend/FoldConstants.h"
 #include "frontend/ParseNode.h"
 #include "frontend/Parser.h"
-#include "frontend/TreeContext.h"
 #include "vm/NumericConversions.h"
 
 #include "jsatominlines.h"
 
-#include "frontend/TreeContext-inl.h"
 #include "vm/String-inl.h"
 
 using namespace js;
+using namespace js::frontend;
 
 static ParseNode *
 ContainsVarOrConst(ParseNode *pn)
@@ -61,8 +60,6 @@ ContainsVarOrConst(ParseNode *pn)
         return ContainsVarOrConst(pn->pn_kid);
       case PN_NAME:
         return ContainsVarOrConst(pn->maybeExpr());
-      case PN_NAMESET:
-        return ContainsVarOrConst(pn->pn_tree);
       default:;
     }
     return NULL;
@@ -93,7 +90,7 @@ FoldType(JSContext *cx, ParseNode *pn, ParseNodeKind kind)
                 JSString *str = js_NumberToString(cx, pn->pn_dval);
                 if (!str)
                     return false;
-                pn->pn_atom = js_AtomizeString(cx, str);
+                pn->pn_atom = AtomizeString(cx, str);
                 if (!pn->pn_atom)
                     return false;
                 pn->setKind(PNK_STRING);
@@ -276,7 +273,7 @@ FoldXMLConstants(JSContext *cx, ParseNode *pn, Parser *parser)
                 pn1->setKind(PNK_XMLTEXT);
                 pn1->setOp(JSOP_STRING);
                 pn1->setArity(PN_NULLARY);
-                pn1->pn_atom = js_AtomizeString(cx, accum);
+                pn1->pn_atom = AtomizeString(cx, accum);
                 if (!pn1->pn_atom)
                     return false;
                 JS_ASSERT(pnp != &pn1->pn_next);
@@ -328,7 +325,7 @@ FoldXMLConstants(JSContext *cx, ParseNode *pn, Parser *parser)
         pn1->setKind(PNK_XMLTEXT);
         pn1->setOp(JSOP_STRING);
         pn1->setArity(PN_NULLARY);
-        pn1->pn_atom = js_AtomizeString(cx, accum);
+        pn1->pn_atom = AtomizeString(cx, accum);
         if (!pn1->pn_atom)
             return false;
         JS_ASSERT(pnp != &pn1->pn_next);
@@ -401,7 +398,8 @@ Boolish(ParseNode *pn)
 }
 
 bool
-js::FoldConstants(JSContext *cx, ParseNode *pn, Parser *parser, bool inGenexpLambda, bool inCond)
+frontend::FoldConstants(JSContext *cx, ParseNode *pn, Parser *parser, bool inGenexpLambda,
+                        bool inCond)
 {
     ParseNode *pn1 = NULL, *pn2 = NULL, *pn3 = NULL;
 
@@ -503,12 +501,6 @@ js::FoldConstants(JSContext *cx, ParseNode *pn, Parser *parser, bool inGenexpLam
             if (pn1 && !FoldConstants(cx, pn1, parser, inGenexpLambda))
                 return false;
         }
-        break;
-
-      case PN_NAMESET:
-        pn1 = pn->pn_tree;
-        if (!FoldConstants(cx, pn1, parser, inGenexpLambda))
-            return false;
         break;
 
       case PN_NULLARY:
@@ -700,7 +692,7 @@ js::FoldConstants(JSContext *cx, ParseNode *pn, Parser *parser, bool inGenexpLam
             JS_ASSERT(*chars == 0);
 
             /* Atomize the result string and mutate pn to refer to it. */
-            pn->pn_atom = js_AtomizeString(cx, str);
+            pn->pn_atom = AtomizeString(cx, str);
             if (!pn->pn_atom)
                 return false;
             pn->setKind(PNK_STRING);
@@ -721,7 +713,7 @@ js::FoldConstants(JSContext *cx, ParseNode *pn, Parser *parser, bool inGenexpLam
             RootedString str(cx, js_ConcatStrings(cx, left, right));
             if (!str)
                 return false;
-            pn->pn_atom = js_AtomizeString(cx, str);
+            pn->pn_atom = AtomizeString(cx, str);
             if (!pn->pn_atom)
                 return false;
             pn->setKind(PNK_STRING);

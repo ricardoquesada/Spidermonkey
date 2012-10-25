@@ -96,6 +96,7 @@ struct JSExnPrivate
     js::HeapPtrString   message;
     js::HeapPtrString   filename;
     unsigned            lineno;
+    unsigned            column;
     size_t              stackDepth;
     int                 exnType;
     JSStackTraceElem    stackElems[1];
@@ -216,7 +217,9 @@ CopyErrorReport(JSContext *cx, JSErrorReport *report)
 
     /* Copy non-pointer members. */
     copy->lineno = report->lineno;
+    copy->column = report->column;
     copy->errorNumber = report->errorNumber;
+    copy->exnType = report->exnType;
 
     /* Note that this is before it gets flagged with JSREPORT_EXCEPTION */
     copy->flags = report->flags;
@@ -249,7 +252,8 @@ SetExnPrivate(JSContext *cx, JSObject *exnObject, JSExnPrivate *priv);
 
 static bool
 InitExnPrivate(JSContext *cx, HandleObject exnObject, HandleString message,
-               HandleString filename, unsigned lineno, JSErrorReport *report, int exnType)
+               HandleString filename, unsigned lineno, unsigned column,
+               JSErrorReport *report, int exnType)
 {
     JS_ASSERT(exnObject->isError());
     JS_ASSERT(!exnObject->getPrivate());
@@ -259,7 +263,7 @@ InitExnPrivate(JSContext *cx, HandleObject exnObject, HandleString message,
     Vector<JSStackTraceStackElem> frames(cx);
     {
         SuppressErrorsGuard seg(cx);
-        for (ScriptFrameIter i(cx); !i.done(); ++i) {
+        for (NonBuiltinScriptFrameIter i(cx); !i.done(); ++i) {
             StackFrame *fp = i.fp();
 
             /*
@@ -278,7 +282,9 @@ InitExnPrivate(JSContext *cx, HandleObject exnObject, HandleString message,
                 return false;
             JSStackTraceStackElem &frame = frames.back();
             if (i.isNonEvalFunctionFrame()) {
-                JSAtom *atom = fp->fun()->atom ? fp->fun()->atom : cx->runtime->emptyString;
+                JSAtom *atom = fp->fun()->displayAtom();
+                if (atom == NULL)
+                    atom = cx->runtime->emptyString;
                 frame.funName = atom;
             } else {
                 frame.funName = NULL;
@@ -325,6 +331,7 @@ InitExnPrivate(JSContext *cx, HandleObject exnObject, HandleString message,
     priv->message.init(message);
     priv->filename.init(filename);
     priv->lineno = lineno;
+    priv->column = column;
     priv->stackDepth = frames.length();
     priv->exnType = exnType;
     for (size_t i = 0; i < frames.length(); ++i) {
@@ -435,7 +442,15 @@ exn_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
         atom = cx->runtime->atomState.lineNumberAtom;
         if (str == atom) {
             prop = js_lineNumber_str;
-            v = INT_TO_JSVAL(priv->lineno);
+            v = UINT_TO_JSVAL(priv->lineno);
+            attrs = JSPROP_ENUMERATE;
+            goto define;
+        }
+
+        atom = cx->runtime->atomState.columnNumberAtom;
+        if (str == atom) {
+            prop = js_columnNumber_str;
+            v = UINT_TO_JSVAL(priv->column);
             attrs = JSPROP_ENUMERATE;
             goto define;
         }
@@ -533,8 +548,9 @@ Exception(JSContext *cx, unsigned argc, Value *vp)
      * NewNativeClassInstance to find the class prototype, we must get the
      * class prototype ourselves.
      */
-    Value protov;
-    if (!args.callee().getProperty(cx, cx->runtime->atomState.classPrototypeAtom, &protov))
+    RootedObject callee(cx, &args.callee());
+    RootedValue protov(cx);
+    if (!JSObject::getProperty(cx, callee, callee, cx->runtime->atomState.classPrototypeAtom, &protov))
         return false;
 
     if (!protov.isObject()) {
@@ -559,7 +575,7 @@ Exception(JSContext *cx, unsigned argc, Value *vp)
     }
 
     /* Find the scripted caller. */
-    ScriptFrameIter iter(cx);
+    NonBuiltinScriptFrameIter iter(cx);
 
     /* XXX StackIter should not point directly to scripts. */
     SkipRoot skip(cx, &iter);
@@ -583,16 +599,16 @@ Exception(JSContext *cx, unsigned argc, Value *vp)
     }
 
     /* Set the 'lineNumber' property. */
-    uint32_t lineno;
+    uint32_t lineno, column = 0;
     if (args.length() > 2) {
         if (!ToUint32(cx, args[2], &lineno))
             return false;
     } else {
-        lineno = iter.done() ? 0 : PCToLineNumber(iter.script(), iter.pc());
+        lineno = iter.done() ? 0 : PCToLineNumber(iter.script(), iter.pc(), &column);
     }
 
     int exnType = args.callee().toFunction()->getExtendedSlot(0).toInt32();
-    if (!InitExnPrivate(cx, obj, message, filename, lineno, NULL, exnType))
+    if (!InitExnPrivate(cx, obj, message, filename, lineno, column, NULL, exnType))
         return false;
 
     args.rval().setObject(*obj);
@@ -616,8 +632,8 @@ exn_toString(JSContext *cx, unsigned argc, Value *vp)
     RootedObject obj(cx, &args.thisv().toObject());
 
     /* Step 3. */
-    Value nameVal;
-    if (!obj->getProperty(cx, cx->runtime->atomState.nameAtom, &nameVal))
+    RootedValue nameVal(cx);
+    if (!JSObject::getProperty(cx, obj, obj, cx->runtime->atomState.nameAtom, &nameVal))
         return false;
 
     /* Step 4. */
@@ -631,8 +647,8 @@ exn_toString(JSContext *cx, unsigned argc, Value *vp)
     }
 
     /* Step 5. */
-    Value msgVal;
-    if (!obj->getProperty(cx, cx->runtime->atomState.messageAtom, &msgVal))
+    RootedValue msgVal(cx);
+    if (!JSObject::getProperty(cx, obj, obj, cx->runtime->atomState.messageAtom, &msgVal))
         return false;
 
     /* Step 6. */
@@ -685,37 +701,37 @@ exn_toSource(JSContext *cx, unsigned argc, Value *vp)
     JS_CHECK_RECURSION(cx, return false);
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    RootedObject obj(cx, ToObject(cx, &args.thisv()));
+    RootedObject obj(cx, ToObject(cx, args.thisv()));
     if (!obj)
         return false;
 
-    Value nameVal;
+    RootedValue nameVal(cx);
     RootedString name(cx);
-    if (!obj->getProperty(cx, cx->runtime->atomState.nameAtom, &nameVal) ||
+    if (!JSObject::getProperty(cx, obj, obj, cx->runtime->atomState.nameAtom, &nameVal) ||
         !(name = ToString(cx, nameVal)))
     {
         return false;
     }
 
-    Value messageVal;
+    RootedValue messageVal(cx);
     RootedString message(cx);
-    if (!obj->getProperty(cx, cx->runtime->atomState.messageAtom, &messageVal) ||
+    if (!JSObject::getProperty(cx, obj, obj, cx->runtime->atomState.messageAtom, &messageVal) ||
         !(message = js_ValueToSource(cx, messageVal)))
     {
         return false;
     }
 
-    Value filenameVal;
+    RootedValue filenameVal(cx);
     RootedString filename(cx);
-    if (!obj->getProperty(cx, cx->runtime->atomState.fileNameAtom, &filenameVal) ||
+    if (!JSObject::getProperty(cx, obj, obj, cx->runtime->atomState.fileNameAtom, &filenameVal) ||
         !(filename = js_ValueToSource(cx, filenameVal)))
     {
         return false;
     }
 
-    Value linenoVal;
+    RootedValue linenoVal(cx);
     uint32_t lineno;
-    if (!obj->getProperty(cx, cx->runtime->atomState.lineNumberAtom, &linenoVal) ||
+    if (!JSObject::getProperty(cx, obj, obj, cx->runtime->atomState.lineNumberAtom, &linenoVal) ||
         !ToUint32(cx, linenoVal, &lineno))
     {
         return false;
@@ -782,18 +798,23 @@ InitErrorClass(JSContext *cx, Handle<GlobalObject*> global, int type, HandleObje
     if (!errorProto)
         return NULL;
 
+    RootedValue nameValue(cx, StringValue(name));
+    RootedValue zeroValue(cx, Int32Value(0));
     RootedValue empty(cx, StringValue(cx->runtime->emptyString));
     RootedId nameId(cx, NameToId(cx->runtime->atomState.nameAtom));
     RootedId messageId(cx, NameToId(cx->runtime->atomState.messageAtom));
     RootedId fileNameId(cx, NameToId(cx->runtime->atomState.fileNameAtom));
     RootedId lineNumberId(cx, NameToId(cx->runtime->atomState.lineNumberAtom));
-    if (!DefineNativeProperty(cx, errorProto, nameId, StringValue(name),
+    RootedId columnNumberId(cx, NameToId(cx->runtime->atomState.columnNumberAtom));
+    if (!DefineNativeProperty(cx, errorProto, nameId, nameValue,
                               JS_PropertyStub, JS_StrictPropertyStub, 0, 0, 0) ||
         !DefineNativeProperty(cx, errorProto, messageId, empty,
                               JS_PropertyStub, JS_StrictPropertyStub, 0, 0, 0) ||
         !DefineNativeProperty(cx, errorProto, fileNameId, empty,
                               JS_PropertyStub, JS_StrictPropertyStub, JSPROP_ENUMERATE, 0, 0) ||
-        !DefineNativeProperty(cx, errorProto, lineNumberId, Int32Value(0),
+        !DefineNativeProperty(cx, errorProto, lineNumberId, zeroValue,
+                              JS_PropertyStub, JS_StrictPropertyStub, JSPROP_ENUMERATE, 0, 0) ||
+        !DefineNativeProperty(cx, errorProto, columnNumberId, zeroValue,
                               JS_PropertyStub, JS_StrictPropertyStub, JSPROP_ENUMERATE, 0, 0))
     {
         return NULL;
@@ -865,19 +886,18 @@ js_GetLocalizedErrorMessage(JSContext* cx, void *userRef, const char *locale,
 namespace js {
 
 JS_FRIEND_API(const jschar*)
-GetErrorTypeNameFromNumber(JSContext* cx, const unsigned errorNumber)
+GetErrorTypeName(JSContext* cx, int16_t exnType)
 {
-    const JSErrorFormatString *efs = js_GetErrorMessage(NULL, NULL, errorNumber);
     /*
      * JSEXN_INTERNALERR returns null to prevent that "InternalError: "
      * is prepended before "uncaught exception: "
      */
-    if (!efs || efs->exnType <= JSEXN_NONE || efs->exnType >= JSEXN_LIMIT ||
-        efs->exnType == JSEXN_INTERNALERR)
+    if (exnType <= JSEXN_NONE || exnType >= JSEXN_LIMIT ||
+        exnType == JSEXN_INTERNALERR)
     {
         return NULL;
     }
-    JSProtoKey key = GetExceptionProtoKey(efs->exnType);
+    JSProtoKey key = GetExceptionProtoKey(exnType);
     return cx->runtime->atomState.classAtoms[key]->chars();
 }
 
@@ -965,7 +985,7 @@ js_ErrorToException(JSContext *cx, const char *message, JSErrorReport *reportp,
      * top stack frame, or in the global object if no frame is active.
      */
     RootedObject errProto(cx);
-    if (!js_GetClassPrototype(cx, NullPtr(), GetExceptionProtoKey(exn), &errProto))
+    if (!js_GetClassPrototype(cx, GetExceptionProtoKey(exn), &errProto))
         return false;
     tv[0] = OBJECT_TO_JSVAL(errProto);
 
@@ -985,7 +1005,7 @@ js_ErrorToException(JSContext *cx, const char *message, JSErrorReport *reportp,
     tv[3] = STRING_TO_JSVAL(filenameStr);
 
     if (!InitExnPrivate(cx, errObject, messageStr, filenameStr,
-                        reportp->lineno, reportp, exn)) {
+                        reportp->lineno, reportp->column, reportp, exn)) {
         return false;
     }
 
@@ -1105,10 +1125,19 @@ js_ReportUncaughtException(JSContext *cx)
             lineno = 0;
         }
 
+        uint32_t column;
+        if (!JS_GetProperty(cx, exnObject, js_columnNumber_str, &roots[5]) ||
+            !ToUint32(cx, roots[5], &column))
+        {
+            column = 0;
+        }
+
         reportp = &report;
         PodZero(&report);
         report.filename = filename.ptr();
         report.lineno = (unsigned) lineno;
+        report.exnType = int16_t(JSEXN_NONE);
+        report.column = (unsigned) column;
         if (str) {
             if (JSFixedString *fixed = str->ensureFixed(cx))
                 report.ucmessage = fixed->chars();
@@ -1179,6 +1208,7 @@ js_CopyErrorObject(JSContext *cx, HandleObject errobj, HandleObject scope)
         return NULL;
     JS::Anchor<JSString *> filenameAnchor(copy->filename);
     copy->lineno = priv->lineno;
+    copy->column = priv->column;
     copy->stackDepth = 0;
     copy->exnType = priv->exnType;
 

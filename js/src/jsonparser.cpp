@@ -55,7 +55,7 @@ JSONParser::readString()
             size_t length = current - start;
             current++;
             JSFlatString *str = (ST == JSONParser::PropertyName)
-                                ? js_AtomizeChars(cx, start.get(), length)
+                                ? AtomizeChars(cx, start.get(), length)
                                 : js_NewStringCopyN(cx, start.get(), length);
             if (!str)
                 return token(OOM);
@@ -488,19 +488,19 @@ JSONParser::advanceAfterProperty()
 enum ParserState { FinishArrayElement, FinishObjectMember, JSONValue };
 
 bool
-JSONParser::parse(Value *vp)
+JSONParser::parse(MutableHandleValue vp)
 {
     Vector<ParserState> stateStack(cx);
     AutoValueVector valueStack(cx);
 
-    *vp = UndefinedValue();
+    vp.setUndefined();
 
     Token token;
     ParserState state = JSONValue;
     while (true) {
         switch (state) {
           case FinishObjectMember: {
-            Value v = valueStack.popCopy();
+            RootedValue v(cx, valueStack.popCopy());
             RootedId propid(cx, AtomToId(&valueStack.popCopy().toString()->asAtom()));
             RootedObject obj(cx, &valueStack.back().toObject());
             if (!DefineNativeProperty(cx, obj, propid, v,
@@ -656,6 +656,6 @@ JSONParser::parse(Value *vp)
 
     JS_ASSERT(end == current);
     JS_ASSERT(valueStack.length() == 1);
-    *vp = valueStack[0];
+    vp.set(valueStack[0]);
     return true;
 }

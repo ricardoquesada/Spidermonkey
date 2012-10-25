@@ -6,18 +6,20 @@
 
 
 
-DEPTH		= ../..
+DEPTH		= @DEPTH@
 topsrcdir	= @top_srcdir@
 VPATH		= @srcdir@
 srcdir		= @srcdir@
-relativesrcdir  = js/jsd
+relativesrcdir  = @relativesrcdir@
 
 include $(DEPTH)/config/autoconf.mk
 
 MODULE		= jsdebug
 LIBRARY_NAME	= jsd
 DIRS	= idl
-CPPSRCS	 = jsd_xpc.cpp
+CPPSRCS	 = \
+		jsd_xpc.cpp \
+		jshash.cpp
 IS_COMPONENT = 1
 LIBXUL_LIBRARY = 1
 

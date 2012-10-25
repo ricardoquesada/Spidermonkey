@@ -1079,7 +1079,7 @@ mjit::JaegerShot(JSContext *cx, bool partial)
 {
     StackFrame *fp = cx->fp();
     JSScript *script = fp->script();
-    JITScript *jit = script->getJIT(fp->isConstructing(), cx->compartment->needsBarrier());
+    JITScript *jit = script->getJIT(fp->isConstructing(), cx->compartment->compileBarriers());
 
     JS_ASSERT(cx->regs().pc == script->code);
 
@@ -1122,10 +1122,22 @@ JITChunk::rootedRegExps() const
     return (RegExpShared **)&rootedTemplates()[nRootedTemplates];
 }
 
+uint32_t *
+JITChunk::monitoredBytecodes() const
+{
+    return (uint32_t *)&rootedRegExps()[nRootedRegExps];
+}
+
+uint32_t *
+JITChunk::typeBarrierBytecodes() const
+{
+    return (uint32_t *)&monitoredBytecodes()[nMonitoredBytecodes];
+}
+
 char *
 JITChunk::commonSectionLimit() const
 {
-    return (char *)&rootedRegExps()[nRootedRegExps];
+    return (char *)&typeBarrierBytecodes()[nTypeBarrierBytecodes];
 }
 
 #ifdef JS_MONOIC
@@ -1257,6 +1269,9 @@ JITScript::destroy(FreeOp *fop)
     for (unsigned i = 0; i < nchunks; i++)
         destroyChunk(fop, i);
 
+    if (liveness)
+        fop->free_(liveness);
+
     if (shimPool)
         shimPool->release();
 }
@@ -1267,6 +1282,10 @@ JITScript::destroyChunk(FreeOp *fop, unsigned chunkIndex, bool resetUses)
     ChunkDescriptor &desc = chunkDescriptor(chunkIndex);
 
     if (desc.chunk) {
+        // Invalidates the CompilerOutput of the chunk.
+        types::TypeCompartment &types = script->compartment()->types;
+        desc.chunk->recompileInfo.compilerOutput(types)->invalidate();
+
         /*
          * Write barrier: Before we destroy the chunk, trace through the objects
          * it holds.
@@ -1362,10 +1381,10 @@ JSScript::JITScriptHandle::staticAsserts()
 size_t
 JSScript::sizeOfJitScripts(JSMallocSizeOfFun mallocSizeOf)
 {
-    if (!hasJITInfo())
+    if (!hasMJITInfo())
         return 0;
 
-    size_t n = mallocSizeOf(jitInfo);
+    size_t n = mallocSizeOf(mJITInfo);
     for (int constructing = 0; constructing <= 1; constructing++) {
         for (int barriers = 0; barriers <= 1; barriers++) {
             JITScript *jit = getJIT((bool) constructing, (bool) barriers);
@@ -1380,6 +1399,8 @@ size_t
 mjit::JITScript::sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf)
 {
     size_t n = mallocSizeOf(this);
+    if (liveness)
+        n += mallocSizeOf(liveness);
     for (unsigned i = 0; i < nchunks; i++) {
         const ChunkDescriptor &desc = chunkDescriptor(i);
         if (desc.chunk)
@@ -1398,6 +1419,8 @@ mjit::JITChunk::computedSizeOfIncludingThis()
            sizeof(CallSite) * nCallSites +
            sizeof(JSObject*) * nRootedTemplates +
            sizeof(RegExpShared*) * nRootedRegExps +
+           sizeof(uint32_t) * nMonitoredBytecodes +
+           sizeof(uint32_t) * nTypeBarrierBytecodes +
 #if defined JS_MONOIC
            sizeof(ic::GetGlobalNameIC) * nGetGlobalNames +
            sizeof(ic::SetGlobalNameIC) * nSetGlobalNames +

@@ -18,6 +18,7 @@
 
 using namespace js;
 using js::detail::RegExpCode;
+using js::frontend::TokenStream;
 
 JS_STATIC_ASSERT(IgnoreCaseFlag == JSREG_FOLD);
 JS_STATIC_ASSERT(GlobalFlag == JSREG_GLOB);
@@ -285,7 +286,7 @@ RegExpObject *
 RegExpObject::createNoStatics(JSContext *cx, const jschar *chars, size_t length, RegExpFlag flags,
                               TokenStream *tokenStream)
 {
-    RootedAtom source(cx, js_AtomizeChars(cx, chars, length));
+    RootedAtom source(cx, AtomizeChars(cx, chars, length));
     if (!source)
         return NULL;
 

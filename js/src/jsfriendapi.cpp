@@ -23,6 +23,12 @@ using namespace js;
 using namespace JS;
 
 JS_FRIEND_API(void)
+JS_SetSourceHook(JSRuntime *rt, JS_SourceHook hook)
+{
+    rt->sourceHook = hook;
+}
+
+JS_FRIEND_API(void)
 JS_SetGrayGCRootsTracer(JSRuntime *rt, JSTraceDataOp traceOp, void *data)
 {
     rt->gcGrayRootsTraceOp = traceOp;
@@ -37,9 +43,9 @@ JS_GetAnonymousString(JSRuntime *rt)
 }
 
 JS_FRIEND_API(JSObject *)
-JS_FindCompilationScope(JSContext *cx, JSObject *obj_)
+JS_FindCompilationScope(JSContext *cx, RawObject objArg)
 {
-    RootedObject obj(cx, obj_);
+    RootedObject obj(cx, objArg);
 
     /*
      * We unwrap wrappers here. This is a little weird, but it's what's being
@@ -58,7 +64,7 @@ JS_FindCompilationScope(JSContext *cx, JSObject *obj_)
 }
 
 JS_FRIEND_API(JSFunction *)
-JS_GetObjectFunction(JSObject *obj)
+JS_GetObjectFunction(RawObject obj)
 {
     if (obj->isFunction())
         return obj->toFunction();
@@ -72,8 +78,10 @@ JS_GetGlobalForFrame(JSStackFrame *fp)
 }
 
 JS_FRIEND_API(JSBool)
-JS_SplicePrototype(JSContext *cx, JSObject *obj, JSObject *proto)
+JS_SplicePrototype(JSContext *cx, JSObject *objArg, JSObject *protoArg)
 {
+    RootedObject obj(cx, objArg);
+    RootedObject proto(cx, protoArg);
     /*
      * Change the prototype of an object which hasn't been used anywhere
      * and does not share its type with another object. Unlike JS_SetPrototype,
@@ -93,10 +101,12 @@ JS_SplicePrototype(JSContext *cx, JSObject *obj, JSObject *proto)
 }
 
 JS_FRIEND_API(JSObject *)
-JS_NewObjectWithUniqueType(JSContext *cx, JSClass *clasp, JSObject *proto, JSObject *parent)
+JS_NewObjectWithUniqueType(JSContext *cx, JSClass *clasp, JSObject *protoArg, JSObject *parentArg)
 {
-    JSObject *obj = JS_NewObject(cx, clasp, proto, parent);
-    if (!obj || !obj->setSingletonType(cx))
+    RootedObject proto(cx, protoArg);
+    RootedObject parent(cx, parentArg);
+    RootedObject obj(cx, JS_NewObject(cx, clasp, proto, parent));
+    if (!obj || !JSObject::setSingletonType(cx, obj))
         return NULL;
     return obj;
 }
@@ -121,7 +131,7 @@ js::PrepareForIncrementalGC(JSRuntime *rt)
         return;
 
     for (CompartmentsIter c(rt); !c.done(); c.next()) {
-        if (c->needsBarrier())
+        if (c->wasGCStarted())
             PrepareCompartmentForGC(c);
     }
 }
@@ -156,9 +166,9 @@ js::ShrinkingGC(JSRuntime *rt, gcreason::Reason reason)
 }
 
 JS_FRIEND_API(void)
-js::IncrementalGC(JSRuntime *rt, gcreason::Reason reason)
+js::IncrementalGC(JSRuntime *rt, gcreason::Reason reason, int64_t millis)
 {
-    GCSlice(rt, GC_NORMAL, reason);
+    GCSlice(rt, GC_NORMAL, reason, millis);
 }
 
 JS_FRIEND_API(void)
@@ -233,7 +243,7 @@ JS_TraceShapeCycleCollectorChildren(JSTracer *trc, void *shape)
 static bool
 DefineHelpProperty(JSContext *cx, HandleObject obj, const char *prop, const char *value)
 {
-    JSAtom *atom = js_Atomize(cx, value, strlen(value));
+    JSAtom *atom = Atomize(cx, value, strlen(value));
     if (!atom)
         return false;
     jsval v = STRING_TO_JSVAL(atom);
@@ -243,16 +253,15 @@ DefineHelpProperty(JSContext *cx, HandleObject obj, const char *prop, const char
 }
 
 JS_FRIEND_API(bool)
-JS_DefineFunctionsWithHelp(JSContext *cx, JSObject *obj_, const JSFunctionSpecWithHelp *fs)
+JS_DefineFunctionsWithHelp(JSContext *cx, JSObject *objArg, const JSFunctionSpecWithHelp *fs)
 {
-    RootedObject obj(cx, obj_);
-
+    RootedObject obj(cx, objArg);
     JS_ASSERT(cx->compartment != cx->runtime->atomsCompartment);
 
     CHECK_REQUEST(cx);
     assertSameCompartment(cx, obj);
     for (; fs->name; fs++) {
-        JSAtom *atom = js_Atomize(cx, fs->name, strlen(fs->name));
+        JSAtom *atom = Atomize(cx, fs->name, strlen(fs->name));
         if (!atom)
             return false;
 
@@ -283,7 +292,7 @@ AutoSwitchCompartment::AutoSwitchCompartment(JSContext *cx, JSCompartment *newCo
     cx->setCompartment(newCompartment);
 }
 
-AutoSwitchCompartment::AutoSwitchCompartment(JSContext *cx, JSObject *target
+AutoSwitchCompartment::AutoSwitchCompartment(JSContext *cx, JSHandleObject target
                                              JS_GUARD_OBJECT_NOTIFIER_PARAM_NO_INIT)
   : cx(cx), oldCompartment(cx->compartment)
 {
@@ -310,37 +319,37 @@ js::IsAtomsCompartment(const JSCompartment *c)
 }
 
 JS_FRIEND_API(bool)
-js::IsScopeObject(JSObject *obj)
+js::IsScopeObject(RawObject obj)
 {
     return obj->isScope();
 }
 
 JS_FRIEND_API(JSObject *)
-js::GetObjectParentMaybeScope(JSObject *obj)
+js::GetObjectParentMaybeScope(RawObject obj)
 {
     return obj->enclosingScope();
 }
 
 JS_FRIEND_API(JSObject *)
-js::GetGlobalForObjectCrossCompartment(JSObject *obj)
+js::GetGlobalForObjectCrossCompartment(RawObject obj)
 {
     return &obj->global();
 }
 
 JS_FRIEND_API(void)
-js::NotifyAnimationActivity(JSObject *obj)
+js::NotifyAnimationActivity(RawObject obj)
 {
     obj->compartment()->lastAnimationTime = PRMJ_Now();
 }
 
 JS_FRIEND_API(uint32_t)
-js::GetObjectSlotSpan(JSObject *obj)
+js::GetObjectSlotSpan(RawObject obj)
 {
     return obj->slotSpan();
 }
 
 JS_FRIEND_API(bool)
-js::IsObjectInContextCompartment(const JSObject *obj, const JSContext *cx)
+js::IsObjectInContextCompartment(RawObject obj, const JSContext *cx)
 {
     return obj->compartment() == cx->compartment;
 }
@@ -352,27 +361,25 @@ js::IsOriginalScriptFunction(JSFunction *fun)
 }
 
 JS_FRIEND_API(JSFunction *)
-js::DefineFunctionWithReserved(JSContext *cx, JSObject *obj_, const char *name, JSNative call,
+js::DefineFunctionWithReserved(JSContext *cx, JSObject *objArg, const char *name, JSNative call,
                                unsigned nargs, unsigned attrs)
 {
-    RootedObject obj(cx, obj_);
-
+    RootedObject obj(cx, objArg);
     JS_THREADSAFE_ASSERT(cx->compartment != cx->runtime->atomsCompartment);
     CHECK_REQUEST(cx);
     assertSameCompartment(cx, obj);
-    JSAtom *atom = js_Atomize(cx, name, strlen(name));
+    JSAtom *atom = Atomize(cx, name, strlen(name));
     if (!atom)
         return NULL;
     Rooted<jsid> id(cx, AtomToId(atom));
-    return js_DefineFunction(cx, obj, id, call, nargs, attrs, JSFunction::ExtendedFinalizeKind);
+    return js_DefineFunction(cx, obj, id, call, nargs, attrs, NULL, JSFunction::ExtendedFinalizeKind);
 }
 
 JS_FRIEND_API(JSFunction *)
 js::NewFunctionWithReserved(JSContext *cx, JSNative native, unsigned nargs, unsigned flags,
-                            JSObject *parent_, const char *name)
+                            JSObject *parentArg, const char *name)
 {
-    RootedObject parent(cx, parent_);
-
+    RootedObject parent(cx, parentArg);
     JS_THREADSAFE_ASSERT(cx->compartment != cx->runtime->atomsCompartment);
     JSAtom *atom;
 
@@ -382,7 +389,7 @@ js::NewFunctionWithReserved(JSContext *cx, JSNative native, unsigned nargs, unsi
     if (!name) {
         atom = NULL;
     } else {
-        atom = js_Atomize(cx, name, strlen(name));
+        atom = Atomize(cx, name, strlen(name));
         if (!atom)
             return NULL;
     }
@@ -392,11 +399,10 @@ js::NewFunctionWithReserved(JSContext *cx, JSNative native, unsigned nargs, unsi
 }
 
 JS_FRIEND_API(JSFunction *)
-js::NewFunctionByIdWithReserved(JSContext *cx, JSNative native, unsigned nargs, unsigned flags, JSObject *parent_,
+js::NewFunctionByIdWithReserved(JSContext *cx, JSNative native, unsigned nargs, unsigned flags, JSObject *parentArg,
                                 jsid id)
 {
-    RootedObject parent(cx, parent_);
-
+    RootedObject parent(cx, parentArg);
     JS_ASSERT(JSID_IS_STRING(id));
     JS_THREADSAFE_ASSERT(cx->compartment != cx->runtime->atomsCompartment);
     CHECK_REQUEST(cx);
@@ -407,13 +413,13 @@ js::NewFunctionByIdWithReserved(JSContext *cx, JSNative native, unsigned nargs, 
 }
 
 JS_FRIEND_API(JSObject *)
-js::InitClassWithReserved(JSContext *cx, JSObject *obj_, JSObject *parent_proto,
+js::InitClassWithReserved(JSContext *cx, JSObject *objArg, JSObject *parent_protoArg,
                           JSClass *clasp, JSNative constructor, unsigned nargs,
                           JSPropertySpec *ps, JSFunctionSpec *fs,
                           JSPropertySpec *static_ps, JSFunctionSpec *static_fs)
 {
-    RootedObject obj(cx, obj_);
-
+    RootedObject obj(cx, objArg);
+    RootedObject parent_proto(cx, parent_protoArg);
     CHECK_REQUEST(cx);
     assertSameCompartment(cx, obj, parent_proto);
     return js_InitClass(cx, obj, parent_proto, Valueify(clasp), constructor,
@@ -422,32 +428,36 @@ js::InitClassWithReserved(JSContext *cx, JSObject *obj_, JSObject *parent_proto,
 }
 
 JS_FRIEND_API(const Value &)
-js::GetFunctionNativeReserved(JSObject *fun, size_t which)
+js::GetFunctionNativeReserved(RawObject fun, size_t which)
 {
     JS_ASSERT(fun->toFunction()->isNative());
     return fun->toFunction()->getExtendedSlot(which);
 }
 
 JS_FRIEND_API(void)
-js::SetFunctionNativeReserved(JSObject *fun, size_t which, const Value &val)
+js::SetFunctionNativeReserved(RawObject fun, size_t which, const Value &val)
 {
     JS_ASSERT(fun->toFunction()->isNative());
     fun->toFunction()->setExtendedSlot(which, val);
 }
 
 JS_FRIEND_API(void)
-js::SetReservedSlotWithBarrier(JSObject *obj, size_t slot, const js::Value &value)
+js::SetReservedSlotWithBarrier(RawObject obj, size_t slot, const js::Value &value)
 {
     obj->setSlot(slot, value);
 }
 
 JS_FRIEND_API(bool)
-js::GetGeneric(JSContext *cx, JSObject *obj, JSObject *receiver_, jsid id_,
+js::GetGeneric(JSContext *cx, JSObject *objArg, JSObject *receiverArg, jsid idArg,
                Value *vp)
 {
-    RootedObject receiver(cx, receiver_);
-    RootedId id(cx, id_);
-    return obj->getGeneric(cx, receiver, id, vp);
+    RootedObject obj(cx, objArg), receiver(cx, receiverArg);
+    RootedId id(cx, idArg);
+    RootedValue value(cx);
+    if (!JSObject::getGeneric(cx, obj, receiver, id, &value))
+        return false;
+    *vp = value;
+    return true;
 }
 
 void
@@ -469,7 +479,9 @@ JS_GetE4XObjectsCreated(JSContext *)
     return sE4XObjectsCreated;
 }
 
+namespace js {
 extern size_t sSetProtoCalled;
+}
 
 JS_FRIEND_API(size_t)
 JS_SetProtoCalled(JSContext *)
@@ -525,6 +537,14 @@ js::VisitGrayWrapperTargets(JSCompartment *comp, GCThingCallback *callback, void
         if (thing->isMarked(gc::GRAY))
             callback(closure, thing);
     }
+}
+
+JS_FRIEND_API(JSObject *)
+js::GetWeakmapKeyDelegate(JSObject *key)
+{
+    if (JSWeakmapKeyDelegateOp op = key->getClass()->ext.weakmapKeyDelegateOp)
+        return op(key);
+    return NULL;
 }
 
 JS_FRIEND_API(void)
@@ -776,6 +796,12 @@ SetGCSliceCallback(JSRuntime *rt, GCSliceCallback callback)
     return old;
 }
 
+JS_FRIEND_API(bool)
+WasIncrementalGC(JSRuntime *rt)
+{
+    return rt->gcIsIncremental;
+}
+
 jschar *
 GCDescription::formatMessage(JSRuntime *rt) const
 {
@@ -788,11 +814,24 @@ GCDescription::formatJSON(JSRuntime *rt, uint64_t timestamp) const
     return rt->gcStats.formatJSON(timestamp);
 }
 
+JS_FRIEND_API(AnalysisPurgeCallback)
+SetAnalysisPurgeCallback(JSRuntime *rt, AnalysisPurgeCallback callback)
+{
+    AnalysisPurgeCallback old = rt->analysisPurgeCallback;
+    rt->analysisPurgeCallback = callback;
+    return old;
+}
+
 JS_FRIEND_API(void)
 NotifyDidPaint(JSRuntime *rt)
 {
-    if (rt->gcZeal() == gc::ZealFrameVerifierValue) {
-        gc::VerifyBarriers(rt);
+    if (rt->gcZeal() == gc::ZealFrameVerifierPreValue) {
+        gc::VerifyBarriers(rt, gc::PreBarrierVerifier);
+        return;
+    }
+
+    if (rt->gcZeal() == gc::ZealFrameVerifierPostValue) {
+        gc::VerifyBarriers(rt, gc::PostBarrierVerifier);
         return;
     }
 
@@ -835,7 +874,7 @@ IsIncrementalBarrierNeeded(JSContext *cx)
 }
 
 JS_FRIEND_API(bool)
-IsIncrementalBarrierNeededOnObject(JSObject *obj)
+IsIncrementalBarrierNeededOnObject(RawObject obj)
 {
     return obj->compartment()->needsBarrier();
 }
@@ -884,7 +923,7 @@ PokeGC(JSRuntime *rt)
 JS_FRIEND_API(JSObject *)
 GetTestingFunctions(JSContext *cx)
 {
-    JSObject *obj = JS_NewObject(cx, NULL, NULL, NULL);
+    RootedObject obj(cx, JS_NewObject(cx, NULL, NULL, NULL));
     if (!obj)
         return NULL;
 
@@ -905,6 +944,46 @@ JS_FRIEND_API(void)
 EnableRuntimeProfilingStack(JSRuntime *rt, bool enabled)
 {
     rt->spsProfiler.enable(enabled);
+}
+
+JS_FRIEND_API(jsbytecode*)
+ProfilingGetPC(JSRuntime *rt, JSScript *script, void *ip)
+{
+    return rt->spsProfiler.ipToPC(script, size_t(ip));
+}
+
+JS_FRIEND_API(void)
+SetDOMCallbacks(JSRuntime *rt, const DOMCallbacks *callbacks)
+{
+    rt->DOMcallbacks = callbacks;
+}
+
+JS_FRIEND_API(const DOMCallbacks *)
+GetDOMCallbacks(JSRuntime *rt)
+{
+    return rt->DOMcallbacks;
+}
+
+static void *gListBaseHandlerFamily = NULL;
+static uint32_t gListBaseExpandoSlot = 0;
+
+JS_FRIEND_API(void)
+SetListBaseInformation(void *listBaseHandlerFamily, uint32_t listBaseExpandoSlot)
+{
+    gListBaseHandlerFamily = listBaseHandlerFamily;
+    gListBaseExpandoSlot = listBaseExpandoSlot;
+}
+
+void *
+GetListBaseHandlerFamily()
+{
+    return gListBaseHandlerFamily;
+}
+
+uint32_t
+GetListBaseExpandoSlot()
+{
+    return gListBaseExpandoSlot;
 }
 
 } // namespace js

@@ -2,7 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DEPTH = ../..
+DEPTH = @DEPTH@
 topsrcdir = @top_srcdir@
 srcdir = @srcdir@
 VPATH = @srcdir@
@@ -14,6 +14,8 @@ STL_FLAGS =
 CPP_UNIT_TESTS = \
   TestCheckedInt.cpp \
   TestTypeTraits.cpp \
+  TestSHA1.cpp \
+  TestWeakPtr.cpp \
   $(NULL)
 
 # in order to prevent rules.mk from trying to link to libraries that are
@@ -27,4 +29,4 @@ WRAP_LDFLAGS=
 
 include $(topsrcdir)/config/rules.mk
 
-LIBS=
+LIBS= $(call EXPAND_LIBNAME_PATH,mfbt,$(DEPTH)/mfbt)

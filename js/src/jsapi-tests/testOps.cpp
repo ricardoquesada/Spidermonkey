@@ -11,10 +11,12 @@
 #include "tests.h"
 
 static JSBool
-my_convert(JSContext* context, JS::HandleObject obj, JSType type, jsval* rval)
+my_convert(JSContext* context, JS::HandleObject obj, JSType type, JS::MutableHandleValue rval)
 {
-    if (type == JSTYPE_VOID || type == JSTYPE_STRING || type == JSTYPE_NUMBER || type == JSTYPE_BOOLEAN)
-        return JS_NewNumberValue(context, 123, rval);
+    if (type == JSTYPE_VOID || type == JSTYPE_STRING || type == JSTYPE_NUMBER || type == JSTYPE_BOOLEAN) {
+        rval.set(JS_NumberValue(123));
+        return JS_TRUE;
+    }
     return JS_FALSE;
 }
 
@@ -42,8 +44,8 @@ createMyObject(JSContext* context, unsigned argc, jsval *vp)
 
 static JSFunctionSpec s_functions[] =
 {
-    { "createMyObject", createMyObject, 0 },
-    { 0,0,0,0 }
+    JS_FN("createMyObject", createMyObject, 0, 0),
+    JS_FS_END
 };
 
 BEGIN_TEST(testOps_bug559006)
@@ -53,8 +55,8 @@ BEGIN_TEST(testOps_bug559006)
     EXEC("function main() { while(1) return 0 + createMyObject(); }");
 
     for (int i = 0; i < 9; i++) {
-        jsvalRoot rval(cx);
-        CHECK(JS_CallFunctionName(cx, global, "main", 0, NULL, rval.addr()));
+        JS::RootedValue rval(cx);
+        CHECK(JS_CallFunctionName(cx, global, "main", 0, NULL, rval.address()));
         CHECK_SAME(rval, INT_TO_JSVAL(123));
     }
     return true;

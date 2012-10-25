@@ -299,7 +299,7 @@ UncachedInlineCall(VMFrame &f, InitialFrameFlags initial,
      * will be constructing a new type object for 'this'.
      */
     if (!newType) {
-        if (JITScript *jit = newscript->getJIT(regs.fp()->isConstructing(), cx->compartment->needsBarrier())) {
+        if (JITScript *jit = newscript->getJIT(regs.fp()->isConstructing(), cx->compartment->compileBarriers())) {
             if (jit->invokeEntry) {
                 *pret = jit->invokeEntry;
 
@@ -867,7 +867,10 @@ js_InternalInterpret(void *returnData, void *returnType, void *returnReg, js::VM
         if (!obj)
             return js_InternalThrow(f);
         fp->thisValue() = ObjectValue(*obj);
+        /* FALLTHROUGH */
+      }
 
+      case REJOIN_THIS_CREATED: {
         Probes::enterScript(f.cx, f.script(), f.script()->function(), fp);
 
         if (script->debugMode) {
@@ -875,9 +878,13 @@ js_InternalInterpret(void *returnData, void *returnType, void *returnReg, js::VM
             switch (status) {
               case JSTRAP_CONTINUE:
                 break;
-              case JSTRAP_RETURN:
-                *f.returnAddressLocation() = f.cx->jaegerRuntime().forceReturnFromExternC();
-                return NULL;
+              case JSTRAP_RETURN: {
+                /* Advance to the JSOP_STOP at the end of the script. */
+                f.regs.pc = script->code + script->length - 1;
+                nextDepth = 0;
+                JS_ASSERT(*f.regs.pc == JSOP_STOP);
+                break;
+              }
               case JSTRAP_THROW:
               case JSTRAP_ERROR:
                 return js_InternalThrow(f);
@@ -1005,7 +1012,8 @@ js_InternalInterpret(void *returnData, void *returnType, void *returnReg, js::VM
              * portion of fun_hasInstance.
              */
             if (f.regs.sp[0].isPrimitive()) {
-                js_ReportValueError(cx, JSMSG_BAD_PROTOTYPE, -1, f.regs.sp[-1], NULL);
+                RootedValue val(cx, f.regs.sp[-1]);
+                js_ReportValueError(cx, JSMSG_BAD_PROTOTYPE, -1, val, NullPtr());
                 return js_InternalThrow(f);
             }
             nextsp[-1].setBoolean(js_IsDelegate(cx, &f.regs.sp[0].toObject(), f.regs.sp[-2]));

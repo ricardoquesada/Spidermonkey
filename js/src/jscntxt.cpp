@@ -58,6 +58,8 @@
 #include "jscompartment.h"
 #include "jsobjinlines.h"
 
+#include "selfhosted.out.h"
+
 using namespace js;
 using namespace js::gc;
 
@@ -201,10 +203,78 @@ JSRuntime::createJaegerRuntime(JSContext *cx)
 }
 #endif
 
-JSScript *
-js_GetCurrentScript(JSContext *cx)
+
+static JSClass self_hosting_global_class = {
+    "self-hosting-global", JSCLASS_GLOBAL_FLAGS,
+    JS_PropertyStub,  JS_PropertyStub,
+    JS_PropertyStub,  JS_StrictPropertyStub,
+    JS_EnumerateStub, JS_ResolveStub,
+    JS_ConvertStub,   NULL
+};
+bool
+JSRuntime::initSelfHosting(JSContext *cx)
 {
-    return cx->hasfp() ? cx->fp()->maybeScript() : NULL;
+    JS_ASSERT(!selfHostedGlobal_);
+    RootedObject savedGlobal(cx, JS_GetGlobalObject(cx));
+    if (!(selfHostedGlobal_ = JS_NewGlobalObject(cx, &self_hosting_global_class, NULL)))
+        return false;
+    JS_SetGlobalObject(cx, selfHostedGlobal_);
+
+    const char *src = selfhosted::raw_sources;
+    uint32_t srcLen = selfhosted::GetRawScriptsSize();
+
+    CompileOptions options(cx);
+    options.setFileAndLine("self-hosted", 1);
+    options.setSelfHostingMode(true);
+
+    RootedObject shg(cx, selfHostedGlobal_);
+    Value rv;
+    if (!Evaluate(cx, shg, options, src, srcLen, &rv))
+        return false;
+
+    JS_SetGlobalObject(cx, savedGlobal);
+    return true;
+}
+
+void
+JSRuntime::markSelfHostedGlobal(JSTracer *trc)
+{
+    MarkObjectRoot(trc, &selfHostedGlobal_, "self-hosting global");
+}
+
+JSFunction *
+JSRuntime::getSelfHostedFunction(JSContext *cx, const char *name)
+{
+    RootedObject holder(cx, cx->global()->getIntrinsicsHolder());
+    JSAtom *atom = Atomize(cx, name, strlen(name));
+    if (!atom)
+        return NULL;
+    Value funVal = NullValue();
+    JSAutoByteString bytes;
+    if (!cloneSelfHostedValueById(cx, AtomToId(atom), holder, &funVal))
+        return NULL;
+    return funVal.toObject().toFunction();
+}
+
+bool
+JSRuntime::cloneSelfHostedValueById(JSContext *cx, jsid id, HandleObject holder, Value *vp)
+{
+    Value funVal;
+    {
+        RootedObject shg(cx, selfHostedGlobal_);
+        AutoCompartment ac(cx, shg);
+        if (!JS_GetPropertyById(cx, shg, id, &funVal) || !funVal.isObject())
+            return false;
+    }
+
+    RootedObject clone(cx, JS_CloneFunctionObject(cx, &funVal.toObject(), cx->global()));
+    if (!clone)
+        return false;
+
+    vp->setObjectOrNull(clone);
+    DebugOnly<bool> ok = JS_DefinePropertyById(cx, holder, id, *vp, NULL, NULL, 0);
+    JS_ASSERT(ok);
+    return true;
 }
 
 JSContext *
@@ -234,11 +304,11 @@ js::NewContext(JSRuntime *rt, size_t stackChunkSize)
 
     /*
      * If cx is the first context on this runtime, initialize well-known atoms,
-     * keywords, numbers, and strings.  If one of these steps should fail, the
-     * runtime will be left in a partially initialized state, with zeroes and
-     * nulls stored in the default-initialized remainder of the struct.  We'll
-     * clean the runtime up under DestroyContext, because cx will be "last"
-     * as well as "first".
+     * keywords, numbers, strings and self-hosted scripts. If one of these
+     * steps should fail, the runtime will be left in a partially initialized
+     * state, with zeroes and nulls stored in the default-initialized remainder
+     * of the struct. We'll clean the runtime up under DestroyContext, because
+     * cx will be "last" as well as "first".
      */
     if (first) {
 #ifdef JS_THREADSAFE
@@ -247,6 +317,8 @@ js::NewContext(JSRuntime *rt, size_t stackChunkSize)
         bool ok = rt->staticStrings.init(cx);
         if (ok)
             ok = InitCommonAtoms(cx);
+        if (ok)
+            ok = rt->initSelfHosting(cx);
 
 #ifdef JS_THREADSAFE
         JS_EndRequest(cx);
@@ -384,15 +456,15 @@ static void
 PopulateReportBlame(JSContext *cx, JSErrorReport *report)
 {
     /*
-     * Walk stack until we find a frame that is associated with some script
-     * rather than a native frame.
+     * Walk stack until we find a frame that is associated with a non-builtin
+     * rather than a builtin frame.
      */
-    ScriptFrameIter iter(cx);
+    NonBuiltinScriptFrameIter iter(cx);
     if (iter.done())
         return;
 
     report->filename = iter.script()->filename;
-    report->lineno = PCToLineNumber(iter.script(), iter.pc());
+    report->lineno = PCToLineNumber(iter.script(), iter.pc(), &report->column);
     report->originPrincipals = iter.script()->originPrincipals;
 }
 
@@ -538,10 +610,10 @@ namespace js {
 
 /* |callee| requires a usage string provided by JS_DefineFunctionsWithHelp. */
 void
-ReportUsageError(JSContext *cx, JSObject *callee, const char *msg)
+ReportUsageError(JSContext *cx, HandleObject callee, const char *msg)
 {
     const char *usageStr = "usage";
-    PropertyName *usageAtom = js_Atomize(cx, usageStr, strlen(usageStr))->asPropertyName();
+    PropertyName *usageAtom = Atomize(cx, usageStr, strlen(usageStr))->asPropertyName();
     DebugOnly<Shape *> shape = callee->nativeLookup(cx, NameToId(usageAtom));
     JS_ASSERT(!shape->configurable());
     JS_ASSERT(!shape->writable());
@@ -594,6 +666,8 @@ js_ExpandErrorArguments(JSContext *cx, JSErrorCallback callback,
     else
         efs = callback(userRef, NULL, errorNumber);
     if (efs) {
+        reportp->exnType = efs->exnType;
+
         size_t totalArgsLength = 0;
         size_t argLengths[10]; /* only {0} thru {9} supported */
         argCount = efs->argCount;
@@ -808,8 +882,8 @@ js_ReportIsNotDefined(JSContext *cx, const char *name)
 }
 
 JSBool
-js_ReportIsNullOrUndefined(JSContext *cx, int spindex, const Value &v,
-                           JSString *fallback)
+js_ReportIsNullOrUndefined(JSContext *cx, int spindex, HandleValue v,
+                           HandleString fallback)
 {
     char *bytes;
     JSBool ok;
@@ -842,16 +916,16 @@ js_ReportIsNullOrUndefined(JSContext *cx, int spindex, const Value &v,
 }
 
 void
-js_ReportMissingArg(JSContext *cx, const Value &v, unsigned arg)
+js_ReportMissingArg(JSContext *cx, HandleValue v, unsigned arg)
 {
     char argbuf[11];
     char *bytes;
-    JSAtom *atom;
+    RootedAtom atom(cx);
 
     JS_snprintf(argbuf, sizeof argbuf, "%u", arg);
     bytes = NULL;
     if (IsFunctionObject(v)) {
-        atom = v.toObject().toFunction()->atom;
+        atom = v.toObject().toFunction()->atom();
         bytes = DecompileValueGenerator(cx, JSDVG_SEARCH_STACK,
                                         v, atom);
         if (!bytes)
@@ -865,7 +939,7 @@ js_ReportMissingArg(JSContext *cx, const Value &v, unsigned arg)
 
 JSBool
 js_ReportValueErrorFlags(JSContext *cx, unsigned flags, const unsigned errorNumber,
-                         int spindex, const Value &v, JSString *fallback,
+                         int spindex, HandleValue v, HandleString fallback,
                          const char *arg1, const char *arg2)
 {
     char *bytes;
@@ -982,9 +1056,11 @@ JSContext::JSContext(JSRuntime *rt)
     rootingUnnecessary(false),
 #endif
     compartment(NULL),
-    stack(thisDuringConstruction()),  /* depends on cx->thread_ */
+    enterCompartmentDepth_(0),
+    savedFrameChains_(),
+    defaultCompartmentObject_(NULL),
+    stack(thisDuringConstruction()),
     parseMapPool_(NULL),
-    globalObject(NULL),
     sharpObjectMap(thisDuringConstruction()),
     argumentFormatMap(NULL),
     lastMessage(NULL),
@@ -1001,7 +1077,6 @@ JSContext::JSContext(JSRuntime *rt)
 #ifdef JS_METHODJIT
     methodJitEnabled(false),
 #endif
-    inferenceEnabled(false),
 #ifdef MOZ_TRACE_JSCALLS
     functionCallback(NULL),
 #endif
@@ -1025,7 +1100,7 @@ JSContext::~JSContext()
 {
     /* Free the stuff hanging off of cx. */
     if (parseMapPool_)
-        Foreground::delete_<ParseMapPool>(parseMapPool_);
+        Foreground::delete_(parseMapPool_);
 
     if (lastMessage)
         Foreground::free_(lastMessage);
@@ -1065,43 +1140,6 @@ RelaxRootChecksForContext(JSContext *cx)
 } /* namespace JS */
 #endif
 
-void
-JSContext::resetCompartment()
-{
-    RootedObject scopeobj(this);
-    if (stack.hasfp()) {
-        scopeobj = fp()->scopeChain();
-    } else {
-        scopeobj = globalObject;
-        if (!scopeobj)
-            goto error;
-
-        /*
-         * Innerize. Assert, but check anyway, that this succeeds. (It
-         * can only fail due to bugs in the engine or embedding.)
-         */
-        scopeobj = GetInnerObject(this, scopeobj);
-        if (!scopeobj)
-            goto error;
-    }
-
-    compartment = scopeobj->compartment();
-    inferenceEnabled = compartment->types.inferenceEnabled;
-
-    if (isExceptionPending())
-        wrapPendingException();
-    updateJITEnabled();
-    return;
-
-error:
-
-    /*
-     * If we try to use the context without a selected compartment,
-     * we will crash.
-     */
-    compartment = NULL;
-}
-
 /*
  * Since this function is only called in the context of a pending exception,
  * the caller must subsequently take an error path. If wrapping fails, it will
@@ -1140,6 +1178,41 @@ JSContext::runningWithTrustedPrincipals() const
     return !compartment || compartment->principals == runtime->trustedPrincipals();
 }
 
+bool
+JSContext::saveFrameChain()
+{
+    if (!stack.saveFrameChain())
+        return false;
+
+    if (!savedFrameChains_.append(SavedFrameChain(compartment, enterCompartmentDepth_))) {
+        stack.restoreFrameChain();
+        return false;
+    }
+
+    if (defaultCompartmentObject_)
+        compartment = defaultCompartmentObject_->compartment();
+    else
+        compartment = NULL;
+    enterCompartmentDepth_ = 0;
+
+    if (isExceptionPending())
+        wrapPendingException();
+    return true;
+}
+
+void
+JSContext::restoreFrameChain()
+{
+    SavedFrameChain sfc = savedFrameChains_.popCopy();
+    compartment = sfc.compartment;
+    enterCompartmentDepth_ = sfc.enterCompartmentCount;
+
+    stack.restoreFrameChain();
+
+    if (isExceptionPending())
+        wrapPendingException();
+}
+
 void
 JSRuntime::setGCMaxMallocBytes(size_t value)
 {
@@ -1155,14 +1228,15 @@ JSRuntime::setGCMaxMallocBytes(size_t value)
 void
 JSRuntime::updateMallocCounter(JSContext *cx, size_t nbytes)
 {
-    /* We tolerate any thread races when updating gcMallocBytes. */
-    ptrdiff_t oldCount = gcMallocBytes;
-    ptrdiff_t newCount = oldCount - ptrdiff_t(nbytes);
-    gcMallocBytes = newCount;
-    if (JS_UNLIKELY(newCount <= 0 && oldCount > 0))
-        onTooMuchMalloc();
-    else if (cx && cx->compartment)
+    if (cx && cx->compartment) {
         cx->compartment->updateMallocCounter(nbytes);
+    } else {
+        ptrdiff_t oldCount = gcMallocBytes;
+        ptrdiff_t newCount = oldCount - ptrdiff_t(nbytes);
+        gcMallocBytes = newCount;
+        if (JS_UNLIKELY(newCount <= 0 && oldCount > 0))
+            onTooMuchMalloc();
+    }
 }
 
 JS_FRIEND_API(void)
@@ -1200,7 +1274,7 @@ void
 JSContext::purge()
 {
     if (!activeCompilations) {
-        Foreground::delete_<ParseMapPool>(parseMapPool_);
+        Foreground::delete_(parseMapPool_);
         parseMapPool_ = NULL;
     }
 }
@@ -1303,8 +1377,8 @@ JSContext::mark(JSTracer *trc)
     /* Stack frames and slots are traced by StackSpace::mark. */
 
     /* Mark other roots-by-definition in the JSContext. */
-    if (globalObject && !hasRunOption(JSOPTION_UNROOTED_GLOBAL))
-        MarkObjectRoot(trc, &globalObject, "global object");
+    if (defaultCompartmentObject_ && !hasRunOption(JSOPTION_UNROOTED_GLOBAL))
+        MarkObjectRoot(trc, &defaultCompartmentObject_, "default compartment object");
     if (isExceptionPending())
         MarkValueRoot(trc, &exception, "exception");
 
