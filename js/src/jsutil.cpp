@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -23,7 +23,101 @@
 #include "js/TemplateLib.h"
 #include "js/Utility.h"
 
+#if USE_ZLIB
+#include "zlib.h"
+#endif
+
 using namespace js;
+
+#if USE_ZLIB
+static void *
+zlib_alloc(void *cx, uInt items, uInt size)
+{
+    return OffTheBooks::malloc_(items * size);
+}
+
+static void
+zlib_free(void *cx, void *addr)
+{
+    Foreground::free_(addr);
+}
+
+bool
+Compressor::init()
+{
+    if (inplen >= UINT32_MAX)
+        return false;
+    zs.zalloc = zlib_alloc;
+    zs.zfree = zlib_free;
+    int ret = deflateInit(&zs, Z_DEFAULT_COMPRESSION);
+    if (ret != Z_OK) {
+        JS_ASSERT(ret == Z_MEM_ERROR);
+        return false;
+    }
+    return true;
+}
+
+bool
+Compressor::compressMore()
+{
+    uInt left = inplen - (zs.next_in - inp);
+    bool done = left <= CHUNKSIZE;
+    if (done)
+        zs.avail_in = left;
+    else if (zs.avail_in == 0)
+        zs.avail_in = CHUNKSIZE;
+    int ret = deflate(&zs, done ? Z_FINISH : Z_NO_FLUSH);
+    if (ret == Z_MEM_ERROR) {
+        zs.avail_out = 0;
+        return false;
+    }
+    if (ret == Z_BUF_ERROR || (done && ret == Z_OK)) {
+        JS_ASSERT(zs.avail_out == 0);
+        return false;
+    }
+    JS_ASSERT_IF(!done, ret == Z_OK);
+    JS_ASSERT_IF(done, ret == Z_STREAM_END);
+    return !done;
+}
+
+size_t
+Compressor::finish()
+{
+    size_t outlen = inplen - zs.avail_out;
+    int ret = deflateEnd(&zs);
+    if (ret != Z_OK) {
+        // If we finished early, we can get a Z_DATA_ERROR.
+        JS_ASSERT(ret == Z_DATA_ERROR);
+        JS_ASSERT(uInt(zs.next_in - inp) < inplen || !zs.avail_out);
+    }
+    return outlen;
+}
+
+bool
+js::DecompressString(const unsigned char *inp, size_t inplen, unsigned char *out, size_t outlen)
+{
+    JS_ASSERT(inplen <= UINT32_MAX);
+    z_stream zs;
+    zs.zalloc = zlib_alloc;
+    zs.zfree = zlib_free;
+    zs.opaque = NULL;
+    zs.next_in = (Bytef *)inp;
+    zs.avail_in = inplen;
+    zs.next_out = out;
+    JS_ASSERT(outlen);
+    zs.avail_out = outlen;
+    int ret = inflateInit(&zs);
+    if (ret != Z_OK) {
+        JS_ASSERT(ret == Z_MEM_ERROR);
+        return false;
+    }
+    ret = inflate(&zs, Z_FINISH);
+    JS_ASSERT(ret == Z_STREAM_END);
+    ret = inflateEnd(&zs);
+    JS_ASSERT(ret == Z_OK);
+    return true;
+}
+#endif
 
 #ifdef DEBUG
 /* For JS_OOM_POSSIBLY_FAIL in jsutil.h. */
@@ -79,11 +173,11 @@ ValToBin(unsigned logscale, uint32_t val)
     if (val <= 1)
         return val;
     bin = (logscale == 10)
-          ? (unsigned) ceil(log10((double) val))
-          : (logscale == 2)
-          ? (unsigned) JS_CEILING_LOG2W(val)
-          : val;
-    return JS_MIN(bin, 10);
+        ? (unsigned) ceil(log10((double) val))
+        : (logscale == 2)
+        ? (unsigned) JS_CEILING_LOG2W(val)
+        : val;
+    return Min(bin, 10U);
 }
 
 void

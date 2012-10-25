@@ -1,4 +1,4 @@
-verifybarriers()
+verifyprebarriers()
 x = []
 function z() {}
 Object.defineProperty(x, 2, {

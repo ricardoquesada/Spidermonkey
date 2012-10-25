@@ -12,7 +12,7 @@
 #include "jscntxt.h"
 #include "jsobj.h"
 
-#include "js/HashTable.h"
+#include "mozilla/FloatingPoint.h"
 
 namespace js {
 
@@ -32,6 +32,8 @@ class HashableValue {
         typedef HashableValue Lookup;
         static HashNumber hash(const Lookup &v) { return v.hash(); }
         static bool match(const HashableValue &k, const Lookup &l) { return k.equals(l); }
+        static bool isEmpty(const HashableValue &v) { return v.value.isMagic(JS_HASH_KEY_EMPTY); }
+        static void makeEmpty(HashableValue *vp) { vp->value = MagicValue(JS_HASH_KEY_EMPTY); }
     };
 
     HashableValue() : value(UndefinedValue()) {}
@@ -40,6 +42,7 @@ class HashableValue {
     HashNumber hash() const;
     bool equals(const HashableValue &other) const;
     HashableValue mark(JSTracer *trc) const;
+    Value get() const { return value.get(); }
 
     class AutoRooter : private AutoGCRooter
     {
@@ -61,30 +64,47 @@ class HashableValue {
     };
 };
 
-typedef HashMap<HashableValue,
-                RelocatableValue,
-                HashableValue::Hasher,
-                RuntimeAllocPolicy> ValueMap;
-typedef HashSet<HashableValue,
-                HashableValue::Hasher,
-                RuntimeAllocPolicy> ValueSet;
+template <class Key, class Value, class OrderedHashPolicy, class AllocPolicy>
+class OrderedHashMap;
+
+template <class T, class OrderedHashPolicy, class AllocPolicy>
+class OrderedHashSet;
+
+typedef OrderedHashMap<HashableValue,
+                       RelocatableValue,
+                       HashableValue::Hasher,
+                       RuntimeAllocPolicy> ValueMap;
+
+typedef OrderedHashSet<HashableValue,
+                       HashableValue::Hasher,
+                       RuntimeAllocPolicy> ValueSet;
 
 class MapObject : public JSObject {
   public:
     static JSObject *initClass(JSContext *cx, JSObject *obj);
     static Class class_;
   private:
-    typedef ValueMap Data;
     static JSFunctionSpec methods[];
     ValueMap *getData() { return static_cast<ValueMap *>(getPrivate()); }
+    static ValueMap & extract(CallReceiver call);
     static void mark(JSTracer *trc, JSObject *obj);
     static void finalize(FreeOp *fop, JSObject *obj);
     static JSBool construct(JSContext *cx, unsigned argc, Value *vp);
+
+    static bool is(const Value &v);
+
+    static bool size_impl(JSContext *cx, CallArgs args);
     static JSBool size(JSContext *cx, unsigned argc, Value *vp);
+    static bool get_impl(JSContext *cx, CallArgs args);
     static JSBool get(JSContext *cx, unsigned argc, Value *vp);
+    static bool has_impl(JSContext *cx, CallArgs args);
     static JSBool has(JSContext *cx, unsigned argc, Value *vp);
+    static bool set_impl(JSContext *cx, CallArgs args);
     static JSBool set(JSContext *cx, unsigned argc, Value *vp);
+    static bool delete_impl(JSContext *cx, CallArgs args);
     static JSBool delete_(JSContext *cx, unsigned argc, Value *vp);
+    static bool iterator_impl(JSContext *cx, CallArgs args);
+    static JSBool iterator(JSContext *cx, unsigned argc, Value *vp);
 };
 
 class SetObject : public JSObject {
@@ -92,16 +112,25 @@ class SetObject : public JSObject {
     static JSObject *initClass(JSContext *cx, JSObject *obj);
     static Class class_;
   private:
-    typedef ValueSet Data;
     static JSFunctionSpec methods[];
     ValueSet *getData() { return static_cast<ValueSet *>(getPrivate()); }
+    static ValueSet & extract(CallReceiver call);
     static void mark(JSTracer *trc, JSObject *obj);
     static void finalize(FreeOp *fop, JSObject *obj);
     static JSBool construct(JSContext *cx, unsigned argc, Value *vp);
+
+    static bool is(const Value &v);
+
+    static bool size_impl(JSContext *cx, CallArgs args);
     static JSBool size(JSContext *cx, unsigned argc, Value *vp);
+    static bool has_impl(JSContext *cx, CallArgs args);
     static JSBool has(JSContext *cx, unsigned argc, Value *vp);
+    static bool add_impl(JSContext *cx, CallArgs args);
     static JSBool add(JSContext *cx, unsigned argc, Value *vp);
+    static bool delete_impl(JSContext *cx, CallArgs args);
     static JSBool delete_(JSContext *cx, unsigned argc, Value *vp);
+    static bool iterator_impl(JSContext *cx, CallArgs args);
+    static JSBool iterator(JSContext *cx, unsigned argc, Value *vp);
 };
 
 } /* namespace js */

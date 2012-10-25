@@ -20,25 +20,34 @@ static JSClass CustomClass = {
 
 static const uint32_t CUSTOM_SLOT = 0;
 
+static bool
+IsCustomClass(const Value &v)
+{
+  return v.isObject() && JS_GetClass(&v.toObject()) == &CustomClass;
+}
+
+static bool
+CustomMethodImpl(JSContext *cx, CallArgs args)
+{
+  JS_ASSERT(IsCustomClass(args.thisv()));
+  args.rval().set(JS_GetReservedSlot(&args.thisv().toObject(), CUSTOM_SLOT));
+  return true;
+}
+
 static JSBool
 CustomMethod(JSContext *cx, unsigned argc, Value *vp)
 {
-  const Value &thisv = JS_THIS_VALUE(cx, vp);
-  JSObject *thisObj;
-  if (!thisv.isObject() || JS_GetClass((thisObj = &thisv.toObject())) != &CustomClass)
-    return JS_CallNonGenericMethodOnProxy(cx, argc, vp, CustomMethod, &CustomClass);
-
-  JS_SET_RVAL(cx, vp, JS_GetReservedSlot(thisObj, CUSTOM_SLOT));
-  return true;
+  CallArgs args = CallArgsFromVp(argc, vp);
+  return CallNonGenericMethod(cx, IsCustomClass, CustomMethodImpl, args);
 }
 
 BEGIN_TEST(test_CallNonGenericMethodOnProxy)
 {
   // Create the first global object and compartment
-  JSObject *globalA = JS_NewGlobalObject(cx, getGlobalClass(), NULL);
+  JS::RootedObject globalA(cx, JS_NewGlobalObject(cx, getGlobalClass(), NULL));
   CHECK(globalA);
 
-  JSObject *customA = JS_NewObject(cx, &CustomClass, NULL, NULL);
+  JS::RootedObject customA(cx, JS_NewObject(cx, &CustomClass, NULL, NULL));
   CHECK(customA);
   JS_SetReservedSlot(customA, CUSTOM_SLOT, Int32Value(17));
 
@@ -51,14 +60,12 @@ BEGIN_TEST(test_CallNonGenericMethodOnProxy)
 
   // Now create the second global object and compartment...
   {
-    JSObject *globalB = JS_NewGlobalObject(cx, getGlobalClass(), NULL);
+    JS::RootedObject globalB(cx, JS_NewGlobalObject(cx, getGlobalClass(), NULL));
     CHECK(globalB);
 
     // ...and enter it.
-    JSAutoEnterCompartment enter;
-    CHECK(enter.enter(cx, globalB));
-
-    JSObject *customB = JS_NewObject(cx, &CustomClass, NULL, NULL);
+    JSAutoCompartment enter(cx, globalB);
+    JS::RootedObject customB(cx, JS_NewObject(cx, &CustomClass, NULL, NULL));
     CHECK(customB);
     JS_SetReservedSlot(customB, CUSTOM_SLOT, Int32Value(42));
 
@@ -69,8 +76,8 @@ BEGIN_TEST(test_CallNonGenericMethodOnProxy)
     CHECK(JS_CallFunction(cx, customB, customMethodB, 0, NULL, &rval));
     CHECK_SAME(rval, Int32Value(42));
 
-    JSObject *wrappedCustomA = customA;
-    CHECK(JS_WrapObject(cx, &wrappedCustomA));
+    JS::RootedObject wrappedCustomA(cx, customA);
+    CHECK(JS_WrapObject(cx, wrappedCustomA.address()));
 
     jsval rval2;
     CHECK(JS_CallFunction(cx, wrappedCustomA, customMethodB, 0, NULL, &rval2));

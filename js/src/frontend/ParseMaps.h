@@ -15,10 +15,22 @@
 #include "js/Vector.h"
 
 namespace js {
+namespace frontend {
 
 struct Definition;
+class DefinitionList;
 
+typedef InlineMap<JSAtom *, jsatomid, 24> AtomIndexMap;
+typedef InlineMap<JSAtom *, Definition *, 24> AtomDefnMap;
 typedef InlineMap<JSAtom *, DefinitionList, 24> AtomDefnListMap;
+
+/*
+ * For all unmapped atoms recorded in al, add a mapping from the atom's index
+ * to its address. map->length must already be set to the number of atoms in
+ * the list and map->vector must point to pre-allocated memory.
+ */
+void
+InitAtomMap(JSContext *cx, AtomIndexMap *indices, HeapPtr<JSAtom> *atoms);
 
 /*
  * A pool that permits the reuse of the backing storage for the defn, index, or
@@ -310,22 +322,23 @@ class DefinitionList
 #endif
 };
 
-namespace tl {
-
-template <> struct IsPodType<DefinitionList> {
-    static const bool result = true;
-};
-
-} /* namespace tl */
-
 /*
- * Multimap for function-scope atom declarations.
+ * AtomDecls is a map of atoms to (sequences of) Definitions. It is used by
+ * ParseContext to store declarations. A declaration associates a name with a
+ * Definition.
+ * 
+ * Declarations with function scope (such as const, var, and function) are
+ * unique in the sense that they override any previous declarations with the
+ * same name. For such declarations, we only need to store a single Definition,
+ * using the method addUnique.
  *
- * Wraps an internal DefinitionList map with multi-map functionality.
- *
- * In the common case, no block scoping is used, and atoms have a single
- * associated definition. In the uncommon (block scoping) case, we map the atom
- * to a chain of definition nodes.
+ * Declarations with block scope (such as let) are slightly more complex. They
+ * override any previous declarations with the same name, but only do so for
+ * the block they are associated with. This is known as shadowing. For such
+ * definitions, we need to store a sequence of Definitions, including those
+ * introduced by previous declarations (and which are now shadowed), using the
+ * method addShadow. When we leave the block associated with the let, the method
+ * remove is used to unshadow the declaration immediately preceding it.
  */
 class AtomDecls
 {
@@ -350,15 +363,14 @@ class AtomDecls
     }
 
     /* Return the definition at the head of the chain for |atom|. */
-    inline Definition *lookupFirst(JSAtom *atom);
+    inline Definition *lookupFirst(JSAtom *atom) const;
 
     /* Perform a lookup that can iterate over the definitions associated with |atom|. */
-    inline DefinitionList::Range lookupMulti(JSAtom *atom);
+    inline DefinitionList::Range lookupMulti(JSAtom *atom) const;
 
     /* Add-or-update a known-unique definition for |atom|. */
     inline bool addUnique(JSAtom *atom, Definition *defn);
     bool addShadow(JSAtom *atom, Definition *defn);
-    bool addHoist(JSAtom *atom, Definition *defn);
 
     /* Updating the definition for an entry that is known to exist is infallible. */
     void updateFirst(JSAtom *atom, Definition *defn) {
@@ -382,7 +394,7 @@ class AtomDecls
         }
     }
 
-    AtomDefnListMap::Range all() {
+    AtomDefnListMap::Range all() const {
         JS_ASSERT(map);
         return map->all();
     }
@@ -400,6 +412,16 @@ typedef AtomIndexMap::Ptr       AtomIndexPtr;
 typedef AtomDefnListMap::Ptr    AtomDefnListPtr;
 typedef AtomDefnListMap::AddPtr AtomDefnListAddPtr;
 typedef AtomDefnListMap::Range  AtomDefnListRange;
+
+} /* namespace frontend */
+
+namespace tl {
+
+template <> struct IsPodType<frontend::DefinitionList> {
+    static const bool result = true;
+};
+
+} /* namespace tl */
 
 } /* namepsace js */
 

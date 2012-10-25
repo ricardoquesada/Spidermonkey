@@ -29,7 +29,7 @@ class nsIXPConnectWrappedJS;
 class nsScriptNameSpaceManager;
 
 #ifndef BAD_TLS_INDEX
-#define BAD_TLS_INDEX ((PRUint32) -1)
+#define BAD_TLS_INDEX ((uint32_t) -1)
 #endif
 
 namespace xpc {
@@ -131,14 +131,14 @@ xpc_FastGetCachedWrapper(nsWrapperCache *cache, JSObject *scope, jsval *vp)
                      "Should never have a slim wrapper when IsDOMBinding()");
         if (wrapper &&
             js::GetObjectCompartment(wrapper) == js::GetObjectCompartment(scope) &&
-            (IS_SLIM_WRAPPER(wrapper) ||
+            (IS_SLIM_WRAPPER(wrapper) || cache->IsDOMBinding() ||
              xpc_OkToHandOutWrapper(cache))) {
             *vp = OBJECT_TO_JSVAL(wrapper);
             return wrapper;
         }
     }
 
-    return nsnull;
+    return nullptr;
 }
 
 // The JS GC marks objects gray that are held alive directly or
@@ -212,7 +212,7 @@ public:
 // If aVariant is an XPCVariant, this marks the object to be in aGeneration.
 // This also unmarks the gray JSObject.
 extern void
-xpc_MarkInCCGeneration(nsISupports* aVariant, PRUint32 aGeneration);
+xpc_MarkInCCGeneration(nsISupports* aVariant, uint32_t aGeneration);
 
 // If aWrappedJS is a JS wrapper, unmark its JSObject.
 extern void
@@ -269,8 +269,8 @@ void SetLocationForGlobal(JSObject *global, nsIURI *locationURI);
  *     interfaceCount are like what nsIClassInfo.getInterfaces returns.
  */
 bool
-DOM_DefineQuickStubs(JSContext *cx, JSObject *proto, PRUint32 flags,
-                     PRUint32 interfaceCount, const nsIID **interfaceArray);
+DOM_DefineQuickStubs(JSContext *cx, JSObject *proto, uint32_t flags,
+                     uint32_t interfaceCount, const nsIID **interfaceArray);
 
 // This reports all the stats in |rtStats| that belong in the "explicit" tree,
 // (which isn't all of them).
@@ -279,56 +279,6 @@ ReportJSRuntimeExplicitTreeStats(const JS::RuntimeStats &rtStats,
                                  const nsACString &rtPath,
                                  nsIMemoryMultiReporterCallback *cb,
                                  nsISupports *closure, size_t *rtTotal = NULL);
-
-/**
- * Convert a jsval to PRInt64. Return true on success.
- */
-inline bool
-ValueToInt64(JSContext *cx, JS::Value v, int64_t *result)
-{
-    if (JSVAL_IS_INT(v)) {
-        int32_t intval;
-        if (!JS_ValueToECMAInt32(cx, v, &intval))
-            return false;
-        *result = static_cast<int64_t>(intval);
-    } else {
-        double doubleval;
-        if (!JS_ValueToNumber(cx, v, &doubleval))
-            return false;
-        // Be careful with non-finite doubles
-        if (NS_finite(doubleval))
-            // XXXbz this isn't quite right either; need to do the mod thing
-            *result = static_cast<int64_t>(doubleval);
-        else
-            *result = 0;
-    }
-    return true;
-}
-
-/**
- * Convert a jsval to uint64_t. Return true on success.
- */
-inline bool
-ValueToUint64(JSContext *cx, JS::Value v, uint64_t *result)
-{
-    if (JSVAL_IS_INT(v)) {
-        uint32_t intval;
-        if (!JS_ValueToECMAUint32(cx, v, &intval))
-            return false;
-        *result = static_cast<uint64_t>(intval);
-    } else {
-        double doubleval;
-        if (!JS_ValueToNumber(cx, v, &doubleval))
-            return false;
-        // Be careful with non-finite doubles
-        if (NS_finite(doubleval))
-            // XXXbz this isn't quite right either; need to do the mod thing
-            *result = static_cast<uint64_t>(doubleval);
-        else
-            *result = 0;
-    }
-    return true;
-}
 
 /**
  * Given an arbitrary object, Unwrap will return the wrapped object if the
@@ -356,14 +306,32 @@ xpc_JSCompartmentParticipant();
 
 namespace mozilla {
 namespace dom {
-namespace binding {
 
 extern int HandlerFamily;
 inline void* ProxyFamily() { return &HandlerFamily; }
-inline bool instanceIsProxy(JSObject *obj)
+
+class DOMBaseProxyHandler : public js::BaseProxyHandler {
+protected:
+    DOMBaseProxyHandler(bool aNewDOMProxy) : js::BaseProxyHandler(ProxyFamily()),
+                                             mNewDOMProxy(aNewDOMProxy)
+    {
+    }
+
+public:
+    bool mNewDOMProxy;
+};
+
+inline bool IsNewProxyBinding(js::BaseProxyHandler* handler)
+{
+  MOZ_ASSERT(handler->family() == ProxyFamily());
+  return static_cast<DOMBaseProxyHandler*>(handler)->mNewDOMProxy;
+}
+
+inline bool IsDOMProxy(JSObject *obj)
 {
     return js::IsProxy(obj) &&
-           js::GetProxyHandler(obj)->family() == ProxyFamily();
+           js::GetProxyHandler(obj)->family() == ProxyFamily() &&
+           IsNewProxyBinding(js::GetProxyHandler(obj));
 }
 
 typedef bool
@@ -377,7 +345,21 @@ extern bool
 DefineConstructor(JSContext *cx, JSObject *obj, DefineInterface aDefine,
                   nsresult *aResult);
 
-} // namespace binding
+namespace oldproxybindings {
+
+inline bool instanceIsProxy(JSObject *obj)
+{
+    return js::IsProxy(obj) &&
+           js::GetProxyHandler(obj)->family() == ProxyFamily() &&
+           !IsNewProxyBinding(js::GetProxyHandler(obj));
+}
+extern bool
+DefineStaticJSVals(JSContext *cx);
+void
+Register(nsScriptNameSpaceManager* aNameSpaceManager);
+
+} // namespace oldproxybindings
+
 } // namespace dom
 } // namespace mozilla
 

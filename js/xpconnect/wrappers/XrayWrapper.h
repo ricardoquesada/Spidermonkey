@@ -7,6 +7,7 @@
 
 #include "jsapi.h"
 #include "jswrapper.h"
+#include "mozilla/GuardObjects.h"
 
 // Xray wrappers re-resolve the original native properties on the native
 // object and always directly access to those properties.
@@ -19,9 +20,9 @@ class XPCWrappedNative;
 namespace xpc {
 
 JSBool
-holder_get(JSContext *cx, JSHandleObject holder, JSHandleId id, jsval *vp);
+holder_get(JSContext *cx, JSHandleObject holder, JSHandleId id, JSMutableHandleValue vp);
 JSBool
-holder_set(JSContext *cx, JSHandleObject holder, JSHandleId id, JSBool strict, jsval *vp);
+holder_set(JSContext *cx, JSHandleObject holder, JSHandleId id, JSBool strict, JSMutableHandleValue vp);
 
 namespace XrayUtils {
 
@@ -100,4 +101,30 @@ public:
 };
 
 extern SandboxProxyHandler sandboxProxyHandler;
+
+class AutoSetWrapperNotShadowing;
+class XPCWrappedNativeXrayTraits;
+
+class ResolvingId {
+public:
+    ResolvingId(JSObject *wrapper, jsid id);
+    ~ResolvingId();
+
+    bool isXrayShadowing(jsid id);
+    bool isResolving(jsid id);
+    static ResolvingId* getResolvingId(JSObject *holder);
+    static JSObject* getHolderObject(JSObject *wrapper);
+    static ResolvingId *getResolvingIdFromWrapper(JSObject *wrapper);
+
+private:
+    friend class AutoSetWrapperNotShadowing;
+    friend class XPCWrappedNativeXrayTraits;
+
+    jsid mId;
+    JSObject *mHolder;
+    ResolvingId *mPrev;
+    bool mXrayShadowing;
+};
+
 }
+

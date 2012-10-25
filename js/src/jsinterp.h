@@ -166,12 +166,12 @@ InvokeConstructor(JSContext *cx, const Value &fval, unsigned argc, Value *argv, 
  * stack to simulate executing an eval in that frame.
  */
 extern bool
-ExecuteKernel(JSContext *cx, JSScript *script, JSObject &scopeChain, const Value &thisv,
+ExecuteKernel(JSContext *cx, HandleScript script, JSObject &scopeChain, const Value &thisv,
               ExecuteType type, StackFrame *evalInFrame, Value *result);
 
 /* Execute a script with the given scopeChain as global code. */
 extern bool
-Execute(JSContext *cx, JSScript *script, JSObject &scopeChain, Value *rval);
+Execute(JSContext *cx, HandleScript script, JSObject &scopeChain, Value *rval);
 
 /* Flags to toggle js::Interpret() execution. */
 enum InterpMode
@@ -234,7 +234,7 @@ class InterpreterFrames {
   public:
     class InterruptEnablerBase {
       public:
-        virtual void enableInterrupts() const = 0;
+        virtual void enable() const = 0;
     };
 
     InterpreterFrames(JSContext *cx, FrameRegs *regs, const InterruptEnablerBase &enabler);
@@ -242,6 +242,7 @@ class InterpreterFrames {
 
     /* If this js::Interpret frame is running |script|, enable interrupts. */
     inline void enableInterruptsIfRunning(JSScript *script);
+    inline void enableInterruptsUnconditionally() { enabler.enable(); }
 
     InterpreterFrames *older;
 
@@ -266,7 +267,7 @@ extern void
 UnwindForUncatchableException(JSContext *cx, const FrameRegs &regs);
 
 extern bool
-OnUnknownMethod(JSContext *cx, HandleObject obj, Value idval, Value *vp);
+OnUnknownMethod(JSContext *cx, HandleObject obj, Value idval, MutableHandleValue vp);
 
 class TryNoteIter
 {

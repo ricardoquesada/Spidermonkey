@@ -44,7 +44,6 @@
 #include "jslibmath.h"
 
 #include "vm/GlobalObject.h"
-#include "vm/MethodGuard.h"
 #include "vm/NumericConversions.h"
 #include "vm/StringBuffer.h"
 
@@ -53,7 +52,6 @@
 #include "jsnuminlines.h"
 #include "jsobjinlines.h"
 
-#include "vm/MethodGuard-inl.h"
 #include "vm/NumberObject-inl.h"
 #include "vm/String-inl.h"
 
@@ -353,7 +351,7 @@ js::num_parseInt(JSContext *cx, unsigned argc, Value *vp)
     if (args.length() == 1 ||
         (args[1].isInt32() && (args[1].toInt32() == 0 || args[1].toInt32() == 10))) {
         if (args[0].isInt32()) {
-            args.rval() = args[0];
+            args.rval().set(args[0]);
             return true;
         }
         /*
@@ -385,7 +383,7 @@ js::num_parseInt(JSContext *cx, unsigned argc, Value *vp)
     }
 
     /* Step 1. */
-    JSString *inputString = ToString(cx, args[0]);
+    RootedString inputString(cx, ToString(cx, args[0]));
     if (!inputString)
         return false;
     args[0].setString(inputString);
@@ -465,19 +463,29 @@ Number(JSContext *cx, unsigned argc, Value *vp)
     return true;
 }
 
-#if JS_HAS_TOSOURCE
-static JSBool
-num_toSource(JSContext *cx, unsigned argc, Value *vp)
+JS_ALWAYS_INLINE bool
+IsNumber(const Value &v)
 {
-    CallArgs args = CallArgsFromVp(argc, vp);
+    return v.isNumber() || (v.isObject() && v.toObject().hasClass(&NumberClass));
+}
 
-    double d;
-    bool ok;
-    if (!BoxedPrimitiveMethodGuard(cx, args, num_toSource, &d, &ok))
-        return ok;
+inline double
+Extract(const Value &v)
+{
+    if (v.isNumber())
+        return v.toNumber();
+    return v.toObject().asNumber().unbox();
+}
+
+#if JS_HAS_TOSOURCE
+JS_ALWAYS_INLINE bool
+num_toSource_impl(JSContext *cx, CallArgs args)
+{
+    double d = Extract(args.thisv());
 
     StringBuffer sb(cx);
-    if (!sb.append("(new Number(") || !NumberValueToStringBuffer(cx, NumberValue(d), sb) ||
+    if (!sb.append("(new Number(") ||
+        !NumberValueToStringBuffer(cx, NumberValue(d), sb) ||
         !sb.append("))"))
     {
         return false;
@@ -488,6 +496,13 @@ num_toSource(JSContext *cx, unsigned argc, Value *vp)
         return false;
     args.rval().setString(str);
     return true;
+}
+
+static JSBool
+num_toSource(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    return CallNonGenericMethod<IsNumber, num_toSource_impl>(cx, args);
 }
 #endif
 
@@ -578,15 +593,12 @@ IntToCString(ToCStringBuf *cbuf, int i, int base = 10)
 static JSString * JS_FASTCALL
 js_NumberToStringWithBase(JSContext *cx, double d, int base);
 
-static JSBool
-num_toString(JSContext *cx, unsigned argc, Value *vp)
+JS_ALWAYS_INLINE bool
+num_toString_impl(JSContext *cx, CallArgs args)
 {
-    CallArgs args = CallArgsFromVp(argc, vp);
+    JS_ASSERT(IsNumber(args.thisv()));
 
-    double d;
-    bool ok;
-    if (!BoxedPrimitiveMethodGuard(cx, args, num_toString, &d, &ok))
-        return ok;
+    double d = Extract(args.thisv());
 
     int32_t base = 10;
     if (args.hasDefined(0)) {
@@ -611,14 +623,18 @@ num_toString(JSContext *cx, unsigned argc, Value *vp)
 }
 
 static JSBool
-num_toLocaleString(JSContext *cx, unsigned argc, Value *vp)
+num_toString(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
+    return CallNonGenericMethod<IsNumber, num_toString_impl>(cx, args);
+}
 
-    double d;
-    bool ok;
-    if (!BoxedPrimitiveMethodGuard(cx, args, num_toLocaleString, &d, &ok))
-        return ok;
+JS_ALWAYS_INLINE bool
+num_toLocaleString_impl(JSContext *cx, CallArgs args)
+{
+    JS_ASSERT(IsNumber(args.thisv()));
+
+    double d = Extract(args.thisv());
 
     Rooted<JSString*> str(cx, js_NumberToStringWithBase(cx, d, 10));
     if (!str) {
@@ -649,7 +665,7 @@ num_toLocaleString(JSContext *cx, unsigned argc, Value *vp)
     int digits = nint - num;
     const char *end = num + digits;
     if (!digits) {
-        args.rval() = StringValue(str);
+        args.rval().setString(str);
         return true;
     }
 
@@ -725,7 +741,7 @@ num_toLocaleString(JSContext *cx, unsigned argc, Value *vp)
         Rooted<Value> v(cx, StringValue(str));
         bool ok = !!cx->localeCallbacks->localeToUnicode(cx, buf, v.address());
         if (ok)
-            args.rval() = v;
+            args.rval().set(v);
         cx->free_(buf);
         return ok;
     }
@@ -735,7 +751,22 @@ num_toLocaleString(JSContext *cx, unsigned argc, Value *vp)
     if (!str)
         return false;
 
-    args.rval() = StringValue(str);
+    args.rval().setString(str);
+    return true;
+}
+
+JSBool
+num_toLocaleString(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    return CallNonGenericMethod<IsNumber, num_toLocaleString_impl>(cx, args);
+}
+
+JS_ALWAYS_INLINE bool
+num_valueOf_impl(JSContext *cx, CallArgs args)
+{
+    JS_ASSERT(IsNumber(args.thisv()));
+    args.rval().setNumber(Extract(args.thisv()));
     return true;
 }
 
@@ -743,16 +774,8 @@ JSBool
 js_num_valueOf(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-
-    double d;
-    bool ok;
-    if (!BoxedPrimitiveMethodGuard(cx, args, js_num_valueOf, &d, &ok))
-        return ok;
-
-    args.rval().setNumber(d);
-    return true;
+    return CallNonGenericMethod<IsNumber, num_valueOf_impl>(cx, args);
 }
-
 
 const unsigned MAX_PRECISION = 100;
 
@@ -767,10 +790,10 @@ ComputePrecisionInRange(JSContext *cx, int minPrecision, int maxPrecision, const
         *precision = int(prec);
         return true;
     }
+
     ToCStringBuf cbuf;
-    char *numStr = IntToCString(&cbuf, *precision);
-    JS_ASSERT(numStr);
-    JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_PRECISION_RANGE, numStr);
+    if (char *numStr = NumberToCString(cx, &cbuf, prec, 10))
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_PRECISION_RANGE, numStr);
     return false;
 }
 
@@ -786,7 +809,7 @@ DToStrResult(JSContext *cx, double d, JSDToStrMode mode, int precision, CallArgs
     JSString *str = js_NewStringCopyZ(cx, numStr);
     if (!str)
         return false;
-    args.rval() = StringValue(str);
+    args.rval().setString(str);
     return true;
 }
 
@@ -794,15 +817,10 @@ DToStrResult(JSContext *cx, double d, JSDToStrMode mode, int precision, CallArgs
  * In the following three implementations, we allow a larger range of precision
  * than ECMA requires; this is permitted by ECMA-262.
  */
-static JSBool
-num_toFixed(JSContext *cx, unsigned argc, Value *vp)
+JS_ALWAYS_INLINE bool
+num_toFixed_impl(JSContext *cx, CallArgs args)
 {
-    CallArgs args = CallArgsFromVp(argc, vp);
-
-    double d;
-    bool ok;
-    if (!BoxedPrimitiveMethodGuard(cx, args, num_toFixed, &d, &ok))
-        return ok;
+    JS_ASSERT(IsNumber(args.thisv()));
 
     int precision;
     if (args.length() == 0) {
@@ -812,18 +830,20 @@ num_toFixed(JSContext *cx, unsigned argc, Value *vp)
             return false;
     }
 
-    return DToStrResult(cx, d, DTOSTR_FIXED, precision, args);
+    return DToStrResult(cx, Extract(args.thisv()), DTOSTR_FIXED, precision, args);
 }
 
-static JSBool
-num_toExponential(JSContext *cx, unsigned argc, Value *vp)
+JSBool
+num_toFixed(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
+    return CallNonGenericMethod<IsNumber, num_toFixed_impl>(cx, args);
+}
 
-    double d;
-    bool ok;
-    if (!BoxedPrimitiveMethodGuard(cx, args, num_toExponential, &d, &ok))
-        return ok;
+JS_ALWAYS_INLINE bool
+num_toExponential_impl(JSContext *cx, CallArgs args)
+{
+    JS_ASSERT(IsNumber(args.thisv()));
 
     JSDToStrMode mode;
     int precision;
@@ -836,18 +856,22 @@ num_toExponential(JSContext *cx, unsigned argc, Value *vp)
             return false;
     }
 
-    return DToStrResult(cx, d, mode, precision + 1, args);
+    return DToStrResult(cx, Extract(args.thisv()), mode, precision + 1, args);
 }
 
-static JSBool
-num_toPrecision(JSContext *cx, unsigned argc, Value *vp)
+JSBool
+num_toExponential(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
+    return CallNonGenericMethod<IsNumber, num_toExponential_impl>(cx, args);
+}
 
-    double d;
-    bool ok;
-    if (!BoxedPrimitiveMethodGuard(cx, args, num_toPrecision, &d, &ok))
-        return ok;
+JS_ALWAYS_INLINE bool
+num_toPrecision_impl(JSContext *cx, CallArgs args)
+{
+    JS_ASSERT(IsNumber(args.thisv()));
+
+    double d = Extract(args.thisv());
 
     if (!args.hasDefined(0)) {
         JSString *str = js_NumberToStringWithBase(cx, d, 10);
@@ -871,6 +895,13 @@ num_toPrecision(JSContext *cx, unsigned argc, Value *vp)
     }
 
     return DToStrResult(cx, d, mode, precision, args);
+}
+
+JSBool
+num_toPrecision(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    return CallNonGenericMethod<IsNumber, num_toPrecision_impl>(cx, args);
 }
 
 static JSFunctionSpec number_methods[] = {
@@ -1126,12 +1157,14 @@ js_InitNumberClass(JSContext *cx, JSObject *obj)
     if (!JS_DefineFunctions(cx, global, number_functions))
         return NULL;
 
+    RootedValue valueNaN(cx, cx->runtime->NaNValue);
+    RootedValue valueInfinity(cx, cx->runtime->positiveInfinityValue);
+
     /* ES5 15.1.1.1, 15.1.1.2 */
-    if (!DefineNativeProperty(cx, global, cx->runtime->atomState.NaNAtom,
-                              cx->runtime->NaNValue, JS_PropertyStub, JS_StrictPropertyStub,
+    if (!DefineNativeProperty(cx, global, cx->runtime->atomState.NaNAtom, valueNaN,
+                              JS_PropertyStub, JS_StrictPropertyStub,
                               JSPROP_PERMANENT | JSPROP_READONLY, 0, 0) ||
-        !DefineNativeProperty(cx, global, cx->runtime->atomState.InfinityAtom,
-                              cx->runtime->positiveInfinityValue,
+        !DefineNativeProperty(cx, global, cx->runtime->atomState.InfinityAtom, valueInfinity,
                               JS_PropertyStub, JS_StrictPropertyStub,
                               JSPROP_PERMANENT | JSPROP_READONLY, 0, 0))
     {
@@ -1366,6 +1399,44 @@ ToNumberSlow(JSContext *cx, Value v, double *out)
     return true;
 }
 
+/*
+ * Convert a value to an int64_t, according to the WebIDL rules for long long
+ * conversion. Return converted value in *out on success, false on failure.
+ */
+JS_PUBLIC_API(bool)
+ToInt64Slow(JSContext *cx, const Value &v, int64_t *out)
+{
+    JS_ASSERT(!v.isInt32());
+    double d;
+    if (v.isDouble()) {
+        d = v.toDouble();
+    } else {
+        if (!ToNumberSlow(cx, v, &d))
+            return false;
+    }
+    *out = ToInt64(d);
+    return true;
+}
+
+/*
+ * Convert a value to an uint64_t, according to the WebIDL rules for unsigned long long
+ * conversion. Return converted value in *out on success, false on failure.
+ */
+JS_PUBLIC_API(bool)
+ToUint64Slow(JSContext *cx, const Value &v, uint64_t *out)
+{
+    JS_ASSERT(!v.isInt32());
+    double d;
+    if (v.isDouble()) {
+        d = v.toDouble();
+    } else {
+        if (!ToNumberSlow(cx, v, &d))
+            return false;
+    }
+    *out = ToUint64(d);
+    return true;
+}
+
 JS_PUBLIC_API(bool)
 ToInt32Slow(JSContext *cx, const Value &v, int32_t *out)
 {
@@ -1381,7 +1452,7 @@ ToInt32Slow(JSContext *cx, const Value &v, int32_t *out)
     return true;
 }
 
-bool
+JS_PUBLIC_API(bool)
 ToUint32Slow(JSContext *cx, const Value &v, uint32_t *out)
 {
     JS_ASSERT(!v.isInt32());
@@ -1396,8 +1467,8 @@ ToUint32Slow(JSContext *cx, const Value &v, uint32_t *out)
     return true;
 }
 
-bool
-ValueToUint16Slow(JSContext *cx, const Value &v, uint16_t *out)
+JS_PUBLIC_API(bool)
+ToUint16Slow(JSContext *cx, const Value &v, uint16_t *out)
 {
     JS_ASSERT(!v.isInt32());
     double d;

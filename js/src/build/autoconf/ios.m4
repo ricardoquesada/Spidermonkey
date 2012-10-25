@@ -27,6 +27,7 @@ MOZ_ARG_WITH_STRING(ios-arch,
                    iOS architecture, defaults to armv7 for device, x86 for simulator],
     ios_arch=$withval)
 
+
 case "$ios_target" in
 iPhoneOS|iPhoneSimulator)
     dnl test for Xcode 4.3+
@@ -90,6 +91,5 @@ iPhoneOS|iPhoneSimulator)
 
     AC_DEFINE(IPHONEOS)
     CROSS_COMPILE=1
-
 esac
 ])

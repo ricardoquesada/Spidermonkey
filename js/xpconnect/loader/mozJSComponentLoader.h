@@ -84,8 +84,8 @@ class mozJSComponentLoader : public mozilla::ModuleLoader,
             loadProc = NULL;
             unloadProc = NULL;
 
-            global = nsnull;
-            location = nsnull;
+            global = nullptr;
+            location = nullptr;
         }
 
         ~ModuleEntry() {
@@ -98,8 +98,7 @@ class mozJSComponentLoader : public mozilla::ModuleLoader,
             if (global) {
                 JSAutoRequest ar(sSelf->mContext);
 
-                JSAutoEnterCompartment ac;
-                ac.enterAndIgnoreErrors(sSelf->mContext, global);
+                JSAutoCompartment ac(sSelf->mContext, global);
 
                 JS_ClearScope(sSelf->mContext, global);
                 JS_RemoveObjectRoot(sSelf->mContext, &global);

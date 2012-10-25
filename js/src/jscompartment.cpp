@@ -41,16 +41,22 @@ JSCompartment::JSCompartment(JSRuntime *rt)
   : rt(rt),
     principals(NULL),
     global_(NULL),
+#ifdef JSGC_GENERATIONAL
+    gcStoreBuffer(&gcNursery),
+#endif
     needsBarrier_(false),
-    gcState(NoGCScheduled),
+    gcScheduled(false),
+    gcState(NoGC),
     gcPreserveCode(false),
     gcBytes(0),
     gcTriggerBytes(0),
     gcHeapGrowthFactor(3.0),
+    gcNextCompartment(NULL),
     hold(false),
     isSystemCompartment(false),
     lastCodeRelease(0),
-    typeLifoAlloc(TYPE_LIFO_ALLOC_PRIMARY_CHUNK_SIZE),
+    analysisLifoAlloc(LIFO_ALLOC_PRIMARY_CHUNK_SIZE),
+    typeLifoAlloc(LIFO_ALLOC_PRIMARY_CHUNK_SIZE),
     data(NULL),
     active(false),
     lastAnimationTime(0),
@@ -63,17 +69,15 @@ JSCompartment::JSCompartment(JSRuntime *rt)
     debugModeBits(rt->debugMode ? DebugFromC : 0),
     watchpointMap(NULL),
     scriptCountsMap(NULL),
-    sourceMapMap(NULL),
     debugScriptMap(NULL)
 {
-    setGCMaxMallocBytes(rt->gcMaxMallocBytes * 0.9);
+    setGCMaxMallocBytes(rt->gcMaxMallocBytes);
 }
 
 JSCompartment::~JSCompartment()
 {
     Foreground::delete_(watchpointMap);
     Foreground::delete_(scriptCountsMap);
-    Foreground::delete_(sourceMapMap);
     Foreground::delete_(debugScriptMap);
 }
 
@@ -89,6 +93,20 @@ JSCompartment::init(JSContext *cx)
     if (!regExps.init(cx))
         return false;
 
+#ifdef JSGC_GENERATIONAL
+    /*
+     * If we are in the middle of post-barrier verification, we need to
+     * immediately begin collecting verification data on new compartments.
+     */
+    if (rt->gcVerifyPostData) {
+        if (!gcNursery.enable())
+            return false;
+
+        if (!gcStoreBuffer.enable())
+            return false;
+    }
+#endif
+
     return debuggees.init();
 }
 
@@ -96,22 +114,27 @@ void
 JSCompartment::setNeedsBarrier(bool needs)
 {
 #ifdef JS_METHODJIT
-    if (needsBarrier_ != needs)
+    /* ClearAllFrames calls compileBarriers() and needs the old value. */
+    bool old = compileBarriers();
+    if (compileBarriers(needs) != old)
         mjit::ClearAllFrames(this);
 #endif
     needsBarrier_ = needs;
 }
 
 static bool
-WrapForSameCompartment(JSContext *cx, JSObject *obj, Value *vp)
+WrapForSameCompartment(JSContext *cx, HandleObject obj, Value *vp)
 {
     JS_ASSERT(cx->compartment == obj->compartment());
-    if (cx->runtime->sameCompartmentWrapObjectCallback) {
-        obj = cx->runtime->sameCompartmentWrapObjectCallback(cx, obj);
-        if (!obj)
-            return false;
+    if (!cx->runtime->sameCompartmentWrapObjectCallback) {
+        vp->setObject(*obj);
+        return true;
     }
-    vp->setObject(*obj);
+
+    JSObject *wrapped = cx->runtime->sameCompartmentWrapObjectCallback(cx, obj);
+    if (!wrapped)
+        return false;
+    vp->setObject(*wrapped);
     return true;
 }
 
@@ -159,14 +182,7 @@ JSCompartment::wrap(JSContext *cx, Value *vp)
      * we parent all wrappers to the global object in their home compartment.
      * This loses us some transparency, and is generally very cheesy.
      */
-    RootedObject global(cx);
-    if (cx->hasfp()) {
-        global = &cx->fp()->global();
-    } else {
-        global = JS_ObjectToInnerObject(cx, cx->globalObject);
-        if (!global)
-            return false;
-    }
+    HandleObject global = cx->global();
 
     /* Unwrap incoming objects. */
     if (vp->isObject()) {
@@ -178,7 +194,7 @@ JSCompartment::wrap(JSContext *cx, Value *vp)
         /* Translate StopIteration singleton. */
         if (obj->isStopIteration()) {
             RootedValue vvp(cx, *vp);
-            bool result = js_FindClassObject(cx, NullPtr(), JSProto_StopIteration, &vvp);
+            bool result = js_FindClassObject(cx, JSProto_StopIteration, &vvp);
             *vp = vvp;
             return result;
         }
@@ -215,7 +231,7 @@ JSCompartment::wrap(JSContext *cx, Value *vp)
         if (vp->isObject()) {
             RootedObject obj(cx, &vp->toObject());
             JS_ASSERT(obj->isCrossCompartmentWrapper());
-            if (global->getClass() != &dummy_class && obj->getParent() != global) {
+            if (obj->getParent() != global) {
                 do {
                     if (!JSObject::setParent(cx, obj, global))
                         return false;
@@ -273,8 +289,6 @@ JSCompartment::wrap(JSContext *cx, Value *vp)
     if (!crossCompartmentWrappers.put(key, *vp))
         return false;
 
-    if (!JSObject::setParent(cx, wrapper, global))
-        return false;
     return true;
 }
 
@@ -424,7 +438,7 @@ JSCompartment::markTypes(JSTracer *trc)
 }
 
 void
-JSCompartment::discardJitCode(FreeOp *fop)
+JSCompartment::discardJitCode(FreeOp *fop, bool discardConstraints)
 {
 #ifdef JS_METHODJIT
 
@@ -461,6 +475,8 @@ JSCompartment::discardJitCode(FreeOp *fop)
              */
             script->resetUseCount();
         }
+
+        types.sweepCompilerOutputs(fop, discardConstraints);
     }
 
 #endif /* JS_METHODJIT */
@@ -480,7 +496,7 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
 {
     {
         gcstats::AutoPhase ap(rt->gcStats, gcstats::PHASE_SWEEP_DISCARD_CODE);
-        discardJitCode(fop);
+        discardJitCode(fop, !activeAnalysis && !gcPreserveCode);
     }
 
     /* This function includes itself in PHASE_SWEEP_TABLES. */
@@ -509,6 +525,7 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
     }
 
     if (!activeAnalysis && !gcPreserveCode) {
+        JS_ASSERT(!types.constrainedOutputs);
         gcstats::AutoPhase ap(rt->gcStats, gcstats::PHASE_DISCARD_ANALYSIS);
 
         /*
@@ -556,12 +573,14 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
             for (CellIterUnderGC i(this, FINALIZE_SCRIPT); !i.done(); i.next()) {
                 JSScript *script = i.get<JSScript>();
                 script->clearAnalysis();
+                script->clearPropertyReadTypes();
             }
         }
 
         {
             gcstats::AutoPhase ap2(rt->gcStats, gcstats::PHASE_FREE_TI_ARENA);
-            oldAlloc.freeAll();
+            rt->freeLifoAlloc.transferFrom(&analysisLifoAlloc);
+            rt->freeLifoAlloc.transferFrom(&oldAlloc);
         }
     }
 
@@ -587,7 +606,7 @@ JSCompartment::sweepCrossCompartmentWrappers()
         JS_ASSERT_IF(!keyMarked && valMarked, key.kind == CrossCompartmentKey::StringWrapper);
         if (!keyMarked || !valMarked || !dbgMarked)
             e.removeFront();
-        else
+        else if (key.wrapped != e.front().key.wrapped || key.debugger != e.front().key.debugger)
             e.rekeyFront(key);
     }
 }
@@ -626,8 +645,7 @@ bool
 JSCompartment::hasScriptsOnStack()
 {
     for (AllFramesIter i(rt->stackSpace); !i.done(); ++i) {
-        JSScript *script = i.fp()->maybeScript();
-        if (script && script->compartment() == this)
+        if (i.fp()->script()->compartment() == this)
             return true;
     }
     return false;

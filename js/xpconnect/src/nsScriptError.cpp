@@ -67,19 +67,19 @@ nsScriptError::GetSourceLine(nsAString& aResult) {
 }
 
 NS_IMETHODIMP
-nsScriptError::GetLineNumber(PRUint32 *result) {
+nsScriptError::GetLineNumber(uint32_t *result) {
     *result = mLineNumber;
     return NS_OK;
 }
 
 NS_IMETHODIMP
-nsScriptError::GetColumnNumber(PRUint32 *result) {
+nsScriptError::GetColumnNumber(uint32_t *result) {
     *result = mColumnNumber;
     return NS_OK;
 }
 
 NS_IMETHODIMP
-nsScriptError::GetFlags(PRUint32 *result) {
+nsScriptError::GetFlags(uint32_t *result) {
     *result = mFlags;
     return NS_OK;
 }
@@ -94,9 +94,9 @@ NS_IMETHODIMP
 nsScriptError::Init(const PRUnichar *message,
                     const PRUnichar *sourceName,
                     const PRUnichar *sourceLine,
-                    PRUint32 lineNumber,
-                    PRUint32 columnNumber,
-                    PRUint32 flags,
+                    uint32_t lineNumber,
+                    uint32_t columnNumber,
+                    uint32_t flags,
                     const char *category)
 {
     return InitWithWindowID(message, sourceName, sourceLine, lineNumber,
@@ -107,11 +107,11 @@ NS_IMETHODIMP
 nsScriptError::InitWithWindowID(const PRUnichar *message,
                                 const PRUnichar *sourceName,
                                 const PRUnichar *sourceLine,
-                                PRUint32 lineNumber,
-                                PRUint32 columnNumber,
-                                PRUint32 flags,
+                                uint32_t lineNumber,
+                                uint32_t columnNumber,
+                                uint32_t flags,
                                 const char *category,
-                                PRUint64 aInnerWindowID)
+                                uint64_t aInnerWindowID)
 {
     mMessage.Assign(message);
     mSourceName.Assign(sourceName);
@@ -152,9 +152,9 @@ nsScriptError::ToString(nsACString& /*UTF8*/ aResult)
     const char* severity = !(mFlags & JSREPORT_WARNING) ? error : warning;
 
     char* temp;
-    char* tempMessage = nsnull;
-    char* tempSourceName = nsnull;
-    char* tempSourceLine = nsnull;
+    char* tempMessage = nullptr;
+    char* tempSourceName = nullptr;
+    char* tempSourceLine = nullptr;
 
     if (!mMessage.IsEmpty())
         tempMessage = ToNewUTF8String(mMessage);
@@ -163,7 +163,7 @@ nsScriptError::ToString(nsACString& /*UTF8*/ aResult)
     if (!mSourceLine.IsEmpty())
         tempSourceLine = ToNewUTF8String(mSourceLine);
 
-    if (nsnull != tempSourceName && nsnull != tempSourceLine)
+    if (nullptr != tempSourceName && nullptr != tempSourceLine)
         temp = JS_smprintf(format0,
                            severity,
                            tempMessage,
@@ -182,11 +182,11 @@ nsScriptError::ToString(nsACString& /*UTF8*/ aResult)
                            severity,
                            tempMessage);
 
-    if (nsnull != tempMessage)
+    if (nullptr != tempMessage)
         nsMemory::Free(tempMessage);
-    if (nsnull != tempSourceName)
+    if (nullptr != tempSourceName)
         nsMemory::Free(tempSourceName);
-    if (nsnull != tempSourceLine)
+    if (nullptr != tempSourceLine)
         nsMemory::Free(tempSourceLine);
 
     if (!temp)
@@ -198,21 +198,21 @@ nsScriptError::ToString(nsACString& /*UTF8*/ aResult)
 }
 
 NS_IMETHODIMP
-nsScriptError::GetOuterWindowID(PRUint64 *aOuterWindowID)
+nsScriptError::GetOuterWindowID(uint64_t *aOuterWindowID)
 {
     *aOuterWindowID = mOuterWindowID;
     return NS_OK;
 }
 
 NS_IMETHODIMP
-nsScriptError::GetInnerWindowID(PRUint64 *aInnerWindowID)
+nsScriptError::GetInnerWindowID(uint64_t *aInnerWindowID)
 {
     *aInnerWindowID = mInnerWindowID;
     return NS_OK;
 }
 
 NS_IMETHODIMP
-nsScriptError::GetTimeStamp(PRInt64 *aTimeStamp)
+nsScriptError::GetTimeStamp(int64_t *aTimeStamp)
 {
     *aTimeStamp = mTimeStamp;
     return NS_OK;

@@ -38,9 +38,9 @@ XPCStringConvert::ReadableToJSVal(JSContext *cx,
                                   nsStringBuffer** sharedBuffer)
 {
     JSString *str;
-    *sharedBuffer = nsnull;
+    *sharedBuffer = nullptr;
 
-    PRUint32 length = readable.Length();
+    uint32_t length = readable.Length();
 
     if (length == 0)
         return JS_GetEmptyStringValue(cx);

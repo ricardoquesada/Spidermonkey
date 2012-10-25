@@ -25,62 +25,60 @@
 
 class JSObject2WrappedJSMap
 {
+    typedef js::HashMap<JSObject*, nsXPCWrappedJS*, js::PointerHasher<JSObject*, 3>,
+                        js::SystemAllocPolicy> Map;
+
 public:
-    struct Entry : public JSDHashEntryHdr
-    {
-        JSObject*       key;
-        nsXPCWrappedJS* value;
-    };
-
-    static JSObject2WrappedJSMap* newMap(int size);
-
-    inline nsXPCWrappedJS* Find(JSObject* Obj)
-    {
-        NS_PRECONDITION(Obj,"bad param");
-        Entry* entry = (Entry*)
-            JS_DHashTableOperate(mTable, Obj, JS_DHASH_LOOKUP);
-        if (JS_DHASH_ENTRY_IS_FREE(entry))
-            return nsnull;
-        return entry->value;
+    static JSObject2WrappedJSMap* newMap(int size) {
+        JSObject2WrappedJSMap* map = new JSObject2WrappedJSMap();
+        if (map && map->mTable.init(size))
+            return map;
+        delete map;
+        return nullptr;
     }
 
-    inline nsXPCWrappedJS* Add(nsXPCWrappedJS* wrapper)
-    {
+    inline nsXPCWrappedJS* Find(JSObject* Obj) {
+        NS_PRECONDITION(Obj,"bad param");
+        Map::Ptr p = mTable.lookup(Obj);
+        return p ? p->value : nullptr;
+    }
+
+    inline nsXPCWrappedJS* Add(nsXPCWrappedJS* wrapper) {
         NS_PRECONDITION(wrapper,"bad param");
         JSObject* obj = wrapper->GetJSObjectPreserveColor();
-        Entry* entry = (Entry*)
-            JS_DHashTableOperate(mTable, obj, JS_DHASH_ADD);
-        if (!entry)
-            return nsnull;
-        if (entry->key)
-            return entry->value;
-        entry->key = obj;
-        entry->value = wrapper;
-        return wrapper;
+        Map::AddPtr p = mTable.lookupForAdd(obj);
+        if (p)
+            return p->value;
+        return mTable.add(p, obj, wrapper) ? wrapper : nullptr;
     }
 
-    inline void Remove(nsXPCWrappedJS* wrapper)
-    {
+    inline void Remove(nsXPCWrappedJS* wrapper) {
         NS_PRECONDITION(wrapper,"bad param");
-        JS_DHashTableOperate(mTable, wrapper->GetJSObjectPreserveColor(),
-                             JS_DHASH_REMOVE);
+        mTable.remove(wrapper->GetJSObjectPreserveColor());
     }
 
-    inline uint32_t Count() {return mTable->entryCount;}
-    inline uint32_t Enumerate(JSDHashEnumerator f, void *arg)
-        {return JS_DHashTableEnumerate(mTable, f, arg);}
+    inline uint32_t Count() {return mTable.count();}
 
-    size_t SizeOfIncludingThis(nsMallocSizeOfFun mallocSizeOf);
+    inline void Dump(int16_t depth) {
+        for (Map::Range r = mTable.all(); !r.empty(); r.popFront())
+            r.front().value->DebugDump(depth);
+    }
 
-    ~JSObject2WrappedJSMap();
+    void FindDyingJSObjects(nsTArray<nsXPCWrappedJS*>* dying);
+
+    void ShutdownMarker(JSRuntime* rt);
+
+    size_t SizeOfIncludingThis(nsMallocSizeOfFun mallocSizeOf) {
+        size_t n = 0;
+        n += mallocSizeOf(this);
+        n += mTable.sizeOfIncludingThis(mallocSizeOf);
+        return n;
+    }
+
 private:
-    JSObject2WrappedJSMap();    // no implementation
-    JSObject2WrappedJSMap(int size);
+    JSObject2WrappedJSMap() {}
 
-    static size_t SizeOfEntryExcludingThis(JSDHashEntryHdr *hdr, JSMallocSizeOfFun mallocSizeOf, void *);
-
-private:
-    JSDHashTable *mTable;
+    Map mTable;
 };
 
 /*************************/
@@ -102,7 +100,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, Obj, JS_DHASH_LOOKUP);
         if (JS_DHASH_ENTRY_IS_FREE(entry))
-            return nsnull;
+            return nullptr;
         return entry->value;
     }
 
@@ -113,7 +111,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, obj, JS_DHASH_ADD);
         if (!entry)
-            return nsnull;
+            return nullptr;
         if (entry->key)
             return entry->value;
         entry->key = obj;
@@ -171,7 +169,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, &iid, JS_DHASH_LOOKUP);
         if (JS_DHASH_ENTRY_IS_FREE(entry))
-            return nsnull;
+            return nullptr;
         return entry->value;
     }
 
@@ -182,7 +180,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, iid, JS_DHASH_ADD);
         if (!entry)
-            return nsnull;
+            return nullptr;
         if (entry->key)
             return entry->value;
         entry->key = iid;
@@ -228,7 +226,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, &iid, JS_DHASH_LOOKUP);
         if (JS_DHASH_ENTRY_IS_FREE(entry))
-            return nsnull;
+            return nullptr;
         return entry->value;
     }
 
@@ -239,7 +237,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, iid, JS_DHASH_ADD);
         if (!entry)
-            return nsnull;
+            return nullptr;
         if (entry->key)
             return entry->value;
         entry->key = iid;
@@ -288,7 +286,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, info, JS_DHASH_LOOKUP);
         if (JS_DHASH_ENTRY_IS_FREE(entry))
-            return nsnull;
+            return nullptr;
         return entry->value;
     }
 
@@ -298,7 +296,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, info, JS_DHASH_ADD);
         if (!entry)
-            return nsnull;
+            return nullptr;
         if (entry->key)
             return entry->value;
         entry->key = info;
@@ -348,7 +346,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, info, JS_DHASH_LOOKUP);
         if (JS_DHASH_ENTRY_IS_FREE(entry))
-            return nsnull;
+            return nullptr;
         return entry->value;
     }
 
@@ -358,7 +356,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, info, JS_DHASH_ADD);
         if (!entry)
-            return nsnull;
+            return nullptr;
         if (entry->key)
             return entry->value;
         entry->key = info;
@@ -413,7 +411,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, key, JS_DHASH_LOOKUP);
         if (JS_DHASH_ENTRY_IS_FREE(entry))
-            return nsnull;
+            return nullptr;
         return entry->key_value;
     }
 
@@ -424,7 +422,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, key, JS_DHASH_ADD);
         if (!entry)
-            return nsnull;
+            return nullptr;
         if (entry->key_value)
             return entry->key_value;
         entry->key_value = set;
@@ -433,7 +431,7 @@ public:
 
     inline XPCNativeSet* Add(XPCNativeSet* set)
     {
-        XPCNativeSetKey key(set, nsnull, 0);
+        XPCNativeSetKey key(set, nullptr, 0);
         return Add(&key, set);
     }
 
@@ -441,7 +439,7 @@ public:
     {
         NS_PRECONDITION(set,"bad param");
 
-        XPCNativeSetKey key(set, nsnull, 0);
+        XPCNativeSetKey key(set, nullptr, 0);
         JS_DHashTableOperate(mTable, &key, JS_DHASH_REMOVE);
     }
 
@@ -490,7 +488,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, &iid, JS_DHASH_LOOKUP);
         if (JS_DHASH_ENTRY_IS_FREE(entry))
-            return nsnull;
+            return nullptr;
         return entry->value;
     }
 
@@ -501,7 +499,7 @@ public:
         Entry* entry = (Entry*)
             JS_DHashTableOperate(mTable, &iid, JS_DHASH_ADD);
         if (!entry)
-            return nsnull;
+            return nullptr;
         NS_IF_ADDREF(obj);
         NS_IF_RELEASE(entry->value);
         entry->value = obj;
@@ -548,7 +546,7 @@ public:
 
     static XPCNativeScriptableSharedMap* newMap(int size);
 
-    JSBool GetNewOrUsed(uint32_t flags, char* name, PRUint32 interfacesBitmap,
+    JSBool GetNewOrUsed(uint32_t flags, char* name, uint32_t interfacesBitmap,
                         XPCNativeScriptableInfo* si);
 
     inline uint32_t Count() {return mTable->entryCount;}
@@ -576,7 +574,7 @@ public:
         JSDHashEntryStub* entry = (JSDHashEntryStub*)
             JS_DHashTableOperate(mTable, proto, JS_DHASH_ADD);
         if (!entry)
-            return nsnull;
+            return nullptr;
         if (entry->key)
             return (XPCWrappedNativeProto*) entry->key;
         entry->key = proto;
@@ -609,20 +607,19 @@ class JSObject2JSObjectMap
                         js::SystemAllocPolicy> Map;
 
 public:
-    static JSObject2JSObjectMap* newMap(int size)
-    {
-        JSObject2JSObjectMap* map = new JSObject2JSObjectMap(size);
-        if (map && map->mTable.initialized())
+    static JSObject2JSObjectMap* newMap(int size) {
+        JSObject2JSObjectMap* map = new JSObject2JSObjectMap();
+        if (map && map->mTable.init(size))
             return map;
         delete map;
-        return nsnull;
+        return nullptr;
     }
 
     inline JSObject* Find(JSObject* key) {
         NS_PRECONDITION(key, "bad param");
         if (Map::Ptr p = mTable.lookup(key))
             return p->value;
-        return nsnull;
+        return nullptr;
     }
 
     /* Note: If the entry already exists, return the old value. */
@@ -632,7 +629,7 @@ public:
         if (p)
             return p->value;
         if (!mTable.add(p, key, value))
-            return nsnull;
+            return nullptr;
         return value;
     }
 
@@ -669,12 +666,8 @@ public:
     }
 
 private:
-    JSObject2JSObjectMap() MOZ_DELETE;
-    JSObject2JSObjectMap(int size) {
-        mTable.init(size);
-    }
+    JSObject2JSObjectMap() {}
 
-private:
     Map mTable;
 };
 

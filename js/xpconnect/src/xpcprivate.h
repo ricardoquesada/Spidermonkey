@@ -283,7 +283,7 @@ typedef XPCCompartmentSet::Range XPCCompartmentRange;
         result = (char*) nsMemory::Clone(src,                                 \
                                          sizeof(char)*(strlen(src)+1));       \
     else                                                                      \
-        result = nsnull;                                                      \
+        result = nullptr;                                                      \
     *dest = result;                                                           \
     return (result || !src) ? NS_OK : NS_ERROR_OUT_OF_MEMORY
 
@@ -399,7 +399,7 @@ private:
     // Not meant to be implemented. This makes it a compiler error to
     // attempt to create an XPCAutoLock object on the heap.
     static void* operator new(size_t /*size*/) CPP_THROW_NEW {
-        return nsnull;
+        return nullptr;
     }
     static void operator delete(void* /*memory*/) {}
 };
@@ -438,7 +438,7 @@ private:
     // Not meant to be implemented. This makes it a compiler error to
     // attempt to create an XPCAutoUnlock object on the heap.
     static void* operator new(size_t /*size*/) CPP_THROW_NEW {
-        return nsnull;
+        return nullptr;
     }
     static void operator delete(void* /*memory*/) {}
 };
@@ -492,7 +492,7 @@ public:
 
     // Gets addref'd pointer
     static nsresult GetInterfaceInfoManager(nsIInterfaceInfoSuperManager** iim,
-                                            nsXPConnect* xpc = nsnull);
+                                            nsXPConnect* xpc = nullptr);
 
     static JSBool IsISupportsDescendant(nsIInterfaceInfo* info);
 
@@ -500,12 +500,12 @@ public:
     {
         // mDefaultSecurityManager is main-thread only.
         if (!NS_IsMainThread()) {
-            return nsnull;
+            return nullptr;
         }
         return mDefaultSecurityManager;
     }
 
-    PRUint16 GetDefaultSecurityManagerFlags() const
+    uint16_t GetDefaultSecurityManagerFlags() const
         {return mDefaultSecurityManagerFlags;}
 
     // This returns an AddRef'd pointer. It does not do this with an 'out' param
@@ -514,7 +514,7 @@ public:
     static nsXPConnect* GetSingleton();
 
     // Called by module code in dll startup
-    static void InitStatics() { gSelf = nsnull; gOnceAliveNowDead = false; }
+    static void InitStatics() { gSelf = nullptr; gOnceAliveNowDead = false; }
     // Called by module code on dll shutdown.
     static void ReleaseXPConnectSingleton();
 
@@ -537,7 +537,7 @@ public:
     virtual nsresult FinishTraverse();
     virtual nsCycleCollectionParticipant *GetParticipant();
     virtual bool NeedCollect();
-    virtual void Collect(PRUint32 reason);
+    virtual void Collect(uint32_t reason);
 
     XPCCallContext *GetCycleCollectionContext()
     {
@@ -579,7 +579,7 @@ private:
     XPCJSRuntime*            mRuntime;
     nsCOMPtr<nsIInterfaceInfoSuperManager> mInterfaceInfoManager;
     nsIXPCSecurityManager*   mDefaultSecurityManager;
-    PRUint16                 mDefaultSecurityManagerFlags;
+    uint16_t                 mDefaultSecurityManagerFlags;
     JSBool                   mShuttingDown;
     JSBool                   mNeedGCBeforeCC;
 
@@ -588,14 +588,14 @@ private:
     // So if XPConnect gets initialized mid-event (which can happen), we'll get
     // an 'after' notification without getting an 'on' notification. If we don't
     // watch out for this, we'll do an unmatched |pop| on the context stack.
-    PRUint16                   mEventDepth;
+    uint16_t                   mEventDepth;
     nsAutoPtr<XPCCallContext> mCycleCollectionContext;
 
     typedef nsBaseHashtable<nsPtrHashKey<void>, nsISupports*, nsISupports*> ScopeSet;
     ScopeSet mScopes;
     nsCOMPtr<nsIXPCScriptable> mBackstagePass;
 
-    static PRUint32 gReportAllJSExceptions;
+    static uint32_t gReportAllJSExceptions;
     static JSBool gDebugMode;
     static JSBool gDesiredDebugMode;
 
@@ -611,8 +611,8 @@ public:
     XPCRootSetElem()
     {
 #ifdef DEBUG
-        mNext = nsnull;
-        mSelfp = nsnull;
+        mNext = nullptr;
+        mSelfp = nullptr;
 #endif
     }
 
@@ -638,6 +638,7 @@ private:
 
 // no virtuals. no refcounting.
 class XPCJSContextStack;
+class XPCIncrementalReleaseRunnable;
 class XPCJSRuntime
 {
 public:
@@ -711,6 +712,7 @@ public:
         IDX_CONSTRUCTOR             = 0 ,
         IDX_TO_STRING               ,
         IDX_TO_SOURCE               ,
+        IDX_VALUE_OF                ,
         IDX_LAST_RESULT             ,
         IDX_RETURN_CODE             ,
         IDX_VALUE                   ,
@@ -729,6 +731,7 @@ public:
         IDX_BASEURIOBJECT           ,
         IDX_NODEPRINCIPAL           ,
         IDX_DOCUMENTURIOBJECT       ,
+        IDX_MOZMATCHESSELECTOR      ,
         IDX_TOTAL_COUNT // just a count of the above
     };
 
@@ -771,7 +774,7 @@ public:
     static void SuspectWrappedNative(XPCWrappedNative *wrapper,
                                      nsCycleCollectionTraversalCallback &cb);
 
-    void DebugDump(PRInt16 depth);
+    void DebugDump(int16_t depth);
 
     void SystemIsBeingShutDown();
 
@@ -801,7 +804,7 @@ public:
     {
         if (EnsureExceptionManager())
             return mExceptionManager;
-        return nsnull;
+        return nullptr;
     }
 
     bool EnsureExceptionManager()
@@ -869,6 +872,8 @@ private:
 
     static void WatchdogMain(void *arg);
 
+    void ReleaseIncrementally(nsTArray<nsISupports *> &array);
+
     static bool gNewDOMBindingsEnabled;
     static bool gExperimentalBindingsEnabled;
 
@@ -909,6 +914,7 @@ private:
     nsTArray<JSGCCallback> extraGCCallbacks;
     bool mWatchdogHibernating;
     PRTime mLastActiveTime; // -1 if active NOW
+    XPCIncrementalReleaseRunnable *mReleaseRunnable;
     js::GCSliceCallback mPrevGCSliceCallback;
 
     nsCOMPtr<nsIException>   mPendingException;
@@ -916,6 +922,7 @@ private:
     bool mExceptionManagerNotAvailable;
 
     friend class AutoLockWatchdog;
+    friend class XPCIncrementalReleaseRunnable;
 };
 
 /***************************************************************************/
@@ -986,16 +993,16 @@ public:
     void SetSecurityManager(nsIXPCSecurityManager* aSecurityManager)
         {mSecurityManager = aSecurityManager;}
 
-    PRUint16 GetSecurityManagerFlags() const
+    uint16_t GetSecurityManagerFlags() const
         {return mSecurityManagerFlags;}
-    void SetSecurityManagerFlags(PRUint16 f)
+    void SetSecurityManagerFlags(uint16_t f)
         {mSecurityManagerFlags = f;}
 
-    nsIXPCSecurityManager* GetAppropriateSecurityManager(PRUint16 flags) const
+    nsIXPCSecurityManager* GetAppropriateSecurityManager(uint16_t flags) const
         {
             NS_ASSERTION(CallerTypeIsKnown(),"missing caller type set somewhere");
             if (!CallerTypeIsJavaScript())
-                return nsnull;
+                return nullptr;
             if (mSecurityManager) {
                 if (flags & mSecurityManagerFlags)
                     return mSecurityManager;
@@ -1006,10 +1013,10 @@ public:
                 if (mgr && (flags & xpc->GetDefaultSecurityManagerFlags()))
                     return mgr;
             }
-            return nsnull;
+            return nullptr;
         }
 
-    void DebugDump(PRInt16 depth);
+    void DebugDump(int16_t depth);
     void AddScope(PRCList *scope) { PR_INSERT_AFTER(scope, &mScopes); }
     void RemoveScope(PRCList *scope) { PR_REMOVE_LINK(scope); }
 
@@ -1029,7 +1036,7 @@ private:
     nsIXPCSecurityManager* mSecurityManager;
     nsIException* mException;
     LangType mCallingLangType;
-    PRUint16 mSecurityManagerFlags;
+    uint16_t mSecurityManagerFlags;
 
     // A linked list of scopes to notify when we are destroyed.
     PRCList mScopes;
@@ -1086,26 +1093,26 @@ class XPCCallContext : public nsAXPCNativeCallContext
 {
 public:
     NS_IMETHOD GetCallee(nsISupports **aResult);
-    NS_IMETHOD GetCalleeMethodIndex(PRUint16 *aResult);
+    NS_IMETHOD GetCalleeMethodIndex(uint16_t *aResult);
     NS_IMETHOD GetCalleeWrapper(nsIXPConnectWrappedNative **aResult);
     NS_IMETHOD GetJSContext(JSContext **aResult);
-    NS_IMETHOD GetArgc(PRUint32 *aResult);
+    NS_IMETHOD GetArgc(uint32_t *aResult);
     NS_IMETHOD GetArgvPtr(jsval **aResult);
     NS_IMETHOD GetCalleeInterface(nsIInterfaceInfo **aResult);
     NS_IMETHOD GetCalleeClassInfo(nsIClassInfo **aResult);
     NS_IMETHOD GetPreviousCallContext(nsAXPCNativeCallContext **aResult);
-    NS_IMETHOD GetLanguage(PRUint16 *aResult);
+    NS_IMETHOD GetLanguage(uint16_t *aResult);
 
     enum {NO_ARGS = (unsigned) -1};
 
     XPCCallContext(XPCContext::LangType callerLanguage,
-                   JSContext* cx    = nsnull,
-                   JSObject* obj    = nsnull,
-                   JSObject* funobj = nsnull,
+                   JSContext* cx    = nullptr,
+                   JSObject* obj    = nullptr,
+                   JSObject* funobj = nullptr,
                    jsid id          = JSID_VOID,
                    unsigned argc       = NO_ARGS,
-                   jsval *argv      = nsnull,
-                   jsval *rval      = nsnull);
+                   jsval *argv      = nullptr,
+                   jsval *rval      = nullptr);
 
     virtual ~XPCCallContext();
 
@@ -1152,8 +1159,8 @@ public:
     inline jsval*                       GetArgv() const ;
     inline jsval*                       GetRetVal() const ;
 
-    inline PRUint16                     GetMethodIndex() const ;
-    inline void                         SetMethodIndex(PRUint16 index) ;
+    inline uint16_t                     GetMethodIndex() const ;
+    inline void                         SetMethodIndex(uint16_t index) ;
 
     inline JSBool   GetDestroyJSContextInDestructor() const;
     inline void     SetDestroyJSContextInDestructor(JSBool b);
@@ -1177,7 +1184,7 @@ public:
 
     operator JSContext*() const {return GetJSContext();}
 
-    XPCReadableJSStringWrapper *NewStringWrapper(const PRUnichar *str, PRUint32 len);
+    XPCReadableJSStringWrapper *NewStringWrapper(const PRUnichar *str, uint32_t len);
     void DeleteString(nsAString *string);
 
 private:
@@ -1266,7 +1273,7 @@ private:
     jsval*                          mArgv;
     jsval*                          mRetVal;
 
-    PRUint16                        mMethodIndex;
+    uint16_t                        mMethodIndex;
 
 #define XPCCCX_STRING_CACHE_SIZE 2
 
@@ -1292,26 +1299,26 @@ public:
     XPCLazyCallContext(XPCCallContext& ccx)
         : mCallBeginRequest(DONT_CALL_BEGINREQUEST),
           mCcx(&ccx),
-          mCcxToDestroy(nsnull)
+          mCcxToDestroy(nullptr)
 #ifdef DEBUG
-          , mCx(nsnull)
+          , mCx(nullptr)
           , mCallerLanguage(JS_CALLER)
-          , mObj(nsnull)
-          , mFlattenedJSObject(nsnull)
-          , mWrapper(nsnull)
-          , mTearOff(nsnull)
+          , mObj(nullptr)
+          , mFlattenedJSObject(nullptr)
+          , mWrapper(nullptr)
+          , mTearOff(nullptr)
 #endif
     {
     }
     XPCLazyCallContext(XPCContext::LangType callerLanguage, JSContext* cx,
-                       JSObject* obj = nsnull,
-                       JSObject* flattenedJSObject = nsnull,
-                       XPCWrappedNative* wrapper = nsnull,
-                       XPCWrappedNativeTearOff* tearoff = nsnull)
+                       JSObject* obj = nullptr,
+                       JSObject* flattenedJSObject = nullptr,
+                       XPCWrappedNative* wrapper = nullptr,
+                       XPCWrappedNativeTearOff* tearoff = nullptr)
         : mCallBeginRequest(callerLanguage == NATIVE_CALLER ?
                             CALL_BEGINREQUEST : DONT_CALL_BEGINREQUEST),
-          mCcx(nsnull),
-          mCcxToDestroy(nsnull),
+          mCcx(nullptr),
+          mCcxToDestroy(nullptr),
           mCx(cx),
           mCallerLanguage(callerLanguage),
           mObj(obj),
@@ -1462,34 +1469,34 @@ XPC_WN_JSOp_ThisObject(JSContext *cx, JSHandleObject obj);
 // Macros to initialize Object or Function like XPC_WN classes
 #define XPC_WN_WithCall_ObjectOps                                             \
     {                                                                         \
-        nsnull, /* lookupGeneric */                                           \
-        nsnull, /* lookupProperty */                                          \
-        nsnull, /* lookupElement */                                           \
-        nsnull, /* lookupSpecial */                                           \
-        nsnull, /* defineGeneric */                                           \
-        nsnull, /* defineProperty */                                          \
-        nsnull, /* defineElement */                                           \
-        nsnull, /* defineSpecial */                                           \
-        nsnull, /* getGeneric    */                                           \
-        nsnull, /* getProperty    */                                          \
-        nsnull, /* getElement    */                                           \
-        nsnull, /* getElementIfPresent */                                     \
-        nsnull, /* getSpecial    */                                           \
-        nsnull, /* setGeneric    */                                           \
-        nsnull, /* setProperty    */                                          \
-        nsnull, /* setElement    */                                           \
-        nsnull, /* setSpecial    */                                           \
-        nsnull, /* getGenericAttributes  */                                   \
-        nsnull, /* getAttributes  */                                          \
-        nsnull, /* getElementAttributes  */                                   \
-        nsnull, /* getSpecialAttributes  */                                   \
-        nsnull, /* setGenericAttributes  */                                   \
-        nsnull, /* setAttributes  */                                          \
-        nsnull, /* setElementAttributes  */                                   \
-        nsnull, /* setSpecialAttributes  */                                   \
-        nsnull, /* deleteProperty */                                          \
-        nsnull, /* deleteElement */                                           \
-        nsnull, /* deleteSpecial */                                           \
+        nullptr, /* lookupGeneric */                                           \
+        nullptr, /* lookupProperty */                                          \
+        nullptr, /* lookupElement */                                           \
+        nullptr, /* lookupSpecial */                                           \
+        nullptr, /* defineGeneric */                                           \
+        nullptr, /* defineProperty */                                          \
+        nullptr, /* defineElement */                                           \
+        nullptr, /* defineSpecial */                                           \
+        nullptr, /* getGeneric    */                                           \
+        nullptr, /* getProperty    */                                          \
+        nullptr, /* getElement    */                                           \
+        nullptr, /* getElementIfPresent */                                     \
+        nullptr, /* getSpecial    */                                           \
+        nullptr, /* setGeneric    */                                           \
+        nullptr, /* setProperty    */                                          \
+        nullptr, /* setElement    */                                           \
+        nullptr, /* setSpecial    */                                           \
+        nullptr, /* getGenericAttributes  */                                   \
+        nullptr, /* getAttributes  */                                          \
+        nullptr, /* getElementAttributes  */                                   \
+        nullptr, /* getSpecialAttributes  */                                   \
+        nullptr, /* setGenericAttributes  */                                   \
+        nullptr, /* setAttributes  */                                          \
+        nullptr, /* setElementAttributes  */                                   \
+        nullptr, /* setSpecialAttributes  */                                   \
+        nullptr, /* deleteProperty */                                          \
+        nullptr, /* deleteElement */                                           \
+        nullptr, /* deleteSpecial */                                           \
         XPC_WN_JSOp_Enumerate,                                                \
         XPC_WN_JSOp_TypeOf_Function,                                          \
         XPC_WN_JSOp_ThisObject,                                               \
@@ -1498,34 +1505,34 @@ XPC_WN_JSOp_ThisObject(JSContext *cx, JSHandleObject obj);
 
 #define XPC_WN_NoCall_ObjectOps                                               \
     {                                                                         \
-        nsnull, /* lookupGeneric */                                           \
-        nsnull, /* lookupProperty */                                          \
-        nsnull, /* lookupElement */                                           \
-        nsnull, /* lookupSpecial */                                           \
-        nsnull, /* defineGeneric */                                           \
-        nsnull, /* defineProperty */                                          \
-        nsnull, /* defineElement */                                           \
-        nsnull, /* defineSpecial */                                           \
-        nsnull, /* getGeneric    */                                           \
-        nsnull, /* getProperty    */                                          \
-        nsnull, /* getElement    */                                           \
-        nsnull, /* getElementIfPresent */                                     \
-        nsnull, /* getSpecial    */                                           \
-        nsnull, /* setGeneric    */                                           \
-        nsnull, /* setProperty    */                                          \
-        nsnull, /* setElement    */                                           \
-        nsnull, /* setSpecial    */                                           \
-        nsnull, /* getGenericAttributes  */                                   \
-        nsnull, /* getAttributes  */                                          \
-        nsnull, /* getElementAttributes  */                                   \
-        nsnull, /* getSpecialAttributes  */                                   \
-        nsnull, /* setGenericAttributes  */                                   \
-        nsnull, /* setAttributes  */                                          \
-        nsnull, /* setElementAttributes  */                                   \
-        nsnull, /* setSpecialAttributes  */                                   \
-        nsnull, /* deleteProperty */                                          \
-        nsnull, /* deleteElement */                                           \
-        nsnull, /* deleteSpecial */                                           \
+        nullptr, /* lookupGeneric */                                           \
+        nullptr, /* lookupProperty */                                          \
+        nullptr, /* lookupElement */                                           \
+        nullptr, /* lookupSpecial */                                           \
+        nullptr, /* defineGeneric */                                           \
+        nullptr, /* defineProperty */                                          \
+        nullptr, /* defineElement */                                           \
+        nullptr, /* defineSpecial */                                           \
+        nullptr, /* getGeneric    */                                           \
+        nullptr, /* getProperty    */                                          \
+        nullptr, /* getElement    */                                           \
+        nullptr, /* getElementIfPresent */                                     \
+        nullptr, /* getSpecial    */                                           \
+        nullptr, /* setGeneric    */                                           \
+        nullptr, /* setProperty    */                                          \
+        nullptr, /* setElement    */                                           \
+        nullptr, /* setSpecial    */                                           \
+        nullptr, /* getGenericAttributes  */                                   \
+        nullptr, /* getAttributes  */                                          \
+        nullptr, /* getElementAttributes  */                                   \
+        nullptr, /* getSpecialAttributes  */                                   \
+        nullptr, /* setGenericAttributes  */                                   \
+        nullptr, /* setAttributes  */                                          \
+        nullptr, /* setElementAttributes  */                                   \
+        nullptr, /* setSpecialAttributes  */                                   \
+        nullptr, /* deleteProperty */                                          \
+        nullptr, /* deleteElement */                                           \
+        nullptr, /* deleteSpecial */                                           \
         XPC_WN_JSOp_Enumerate,                                                \
         XPC_WN_JSOp_TypeOf_Object,                                            \
         XPC_WN_JSOp_ThisObject,                                               \
@@ -1571,7 +1578,7 @@ class XPCWrappedNativeScope : public PRCList
 public:
 
     static XPCWrappedNativeScope*
-    GetNewOrUsed(XPCCallContext& ccx, JSObject* aGlobal, nsISupports* aNative = nsnull);
+    GetNewOrUsed(XPCCallContext& ccx, JSObject* aGlobal, nsISupports* aNative = nullptr);
 
     XPCJSRuntime*
     GetRuntime() const {return mRuntime;}
@@ -1610,14 +1617,14 @@ public:
     nsIPrincipal*
     GetPrincipal() const
     {return mScriptObjectPrincipal ?
-         mScriptObjectPrincipal->GetPrincipal() : nsnull;}
+         mScriptObjectPrincipal->GetPrincipal() : nullptr;}
 
     void RemoveWrappedNativeProtos();
 
     static XPCWrappedNativeScope*
     FindInJSObjectScope(JSContext* cx, JSObject* obj,
                         JSBool OKIfNotInitialized = false,
-                        XPCJSRuntime* runtime = nsnull);
+                        XPCJSRuntime* runtime = nullptr);
 
     static XPCWrappedNativeScope*
     FindInJSObjectScope(XPCCallContext& ccx, JSObject* obj,
@@ -1667,10 +1674,10 @@ public:
     SweepAllWrappedNativeTearOffs();
 
     static void
-    DebugDumpAllScopes(PRInt16 depth);
+    DebugDumpAllScopes(int16_t depth);
 
     void
-    DebugDump(PRInt16 depth);
+    DebugDump(int16_t depth);
 
     static size_t
     SizeOfAllScopesIncludingThis(nsMallocSizeOfFun mallocSizeOf);
@@ -1679,7 +1686,7 @@ public:
     SizeOfIncludingThis(nsMallocSizeOfFun mallocSizeOf);
 
     JSBool
-    IsValid() const {return mRuntime != nsnull;}
+    IsValid() const {return mRuntime != nullptr;}
 
     static JSBool
     IsDyingScope(XPCWrappedNativeScope *scope);
@@ -1688,10 +1695,10 @@ public:
     nsXPCComponents *GetComponents();
     void SetGlobal(XPCCallContext& ccx, JSObject* aGlobal, nsISupports* aNative);
 
-    static void InitStatics() { gScopes = nsnull; gDyingScopes = nsnull; }
+    static void InitStatics() { gScopes = nullptr; gDyingScopes = nullptr; }
 
     XPCContext *GetContext() { return mContext; }
-    void ClearContext() { mContext = nsnull; }
+    void ClearContext() { mContext = nullptr; }
 
     nsDataHashtable<nsDepCharHashKey, JSObject*>& GetCachedDOMPrototypes()
     {
@@ -1704,7 +1711,7 @@ public:
 
         const js::Value &v = js::GetObjectSlot(obj, JSCLASS_GLOBAL_SLOT_COUNT);
         return v.isUndefined()
-               ? nsnull
+               ? nullptr
                : static_cast<XPCWrappedNativeScope *>(v.toPrivate());
     }
     void TraceDOMPrototypes(JSTracer *trc);
@@ -1779,13 +1786,13 @@ public:
 
     jsid   GetName() const {return mName;}
 
-    PRUint16 GetIndex() const {return mIndex;}
+    uint16_t GetIndex() const {return mIndex;}
 
     JSBool GetConstantValue(XPCCallContext& ccx, XPCNativeInterface* iface,
                             jsval* pval)
         {NS_ASSERTION(IsConstant(),
                       "Only call this if you're sure this is a constant!");
-         return Resolve(ccx, iface, nsnull, pval);}
+         return Resolve(ccx, iface, nullptr, pval);}
 
     JSBool NewFunctionObject(XPCCallContext& ccx, XPCNativeInterface* iface,
                              JSObject *parent, jsval* pval);
@@ -1808,13 +1815,13 @@ public:
 
     void SetName(jsid a) {mName = a;}
 
-    void SetMethod(PRUint16 index)
+    void SetMethod(uint16_t index)
         {mFlags = METHOD; mIndex = index;}
 
-    void SetConstant(PRUint16 index)
+    void SetConstant(uint16_t index)
         {mFlags = CONSTANT; mIndex = index;}
 
-    void SetReadOnlyAttribute(PRUint16 index)
+    void SetReadOnlyAttribute(uint16_t index)
         {mFlags = GETTER; mIndex = index;}
 
     void SetWritableAttribute()
@@ -1838,8 +1845,8 @@ private:
 private:
     // our only data...
     jsid     mName;
-    PRUint16 mIndex;
-    PRUint16 mFlags;
+    uint16_t mIndex;
+    uint16_t mFlags;
 };
 
 /***************************************************************************/
@@ -1868,17 +1875,17 @@ class XPCNativeInterface
 
     inline JSBool HasAncestor(const nsIID* iid) const;
 
-    PRUint16 GetMemberCount() const {
+    uint16_t GetMemberCount() const {
         return mMemberCount;
     }
-    XPCNativeMember* GetMemberAt(PRUint16 i) {
+    XPCNativeMember* GetMemberAt(uint16_t i) {
         NS_ASSERTION(i < mMemberCount, "bad index");
         return &mMembers[i];
     }
 
-    void DebugDump(PRInt16 depth);
+    void DebugDump(int16_t depth);
 
-#define XPC_NATIVE_IFACE_MARK_FLAG ((PRUint16)JS_BIT(15)) // only high bit of 16 is set
+#define XPC_NATIVE_IFACE_MARK_FLAG ((uint16_t)JS_BIT(15)) // only high bit of 16 is set
 
     void Mark() {
         mMarked = 1;
@@ -1922,8 +1929,8 @@ class XPCNativeInterface
 private:
     nsCOMPtr<nsIInterfaceInfo> mInfo;
     jsid                       mName;
-    PRUint16                   mMemberCount : 15;
-    PRUint16                   mMarked : 1;
+    uint16_t                   mMemberCount : 15;
+    uint16_t                   mMarked : 1;
     XPCNativeMember            mMembers[1]; // always last - object sized for array
 };
 
@@ -1933,16 +1940,16 @@ private:
 class XPCNativeSetKey
 {
 public:
-    XPCNativeSetKey(XPCNativeSet*       BaseSet  = nsnull,
-                    XPCNativeInterface* Addition = nsnull,
-                    PRUint16            Position = 0)
+    XPCNativeSetKey(XPCNativeSet*       BaseSet  = nullptr,
+                    XPCNativeInterface* Addition = nullptr,
+                    uint16_t            Position = 0)
         : mIsAKey(IS_A_KEY), mPosition(Position), mBaseSet(BaseSet),
           mAddition(Addition) {}
     ~XPCNativeSetKey() {}
 
     XPCNativeSet*           GetBaseSet()  const {return mBaseSet;}
     XPCNativeInterface*     GetAddition() const {return mAddition;}
-    PRUint16                GetPosition() const {return mPosition;}
+    uint16_t                GetPosition() const {return mPosition;}
 
     // This is a fun little hack...
     // We build these keys only on the stack. We use them for lookup in
@@ -1961,7 +1968,7 @@ public:
     // XPCNativeSetKey pointer and call this IsAKey method. If that fails then
     // it realises that it really has a XPCNativeSet pointer and deals with that
     // fact. This is safe because we know that both of these classes have no
-    // virtual methods and their first data member is a PRUint16. We are
+    // virtual methods and their first data member is a uint16_t. We are
     // confident that XPCNativeSet->mMemberCount will never be 0xffff.
 
     JSBool                  IsAKey() const {return mIsAKey == IS_A_KEY;}
@@ -1971,8 +1978,8 @@ public:
     // Allow shallow copy
 
 private:
-    PRUint16                mIsAKey;    // must be first data member
-    PRUint16                mPosition;
+    uint16_t                mIsAKey;    // must be first data member
+    uint16_t                mPosition;
     XPCNativeSet*           mBaseSet;
     XPCNativeInterface*     mAddition;
 };
@@ -1989,7 +1996,7 @@ class XPCNativeSet
     static XPCNativeSet* GetNewOrUsed(XPCCallContext& ccx,
                                       XPCNativeSet* otherSet,
                                       XPCNativeInterface* newInterface,
-                                      PRUint16 position);
+                                      uint16_t position);
 
     // This generates a union set.
     //
@@ -2006,7 +2013,7 @@ class XPCNativeSet
     static void ClearCacheEntryForClassInfo(nsIClassInfo* classInfo);
 
     inline JSBool FindMember(jsid name, XPCNativeMember** pMember,
-                             PRUint16* pInterfaceIndex) const;
+                             uint16_t* pInterfaceIndex) const;
 
     inline JSBool FindMember(jsid name, XPCNativeMember** pMember,
                              XPCNativeInterface** pInterface) const;
@@ -2025,23 +2032,23 @@ class XPCNativeSet
 
     inline XPCNativeInterface* FindNamedInterface(jsid name) const;
 
-    PRUint16 GetMemberCount() const {
+    uint16_t GetMemberCount() const {
         return mMemberCount;
     }
-    PRUint16 GetInterfaceCount() const {
+    uint16_t GetInterfaceCount() const {
         return mInterfaceCount;
     }
     XPCNativeInterface **GetInterfaceArray() {
         return mInterfaces;
     }
 
-    XPCNativeInterface* GetInterfaceAt(PRUint16 i)
+    XPCNativeInterface* GetInterfaceAt(uint16_t i)
         {NS_ASSERTION(i < mInterfaceCount, "bad index"); return mInterfaces[i];}
 
     inline JSBool MatchesSetUpToInterface(const XPCNativeSet* other,
                                           XPCNativeInterface* iface) const;
 
-#define XPC_NATIVE_SET_MARK_FLAG ((PRUint16)JS_BIT(15)) // only high bit of 16 is set
+#define XPC_NATIVE_SET_MARK_FLAG ((uint16_t)JS_BIT(15)) // only high bit of 16 is set
 
     inline void Mark();
 
@@ -2066,7 +2073,7 @@ class XPCNativeSet
     inline void ASSERT_NotMarked();
 #endif
 
-    void DebugDump(PRInt16 depth);
+    void DebugDump(int16_t depth);
 
     static void DestroyInstance(XPCNativeSet* inst);
 
@@ -2075,10 +2082,10 @@ class XPCNativeSet
   protected:
     static XPCNativeSet* NewInstance(XPCCallContext& ccx,
                                      XPCNativeInterface** array,
-                                     PRUint16 count);
+                                     uint16_t count);
     static XPCNativeSet* NewInstanceMutate(XPCNativeSet*       otherSet,
                                            XPCNativeInterface* newInterface,
-                                           PRUint16            position);
+                                           uint16_t            position);
     XPCNativeSet()
       : mMemberCount(0), mInterfaceCount(0), mMarked(0)
     {
@@ -2090,9 +2097,9 @@ class XPCNativeSet
     void* operator new(size_t, void* p) CPP_THROW_NEW {return p;}
 
   private:
-    PRUint16                mMemberCount;
-    PRUint16                mInterfaceCount : 15;
-    PRUint16                mMarked : 1;
+    uint16_t                mMemberCount;
+    uint16_t                mInterfaceCount : 15;
+    uint16_t                mMarked : 1;
     XPCNativeInterface*     mInterfaces[1];  // always last - object sized for array
 };
 
@@ -2184,22 +2191,22 @@ public:
 struct XPCWrappedNativeJSClass
 {
     js::Class base;
-    PRUint32 interfacesBitmap;
+    uint32_t interfacesBitmap;
 };
 
 class XPCNativeScriptableShared
 {
 public:
     const XPCNativeScriptableFlags& GetFlags() const {return mFlags;}
-    PRUint32                        GetInterfacesBitmap() const
+    uint32_t                        GetInterfacesBitmap() const
         {return mJSClass.interfacesBitmap;}
     JSClass*                        GetJSClass()
         {return Jsvalify(&mJSClass.base);}
     JSClass*                        GetSlimJSClass()
-        {if (mCanBeSlim) return GetJSClass(); return nsnull;}
+        {if (mCanBeSlim) return GetJSClass(); return nullptr;}
 
     XPCNativeScriptableShared(uint32_t aFlags, char* aName,
-                              PRUint32 interfacesBitmap)
+                              uint32_t interfacesBitmap)
         : mFlags(aFlags),
           mCanBeSlim(false)
         {memset(&mJSClass, 0, sizeof(mJSClass));
@@ -2212,7 +2219,7 @@ public:
          MOZ_COUNT_DTOR(XPCNativeScriptableShared);}
 
     char* TransferNameOwnership()
-        {char* name=(char*)mJSClass.base.name; mJSClass.base.name = nsnull;
+        {char* name=(char*)mJSClass.base.name; mJSClass.base.name = nullptr;
         return name;}
 
     void PopulateJSClass();
@@ -2243,7 +2250,7 @@ public:
     const XPCNativeScriptableFlags&
     GetFlags() const      {return mShared->GetFlags();}
 
-    PRUint32
+    uint32_t
     GetInterfacesBitmap() const {return mShared->GetInterfacesBitmap();}
 
     JSClass*
@@ -2272,8 +2279,8 @@ public:
     void AutoTrace(JSTracer *trc) {}
 
 protected:
-    XPCNativeScriptableInfo(nsIXPCScriptable* scriptable = nsnull,
-                            XPCNativeScriptableShared* shared = nsnull)
+    XPCNativeScriptableInfo(nsIXPCScriptable* scriptable = nullptr,
+                            XPCNativeScriptableShared* shared = nullptr)
         : mCallback(scriptable), mShared(shared)
                                {MOZ_COUNT_CTOR(XPCNativeScriptableInfo);}
 public:
@@ -2304,7 +2311,7 @@ public:
 
     XPCNativeScriptableCreateInfo(already_AddRefed<nsIXPCScriptable> callback,
                                   XPCNativeScriptableFlags flags,
-                                  PRUint32 interfacesBitmap)
+                                  uint32_t interfacesBitmap)
         : mCallback(callback), mFlags(flags),
           mInterfacesBitmap(interfacesBitmap) {}
 
@@ -2318,7 +2325,7 @@ public:
     const XPCNativeScriptableFlags&
     GetFlags() const      {return mFlags;}
 
-    PRUint32
+    uint32_t
     GetInterfacesBitmap() const     {return mInterfacesBitmap;}
 
     void
@@ -2329,13 +2336,13 @@ public:
     SetFlags(const XPCNativeScriptableFlags& flags)  {mFlags = flags;}
 
     void
-    SetInterfacesBitmap(PRUint32 interfacesBitmap)
+    SetInterfacesBitmap(uint32_t interfacesBitmap)
         {mInterfacesBitmap = interfacesBitmap;}
 
 private:
     nsCOMPtr<nsIXPCScriptable>  mCallback;
     XPCNativeScriptableFlags    mFlags;
-    PRUint32                    mInterfacesBitmap;
+    uint32_t                    mInterfacesBitmap;
 };
 
 /***********************************************/
@@ -2382,7 +2389,7 @@ public:
     QITableEntry*
     GetOffsets()
     {
-        return InitedOffsets() ? mOffsets : nsnull;
+        return InitedOffsets() ? mOffsets : nullptr;
     }
     QITableEntry*
     GetOffsetsMasked()
@@ -2408,7 +2415,7 @@ public:
             if (mClassInfoFlags & nsIClassInfo::CONTENT_NODE) {
                 identity->QueryInterface(kThisPtrOffsetsSID, (void**)&mOffsets);
             } else {
-                mOffsets = nsnull;
+                mOffsets = nullptr;
             }
         }
     }
@@ -2427,7 +2434,7 @@ public:
 #undef GET_IT
 
     XPCLock* GetLock() const
-        {return ClassIsThreadSafe() ? GetRuntime()->GetMapLock() : nsnull;}
+        {return ClassIsThreadSafe() ? GetRuntime()->GetMapLock() : nullptr;}
 
     void SetScriptableInfo(XPCNativeScriptableInfo* si)
         {NS_ASSERTION(!mScriptableInfo, "leak here!"); mScriptableInfo = si;}
@@ -2437,7 +2444,7 @@ public:
 
     void SystemIsBeingShutDown();
 
-    void DebugDump(PRInt16 depth);
+    void DebugDump(int16_t depth);
 
     void TraceSelf(JSTracer *trc) {
         if (mJSProtoObject)
@@ -2487,7 +2494,7 @@ protected:
     // hide ctor
     XPCWrappedNativeProto(XPCWrappedNativeScope* Scope,
                           nsIClassInfo* ClassInfo,
-                          PRUint32 ClassInfoFlags,
+                          uint32_t ClassInfoFlags,
                           XPCNativeSet* Set,
                           QITableEntry* offsets);
 
@@ -2497,7 +2504,7 @@ protected:
 
 private:
 #if defined(DEBUG_xpc_hacker) || defined(DEBUG)
-    static PRInt32 gDEBUG_LiveProtoCount;
+    static int32_t gDEBUG_LiveProtoCount;
 #endif
 
 private:
@@ -2510,7 +2517,7 @@ private:
     XPCWrappedNativeScope*   mScope;
     js::ObjectPtr            mJSProtoObject;
     nsCOMPtr<nsIClassInfo>   mClassInfo;
-    PRUint32                 mClassInfoFlags;
+    uint32_t                 mClassInfoFlags;
     XPCNativeSet*            mSet;
     void*                    mSecurityInfo;
     XPCNativeScriptableInfo* mScriptableInfo;
@@ -2531,7 +2538,7 @@ extern JSBool MorphSlimWrapper(JSContext *cx, JSObject *obj);
 class XPCWrappedNativeTearOff
 {
 public:
-    JSBool IsAvailable() const {return mInterface == nsnull;}
+    JSBool IsAvailable() const {return mInterface == nullptr;}
     JSBool IsReserved()  const {return mInterface == (XPCNativeInterface*)1;}
     JSBool IsValid()     const {return !IsAvailable() && !IsReserved();}
     void   SetReserved()       {mInterface = (XPCNativeInterface*)1;}
@@ -2544,10 +2551,10 @@ public:
     void SetNative(nsISupports*  Native)              {mNative = Native;}
     void SetJSObject(JSObject*  JSObj);
 
-    void JSObjectFinalized() {SetJSObject(nsnull);}
+    void JSObjectFinalized() {SetJSObject(nullptr);}
 
     XPCWrappedNativeTearOff()
-        : mInterface(nsnull), mNative(nsnull), mJSObject(nsnull) {}
+        : mInterface(nullptr), mNative(nullptr), mJSObject(nullptr) {}
     ~XPCWrappedNativeTearOff();
 
     // NOP. This is just here to make the AutoMarkingPtr code compile.
@@ -2584,7 +2591,7 @@ class XPCWrappedNativeTearOffChunk
 {
 friend class XPCWrappedNative;
 private:
-    XPCWrappedNativeTearOffChunk() : mNextChunk(nsnull) {}
+    XPCWrappedNativeTearOffChunk() : mNextChunk(nullptr) {}
     ~XPCWrappedNativeTearOffChunk() {delete mNextChunk;}
 
 private:
@@ -2627,7 +2634,7 @@ public:
     nsIPrincipal* GetObjectPrincipal() const;
 
     JSBool
-    IsValid() const {return nsnull != mFlatJSObject;}
+    IsValid() const {return nullptr != mFlatJSObject;}
 
 #define XPC_SCOPE_WORD(s)   (intptr_t(s))
 #define XPC_SCOPE_MASK      (intptr_t(0x3))
@@ -2658,7 +2665,7 @@ public:
     GetProto() const
         {return HasProto() ?
          (XPCWrappedNativeProto*)
-         (XPC_SCOPE_WORD(mMaybeProto) & ~XPC_SCOPE_MASK) : nsnull;}
+         (XPC_SCOPE_WORD(mMaybeProto) & ~XPC_SCOPE_MASK) : nullptr;}
 
     void SetProto(XPCWrappedNativeProto* p);
 
@@ -2694,7 +2701,7 @@ public:
 
     XPCLock*
     GetLock() const {return IsValid() && HasProto() ?
-                                GetProto()->GetLock() : nsnull;}
+                                GetProto()->GetLock() : nullptr;}
 
     XPCNativeSet*
     GetSet() const {XPCAutoLock al(GetLock()); return mSet;}
@@ -2718,11 +2725,11 @@ public:
 
     void**
     GetSecurityInfoAddr() {return HasProto() ?
-                                   GetProto()->GetSecurityInfoAddr() : nsnull;}
+                                   GetProto()->GetSecurityInfoAddr() : nullptr;}
 
     nsIClassInfo*
     GetClassInfo() const {return IsValid() && HasProto() ?
-                            GetProto()->GetClassInfo() : nsnull;}
+                            GetProto()->GetClassInfo() : nullptr;}
 
     JSBool
     HasMutatedSet() const {return IsValid() &&
@@ -2731,7 +2738,7 @@ public:
 
     XPCJSRuntime*
     GetRuntime() const {XPCWrappedNativeScope* scope = GetScope();
-                        return scope ? scope->GetRuntime() : nsnull;}
+                        return scope ? scope->GetRuntime() : nullptr;}
 
     static nsresult
     WrapNewGlobal(XPCCallContext &ccx, xpcObjectHelper &nativeHelper,
@@ -2766,15 +2773,15 @@ public:
     // fubobj must be null as well.
     static XPCWrappedNative*
     GetWrappedNativeOfJSObject(JSContext* cx, JSObject* obj,
-                               JSObject* funobj = nsnull,
-                               JSObject** pobj2 = nsnull,
-                               XPCWrappedNativeTearOff** pTearOff = nsnull);
+                               JSObject* funobj = nullptr,
+                               JSObject** pobj2 = nullptr,
+                               XPCWrappedNativeTearOff** pTearOff = nullptr);
     static XPCWrappedNative*
     GetAndMorphWrappedNativeOfJSObject(JSContext* cx, JSObject* obj)
     {
-        JSObject *obj2 = nsnull;
+        JSObject *obj2 = nullptr;
         XPCWrappedNative* wrapper =
-            GetWrappedNativeOfJSObject(cx, obj, nsnull, &obj2);
+            GetWrappedNativeOfJSObject(cx, obj, nullptr, &obj2);
         if (wrapper || !obj2)
             return wrapper;
 
@@ -2783,7 +2790,7 @@ public:
         SLIM_LOG_WILL_MORPH(cx, obj2);
         return MorphSlimWrapper(cx, obj2) ?
                (XPCWrappedNative*)xpc_GetJSPrivate(obj2) :
-               nsnull;
+               nullptr;
     }
 
     static nsresult
@@ -2825,7 +2832,7 @@ public:
     XPCWrappedNativeTearOff* FindTearOff(XPCCallContext& ccx,
                                          XPCNativeInterface* aInterface,
                                          JSBool needJSObject = false,
-                                         nsresult* pError = nsnull);
+                                         nsresult* pError = nullptr);
     void Mark() const
     {
         mSet->Mark();
@@ -2888,7 +2895,7 @@ public:
 
     // Returns a string that shuld be free'd using JS_smprintf_free (or null).
     char* ToString(XPCCallContext& ccx,
-                   XPCWrappedNativeTearOff* to = nsnull) const;
+                   XPCWrappedNativeTearOff* to = nullptr) const;
 
     static void GatherProtoScriptableCreateInfo(nsIClassInfo* classInfo,
                                                 XPCNativeScriptableCreateInfo& sciProto);
@@ -2932,7 +2939,7 @@ public:
     QITableEntry* GetOffsets()
     {
         if (!HasProto() || !GetProto()->ClassIsDOMObject())
-            return nsnull;
+            return nullptr;
 
         XPCWrappedNativeProto* proto = GetProto();
         QITableEntry* offsets = proto->GetOffsets();
@@ -3021,7 +3028,7 @@ class nsIXPCWrappedJSClass : public nsISupports
 {
 public:
     NS_DECLARE_STATIC_IID_ACCESSOR(NS_IXPCONNECT_WRAPPED_JS_CLASS_IID)
-    NS_IMETHOD DebugDump(PRInt16 depth) = 0;
+    NS_IMETHOD DebugDump(int16_t depth) = 0;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsIXPCWrappedJSClass,
@@ -3035,7 +3042,7 @@ class nsXPCWrappedJSClass : public nsIXPCWrappedJSClass
 {
     // all the interface method declarations...
     NS_DECL_ISUPPORTS
-    NS_IMETHOD DebugDump(PRInt16 depth);
+    NS_IMETHOD DebugDump(int16_t depth);
 public:
 
     static nsresult
@@ -3142,7 +3149,7 @@ public:
     NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsXPCWrappedJS, nsIXPConnectWrappedJS)
     NS_DECL_CYCLE_COLLECTION_UNMARK_PURPLE_STUB(nsXPCWrappedJS)
 
-    NS_IMETHOD CallMethod(PRUint16 methodIndex,
+    NS_IMETHOD CallMethod(uint16_t methodIndex,
                           const XPTMethodDescriptor *info,
                           nsXPTCMiniVariant* params);
 
@@ -3185,7 +3192,7 @@ public:
     nsXPCWrappedJS* Find(REFNSIID aIID);
     nsXPCWrappedJS* FindInherited(REFNSIID aIID);
 
-    JSBool IsValid() const {return mJSObj != nsnull;}
+    JSBool IsValid() const {return mJSObj != nullptr;}
     void SystemIsBeingShutDown(JSRuntime* rt);
 
     // This is used by XPCJSRuntime::GCCallback to find wrappers that no
@@ -3196,7 +3203,7 @@ public:
     // is to be finalized.
     JSBool IsSubjectToFinalization() const {return IsValid() && mRefCnt == 1;}
 
-    JSBool IsAggregatedToNative() const {return mRoot->mOuter != nsnull;}
+    JSBool IsAggregatedToNative() const {return mRoot->mOuter != nullptr;}
     nsISupports* GetAggregatedNativeObject() const {return mRoot->mOuter;}
 
     void SetIsMainThreadOnly() {
@@ -3270,7 +3277,7 @@ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIPROPERTY
 
-  xpcProperty(const PRUnichar* aName, PRUint32 aNameLen, nsIVariant* aValue);
+  xpcProperty(const PRUnichar* aName, uint32_t aNameLen, nsIVariant* aValue);
   virtual ~xpcProperty() {}
 
 private:
@@ -3398,7 +3405,7 @@ public:
 
     static JSBool JSStringWithSize2Native(XPCCallContext& ccx, void* d, jsval s,
                                           uint32_t count, const nsXPTType& type,
-                                          unsigned* pErr);
+                                          nsresult* pErr);
 
     static nsresult JSValToXPCException(XPCCallContext& ccx,
                                         jsval s,
@@ -3479,10 +3486,10 @@ public:
     CreateStack(JSContext* cx, nsIStackFrame** stack);
 
     static nsresult
-    CreateStackFrameLocation(PRUint32 aLanguage,
+    CreateStackFrameLocation(uint32_t aLanguage,
                              const char* aFilename,
                              const char* aFunctionName,
-                             PRInt32 aLineNumber,
+                             int32_t aLineNumber,
                              nsIStackFrame* aCaller,
                              nsIStackFrame** stack);
 private:
@@ -3516,7 +3523,7 @@ public:
                                   const char** format,
                                   void** iterp);
 
-    static PRUint32 GetNSResultCount();
+    static uint32_t GetNSResultCount();
 
     nsXPCException();
     virtual ~nsXPCException();
@@ -3563,7 +3570,7 @@ public:
     bool SetName(const char* name);
     void   SetNameToNoString()
         {NS_ASSERTION(!mName, "name already set"); mName = gNoString;}
-    bool NameIsSet() const {return nsnull != mName;}
+    bool NameIsSet() const {return nullptr != mName;}
     const nsID& ID() const {return mID;}
     bool IsValid() const {return !mID.Equals(GetInvalidIID());}
 
@@ -3707,7 +3714,7 @@ public:
 
 private:
     const InfallibleTArray<XPCJSContextInfo> *mStack;
-    PRUint32 mPosition;
+    uint32_t mPosition;
 };
 
 /***************************************************************************/
@@ -3832,14 +3839,14 @@ public:
 private:
     nsString mMessage;
     nsString mSourceName;
-    PRUint32 mLineNumber;
+    uint32_t mLineNumber;
     nsString mSourceLine;
-    PRUint32 mColumnNumber;
-    PRUint32 mFlags;
+    uint32_t mColumnNumber;
+    uint32_t mFlags;
     nsCString mCategory;
-    PRUint64 mOuterWindowID;
-    PRUint64 mInnerWindowID;
-    PRInt64 mTimeStamp;
+    uint64_t mOuterWindowID;
+    uint64_t mInnerWindowID;
+    int64_t mTimeStamp;
 };
 
 /******************************************************************************
@@ -3866,7 +3873,8 @@ public:
      * @param errorReporter the error reporter callback function to set
      */
 
-    bool StartEvaluating(JSObject *scope, JSErrorReporter errorReporter = nsnull);
+    bool StartEvaluating(JSObject *scope, JSErrorReporter errorReporter = nullptr);
+
     /**
      * Does the post script evaluation and resets the error reporter
      */
@@ -3877,7 +3885,7 @@ private:
     bool mErrorReporterSet;
     bool mEvaluated;
     intptr_t mContextHasThread;
-    JSAutoEnterCompartment mEnterCompartment;
+    mozilla::Maybe<JSAutoCompartment> mAutoCompartment;
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 
     // No copying or assignment allowed
@@ -3891,8 +3899,11 @@ class NS_STACK_CLASS AutoResolveName
 public:
     AutoResolveName(XPCCallContext& ccx, jsid name
                     MOZ_GUARD_OBJECT_NOTIFIER_PARAM) :
-          mOld(XPCJSRuntime::Get()->SetResolveName(name)),
-          mCheck(name) {
+          mOld(XPCJSRuntime::Get()->SetResolveName(name))
+#ifdef DEBUG
+          ,mCheck(name)
+#endif
+    {
         MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
     ~AutoResolveName()
@@ -3906,7 +3917,9 @@ public:
 
 private:
     jsid mOld;
+#ifdef DEBUG
     jsid mCheck;
+#endif
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
@@ -3975,7 +3988,7 @@ template<class T>
 class TypedAutoMarkingPtr : public AutoMarkingPtr
 {
   public:
-    TypedAutoMarkingPtr(XPCCallContext& ccx) : AutoMarkingPtr(ccx), mPtr(nsnull) {}
+    TypedAutoMarkingPtr(XPCCallContext& ccx) : AutoMarkingPtr(ccx), mPtr(nullptr) {}
     TypedAutoMarkingPtr(XPCCallContext& ccx, T* ptr) : AutoMarkingPtr(ccx), mPtr(ptr) {}
 
     T* get() const { return mPtr; }
@@ -4016,8 +4029,8 @@ class ArrayAutoMarkingPtr : public AutoMarkingPtr
 {
   public:
     ArrayAutoMarkingPtr(XPCCallContext& ccx)
-      : AutoMarkingPtr(ccx), mPtr(nsnull), mCount(0) {}
-    ArrayAutoMarkingPtr(XPCCallContext& ccx, T** ptr, PRUint32 count, bool clear)
+      : AutoMarkingPtr(ccx), mPtr(nullptr), mCount(0) {}
+    ArrayAutoMarkingPtr(XPCCallContext& ccx, T** ptr, uint32_t count, bool clear)
       : AutoMarkingPtr(ccx), mPtr(ptr), mCount(count)
     {
         if (!mPtr) mCount = 0;
@@ -4038,7 +4051,7 @@ class ArrayAutoMarkingPtr : public AutoMarkingPtr
   protected:
     virtual void TraceJS(JSTracer* trc)
     {
-        for (PRUint32 i = 0; i < mCount; i++) {
+        for (uint32_t i = 0; i < mCount; i++) {
             if (mPtr[i]) {
                 mPtr[i]->TraceJS(trc);
                 mPtr[i]->AutoTrace(trc);
@@ -4048,7 +4061,7 @@ class ArrayAutoMarkingPtr : public AutoMarkingPtr
 
     virtual void MarkAfterJSFinalize()
     {
-        for (PRUint32 i = 0; i < mCount; i++) {
+        for (uint32_t i = 0; i < mCount; i++) {
             if (mPtr[i])
                 mPtr[i]->Mark();
         }
@@ -4056,7 +4069,7 @@ class ArrayAutoMarkingPtr : public AutoMarkingPtr
 
   private:
     T** mPtr;
-    PRUint32 mCount;
+    uint32_t mCount;
 };
 
 typedef ArrayAutoMarkingPtr<XPCNativeInterface> AutoMarkingNativeInterfacePtrArrayPtr;
@@ -4154,12 +4167,12 @@ public:
         mRefCnt.RemovePurple();
     }
 
-    void SetCCGeneration(PRUint32 aGen)
+    void SetCCGeneration(uint32_t aGen)
     {
         mCCGeneration = aGen;
     }
 
-    PRUint32 CCGeneration() { return mCCGeneration; }
+    uint32_t CCGeneration() { return mCCGeneration; }
 protected:
     virtual ~XPCVariant() { }
 
@@ -4169,7 +4182,7 @@ protected:
     nsDiscriminatedUnion mData;
     jsval                mJSVal;
     bool                 mReturnRawObject : 1;
-    PRUint32             mCCGeneration : 31;
+    uint32_t             mCCGeneration : 31;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(XPCVariant, XPCVARIANT_IID)
@@ -4266,7 +4279,7 @@ xpc_CreateSandboxObject(JSContext * cx, jsval * vp, nsISupports *prinOrSop,
 // result, and cx->exception will be empty.
 nsresult
 xpc_EvalInSandbox(JSContext *cx, JSObject *sandbox, const nsAString& source,
-                  const char *filename, PRInt32 lineNo,
+                  const char *filename, int32_t lineNo,
                   JSVersion jsVersion, bool returnStringOnly, jsval *rval);
 
 /***************************************************************************/
@@ -4298,6 +4311,7 @@ public:
 
     CompartmentPrivate(bool wantXrays)
         : wantXrays(wantXrays)
+        , universalXPConnectEnabled(false)
     {
         MOZ_COUNT_CTOR(xpc::CompartmentPrivate);
     }
@@ -4305,6 +4319,13 @@ public:
     ~CompartmentPrivate();
 
     bool wantXrays;
+
+    // This is only ever set during mochitest runs when enablePrivilege is called.
+    // It's intended as a temporary stopgap measure until we can finish ripping out
+    // enablePrivilege. Once set, this value is never unset (i.e., it doesn't follow
+    // the old scoping rules of enablePrivilege). Using it is inherently unsafe.
+    bool universalXPConnectEnabled;
+
     nsAutoPtr<JSObject2JSObjectMap> waiverWrapperMap;
     nsAutoPtr<DOMExpandoMap> domExpandoMap;
 
@@ -4324,7 +4345,7 @@ public:
         if (locationURI) {
             if (NS_FAILED(locationURI->GetSpec(location)))
                 location = NS_LITERAL_CSTRING("<unknown location>");
-            locationURI = nsnull;
+            locationURI = nullptr;
         }
         return location;
     }
@@ -4364,6 +4385,30 @@ GetCompartmentPrivate(JSObject *object)
 
     MOZ_ASSERT(compartment);
     return GetCompartmentPrivate(compartment);
+}
+
+inline bool IsUniversalXPConnectEnabled(JSContext *cx)
+{
+    JSCompartment *compartment = js::GetContextCompartment(cx);
+    if (!compartment)
+        return false;
+    CompartmentPrivate *priv =
+      static_cast<CompartmentPrivate*>(JS_GetCompartmentPrivate(compartment));
+    if (!priv)
+        return false;
+    return priv->universalXPConnectEnabled;
+}
+
+inline void EnableUniversalXPConnect(JSContext *cx)
+{
+    JSCompartment *compartment = js::GetContextCompartment(cx);
+    if (!compartment)
+        return;
+    CompartmentPrivate *priv =
+      static_cast<CompartmentPrivate*>(JS_GetCompartmentPrivate(compartment));
+    if (!priv)
+        return;
+    priv->universalXPConnectEnabled = true;
 }
 
 }

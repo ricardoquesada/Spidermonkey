@@ -199,7 +199,7 @@ IsFrameId(JSContext *cx, JSObject *obj, jsid id)
         return false;
     }
 
-    return domwin != nsnull;
+    return domwin != nullptr;
 }
 
 static bool
@@ -260,15 +260,15 @@ AccessCheck::isSystemOnlyAccessPermitted(JSContext *cx)
         return false;
     }
 
-    JSScript *script = nsnull;
-    if (!fp) {
-        if (!JS_DescribeScriptedCaller(cx, &script, nsnull)) {
+    JSScript *script = nullptr;
+    if (fp) {
+      script = JS_GetFrameScript(cx, fp);
+    } else {
+        if (!JS_DescribeScriptedCaller(cx, &script, nullptr)) {
             // No code at all is running. So we must be arriving here as the result
             // of C++ code asking us to do something. Allow access.
             return true;
         }
-    } else if (JS_IsScriptFrame(cx, fp)) {
-        script = JS_GetFrameScript(cx, fp);
     }
 
     bool privileged;
@@ -400,6 +400,14 @@ PermitIfUniversalXPConnect(JSContext *cx, jsid id, Wrapper::Action act,
     return Deny(cx, id, act);
 }
 
+static bool
+IsInSandbox(JSContext *cx, JSObject *obj)
+{
+    JSAutoCompartment ac(cx, obj);
+    JSObject *global = JS_GetGlobalForObject(cx, obj);
+    return !strcmp(js::GetObjectJSClass(global)->name, "Sandbox");
+}
+
 bool
 ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper::Action act,
                              Permission &perm)
@@ -421,10 +429,7 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
     // but we need to be in the wrapper's compartment to check UniversalXPConnect.
     //
     // Unfortunately, |cx| can be in either compartment when we call ::check. :-(
-    JSAutoEnterCompartment ac;
-    JSAutoEnterCompartment wrapperAC;
-    if (!ac.enter(cx, wrappedObject))
-        return false;
+    JSAutoCompartment ac(cx, wrappedObject);
 
     JSBool found = false;
     if (!JS_HasPropertyById(cx, wrappedObject, exposedPropsId, &found))
@@ -441,12 +446,12 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
     // If no __exposedProps__ existed, deny access.
     if (!found) {
         // Everything below here needs to be done in the wrapper's compartment.
-        if (!wrapperAC.enter(cx, wrapper))
-            return false;
-
-        // For now, only do this on functions.
-        if (!JS_ObjectIsFunction(cx, wrappedObject)) {
-
+        JSAutoCompartment wrapperAC(cx, wrapper);
+        // Make a temporary exception for objects in a chrome sandbox to help
+        // out jetpack. See bug 784233.
+        if (!JS_ObjectIsFunction(cx, wrappedObject) &&
+            IsInSandbox(cx, wrappedObject))
+        {
             // This little loop hole will go away soon! See bug 553102.
             nsCOMPtr<nsPIDOMWindow> win =
                 do_QueryInterface(nsJSUtils::GetStaticScriptGlobal(cx, wrapper));
@@ -476,8 +481,8 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
         return false;
 
     if (exposedProps.isNullOrUndefined()) {
-        return wrapperAC.enter(cx, wrapper) &&
-               PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
+        JSAutoCompartment wrapperAC(cx, wrapper);
+        return PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
     }
 
     if (!exposedProps.isObject()) {
@@ -495,8 +500,8 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
         return false; // Error
     }
     if (desc.obj == NULL || !(desc.attrs & JSPROP_ENUMERATE)) {
-        return wrapperAC.enter(cx, wrapper) &&
-               PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
+        JSAutoCompartment wrapperAC(cx, wrapper);
+        return PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
     }
 
     if (!JSVAL_IS_STRING(desc.value)) {
@@ -541,8 +546,8 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
 
     if ((act == Wrapper::SET && !(access & WRITE)) ||
         (act != Wrapper::SET && !(access & READ))) {
-        return wrapperAC.enter(cx, wrapper) &&
-               PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
+        JSAutoCompartment wrapperAC(cx, wrapper);
+        return PermitIfUniversalXPConnect(cx, id, act, perm); // Deny
     }
 
     perm = PermitPropertyAccess;
@@ -554,9 +559,7 @@ ComponentsObjectPolicy::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper
                               Permission &perm) 
 {
     perm = DenyAccess;
-    JSAutoEnterCompartment ac;
-    if (!ac.enter(cx, wrapper))
-        return false;
+    JSAutoCompartment ac(cx, wrapper);
 
     if (JSID_IS_STRING(id) && act == Wrapper::GET) {
         JSFlatString *flatId = JSID_TO_FLAT_STRING(id);

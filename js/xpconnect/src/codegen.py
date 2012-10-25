@@ -95,12 +95,12 @@ argumentUnboxingTemplates = {
 
     'long long':
         "    int64_t ${name};\n"
-        "    if (!xpc::ValueToInt64(cx, ${argVal}, &${name}))\n"
+        "    if (!JS::ToInt64(cx, ${argVal}, &${name}))\n"
         "        return JS_FALSE;\n",
 
     'unsigned long long':
         "    uint64_t ${name};\n"
-        "    if (!xpc::ValueToUint64(cx, ${argVal}, &${name}))\n"
+        "    if (!JS::ToUint64(cx, ${argVal}, &${name}))\n"
         "        return JS_FALSE;\n",
 
     'float':
@@ -293,6 +293,8 @@ def outParamForm(name, type):
         if type.specialtype == 'jsval':
             return 'vp'
         elif type.modifier == 'ref':
+            if isStringType(type):
+                return '(nsAString&)' + name
             return name
         else:
             return '&' + name
@@ -332,10 +334,12 @@ resultConvTemplates = {
         "    return xpc_qsUint64ToJsval(cx, result, ${jsvalPtr});\n",
 
     'float':
-        "    return JS_NewNumberValue(cx, result, ${jsvalPtr});\n",
+        "    ${jsvalRef} = JS_NumberValue(result);\n"
+        "    return JS_TRUE;\n",
 
     'double':
-        "    return JS_NewNumberValue(cx, result, ${jsvalPtr});\n",
+        "    ${jsvalRef} = JS_NumberValue(result);\n"
+        "    return JS_TRUE;\n",
 
     'boolean':
         "    ${jsvalRef} = (result ? JSVAL_TRUE : JSVAL_FALSE);\n"
@@ -441,9 +445,9 @@ def writeStub(f, customMethodCalls, member, stubName, writeThisUnwrapping, write
     if isAttr:
         # JSPropertyOp signature.
         if isSetter:
-            signature += "%s(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict,%s jsval *vp)\n"
+            signature += "%s(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict,%s JSMutableHandleValue vp_)\n"
         else:
-            signature += "%s(JSContext *cx, JSHandleObject obj, JSHandleId id,%s jsval *vp)\n"
+            signature += "%s(JSContext *cx, JSHandleObject obj, JSHandleId id,%s JSMutableHandleValue vp_)\n"
     else:
         # JSFastNative.
         signature += "%s(JSContext *cx, unsigned argc,%s jsval *vp)\n"
@@ -478,7 +482,7 @@ def writeStub(f, customMethodCalls, member, stubName, writeThisUnwrapping, write
             argumentValues = (customMethodCall['additionalArgumentValues']
                               % header.methodNativeName(member))
             if isAttr:
-                callTemplate += ("    return %s(cx, obj, id%s, %s, vp);\n"
+                callTemplate += ("    return %s(cx, obj, id%s, %s, vp_);\n"
                                  % (templateName, ", strict" if isSetter else "", argumentValues))
             else:
                 callTemplate += ("    return %s(cx, argc, %s, vp);\n"
@@ -511,6 +515,10 @@ def writeStub(f, customMethodCalls, member, stubName, writeThisUnwrapping, write
     f.write(signature % (stubName, additionalArguments))
     f.write("{\n")
     f.write("    XPC_QS_ASSERT_CONTEXT_OK(cx);\n")
+
+    # Convert JSMutableHandleValue to jsval*
+    if isAttr:
+        f.write("    jsval *vp = vp_.address();\n")
 
     # For methods, compute "this".
     if isMethod:

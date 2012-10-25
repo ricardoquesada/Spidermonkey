@@ -322,22 +322,6 @@ js_DecompileToString(JSContext *cx, const char *name, JSFunction *fun,
                      JSDecompilerPtr decompiler);
 
 /*
- * Find the source expression that resulted in v, and return a newly allocated
- * C-string containing it.  Fall back on v's string conversion (fallback) if we
- * can't find the bytecode that generated and pushed v on the operand stack.
- *
- * Search the current stack frame if spindex is JSDVG_SEARCH_STACK.  Don't
- * look for v on the stack if spindex is JSDVG_IGNORE_STACK.  Otherwise,
- * spindex is the negative index of v, measured from cx->fp->sp, or from a
- * lower frame's sp if cx->fp is native.
- *
- * The caller must call JS_free on the result after a succsesful call.
- */
-extern char *
-js_DecompileValueGenerator(JSContext *cx, int spindex, jsval v,
-                           JSString *fallback);
-
-/*
  * Given bytecode address pc in script's main program code, return the operand
  * stack depth just before (JSOp) *pc executes.
  */
@@ -361,12 +345,26 @@ js_GetVariableBytecodeLength(jsbytecode *pc);
 
 namespace js {
 
-static inline char *
-DecompileValueGenerator(JSContext *cx, int spindex, const Value &v,
-                        JSString *fallback)
-{
-    return js_DecompileValueGenerator(cx, spindex, v, fallback);
-}
+/*
+ * Find the source expression that resulted in v, and return a newly allocated
+ * C-string containing it.  Fall back on v's string conversion (fallback) if we
+ * can't find the bytecode that generated and pushed v on the operand stack.
+ *
+ * Search the current stack frame if spindex is JSDVG_SEARCH_STACK.  Don't
+ * look for v on the stack if spindex is JSDVG_IGNORE_STACK.  Otherwise,
+ * spindex is the negative index of v, measured from cx->fp->sp, or from a
+ * lower frame's sp if cx->fp is native.
+ *
+ * The optional argument skipStackHits can be used to skip a hit in the stack
+ * frame. This can be useful in self-hosted code that wants to report value
+ * errors containing decompiled values that are useful for the user, instead of
+ * values used internally by the self-hosted code.
+ *
+ * The caller must call JS_free on the result after a succsesful call.
+ */
+char *
+DecompileValueGenerator(JSContext *cx, int spindex, HandleValue v,
+                        HandleString fallback, int skipStackHits = 0);
 
 /*
  * Sprintf, but with unlimited and automatically allocated buffering.
@@ -486,6 +484,24 @@ FlowsIntoNext(JSOp op)
            op != JSOP_GOTO && op != JSOP_RETSUB;
 }
 
+inline bool
+IsArgOp(JSOp op)
+{
+    return JOF_OPTYPE(op) == JOF_QARG;
+}
+
+inline bool
+IsLocalOp(JSOp op)
+{
+    return JOF_OPTYPE(op) == JOF_LOCAL;
+}
+
+inline bool
+IsGlobalOp(JSOp op)
+{
+    return js_CodeSpec[op].format & JOF_GNAME;
+}
+
 /*
  * Counts accumulated for a single opcode in a script. The counts tracked vary
  * between opcodes, and this structure ensures that counts are accessed in a
@@ -497,6 +513,8 @@ class PCCounts
     double *counts;
 #ifdef DEBUG
     size_t capacity;
+#elif JS_BITS_PER_WORD == 32
+    void *padding;
 #endif
 
  public:
@@ -615,21 +633,24 @@ class PCCounts
     }
 };
 
+/* Necessary for alignment with the script. */
+JS_STATIC_ASSERT(sizeof(PCCounts) % sizeof(Value) == 0);
+
 } /* namespace js */
 
 #if defined(DEBUG)
 /*
  * Disassemblers, for debugging only.
  */
-extern JS_FRIEND_API(JSBool)
-js_Disassemble(JSContext *cx, JSScript *script, JSBool lines, js::Sprinter *sp);
+JSBool
+js_Disassemble(JSContext *cx, JS::Handle<JSScript*> script, JSBool lines, js::Sprinter *sp);
 
-extern JS_FRIEND_API(unsigned)
-js_Disassemble1(JSContext *cx, JSScript *script, jsbytecode *pc, unsigned loc,
+unsigned
+js_Disassemble1(JSContext *cx, JS::Handle<JSScript*> script, jsbytecode *pc, unsigned loc,
                 JSBool lines, js::Sprinter *sp);
 
-extern JS_FRIEND_API(void)
-js_DumpPCCounts(JSContext *cx, JSScript *script, js::Sprinter *sp);
+void
+js_DumpPCCounts(JSContext *cx, JS::Handle<JSScript*> script, js::Sprinter *sp);
 #endif
 
 #endif /* jsopcode_h___ */
