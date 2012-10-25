@@ -341,7 +341,7 @@ def writeHeaderFile(filename, name):
                 "#define " + headerMacro + "\n\n"
                 "JSBool " + name + "_DefineQuickStubs("
                 "JSContext *cx, JSObject *proto, unsigned flags, "
-                "PRUint32 count, const nsID **iids);\n\n"
+                "uint32_t count, const nsID **iids);\n\n"
                 "void " + name + "_MarkInterfaces();\n\n"
                 "void " + name + "_ClearInterfaces();\n\n"
                 "inline void " + name + "_InitInterfaces()\n"
@@ -424,12 +424,12 @@ argumentUnboxingTemplates = {
 
     'long long':
         "    int64_t ${name};\n"
-        "    if (!xpc::ValueToInt64(cx, ${argVal}, &${name}))\n"
+        "    if (!JS::ToInt64(cx, ${argVal}, &${name}))\n"
         "        return JS_FALSE;\n",
 
     'unsigned long long':
         "    uint64_t ${name};\n"
-        "    if (!xpc::ValueToUint64(cx, ${argVal}, &${name}))\n"
+        "    if (!JS::ToUint64(cx, ${argVal}, &${name}))\n"
         "        return JS_FALSE;\n",
 
     'float':
@@ -656,10 +656,12 @@ resultConvTemplates = {
         "    return xpc_qsUint64ToJsval(cx, result, ${jsvalPtr});\n",
 
     'float':
-        "    return JS_NewNumberValue(cx, result, ${jsvalPtr});\n",
+        "    ${jsvalRef} = JS_NumberValue(result);\n"
+        "    return JS_TRUE;\n",
 
     'double':
-        "    return JS_NewNumberValue(cx, result, ${jsvalPtr});\n",
+        "    ${jsvalRef} =  JS_NumberValue(result);\n"
+        "    return JS_TRUE;\n",
 
     'boolean':
         "    ${jsvalRef} = (result ? JSVAL_TRUE : JSVAL_FALSE);\n"
@@ -751,10 +753,26 @@ def validateParam(member, param):
     if param.const or param.array or param.shared:
         pfail("I am a simple caveman.")
 
+def setOptimizationForMSVC(f, b):
+    """ Write a pragma that turns optimizations off (if b is False) or
+    on (if b is True) for MSVC.
+    """
+    if b:
+        pragmaParam = "on"
+    else:
+        pragmaParam = "off"
+    f.write("#ifdef _MSC_VER\n")
+    f.write('# pragma optimize("", %s)\n'%pragmaParam)
+    f.write("#endif\n")
+
 def writeQuickStub(f, customMethodCalls, member, stubName, isSetter=False):
     """ Write a single quick stub (a custom SpiderMonkey getter/setter/method)
     for the specified XPCOM interface-member. 
     """
+    # Workaround for suspected compiler bug.
+    # See https://bugzilla.mozilla.org/show_bug.cgi?id=750019
+    disableOptimizationForMSVC = (stubName == 'nsIDOMHTMLDocument_Write')
+
     isAttr = (member.kind == 'attribute')
     isMethod = (member.kind == 'method')
     assert isAttr or isMethod
@@ -764,9 +782,9 @@ def writeQuickStub(f, customMethodCalls, member, stubName, isSetter=False):
     if isAttr:
         # JSPropertyOp signature.
         if isSetter:
-            signature += "%s(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict,%s jsval *vp)\n"
+            signature += "%s(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict,%s JSMutableHandleValue vp_)\n"
         else:
-            signature += "%s(JSContext *cx, JSHandleObject obj, JSHandleId id,%s jsval *vp)\n"
+            signature += "%s(JSContext *cx, JSHandleObject obj, JSHandleId id,%s JSMutableHandleValue vp_)\n"
     else:
         # JSFastNative.
         signature += "%s(JSContext *cx, unsigned argc,%s jsval *vp)\n"
@@ -803,7 +821,7 @@ def writeQuickStub(f, customMethodCalls, member, stubName, isSetter=False):
             argumentValues = (customMethodCall['additionalArgumentValues']
                               % nativeName)
             if isAttr:
-                callTemplate += ("    return %s(cx, obj, id%s, %s, vp);\n"
+                callTemplate += ("    return %s(cx, obj, id%s, %s, vp_);\n"
                                  % (templateName, ", strict" if isSetter else "", argumentValues))
             else:
                 callTemplate += ("    return %s(cx, argc, %s, vp);\n"
@@ -839,9 +857,15 @@ def writeQuickStub(f, customMethodCalls, member, stubName, isSetter=False):
         additionalArguments = ''
     else:
         additionalArguments = " %s," % customMethodCall['additionalArguments']
+    if disableOptimizationForMSVC:
+        setOptimizationForMSVC(f, False)
     f.write(signature % (stubName, additionalArguments))
     f.write("{\n")
     f.write("    XPC_QS_ASSERT_CONTEXT_OK(cx);\n")
+
+    # Convert JSMutableHandleValue to jsval*
+    if isAttr:
+        f.write("    jsval *vp = vp_.address();\n")
 
     # For methods, compute "this".
     if isMethod:
@@ -895,7 +919,7 @@ def writeQuickStub(f, customMethodCalls, member, stubName, isSetter=False):
                     "&selfref.ptr, %s, &lccx, %s))\n" % (pthisval, unwrapFatalArg))
         else:
             f.write("    if (!xpc_qsUnwrapThis(cx, obj, &self, "
-                    "&selfref.ptr, %s, nsnull, %s))\n" % (pthisval, unwrapFatalArg))
+                    "&selfref.ptr, %s, nullptr, %s))\n" % (pthisval, unwrapFatalArg))
         f.write("        return JS_FALSE;\n")
 
         if not unwrapThisFailureFatal:
@@ -979,7 +1003,7 @@ def writeQuickStub(f, customMethodCalls, member, stubName, isSetter=False):
             if member.implicit_jscontext:
                 argv.append('cx')
             if member.optional_argc:
-                argv.append('NS_MIN<PRUint32>(argc, %d) - %d' % 
+                argv.append('NS_MIN<uint32_t>(argc, %d) - %d' % 
                             (len(member.params), requiredArgs))
             if not isVoidType(member.realtype):
                 argv.append(outParamForm(resultname, member.realtype))
@@ -1033,7 +1057,10 @@ def writeQuickStub(f, customMethodCalls, member, stubName, isSetter=False):
         f.write("    return JS_TRUE;\n")
 
     # Epilog.
-    f.write("}\n\n")
+    f.write("}\n")
+    if disableOptimizationForMSVC:
+        setOptimizationForMSVC(f, True)
+    f.write("\n")
 
     # Now write out the call to the template function.
     if customMethodCall is not None:
@@ -1104,7 +1131,7 @@ def writeResultXPCInterfacesArray(f, conf, resulttypes):
     f.write("void %s_MarkInterfaces()\n"
             "{\n" % conf.name)
     if count > 0:
-        f.write("    for (PRUint32 i = 0; i < %d; ++i)\n"
+        f.write("    for (uint32_t i = 0; i < %d; ++i)\n"
                 "        if (interfaces[i])\n"
                 "            interfaces[i]->Mark();\n" % count)
     f.write("}\n")
@@ -1116,7 +1143,7 @@ def writeResultXPCInterfacesArray(f, conf, resulttypes):
     f.write("}\n\n")
     i = 0
     for type in resulttypes:
-        f.write("static const PRUint32 k_%s = %d;\n" % (type, i))
+        f.write("static const uint32_t k_%s = %d;\n" % (type, i))
         i += 1
     if count > 0:
         f.write("\n\n")
@@ -1243,7 +1270,7 @@ def writeDefiner(f, conf, stringtable, interfaces):
     # the definer function (entry point to this quick stubs file)
     f.write("namespace xpc {\n")
     f.write("bool %s_DefineQuickStubs(" % conf.name)
-    f.write("JSContext *cx, JSObject *proto, unsigned flags, PRUint32 count, "
+    f.write("JSContext *cx, JSObject *proto, unsigned flags, uint32_t count, "
             "const nsID **iids)\n"
             "{\n")
     f.write("    return !!xpc_qsDefineQuickStubs("

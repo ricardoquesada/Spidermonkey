@@ -46,8 +46,8 @@ struct xpc_qsHashEntry {
 
 JSBool
 xpc_qsDefineQuickStubs(JSContext *cx, JSObject *proto, unsigned extraFlags,
-                       PRUint32 ifacec, const nsIID **interfaces,
-                       PRUint32 tableSize, const xpc_qsHashEntry *table,
+                       uint32_t ifacec, const nsIID **interfaces,
+                       uint32_t tableSize, const xpc_qsHashEntry *table,
                        const xpc_qsPropertySpec *propspecs,
                        const xpc_qsFunctionSpec *funcspecs,
                        const char *stringTable);
@@ -115,20 +115,22 @@ xpc_qsThrowBadSetterValue(JSContext *cx, nsresult rv, JSObject *obj,
 
 
 JSBool
-xpc_qsGetterOnlyPropertyStub(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict, jsval *vp);
+xpc_qsGetterOnlyPropertyStub(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict, JSMutableHandleValue vp);
 
 /* Functions for converting values between COM and JS. */
 
 inline JSBool
-xpc_qsInt64ToJsval(JSContext *cx, PRInt64 i, jsval *rv)
+xpc_qsInt64ToJsval(JSContext *cx, int64_t i, jsval *rv)
 {
-    return JS_NewNumberValue(cx, static_cast<double>(i), rv);
+    *rv = JS_NumberValue(static_cast<double>(i));
+    return true;
 }
 
 inline JSBool
-xpc_qsUint64ToJsval(JSContext *cx, PRUint64 u, jsval *rv)
+xpc_qsUint64ToJsval(JSContext *cx, uint64_t u, jsval *rv)
 {
-    return JS_NewNumberValue(cx, static_cast<double>(u), rv);
+    *rv = JS_NumberValue(static_cast<double>(u));
+    return true;
 }
 
 
@@ -231,16 +233,16 @@ protected:
             if (behavior != eStringify || !pval) {
                 // Here behavior == eStringify implies !pval, so both eNull and
                 // eStringify should end up with void strings.
-                (new(mBuf) implementation_type(traits::sEmptyBuffer, PRUint32(0)))->
+                (new(mBuf) implementation_type(traits::sEmptyBuffer, uint32_t(0)))->
                     SetIsVoid(behavior != eEmpty);
                 mValid = true;
-                return nsnull;
+                return nullptr;
             }
 
             s = JS_ValueToString(cx, v);
             if (!s) {
                 mValid = false;
-                return nsnull;
+                return nullptr;
             }
             *pval = STRING_TO_JSVAL(s);  // Root the new string.
         }
@@ -307,7 +309,7 @@ public:
 
 struct xpc_qsSelfRef
 {
-    xpc_qsSelfRef() : ptr(nsnull) {}
+    xpc_qsSelfRef() : ptr(nullptr) {}
     explicit xpc_qsSelfRef(nsISupports *p) : ptr(p) {}
     ~xpc_qsSelfRef() { NS_IF_RELEASE(ptr); }
 
@@ -392,18 +394,18 @@ xpc_qsUnwrapThis(JSContext *cx,
         return NS_SUCCEEDED(rv) || xpc_qsThrow(cx, rv);
 
     if (NS_FAILED(rv))
-        *ppThis = nsnull;
+        *ppThis = nullptr;
     return true;
 }
 
 MOZ_ALWAYS_INLINE nsISupports*
 castNativeFromWrapper(JSContext *cx,
                       JSObject *obj,
-                      PRUint32 interfaceBit,
+                      uint32_t interfaceBit,
                       nsISupports **pRef,
                       jsval *pVal,
                       XPCLazyCallContext *lccx,
-                      nsresult *rv NS_OUTPARAM)
+                      nsresult *rv)
 {
     XPCWrappedNative *wrapper;
     XPCWrappedNativeTearOff *tearoff;
@@ -413,12 +415,12 @@ castNativeFromWrapper(JSContext *cx,
         cur = obj;
         wrapper = IS_WN_WRAPPER_OBJECT(cur) ?
                   (XPCWrappedNative*)xpc_GetJSPrivate(obj) :
-                  nsnull;
-        tearoff = nsnull;
+                  nullptr;
+        tearoff = nullptr;
     } else {
         *rv = getWrapper(cx, obj, &wrapper, &cur, &tearoff);
         if (NS_FAILED(*rv))
-            return nsnull;
+            return nullptr;
     }
 
     nsISupports *native;
@@ -428,22 +430,22 @@ castNativeFromWrapper(JSContext *cx,
     } else if (cur && IS_SLIM_WRAPPER(cur)) {
         native = static_cast<nsISupports*>(xpc_GetJSPrivate(cur));
     } else {
-        native = nsnull;
+        native = nullptr;
     }
 
     *rv = NS_ERROR_XPC_BAD_CONVERT_JS;
 
     if (!native)
-        return nsnull;
+        return nullptr;
 
     NS_ASSERTION(IS_WRAPPER_CLASS(js::GetObjectClass(cur)), "Not a wrapper?");
 
     XPCWrappedNativeJSClass *clasp =
       (XPCWrappedNativeJSClass*)js::GetObjectClass(cur);
     if (!(clasp->interfacesBitmap & (1 << interfaceBit)))
-        return nsnull;
+        return nullptr;
 
-    *pRef = nsnull;
+    *pRef = nullptr;
     *pVal = OBJECT_TO_JSVAL(cur);
 
     if (lccx) {
@@ -507,16 +509,16 @@ xpc_qsUnwrapArg(JSContext *cx, jsval v, Interface **ppArg,
 inline nsISupports*
 castNativeArgFromWrapper(JSContext *cx,
                          jsval v,
-                         PRUint32 bit,
+                         uint32_t bit,
                          nsISupports **pArgRef,
                          jsval *vp,
-                         nsresult *rv NS_OUTPARAM)
+                         nsresult *rv)
 {
     JSObject *src = xpc_qsUnwrapObj(v, pArgRef, rv);
     if (!src)
-        return nsnull;
+        return nullptr;
 
-    return castNativeFromWrapper(cx, src, bit, pArgRef, vp, nsnull, rv);
+    return castNativeFromWrapper(cx, src, bit, pArgRef, vp, nullptr, rv);
 }
 
 inline nsWrapperCache*
@@ -534,7 +536,7 @@ xpc_qsGetWrapperCache(nsGlobalWindow *not_allowed);
 inline nsWrapperCache*
 xpc_qsGetWrapperCache(void *p)
 {
-    return nsnull;
+    return nullptr;
 }
 
 /** Convert an XPCOM pointer to jsval. Return true on success.
@@ -573,7 +575,7 @@ xpc_qsSameResult(const nsString &result1, const nsString &result2)
 }
 
 inline bool
-xpc_qsSameResult(PRInt32 result1, PRInt32 result2)
+xpc_qsSameResult(int32_t result1, int32_t result2)
 {
     return result1 == result2;
 }
@@ -585,11 +587,11 @@ xpc_qsSameResult(PRInt32 result1, PRInt32 result2)
 
 // Apply |op| to |obj|, |id|, and |vp|. If |op| is a setter, treat the assignment as lenient.
 template<typename Op>
-static inline JSBool ApplyPropertyOp(JSContext *cx, Op op, JSHandleObject obj, JSHandleId id, jsval *vp);
+static inline JSBool ApplyPropertyOp(JSContext *cx, Op op, JSHandleObject obj, JSHandleId id, JSMutableHandleValue vp);
 
 template<>
 inline JSBool
-ApplyPropertyOp<JSPropertyOp>(JSContext *cx, JSPropertyOp op, JSHandleObject obj, JSHandleId id, jsval *vp)
+ApplyPropertyOp<JSPropertyOp>(JSContext *cx, JSPropertyOp op, JSHandleObject obj, JSHandleId id, JSMutableHandleValue vp)
 {
     return op(cx, obj, id, vp);
 }
@@ -597,7 +599,7 @@ ApplyPropertyOp<JSPropertyOp>(JSContext *cx, JSPropertyOp op, JSHandleObject obj
 template<>
 inline JSBool
 ApplyPropertyOp<JSStrictPropertyOp>(JSContext *cx, JSStrictPropertyOp op, JSHandleObject obj,
-                                    JSHandleId id, jsval *vp)
+                                    JSHandleId id, JSMutableHandleValue vp)
 {
     return op(cx, obj, id, true, vp);
 }
@@ -611,7 +613,9 @@ PropertyOpForwarder(JSContext *cx, unsigned argc, jsval *vp)
     //   property op to call = callee reserved slot 0
     //   name of the property = callee reserved slot 1
 
-    JSObject *callee = JSVAL_TO_OBJECT(JS_CALLEE(cx, vp));
+    JS::CallArgs args = CallArgsFromVp(argc, vp);
+
+    JSObject *callee = &args.callee();
     JS::RootedObject obj(cx, JS_THIS_OBJECT(cx, vp));
     if (!obj)
         return false;
@@ -623,12 +627,12 @@ PropertyOpForwarder(JSContext *cx, unsigned argc, jsval *vp)
 
     v = js::GetFunctionNativeReserved(callee, 1);
 
-    jsval argval = (argc > 0) ? JS_ARGV(cx, vp)[0] : JSVAL_VOID;
+    jsval argval = (argc > 0) ? args[0] : JSVAL_VOID;
     JS::RootedId id(cx);
     if (!JS_ValueToId(cx, v, id.address()))
         return false;
-    JS_SET_RVAL(cx, vp, argval);
-    return ApplyPropertyOp<Op>(cx, *popp, obj, id, vp);
+    args.rval().set(argval);
+    return ApplyPropertyOp<Op>(cx, *popp, obj, id, args.rval());
 }
 
 extern JSClass PointerHolderClass;
@@ -642,7 +646,7 @@ GeneratePropertyOp(JSContext *cx, JSObject *obj, jsid id, unsigned argc, Op pop)
     JSFunction *fun =
         js::NewFunctionByIdWithReserved(cx, PropertyOpForwarder<Op>, argc, 0, obj, id);
     if (!fun)
-        return nsnull;
+        return nullptr;
 
     JSObject *funobj = JS_GetFunctionObject(fun);
 
@@ -650,12 +654,12 @@ GeneratePropertyOp(JSContext *cx, JSObject *obj, jsid id, unsigned argc, Op pop)
 
     // Unfortunately, we cannot guarantee that Op is aligned. Use a
     // second object to work around this.
-    JSObject *ptrobj = JS_NewObject(cx, &PointerHolderClass, nsnull, funobj);
+    JSObject *ptrobj = JS_NewObject(cx, &PointerHolderClass, nullptr, funobj);
     if (!ptrobj)
-        return nsnull;
+        return nullptr;
     Op *popp = new Op;
     if (!popp)
-        return nsnull;
+        return nullptr;
     *popp = pop;
     JS_SetPrivate(ptrobj, popp);
 

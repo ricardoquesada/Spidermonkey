@@ -15,7 +15,6 @@
 #include "jsscript.h"
 #include "jsscope.h"
 
-#include "vm/ScopeObject.h"
 #include "vm/GlobalObject.h"
 #include "vm/RegExpObject.h"
 
@@ -25,79 +24,17 @@ namespace js {
 
 inline
 Bindings::Bindings()
-    : lastBinding(NULL), nargs(0), nvars(0), hasDup_(false)
+    : callObjShape_(NULL), bindingArrayAndFlag_(TEMPORARY_STORAGE_BIT), numArgs_(0), numVars_(0)
 {}
 
-inline void
-Bindings::transfer(Bindings *bindings)
+inline
+AliasedFormalIter::AliasedFormalIter(JSScript *script)
+  : begin_(script->bindings.bindingArray()),
+    p_(begin_),
+    end_(begin_ + (script->funHasAnyAliasedFormal ? script->bindings.numArgs() : 0)),
+    slot_(CallObject::RESERVED_SLOTS)
 {
-    JS_ASSERT(!lastBinding);
-    JS_ASSERT(!bindings->lastBinding || !bindings->lastBinding->inDictionary());
-
-    *this = *bindings;
-#ifdef DEBUG
-    bindings->lastBinding = NULL;
-#endif
-}
-
-Shape *
-Bindings::lastShape() const
-{
-    JS_ASSERT(lastBinding);
-    JS_ASSERT(!lastBinding->inDictionary());
-    return lastBinding;
-}
-
-Shape *
-Bindings::initialShape(JSContext *cx) const
-{
-    /* Get an allocation kind to match an empty call object. */
-    gc::AllocKind kind = gc::FINALIZE_OBJECT2_BACKGROUND;
-    JS_ASSERT(gc::GetGCKindSlots(kind) == CallObject::RESERVED_SLOTS);
-
-    return EmptyShape::getInitialShape(cx, &CallClass, NULL, cx->global(),
-                                       kind, BaseShape::VAROBJ);
-}
-
-bool
-Bindings::ensureShape(JSContext *cx)
-{
-    if (!lastBinding) {
-        lastBinding = initialShape(cx);
-        if (!lastBinding)
-            return false;
-    }
-    return true;
-}
-
-bool
-Bindings::extensibleParents()
-{
-    return lastBinding && lastBinding->extensibleParents();
-}
-
-uint16_t
-Bindings::formalIndexToSlot(uint16_t i)
-{
-    JS_ASSERT(i < nargs);
-    return CallObject::RESERVED_SLOTS + i;
-}
-
-uint16_t
-Bindings::varIndexToSlot(uint16_t i)
-{
-    JS_ASSERT(i < nvars);
-    return CallObject::RESERVED_SLOTS + i + nargs;
-}
-
-unsigned
-Bindings::argumentsVarIndex(JSContext *cx) const
-{
-    PropertyName *arguments = cx->runtime->atomState.argumentsAtom;
-    unsigned i;
-    DebugOnly<BindingKind> kind = lookup(cx, arguments, &i);
-    JS_ASSERT(kind == VARIABLE || kind == CONSTANT);
-    return i;
+    settle();
 }
 
 extern void
@@ -213,19 +150,19 @@ JSScript::hasClearedGlobal() const
 
 #ifdef JS_METHODJIT
 inline bool
-JSScript::ensureHasJITInfo(JSContext *cx)
+JSScript::ensureHasMJITInfo(JSContext *cx)
 {
-    if (jitInfo)
+    if (mJITInfo)
         return true;
-    jitInfo = cx->new_<JITScriptSet>();
-    return jitInfo != NULL;
+    mJITInfo = cx->new_<JITScriptSet>();
+    return mJITInfo != NULL;
 }
 
 inline void
-JSScript::destroyJITInfo(js::FreeOp *fop)
+JSScript::destroyMJITInfo(js::FreeOp *fop)
 {
-    fop->delete_(jitInfo);
-    jitInfo = NULL;
+    fop->delete_(mJITInfo);
+    mJITInfo = NULL;
 }
 #endif /* JS_METHODJIT */
 

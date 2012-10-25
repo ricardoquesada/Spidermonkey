@@ -2,7 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DEPTH 		= ../../..
+DEPTH 		= @DEPTH@
 topsrcdir	= @top_srcdir@
 srcdir		= @srcdir@
 VPATH		= @srcdir@
@@ -16,11 +16,11 @@ LIBXUL_LIBRARY = 1
 
 CPPSRCS = \
   AccessCheck.cpp \
-  ChromeObjectWrapper.cpp \
-  CrossOriginWrapper.cpp \
+  WaiveXrayWrapper.cpp \
   FilteringWrapper.cpp \
-  WrapperFactory.cpp \
+  ChromeObjectWrapper.cpp \
   XrayWrapper.cpp \
+  WrapperFactory.cpp \
   $(NULL)
 
 LOCAL_INCLUDES = \

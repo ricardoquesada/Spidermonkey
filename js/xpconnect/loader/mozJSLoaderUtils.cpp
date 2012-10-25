@@ -23,13 +23,13 @@ ReadCachedScript(StartupCache* cache, nsACString &uri, JSContext *cx,
                  nsIPrincipal *systemPrincipal, JSScript **scriptp)
 {
     nsAutoArrayPtr<char> buf;
-    PRUint32 len;
+    uint32_t len;
     nsresult rv = cache->GetBuffer(PromiseFlatCString(uri).get(),
                                    getter_Transfers(buf), &len);
     if (NS_FAILED(rv))
         return rv; // don't warn since NOT_AVAILABLE is an ok error
 
-    JSScript *script = JS_DecodeScript(cx, buf, len, nsJSPrincipals::get(systemPrincipal), nsnull);
+    JSScript *script = JS_DecodeScript(cx, buf, len, nsJSPrincipals::get(systemPrincipal), nullptr);
     if (!script)
         return NS_ERROR_OUT_OF_MEMORY;
     *scriptp = script;

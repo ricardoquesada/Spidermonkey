@@ -86,9 +86,11 @@ class EvalScriptGuard
     EvalCacheLookup lookup_;
     EvalCache::AddPtr p_;
 
+    Rooted<JSLinearString*> lookupStr_;
+
   public:
     EvalScriptGuard(JSContext *cx)
-      : cx_(cx), script_(cx)
+      : cx_(cx), script_(cx), lookupStr_(cx)
     {
         lookup_.str = NULL;
     }
@@ -98,6 +100,7 @@ class EvalScriptGuard
             CallDestroyScriptHook(cx_->runtime->defaultFreeOp(), script_);
             script_->isActiveEval = false;
             script_->isCachedEval = true;
+            lookup_.str = lookupStr_;
             if (lookup_.str && IsEvalCacheCandidate(script_))
                 cx_->runtime->evalCache.relookupOrAdd(p_, lookup_, script_);
         }
@@ -105,6 +108,7 @@ class EvalScriptGuard
 
     void lookupInEvalCache(JSLinearString *str, JSFunction *caller, unsigned staticLevel)
     {
+        lookupStr_ = str;
         lookup_.str = str;
         lookup_.caller = caller;
         lookup_.staticLevel = staticLevel;
@@ -131,7 +135,7 @@ class EvalScriptGuard
         return !!script_;
     }
 
-    JSScript *script() const {
+    HandleScript script() {
         JS_ASSERT(script_);
         return script_;
     }
@@ -167,10 +171,10 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, StackFrame *c
         return true;
     }
     if (!args[0].isString()) {
-        args.rval() = args[0];
+        args.rval().set(args[0]);
         return true;
     }
-    JSString *str = args[0].toString();
+    RootedString str(cx, args[0].toString());
 
     // ES5 15.1.2.1 steps 2-8.
 
@@ -193,7 +197,7 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, StackFrame *c
         staticLevel = 0;
 
         // Use the global as 'this', modulo outerization.
-        JSObject *thisobj = scopeobj->thisObject(cx);
+        JSObject *thisobj = JSObject::thisObject(cx, scopeobj);
         if (!thisobj)
             return false;
         thisv = ObjectValue(*thisobj);
@@ -235,12 +239,12 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, StackFrame *c
                 bool isArray = (chars[0] == '[');
                 JSONParser parser(cx, isArray ? chars : chars + 1, isArray ? length : length - 2,
                                   JSONParser::StrictJSON, JSONParser::NoError);
-                Value tmp;
+                RootedValue tmp(cx);
                 if (!parser.parse(&tmp))
                     return false;
                 if (tmp.isUndefined())
                     break;
-                args.rval() = tmp;
+                args.rval().set(tmp);
                 return true;
             }
         }
@@ -261,13 +265,14 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, StackFrame *c
                                     evalType == DIRECT_EVAL ? CALLED_FROM_JSOP_EVAL
                                                             : NOT_CALLED_FROM_JSOP_EVAL);
 
-        bool compileAndGo = true;
-        bool noScriptRval = false;
-        JSScript *compiled = frontend::CompileScript(cx, scopeobj, caller,
-                                                     principals, originPrincipals,
-                                                     compileAndGo, noScriptRval,
-                                                     chars, length, filename,
-                                                     lineno, cx->findVersion(), linearStr,
+        CompileOptions options(cx);
+        options.setFileAndLine(filename, lineno)
+               .setCompileAndGo(true)
+               .setNoScriptRval(false)
+               .setPrincipals(principals)
+               .setOriginPrincipals(originPrincipals);
+        JSScript *compiled = frontend::CompileScript(cx, scopeobj, caller, options,
+                                                     chars, length, linearStr,
                                                      staticLevel);
         if (!compiled)
             return false;
@@ -276,7 +281,7 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, StackFrame *c
     }
 
     return ExecuteKernel(cx, esg.script(), *scopeobj, thisv, ExecuteType(evalType),
-                         NULL /* evalInFrame */, &args.rval());
+                         NULL /* evalInFrame */, args.rval().address());
 }
 
 // We once supported a second argument to eval to use as the scope chain
@@ -319,7 +324,6 @@ js::DirectEval(JSContext *cx, const CallArgs &args)
 {
     // Direct eval can assume it was called from an interpreted frame.
     StackFrame *caller = cx->fp();
-    JS_ASSERT(caller->isScriptFrame());
     JS_ASSERT(IsBuiltinEvalForScope(caller->scopeChain(), args.calleev()));
     JS_ASSERT(JSOp(*cx->regs().pc) == JSOP_EVAL);
 
@@ -361,5 +365,5 @@ js::PrincipalsForCompiledCode(const CallReceiver &call, JSContext *cx)
     // compiled code will be run with the callee's scope chain, this would make
     // fp->script()->compartment() != fp->compartment().
 
-    return call.callee().principals(cx);
+    return call.callee().compartment()->principals;
 }

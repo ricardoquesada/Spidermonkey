@@ -21,7 +21,6 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=720619
   const Cu = Components.utils;
 
   var obj = {
-    __exposedProps__: {},
     valueOf: function () {
       return 42;
     },

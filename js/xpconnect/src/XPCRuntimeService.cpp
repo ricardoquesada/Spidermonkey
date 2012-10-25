@@ -32,11 +32,11 @@ NS_IMPL_THREADSAFE_RELEASE(BackstagePass)
                             nsIXPCScriptable::DONT_REFLECT_INTERFACE_NAMES
 #include "xpc_map_end.h" /* This will #undef the above */
 
-/* bool newResolve (in nsIXPConnectWrappedNative wrapper, in JSContextPtr cx, in JSObjectPtr obj, in jsval id, in PRUint32 flags, out JSObjectPtr objp); */
+/* bool newResolve (in nsIXPConnectWrappedNative wrapper, in JSContextPtr cx, in JSObjectPtr obj, in jsval id, in uint32_t flags, out JSObjectPtr objp); */
 NS_IMETHODIMP
 BackstagePass::NewResolve(nsIXPConnectWrappedNative *wrapper,
                           JSContext * cx, JSObject * obj_,
-                          jsid id_, PRUint32 flags,
+                          jsid id_, uint32_t flags,
                           JSObject * *objp_, bool *_retval)
 {
     JS::RootedObject obj(cx, obj_);
@@ -46,7 +46,7 @@ BackstagePass::NewResolve(nsIXPConnectWrappedNative *wrapper,
 
     *_retval = !!JS_ResolveStandardClass(cx, obj, id, &resolved);
     if (!*_retval) {
-        *objp_ = nsnull;
+        *objp_ = nullptr;
         return NS_OK;
     }
 
@@ -62,19 +62,19 @@ BackstagePass::NewResolve(nsIXPConnectWrappedNative *wrapper,
 }
 
 /***************************************************************************/
-/* void getInterfaces (out PRUint32 count, [array, size_is (count), retval]
+/* void getInterfaces (out uint32_t count, [array, size_is (count), retval]
                        out nsIIDPtr array); */
 NS_IMETHODIMP
-BackstagePass::GetInterfaces(PRUint32 *aCount, nsIID * **aArray)
+BackstagePass::GetInterfaces(uint32_t *aCount, nsIID * **aArray)
 {
-    const PRUint32 count = 2;
+    const uint32_t count = 2;
     *aCount = count;
     nsIID **array;
     *aArray = array = static_cast<nsIID**>(nsMemory::Alloc(count * sizeof(nsIID*)));
     if (!array)
         return NS_ERROR_OUT_OF_MEMORY;
 
-    PRUint32 index = 0;
+    uint32_t index = 0;
     nsIID* clone;
 #define PUSH_IID(id)                                                          \
     clone = static_cast<nsIID *>(nsMemory::Clone(&NS_GET_IID( id ),           \
@@ -92,16 +92,16 @@ oom:
     while (index)
         nsMemory::Free(array[--index]);
     nsMemory::Free(array);
-    *aArray = nsnull;
+    *aArray = nullptr;
     return NS_ERROR_OUT_OF_MEMORY;
 }
 
-/* nsISupports getHelperForLanguage (in PRUint32 language); */
+/* nsISupports getHelperForLanguage (in uint32_t language); */
 NS_IMETHODIMP
-BackstagePass::GetHelperForLanguage(PRUint32 language,
+BackstagePass::GetHelperForLanguage(uint32_t language,
                                     nsISupports **retval)
 {
-    *retval = nsnull;
+    *retval = nullptr;
     return NS_OK;
 }
 
@@ -109,7 +109,7 @@ BackstagePass::GetHelperForLanguage(PRUint32 language,
 NS_IMETHODIMP
 BackstagePass::GetContractID(char * *aContractID)
 {
-    *aContractID = nsnull;
+    *aContractID = nullptr;
     return NS_ERROR_NOT_AVAILABLE;
 }
 
@@ -126,21 +126,21 @@ BackstagePass::GetClassDescription(char * *aClassDescription)
 NS_IMETHODIMP
 BackstagePass::GetClassID(nsCID * *aClassID)
 {
-    *aClassID = nsnull;
+    *aClassID = nullptr;
     return NS_OK;
 }
 
-/* readonly attribute PRUint32 implementationLanguage; */
+/* readonly attribute uint32_t implementationLanguage; */
 NS_IMETHODIMP
-BackstagePass::GetImplementationLanguage(PRUint32 *aImplementationLanguage)
+BackstagePass::GetImplementationLanguage(uint32_t *aImplementationLanguage)
 {
     *aImplementationLanguage = nsIProgrammingLanguage::CPLUSPLUS;
     return NS_OK;
 }
 
-/* readonly attribute PRUint32 flags; */
+/* readonly attribute uint32_t flags; */
 NS_IMETHODIMP
-BackstagePass::GetFlags(PRUint32 *aFlags)
+BackstagePass::GetFlags(uint32_t *aFlags)
 {
     *aFlags = nsIClassInfo::THREADSAFE;
     return NS_OK;

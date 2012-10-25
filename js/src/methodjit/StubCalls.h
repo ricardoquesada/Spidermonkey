@@ -83,11 +83,11 @@ void * JS_FASTCALL TableSwitch(VMFrame &f, jsbytecode *origPc);
 
 void JS_FASTCALL BindName(VMFrame &f, PropertyName *name);
 JSObject * JS_FASTCALL BindGlobalName(VMFrame &f);
-template<JSBool strict> void JS_FASTCALL SetName(VMFrame &f, PropertyName *name);
-template<JSBool strict> void JS_FASTCALL SetGlobalName(VMFrame &f, PropertyName *name);
+void JS_FASTCALL SetName(VMFrame &f, PropertyName *name);
 void JS_FASTCALL Name(VMFrame &f);
 void JS_FASTCALL GetProp(VMFrame &f, PropertyName *name);
 void JS_FASTCALL GetPropNoCache(VMFrame &f, PropertyName *name);
+void JS_FASTCALL SetProp(VMFrame &f, PropertyName *name);
 void JS_FASTCALL GetElem(VMFrame &f);
 template<JSBool strict> void JS_FASTCALL SetElem(VMFrame &f);
 void JS_FASTCALL ToId(VMFrame &f);
@@ -134,7 +134,7 @@ void JS_FASTCALL StrictEq(VMFrame &f);
 void JS_FASTCALL StrictNe(VMFrame &f);
 
 void JS_FASTCALL Iter(VMFrame &f, uint32_t flags);
-void JS_FASTCALL IterNext(VMFrame &f, int32_t offset);
+void JS_FASTCALL IterNext(VMFrame &f);
 JSBool JS_FASTCALL IterMore(VMFrame &f);
 void JS_FASTCALL EndIter(VMFrame &f);
 

@@ -65,6 +65,7 @@ class StaticScopeIter
 
     /* Return whether this static scope will be on the dynamic scope chain. */
     bool hasDynamicScopeObject() const;
+    Shape *scopeShape() const;
 
     enum Type { BLOCK, FUNCTION, NAMED_LAMBDA };
     Type type() const;
@@ -93,24 +94,16 @@ struct ScopeCoordinate
     inline ScopeCoordinate() {}
 };
 
-/* Return the static block chain (or null) accessed by *pc. */
-extern StaticBlockObject *
-ScopeCoordinateBlockChain(JSScript *script, jsbytecode *pc);
+/*
+ * Return a scope iterator pointing at the static scope containing the variable
+ * accessed by the ALIASEDVAR op at 'pc'.
+ */
+extern StaticScopeIter
+ScopeCoordinateToStaticScope(JSScript *script, jsbytecode *pc);
 
 /* Return the name being accessed by the given ALIASEDVAR op. */
 extern PropertyName *
 ScopeCoordinateName(JSRuntime *rt, JSScript *script, jsbytecode *pc);
-
-/*
- * The 'slot' of a ScopeCoordinate is relative to the scope object. Type
- * inference and jit compilation are instead relative to frame values (even if
- * these values are aliased and thus never accessed, the the index of the
- * variable is used to refer to the jit/inference information). This function
- * maps from the ScopeCoordinate space to the StackFrame variable space.
- */
-enum FrameIndexType { FrameIndex_Local, FrameIndex_Arg };
-extern FrameIndexType
-ScopeCoordinateToFrameIndex(JSScript *script, jsbytecode *pc, unsigned *index);
 
 /*****************************************************************************/
 
@@ -201,19 +194,9 @@ class CallObject : public ScopeObject
      */
     inline JSFunction &callee() const;
 
-    /* Returns the formal argument at the given index. */
-    inline const Value &arg(unsigned i, MaybeCheckAliasing = CHECK_ALIASING) const;
-    inline void setArg(unsigned i, const Value &v, MaybeCheckAliasing = CHECK_ALIASING);
-
-    /* Returns the variable at the given index. */
-    inline const Value &var(unsigned i, MaybeCheckAliasing = CHECK_ALIASING) const;
-    inline void setVar(unsigned i, const Value &v, MaybeCheckAliasing = CHECK_ALIASING);
-
-    static JSBool setArgOp(JSContext *cx, HandleObject obj, HandleId id, JSBool strict, Value *vp);
-    static JSBool setVarOp(JSContext *cx, HandleObject obj, HandleId id, JSBool strict, Value *vp);
-
-    /* Copy in all the unaliased formals and locals. */
-    void copyUnaliasedValues(StackFrame *fp);
+    /* Get/set the aliased variable referred to by 'bi'. */
+    inline const Value &aliasedVar(AliasedFormalIter fi);
+    inline void setAliasedVar(AliasedFormalIter fi, const Value &v);
 };
 
 class DeclEnvObject : public ScopeObject
@@ -323,11 +306,11 @@ class StaticBlockObject : public BlockObject
      * Frontend compilation temporarily uses the object's slots to link
      * a let var to its associated Definition parse node.
      */
-    void setDefinitionParseNode(unsigned i, Definition *def);
-    Definition *maybeDefinitionParseNode(unsigned i);
+    void setDefinitionParseNode(unsigned i, frontend::Definition *def);
+    frontend::Definition *maybeDefinitionParseNode(unsigned i);
 
     /*
-     * The parser uses 'enclosingBlock' as the prev-link in the tc->blockChain
+     * The parser uses 'enclosingBlock' as the prev-link in the pc->blockChain
      * stack. Note: in the case of hoisting, this prev-link will not ultimately
      * be the same as enclosingBlock, initEnclosingStaticScope must be called
      * separately in the emitter. 'reset' is just for asserting stackiness.
@@ -490,10 +473,10 @@ class ScopeIterKey
  * To resolve this, the debugger first calls GetDebugScopeFor(Function|Frame)
  * to synthesize a "debug scope chain". A debug scope chain is just a chain of
  * objects that fill in missing scopes and protect the engine from unexpected
- * access. (The latter means that some debugger operations, like adding a new
- * binding to a lexical scope, can fail when a true eval would succeed.) To do
- * both of these things, GetDebugScopeFor* creates a new proxy DebugScopeObject
- * to sit in front of every existing ScopeObject.
+ * access. (The latter means that some debugger operations, like redefining a
+ * lexical binding, can fail when a true eval would succeed.) To do both of
+ * these things, GetDebugScopeFor* creates a new proxy DebugScopeObject to sit
+ * in front of every existing ScopeObject.
  *
  * GetDebugScopeFor* ensures the invariant that the same DebugScopeObject is
  * always produced for the same underlying scope (optimized or not!). This is
@@ -509,13 +492,27 @@ GetDebugScopeForFrame(JSContext *cx, StackFrame *fp);
 /* Provides debugger access to a scope. */
 class DebugScopeObject : public JSObject
 {
+    /*
+     * The enclosing scope on the dynamic scope chain. This slot is analogous
+     * to the SCOPE_CHAIN_SLOT of a ScopeObject.
+     */
     static const unsigned ENCLOSING_EXTRA = 0;
+
+    /*
+     * NullValue or a dense array holding the unaliased variables of a function
+     * frame that has been popped.
+     */
+    static const unsigned SNAPSHOT_EXTRA = 1;
 
   public:
     static DebugScopeObject *create(JSContext *cx, ScopeObject &scope, HandleObject enclosing);
 
     ScopeObject &scope() const;
     JSObject &enclosingScope() const;
+
+    /* May only be called for proxies to function call objects. */
+    JSObject *maybeSnapshot() const;
+    void initSnapshot(JSObject &snapshot);
 
     /* Currently, the 'declarative' scopes are Call and Block. */
     bool isForDeclarative() const;
@@ -527,7 +524,7 @@ class DebugScopes
     JSRuntime *rt;
 
     /* The map from (non-debug) scopes to debug scopes. */
-    typedef WeakMap<HeapPtrObject, HeapPtrObject> ObjectWeakMap;
+    typedef WeakMap<EncapsulatedPtrObject, RelocatablePtrObject> ObjectWeakMap;
     ObjectWeakMap proxiedScopes;
 
     /*

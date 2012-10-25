@@ -24,6 +24,7 @@
 #include "jsscope.h"
 #include "jsstr.h"
 
+#include "js/HashTable.h"
 #include "js/MemoryMetrics.h"
 
 #include "jsatominlines.h"
@@ -145,7 +146,7 @@ Shape::hashify(JSContext *cx)
 Shape **
 ShapeTable::search(jsid id, bool adding)
 {
-    JSHashNumber hash0, hash1, hash2;
+    js::HashNumber hash0, hash1, hash2;
     int sizeLog2;
     Shape *stored, *shape, **spp, **firstRemoved;
     uint32_t sizeMask;
@@ -733,11 +734,11 @@ JSObject::putProperty(JSContext *cx, jsid id_,
     return shape;
 }
 
-Shape *
-JSObject::changeProperty(JSContext *cx, Shape *shape, unsigned attrs, unsigned mask,
+/* static */ Shape *
+JSObject::changeProperty(JSContext *cx, HandleObject obj, Shape *shape, unsigned attrs, unsigned mask,
                          PropertyOp getter, StrictPropertyOp setter)
 {
-    JS_ASSERT(nativeContainsNoAllocation(*shape));
+    JS_ASSERT(obj->nativeContainsNoAllocation(*shape));
 
     attrs |= shape->attrs & mask;
 
@@ -745,16 +746,16 @@ JSObject::changeProperty(JSContext *cx, Shape *shape, unsigned attrs, unsigned m
     JS_ASSERT(!((attrs ^ shape->attrs) & JSPROP_SHARED) ||
               !(attrs & JSPROP_SHARED));
 
-    types::MarkTypePropertyConfigured(cx, this, shape->propid());
+    types::MarkTypePropertyConfigured(cx, obj, shape->propid());
     if (attrs & (JSPROP_GETTER | JSPROP_SETTER))
-        types::AddTypePropertyId(cx, this, shape->propid(), types::Type::UnknownType());
+        types::AddTypePropertyId(cx, obj, shape->propid(), types::Type::UnknownType());
 
     if (getter == JS_PropertyStub)
         getter = NULL;
     if (setter == JS_StrictPropertyStub)
         setter = NULL;
 
-    if (!CheckCanChangeAttrs(cx, this, shape, &attrs))
+    if (!CheckCanChangeAttrs(cx, obj, shape, &attrs))
         return NULL;
 
     if (shape->attrs == attrs && shape->getter() == getter && shape->setter() == setter)
@@ -766,10 +767,10 @@ JSObject::changeProperty(JSContext *cx, Shape *shape, unsigned attrs, unsigned m
      * removeProperty because it will free an allocated shape->slot, and
      * putProperty won't re-allocate it.
      */
-    Shape *newShape = putProperty(cx, shape->propid(), getter, setter, shape->maybeSlot(),
-                                  attrs, shape->flags, shape->maybeShortid());
+    Shape *newShape = obj->putProperty(cx, shape->propid(), getter, setter, shape->maybeSlot(),
+                                       attrs, shape->flags, shape->maybeShortid());
 
-    checkShapeConsistency();
+    obj->checkShapeConsistency();
     return newShape;
 }
 
@@ -1160,30 +1161,6 @@ BaseShape::finalize(FreeOp *fop)
     }
 }
 
-/* static */ Shape *
-Shape::setExtensibleParents(JSContext *cx, Shape *shape)
-{
-    JS_ASSERT(!shape->inDictionary());
-
-    StackBaseShape base(shape);
-    base.flags |= BaseShape::EXTENSIBLE_PARENTS;
-
-    /* This is only used for Block and Call objects, which have a NULL proto. */
-    return replaceLastProperty(cx, base, NULL, shape);
-}
-
-bool
-Bindings::setExtensibleParents(JSContext *cx)
-{
-    if (!ensureShape(cx))
-        return false;
-    Shape *newShape = Shape::setExtensibleParents(cx, lastBinding);
-    if (!newShape)
-        return false;
-    lastBinding = newShape;
-    return true;
-}
-
 inline
 InitialShapeEntry::InitialShapeEntry() : shape(NULL), proto(NULL)
 {
@@ -1331,8 +1308,10 @@ JSCompartment::sweepInitialShapeTable()
                 JS_ASSERT(!parent || IsObjectMarked(&parent));
                 JS_ASSERT(parent == shape->getObjectParent());
 #endif
-                InitialShapeEntry newKey(shape, proto);
-                e.rekeyFront(newKey.getLookup(), newKey);
+                if (shape != entry.shape || proto != entry.proto) {
+                    InitialShapeEntry newKey(shape, proto);
+                    e.rekeyFront(newKey.getLookup(), newKey);
+                }
             }
         }
     }

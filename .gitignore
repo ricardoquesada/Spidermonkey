@@ -11,8 +11,6 @@ PLBlocks.framework/*
 .DS_Store
 profile
 
-# Mac OS X Finder
-.DS_Store
 # Sparkle distribution Private Key (Don’t check me in!)
 dsa_priv.pem
 # XCode (and ancestors) per-user config (very noisy, and not relevant)
@@ -31,7 +29,6 @@ VersionX-revision.h
 # Other source repository archive directories (protects when importing)
 .hg
 .svn
-CVS
 # automatic backup files
 *~.nib
 *.swp
@@ -41,10 +38,11 @@ Backup[ ]of[ ]*.pages/
 Backup[ ]of[ ]*.key/
 Backup[ ]of[ ]*.numbers/
 
-# Ignore the entire build-android directory
+# Ignore the entire build-android and build-ios directory
 # Note : to override .gitignore and commit changes to files in this directory
 # use "git commit -f <filename>"
 js/src/build-android
+js/src/build-ios
 
-# Ignore temporary python file
-js/src/config/expandlibs.pyc
+js/src/builtin/*.pyc
+js/src/config/*.pyc

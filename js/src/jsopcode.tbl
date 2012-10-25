@@ -166,8 +166,9 @@ OPDEF(JSOP_STRICTEQ,  72, "stricteq",   "===",        1,  2,  1, 10,  JOF_BYTE|J
 OPDEF(JSOP_STRICTNE,  73, "strictne",   "!==",        1,  2,  1, 10,  JOF_BYTE|JOF_DETECTING|JOF_LEFTASSOC|JOF_ARITH)
 
 /*
- * Host object extension: given 'o.item(i) = j', the left-hand side compiles
- * JSOP_SETCALL after JSOP_CALL, JSOP_EVAL, JSOP_FUNAPPLY, or JSOP_FUNCALL.
+ * Sometimes web pages do 'o.Item(i) = j'. This is not an early SyntaxError,
+ * for web compatibility. Instead we emit JSOP_SETCALL after the function call,
+ * an opcode that always throws.
  */
 OPDEF(JSOP_SETCALL,   74, "setcall",    NULL,         1,  1,  2, 18,  JOF_BYTE)
 
@@ -185,7 +186,7 @@ OPDEF(JSOP_SETCALL,   74, "setcall",    NULL,         1,  1,  2, 18,  JOF_BYTE)
  */
 OPDEF(JSOP_ITER,      75, "iter",       NULL,         2,  1,  1,  0,  JOF_UINT8)
 OPDEF(JSOP_MOREITER,  76, "moreiter",   NULL,         1,  1,  2,  0,  JOF_BYTE)
-OPDEF(JSOP_ITERNEXT,  77, "iternext",   "<next>",     2,  0,  1,  0,  JOF_UINT8)
+OPDEF(JSOP_ITERNEXT,  77, "iternext",   "<next>",     1,  0,  1,  0,  JOF_BYTE)
 OPDEF(JSOP_ENDITER,   78, "enditer",    NULL,         1,  1,  0,  0,  JOF_BYTE)
 
 OPDEF(JSOP_FUNAPPLY,  79, "funapply",   NULL,         3, -1,  1, 18,  JOF_UINT16|JOF_INVOKE|JOF_TYPESET)
@@ -342,17 +343,25 @@ OPDEF(JSOP_FINALLY,     135,"finally",    NULL,       1,  0,  2,  0,  JOF_BYTE)
  *  uint32 block: the index (into the script object table) of the block chain
  *                at the point of the variable access.
  */
-OPDEF(JSOP_GETALIASEDVAR, 136,"getaliasedvar",NULL,   9,  0,  1, 19,  JOF_SCOPECOORD|JOF_NAME)
-OPDEF(JSOP_CALLALIASEDVAR,137,"callaliasedvar",NULL,  9,  0,  1, 19,  JOF_SCOPECOORD|JOF_NAME)
+OPDEF(JSOP_GETALIASEDVAR, 136,"getaliasedvar",NULL,   9,  0,  1, 19,  JOF_SCOPECOORD|JOF_NAME|JOF_TYPESET)
+OPDEF(JSOP_CALLALIASEDVAR,137,"callaliasedvar",NULL,  9,  0,  1, 19,  JOF_SCOPECOORD|JOF_NAME|JOF_TYPESET)
 OPDEF(JSOP_SETALIASEDVAR, 138,"setaliasedvar",NULL,   9,  1,  1,  3,  JOF_SCOPECOORD|JOF_NAME|JOF_SET|JOF_DETECTING)
 OPDEF(JSOP_INCALIASEDVAR, 139,"incaliasedvar",NULL,   10, 0,  1, 15,  JOF_SCOPECOORD|JOF_NAME|JOF_INC|JOF_TMPSLOT3|JOF_DECOMPOSE)
 OPDEF(JSOP_DECALIASEDVAR, 140,"decaliasedvar",NULL,   10, 0,  1, 15,  JOF_SCOPECOORD|JOF_NAME|JOF_DEC|JOF_TMPSLOT3|JOF_DECOMPOSE)
 OPDEF(JSOP_ALIASEDVARINC, 141,"aliasedvarinc",NULL,   10, 0,  1, 15,  JOF_SCOPECOORD|JOF_NAME|JOF_INC|JOF_POST|JOF_TMPSLOT3|JOF_DECOMPOSE)
 OPDEF(JSOP_ALIASEDVARDEC, 142,"aliasedvardec",NULL,   10, 0,  1, 15,  JOF_SCOPECOORD|JOF_NAME|JOF_DEC|JOF_POST|JOF_TMPSLOT3|JOF_DECOMPOSE)
 
+/*
+ * Intrinsic names have the syntax %name and can only be used when the 
+ * CompileOptions flag "selfHostingMode" is set.
+ *
+ * They are used to access intrinsic functions the runtime doesn't give 
+ * client JS code access to from self-hosted code.
+ */
+OPDEF(JSOP_INTRINSICNAME, 143, "intrinsicname", NULL, 5,  0,  1, 19,  JOF_ATOM|JOF_NAME|JOF_TYPESET)
+OPDEF(JSOP_CALLINTRINSIC, 144, "callintrinsic", NULL, 5,  0,  1, 19,  JOF_ATOM|JOF_NAME|JOF_TYPESET)
+
 /* Unused. */
-OPDEF(JSOP_UNUSED8,       143,"unused8",  NULL,       1,  0,  0,  0,  JOF_BYTE)
-OPDEF(JSOP_UNUSED9,       144,"unused9",  NULL,       1,  0,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_UNUSED10,      145,"unused10", NULL,       1,  0,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_UNUSED11,      146,"unused11", NULL,       1,  0,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_UNUSED12,      147,"unused12", NULL,       1,  0,  0,  0,  JOF_BYTE)

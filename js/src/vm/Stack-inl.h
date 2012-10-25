@@ -65,7 +65,7 @@ StackFrame::varObj()
 inline JSCompartment *
 StackFrame::compartment() const
 {
-    JS_ASSERT_IF(isScriptFrame(), scopeChain()->compartment() == script()->compartment());
+    JS_ASSERT(scopeChain()->compartment() == script()->compartment());
     return scopeChain()->compartment();
 }
 
@@ -74,7 +74,7 @@ inline mjit::JITScript *
 StackFrame::jit()
 {
     JSScript *script_ = script();
-    return script_->getJIT(isConstructing(), script_->compartment()->needsBarrier());
+    return script_->getJIT(isConstructing(), script_->compartment()->compileBarriers());
 }
 #endif
 
@@ -86,8 +86,7 @@ StackFrame::initPrev(JSContext *cx)
         prev_ = regs->fp();
         prevpc_ = regs->pc;
         prevInline_ = regs->inlined();
-        JS_ASSERT_IF(!prev_->isDummyFrame(),
-                     uint32_t(prevpc_ - prev_->script()->code) < prev_->script()->length);
+        JS_ASSERT(uint32_t(prevpc_ - prev_->script()->code) < prev_->script()->length);
     } else {
         prev_ = NULL;
 #ifdef DEBUG
@@ -238,6 +237,10 @@ inline Value &
 StackFrame::unaliasedFormal(unsigned i, MaybeCheckAliasing checkAliasing)
 {
     JS_ASSERT(i < numFormalArgs());
+    JS_ASSERT_IF(checkAliasing, !script()->argsObjAliasesFormals());
+    if (checkAliasing && script()->formalIsAliased(i)) {
+        while (true) {}
+    }
     JS_ASSERT_IF(checkAliasing, !script()->formalIsAliased(i));
     return formals()[i];
 }
@@ -246,6 +249,7 @@ inline Value &
 StackFrame::unaliasedActual(unsigned i, MaybeCheckAliasing checkAliasing)
 {
     JS_ASSERT(i < numActualArgs());
+    JS_ASSERT_IF(checkAliasing, !script()->argsObjAliasesFormals());
     JS_ASSERT_IF(checkAliasing && i < numFormalArgs(), !script()->formalIsAliased(i));
     return i < numFormalArgs() ? formals()[i] : actuals()[i];
 }
@@ -254,7 +258,7 @@ template <class Op>
 inline void
 StackFrame::forEachUnaliasedActual(Op op)
 {
-    JS_ASSERT(script()->numClosedArgs() == 0);
+    JS_ASSERT(!script()->funHasAnyAliasedFormal);
     JS_ASSERT(!script()->needsArgsObj());
 
     unsigned nformal = numFormalArgs();
@@ -365,8 +369,7 @@ StackFrame::callObj() const
 
 STATIC_POSTCONDITION(!return || ubound(from) >= nvals)
 JS_ALWAYS_INLINE bool
-StackSpace::ensureSpace(JSContext *cx, MaybeReportError report, Value *from, ptrdiff_t nvals,
-                        JSCompartment *dest) const
+StackSpace::ensureSpace(JSContext *cx, MaybeReportError report, Value *from, ptrdiff_t nvals) const
 {
     assertInvariants();
     JS_ASSERT(from >= firstUnused());
@@ -374,7 +377,7 @@ StackSpace::ensureSpace(JSContext *cx, MaybeReportError report, Value *from, ptr
     JS_ASSERT(from <= commitEnd_);
 #endif
     if (JS_UNLIKELY(conservativeEnd_ - from < nvals))
-        return ensureSpaceSlow(cx, report, from, nvals, dest);
+        return ensureSpaceSlow(cx, report, from, nvals);
     return true;
 }
 
@@ -518,17 +521,16 @@ ContextStack::currentScript(jsbytecode **ppc,
     if (ppc)
         *ppc = NULL;
 
-    FrameRegs *regs = maybeRegs();
-    StackFrame *fp = regs ? regs->fp() : NULL;
-    while (fp && fp->isDummyFrame())
-        fp = fp->prev();
-    if (!fp)
+    if (!hasfp())
         return NULL;
 
+    FrameRegs &regs = this->regs();
+    StackFrame *fp = regs.fp();
+
 #ifdef JS_METHODJIT
-    mjit::CallSite *inlined = regs->inlined();
+    mjit::CallSite *inlined = regs.inlined();
     if (inlined) {
-        mjit::JITChunk *chunk = fp->jit()->chunk(regs->pc);
+        mjit::JITChunk *chunk = fp->jit()->chunk(regs.pc);
         JS_ASSERT(inlined->inlineIndex < chunk->nInlineFrames);
         mjit::InlineFrame *frame = &chunk->inlineFrames()[inlined->inlineIndex];
         JSScript *script = frame->fun->script();

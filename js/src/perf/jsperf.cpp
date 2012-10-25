@@ -13,19 +13,20 @@ using JS::PerfMeasurement;
 
 // You cannot forward-declare a static object in C++, so instead
 // we have to forward-declare the helper functions that refer to it.
-static PerfMeasurement* GetPM(JSContext* cx, JSObject* obj, const char* fname);
+static PerfMeasurement* GetPM(JSContext* cx, JSHandleObject obj, const char* fname);
 static PerfMeasurement* GetPMFromThis(JSContext* cx, jsval* vp);
 
 // Property access
 
 #define GETTER(name)                                                    \
     static JSBool                                                       \
-    pm_get_##name(JSContext* cx, JS::HandleObject obj, JS::HandleId /*unused*/, jsval* vp) \
+    pm_get_##name(JSContext* cx, JS::HandleObject obj, JS::HandleId /*unused*/, JS::MutableHandleValue vp) \
     {                                                                   \
         PerfMeasurement* p = GetPM(cx, obj, #name);                     \
         if (!p)                                                         \
             return JS_FALSE;                                            \
-        return JS_NewNumberValue(cx, double(p->name), vp);              \
+        vp.set(JS_NumberValue(double(p->name)));                        \
+        return JS_TRUE;                                                 \
     }
 
 GETTER(cpu_cycles)
@@ -102,7 +103,7 @@ const uint8_t PM_PATTRS =
     JSPROP_ENUMERATE | JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_SHARED;
 
 #define GETTER(name)                            \
-    { #name, 0, PM_PATTRS, pm_get_##name, 0 }
+    { #name, 0, PM_PATTRS, JSOP_WRAPPER(pm_get_##name), JSOP_NULLWRAPPER }
 
 static JSPropertySpec pm_props[] = {
     GETTER(cpu_cycles),
@@ -117,7 +118,7 @@ static JSPropertySpec pm_props[] = {
     GETTER(context_switches),
     GETTER(cpu_migrations),
     GETTER(eventsMeasured),
-    {0,0,0,0,0}
+    {0,0,0,JSOP_NULLWRAPPER,JSOP_NULLWRAPPER}
 };
 
 #undef GETTER
@@ -195,7 +196,7 @@ pm_finalize(JSFreeOp* fop, JSObject* obj)
 // Helpers (declared above)
 
 static PerfMeasurement*
-GetPM(JSContext* cx, JSObject* obj, const char* fname)
+GetPM(JSContext* cx, JSHandleObject obj, const char* fname)
 {
     PerfMeasurement* p = (PerfMeasurement*)
         JS_GetInstancePrivate(cx, obj, &pm_class, 0);
@@ -222,10 +223,10 @@ GetPMFromThis(JSContext* cx, jsval* vp)
 namespace JS {
 
 JSObject*
-RegisterPerfMeasurement(JSContext *cx, JSObject *global)
+RegisterPerfMeasurement(JSContext *cx, JSRawObject global)
 {
     js::RootedObject prototype(cx);
-    prototype = JS_InitClass(cx, global, 0 /* parent */,
+    prototype = JS_InitClass(cx, global, NULL /* parent */,
                              &pm_class, pm_construct, 1,
                              pm_props, pm_fns, 0, 0);
     if (!prototype)

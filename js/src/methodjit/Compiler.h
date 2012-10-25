@@ -209,7 +209,6 @@ class Compiler : public BaseCompiler
         bool hasTypeCheck;
         bool typeMonitored;
         bool cached;
-        types::TypeSet *rhsTypes;
         ValueRemat vr;
         union {
             ic::GetPropLabels getPropLabels_;
@@ -249,7 +248,6 @@ class Compiler : public BaseCompiler
             }
             ic.typeMonitored = typeMonitored;
             ic.cached = cached;
-            ic.rhsTypes = rhsTypes;
             if (ic.isGet())
                 ic.setLabels(getPropLabels());
             else if (ic.isSet())
@@ -321,19 +319,19 @@ class Compiler : public BaseCompiler
      */
     class VarType {
         JSValueType type;
-        types::TypeSet *types;
+        types::StackTypeSet *types;
 
       public:
-        void setTypes(types::TypeSet *types) {
+        void setTypes(types::StackTypeSet *types) {
             this->types = types;
             this->type = JSVAL_TYPE_MISSING;
         }
 
         types::TypeSet *getTypes() { return types; }
 
-        JSValueType getTypeTag(JSContext *cx) {
+        JSValueType getTypeTag() {
             if (type == JSVAL_TYPE_MISSING)
-                type = types ? types->getKnownTypeTag(cx) : JSVAL_TYPE_UNKNOWN;
+                type = types ? types->getKnownTypeTag() : JSVAL_TYPE_UNKNOWN;
             return type;
         }
     };
@@ -368,6 +366,7 @@ class Compiler : public BaseCompiler
     Rooted<GlobalObject*> globalObj;
     const HeapSlot *globalSlots;  /* Original slots pointer. */
 
+    SPSInstrumentation sps;
     Assembler masm;
     FrameState frame;
 
@@ -432,6 +431,8 @@ private:
     js::Vector<DoublePatch, 16, CompilerAllocPolicy> doubleList;
     js::Vector<JSObject*, 0, CompilerAllocPolicy> rootedTemplates;
     js::Vector<RegExpShared*, 0, CompilerAllocPolicy> rootedRegExps;
+    js::Vector<uint32_t> monitoredBytecodes;
+    js::Vector<uint32_t> typeBarrierBytecodes;
     js::Vector<uint32_t> fixedIntToDoubleEntries;
     js::Vector<uint32_t> fixedDoubleToAnyEntries;
     js::Vector<JumpTable, 16> jumpTables;
@@ -485,7 +486,7 @@ private:
     }
 
     JITScript *outerJIT() {
-        return outerScript->getJIT(isConstructing, cx->compartment->needsBarrier());
+        return outerScript->getJIT(isConstructing, cx->compartment->compileBarriers());
     }
 
     ChunkDescriptor &outerChunkRef() {
@@ -527,7 +528,7 @@ private:
     CompileStatus finishThisUp();
     CompileStatus pushActiveFrame(JSScript *script, uint32_t argc);
     void popActiveFrame();
-    void updatePCCounts(jsbytecode *pc, Label *start, bool *updated);
+    void updatePCCounts(jsbytecode *pc, bool *updated);
     void updatePCTypes(jsbytecode *pc, FrameEntry *fe);
     void updateArithCounts(jsbytecode *pc, FrameEntry *fe,
                              JSValueType firstUseType, JSValueType secondUseType);
@@ -546,7 +547,7 @@ private:
     void restoreVarType();
     JSValueType knownPushedType(uint32_t pushed);
     bool mayPushUndefined(uint32_t pushed);
-    types::TypeSet *pushedTypeSet(uint32_t which);
+    types::StackTypeSet *pushedTypeSet(uint32_t which);
     bool monitored(jsbytecode *pc);
     bool hasTypeBarriers(jsbytecode *pc);
     bool testSingletonProperty(HandleObject obj, HandleId id);
@@ -561,8 +562,8 @@ private:
         RegisterID dataReg;
     };
 
-    MaybeJump trySingleTypeTest(types::TypeSet *types, RegisterID typeReg);
-    Jump addTypeTest(types::TypeSet *types, RegisterID typeReg, RegisterID dataReg);
+    MaybeJump trySingleTypeTest(types::StackTypeSet *types, RegisterID typeReg);
+    Jump addTypeTest(types::StackTypeSet *types, RegisterID typeReg, RegisterID dataReg);
     BarrierState pushAddressMaybeBarrier(Address address, JSValueType type, bool reuseBase,
                                          bool testUndefined = false);
     BarrierState testBarrier(RegisterID typeReg, RegisterID dataReg,
@@ -581,7 +582,7 @@ private:
     bool constantFoldBranch(jsbytecode *target, bool taken);
     bool emitStubCmpOp(BoolStub stub, jsbytecode *target, JSOp fused);
     bool iter(unsigned flags);
-    void iterNext(ptrdiff_t offset);
+    void iterNext();
     bool iterMore(jsbytecode *target);
     void iterEnd();
     MaybeJump loadDouble(FrameEntry *fe, FPRegisterID *fpReg, bool *allocated);
@@ -653,6 +654,7 @@ private:
     bool jsop_setprop(PropertyName *name, bool popGuaranteed);
     void jsop_setprop_slow(PropertyName *name);
     bool jsop_instanceof();
+    void jsop_intrinsicname(PropertyName *name, JSValueType type);
     void jsop_name(PropertyName *name, JSValueType type);
     bool jsop_xname(PropertyName *name);
     void enterBlock(StaticBlockObject *block);

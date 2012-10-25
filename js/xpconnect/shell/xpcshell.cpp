@@ -89,9 +89,9 @@ public:
     ~XPCShellDirProvider() { }
 
     bool SetGREDir(const char *dir);
-    void ClearGREDir() { mGREDir = nsnull; }
+    void ClearGREDir() { mGREDir = nullptr; }
     void SetAppFile(nsIFile *appFile);
-    void ClearAppFile() { mAppFile = nsnull; }
+    void ClearAppFile() { mAppFile = nullptr; }
 
 private:
     nsCOMPtr<nsIFile> mGREDir;
@@ -124,11 +124,11 @@ JSBool gQuitting = false;
 static JSBool reportWarnings = true;
 static JSBool compileOnly = false;
 
-JSPrincipals *gJSPrincipals = nsnull;
-nsAutoString *gWorkingDirectory = nsnull;
+JSPrincipals *gJSPrincipals = nullptr;
+nsAutoString *gWorkingDirectory = nullptr;
 
 static JSBool
-GetLocationProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, jsval *vp)
+GetLocationProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSMutableHandleValue vp)
 {
 #if !defined(XP_WIN) && !defined(XP_UNIX)
     //XXX: your platform should really implement this
@@ -201,7 +201,7 @@ GetLocationProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, jsval *vp)
 
             if (NS_SUCCEEDED(rv) &&
                 NS_SUCCEEDED(locationHolder->GetJSObject(&locationObj))) {
-                *vp = OBJECT_TO_JSVAL(locationObj);
+                vp.set(OBJECT_TO_JSVAL(locationObj));
             }
         }
     }
@@ -258,19 +258,19 @@ my_ErrorReporter(JSContext *cx, const char *message, JSErrorReport *report)
 
     // Don't report an exception from inner JS frames as the callers may intend
     // to handle it.
-    if (JS_DescribeScriptedCaller(cx, nsnull, nsnull)) {
+    if (JS_DescribeScriptedCaller(cx, nullptr, nullptr)) {
         return;
     }
 
     // In some cases cx->fp is null here so use XPConnect to tell us about inner
     // frames.
     if ((xpc = do_GetService(nsIXPConnect::GetCID()))) {
-        nsAXPCNativeCallContext *cc = nsnull;
+        nsAXPCNativeCallContext *cc = nullptr;
         xpc->GetCurrentNativeCallContext(&cc);
         if (cc) {
             nsAXPCNativeCallContext *prev = cc;
             while (NS_SUCCEEDED(prev->GetPreviousCallContext(&prev)) && prev) {
-                PRUint16 lang;
+                uint16_t lang;
                 if (NS_SUCCEEDED(prev->GetLanguage(&lang)) &&
                     lang == nsAXPCNativeCallContext::LANG_JS) {
                     return;
@@ -648,7 +648,7 @@ SendCommand(JSContext* cx,
         return false;
     }
 
-    if (!XRE_SendTestShellCommand(cx, str, argc > 1 ? &argv[1] : nsnull)) {
+    if (!XRE_SendTestShellCommand(cx, str, argc > 1 ? &argv[1] : nullptr)) {
         JS_ReportError(cx, "Couldn't send command!");
         return false;
     }
@@ -786,36 +786,36 @@ Parent(JSContext *cx, unsigned argc, jsval *vp)
 }
 
 static JSFunctionSpec glob_functions[] = {
-    {"print",           Print,          0,0},
-    {"readline",        ReadLine,       1,0},
-    {"load",            Load,           1,0},
-    {"quit",            Quit,           0,0},
-    {"version",         Version,        1,0},
-    {"build",           BuildDate,      0,0},
-    {"dumpXPC",         DumpXPC,        1,0},
-    {"dump",            Dump,           1,0},
-    {"gc",              GC,             0,0},
+    JS_FS("print",           Print,          0,0),
+    JS_FS("readline",        ReadLine,       1,0),
+    JS_FS("load",            Load,           1,0),
+    JS_FS("quit",            Quit,           0,0),
+    JS_FS("version",         Version,        1,0),
+    JS_FS("build",           BuildDate,      0,0),
+    JS_FS("dumpXPC",         DumpXPC,        1,0),
+    JS_FS("dump",            Dump,           1,0),
+    JS_FS("gc",              GC,             0,0),
 #ifdef JS_GC_ZEAL
-    {"gczeal",          GCZeal,         1,0},
+    JS_FS("gczeal",          GCZeal,         1,0),
 #endif
-    {"options",         Options,        0,0},
+    JS_FS("options",         Options,        0,0),
     JS_FN("parent",     Parent,         1,0),
 #ifdef DEBUG
-    {"dumpHeap",        DumpHeap,       5,0},
+    JS_FS("dumpHeap",        DumpHeap,       5,0),
 #endif
-    {"sendCommand",     SendCommand,    1,0},
-    {"getChildGlobalObject", GetChildGlobalObject, 0,0},
-    {nsnull,nsnull,0,0}
+    JS_FS("sendCommand",     SendCommand,    1,0),
+    JS_FS("getChildGlobalObject", GetChildGlobalObject, 0,0),
+    JS_FS_END
 };
 
 JSClass global_class = {
     "global", 0,
     JS_PropertyStub,  JS_PropertyStub,  JS_PropertyStub,  JS_StrictPropertyStub,
-    JS_EnumerateStub, JS_ResolveStub,   JS_ConvertStub,   nsnull
+    JS_EnumerateStub, JS_ResolveStub,   JS_ConvertStub,   nullptr
 };
 
 static JSBool
-env_setProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict, jsval *vp)
+env_setProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict, JSMutableHandleValue vp)
 {
 /* XXX porting may be easy, but these don't seem to supply setenv by default */
 #if !defined XP_OS2 && !defined SOLARIS
@@ -827,7 +827,7 @@ env_setProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict,
         return false;
 
     idstr = JS_ValueToString(cx, idval);
-    valstr = JS_ValueToString(cx, *vp);
+    valstr = JS_ValueToString(cx, vp);
     if (!idstr || !valstr)
         return false;
     JSAutoByteString name(cx, idstr);
@@ -862,7 +862,7 @@ env_setProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict,
         JS_ReportError(cx, "can't set envariable %s to %s", name.ptr(), value.ptr());
         return false;
     }
-    *vp = STRING_TO_JSVAL(valstr);
+    vp.set(STRING_TO_JSVAL(valstr));
 #endif /* !defined XP_OS2 && !defined SOLARIS */
     return true;
 }
@@ -937,7 +937,7 @@ static JSClass env_class = {
     JS_PropertyStub,  JS_PropertyStub,
     JS_PropertyStub,  env_setProperty,
     env_enumerate, (JSResolveOp) env_resolve,
-    JS_ConvertStub,   nsnull
+    JS_ConvertStub,   nullptr
 };
 
 /***************************************************************************/
@@ -1269,7 +1269,7 @@ NS_IMPL_RELEASE(FullTrustSecMan)
 
 FullTrustSecMan::FullTrustSecMan()
 {
-  mSystemPrincipal = nsnull;
+  mSystemPrincipal = nullptr;
 }
 
 FullTrustSecMan::~FullTrustSecMan()
@@ -1296,9 +1296,9 @@ FullTrustSecMan::CanGetService(JSContext * aJSContext, const nsCID & aCID)
     return NS_OK;
 }
 
-/* void CanAccess (in PRUint32 aAction, in nsIXPCNativeCallContext aCallContext, in JSContextPtr aJSContext, in JSObjectPtr aJSObject, in nsISupports aObj, in nsIClassInfo aClassInfo, in jsval aName, inout voidPtr aPolicy); */
+/* void CanAccess (in uint32_t aAction, in nsIXPCNativeCallContext aCallContext, in JSContextPtr aJSContext, in JSObjectPtr aJSObject, in nsISupports aObj, in nsIClassInfo aClassInfo, in jsval aName, inout voidPtr aPolicy); */
 NS_IMETHODIMP
-FullTrustSecMan::CanAccess(PRUint32 aAction,
+FullTrustSecMan::CanAccess(uint32_t aAction,
                            nsAXPCNativeCallContext *aCallContext,
                            JSContext * aJSContext, JSObject * aJSObject,
                            nsISupports *aObj, nsIClassInfo *aClassInfo,
@@ -1307,12 +1307,12 @@ FullTrustSecMan::CanAccess(PRUint32 aAction,
     return NS_OK;
 }
 
-/* [noscript] void checkPropertyAccess (in JSContextPtr aJSContext, in JSObjectPtr aJSObject, in string aClassName, in jsid aProperty, in PRUint32 aAction); */
+/* [noscript] void checkPropertyAccess (in JSContextPtr aJSContext, in JSObjectPtr aJSObject, in string aClassName, in jsid aProperty, in uint32_t aAction); */
 NS_IMETHODIMP
 FullTrustSecMan::CheckPropertyAccess(JSContext * aJSContext,
                                      JSObject * aJSObject,
                                      const char *aClassName,
-                                     jsid aProperty, PRUint32 aAction)
+                                     jsid aProperty, uint32_t aAction)
 {
     return NS_OK;
 }
@@ -1327,14 +1327,7 @@ FullTrustSecMan::CheckLoadURIFromScript(JSContext * cx, nsIURI *uri)
 /* void checkLoadURIWithPrincipal (in nsIPrincipal aPrincipal, in nsIURI uri, in unsigned long flags); */
 NS_IMETHODIMP
 FullTrustSecMan::CheckLoadURIWithPrincipal(nsIPrincipal *aPrincipal,
-                                           nsIURI *uri, PRUint32 flags)
-{
-    return NS_OK;
-}
-
-/* void checkLoadURI (in nsIURI from, in nsIURI uri, in unsigned long flags); */
-NS_IMETHODIMP
-FullTrustSecMan::CheckLoadURI(nsIURI *from, nsIURI *uri, PRUint32 flags)
+                                           nsIURI *uri, uint32_t flags)
 {
     return NS_OK;
 }
@@ -1343,15 +1336,7 @@ FullTrustSecMan::CheckLoadURI(nsIURI *from, nsIURI *uri, PRUint32 flags)
 NS_IMETHODIMP
 FullTrustSecMan::CheckLoadURIStrWithPrincipal(nsIPrincipal *aPrincipal,
                                               const nsACString & uri,
-                                              PRUint32 flags)
-{
-    return NS_OK;
-}
-
-/* void checkLoadURIStr (in AUTF8String from, in AUTF8String uri, in unsigned long flags); */
-NS_IMETHODIMP
-FullTrustSecMan::CheckLoadURIStr(const nsACString & from,
-                                 const nsACString & uri, PRUint32 flags)
+                                              uint32_t flags)
 {
     return NS_OK;
 }
@@ -1401,18 +1386,39 @@ FullTrustSecMan::GetCertificatePrincipal(const nsACString & aCertFingerprint,
     return *_retval ? NS_OK : NS_ERROR_FAILURE;
 }
 
-/* [noscript] nsIPrincipal getCodebasePrincipal (in nsIURI aURI); */
+/* [noscript] nsIPrincipal getSimpleCodebasePrincipal (in nsIURI aURI); */
 NS_IMETHODIMP
-FullTrustSecMan::GetCodebasePrincipal(nsIURI *aURI, nsIPrincipal **_retval)
+FullTrustSecMan::GetSimpleCodebasePrincipal(nsIURI *aURI, nsIPrincipal **_retval)
 {
     NS_IF_ADDREF(*_retval = mSystemPrincipal);
     return *_retval ? NS_OK : NS_ERROR_FAILURE;
 }
 
+/* [noscript] nsIPrincipal getNoAppCodebasePrincipal (in nsIURI aURI); */
+NS_IMETHODIMP
+FullTrustSecMan::GetNoAppCodebasePrincipal(nsIURI *aURI, nsIPrincipal **_retval)
+{
+    return GetSimpleCodebasePrincipal(aURI, _retval);
+}
+
+/* [noscript] nsIPrincipal getAppCodebasePrincipal (in nsIURI aURI, unsigned long appid, bool inMozBrowser); */
+NS_IMETHODIMP
+FullTrustSecMan::GetAppCodebasePrincipal(nsIURI *aURI, uint32_t aAppId, bool aInMozBrowser, nsIPrincipal **_retval)
+{
+    return GetSimpleCodebasePrincipal(aURI, _retval);
+}
+
+/* [noscript] nsIPrincipal getDocShellCodebasePrincipal (in nsIURI aURI, nsIDocShell docShell); */
+NS_IMETHODIMP
+FullTrustSecMan::GetDocShellCodebasePrincipal(nsIURI *aURI, nsIDocShell* aDocShell, nsIPrincipal **_retval)
+{
+    return GetSimpleCodebasePrincipal(aURI, _retval);
+}
+
 /* [noscript] short requestCapability (in nsIPrincipal principal, in string capability); */
 NS_IMETHODIMP
 FullTrustSecMan::RequestCapability(nsIPrincipal *principal,
-                                   const char *capability, PRInt16 *_retval)
+                                   const char *capability, int16_t *_retval)
 {
     *_retval = nsIPrincipal::ENABLE_GRANTED;
     return NS_OK;
@@ -1498,8 +1504,17 @@ FullTrustSecMan::GetCxSubjectPrincipal(JSContext *cx)
 NS_IMETHODIMP_(nsIPrincipal *)
 FullTrustSecMan::GetCxSubjectPrincipalAndFrame(JSContext *cx, JSStackFrame **fp)
 {
-    *fp = nsnull;
+    *fp = nullptr;
     return mSystemPrincipal;
+}
+
+NS_IMETHODIMP
+FullTrustSecMan::GetExtendedOrigin(nsIURI* aURI, uint32_t aAppId,
+                                   bool aInMozBrowser,
+                                   nsACString& aExtendedOrigin)
+{
+  aExtendedOrigin.Truncate();
+  return NS_OK;
 }
 
 /***************************************************************************/
@@ -1568,11 +1583,11 @@ nsXPCFunctionThisTranslator::~nsXPCFunctionThisTranslator()
 #endif
 }
 
-/* nsISupports TranslateThis (in nsISupports aInitialThis, in nsIInterfaceInfo aInterfaceInfo, in PRUint16 aMethodIndex, out bool aHideFirstParamFromJS, out nsIIDPtr aIIDOfResult); */
+/* nsISupports TranslateThis (in nsISupports aInitialThis, in nsIInterfaceInfo aInterfaceInfo, in uint16_t aMethodIndex, out bool aHideFirstParamFromJS, out nsIIDPtr aIIDOfResult); */
 NS_IMETHODIMP
 nsXPCFunctionThisTranslator::TranslateThis(nsISupports *aInitialThis,
                                            nsIInterfaceInfo *aInterfaceInfo,
-                                           PRUint16 aMethodIndex,
+                                           uint16_t aMethodIndex,
                                            bool *aHideFirstParamFromJS,
                                            nsIID * *aIIDOfResult,
                                            nsISupports **_retval)
@@ -1580,7 +1595,7 @@ nsXPCFunctionThisTranslator::TranslateThis(nsISupports *aInitialThis,
     NS_IF_ADDREF(aInitialThis);
     *_retval = aInitialThis;
     *aHideFirstParamFromJS = false;
-    *aIIDOfResult = nsnull;
+    *aIIDOfResult = nullptr;
     return NS_OK;
 }
 
@@ -1620,8 +1635,8 @@ GetCurrentWorkingDirectory(nsAString& workingDirectory)
     nsCAutoString cwd;
     // 1024 is just a guess at a sane starting value
     size_t bufsize = 1024;
-    char* result = nsnull;
-    while (result == nsnull) {
+    char* result = nullptr;
+    while (result == nullptr) {
         if (!cwd.SetLength(bufsize))
             return false;
         result = getcwd(cwd.BeginWriting(), cwd.Length());
@@ -1638,12 +1653,6 @@ GetCurrentWorkingDirectory(nsAString& workingDirectory)
     workingDirectory = NS_ConvertUTF8toUTF16(cwd);
 #endif
     return true;
-}
-
-static JSPrincipals *
-FindObjectPrincipals(JSObject *obj)
-{
-    return gJSPrincipals;
 }
 
 static JSSecurityCallbacks shellSecurityCallbacks;
@@ -1824,13 +1833,12 @@ main(int argc, char **argv, char **envp)
         const JSSecurityCallbacks *scb = JS_GetSecurityCallbacks(rt);
         NS_ASSERTION(scb, "We are assuming that nsScriptSecurityManager::Init() has been run");
         shellSecurityCallbacks = *scb;
-        shellSecurityCallbacks.findObjectPrincipals = FindObjectPrincipals;
         JS_SetSecurityCallbacks(rt, &shellSecurityCallbacks);
 
 #ifdef TEST_TranslateThis
         nsCOMPtr<nsIXPCFunctionThisTranslator>
             translator(new nsXPCFunctionThisTranslator);
-        xpc->SetFunctionThisTranslator(NS_GET_IID(nsITestXPCFunctionCallback), translator, nsnull);
+        xpc->SetFunctionThisTranslator(NS_GET_IID(nsITestXPCFunctionCallback), translator, nullptr);
 #endif
 
         nsCOMPtr<nsIJSContextStack> cxstack = do_GetService("@mozilla.org/js/xpc/ContextStack;1");
@@ -1862,17 +1870,13 @@ main(int argc, char **argv, char **envp)
 
         rv = holder->GetJSObject(&glob);
         if (NS_FAILED(rv)) {
-            NS_ASSERTION(glob == nsnull, "bad GetJSObject?");
+            NS_ASSERTION(glob == nullptr, "bad GetJSObject?");
             return 1;
         }
 
         JS_BeginRequest(cx);
         {
-            JSAutoEnterCompartment ac;
-            if (!ac.enter(cx, glob)) {
-                JS_EndRequest(cx);
-                return 1;
-            }
+            JSAutoCompartment ac(cx, glob);
 
             if (!JS_InitReflect(cx, glob)) {
                 JS_EndRequest(cx);
@@ -1920,7 +1924,7 @@ main(int argc, char **argv, char **envp)
             JSContext *oldcx;
             cxstack->Pop(&oldcx);
             NS_ASSERTION(oldcx == cx, "JS thread context push/pop mismatch");
-            cxstack = nsnull;
+            cxstack = nullptr;
             JS_GC(rt);
         } //this scopes the JSAutoCrossCompartmentCall
         JS_EndRequest(cx);
@@ -1945,11 +1949,11 @@ main(int argc, char **argv, char **envp)
     // test of late call and release (see above)
     JSContext* bogusCX;
     bogus->Peek(&bogusCX);
-    bogus = nsnull;
+    bogus = nullptr;
 #endif
 
-    appDir = nsnull;
-    appFile = nsnull;
+    appDir = nullptr;
+    appFile = nullptr;
     dirprovider.ClearGREDir();
     dirprovider.ClearAppFile();
 
@@ -1957,7 +1961,7 @@ main(int argc, char **argv, char **envp)
     // Shut down the crashreporter service to prevent leaking some strings it holds.
     if (crashReporter) {
         crashReporter->SetEnabled(false);
-        crashReporter = nsnull;
+        crashReporter = nullptr;
     }
 #endif
 

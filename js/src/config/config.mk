@@ -87,20 +87,12 @@ endif
 CONFIG_TOOLS	= $(MOZ_BUILD_ROOT)/config
 AUTOCONF_TOOLS	= $(topsrcdir)/build/autoconf
 
-ifeq ($(OS_ARCH),QNX)
-ifeq ($(OS_TARGET),NTO)
-LD		:= qcc -Vgcc_ntox86 -nostdlib
-else
-LD		:= $(CC)
-endif
-endif
-
 #
 # Strip off the excessively long version numbers on these platforms,
 # but save the version to allow multiple versions of the same base
 # platform to be built in the same tree.
 #
-ifneq (,$(filter FreeBSD HP-UX Linux NetBSD OpenBSD OSF1 SunOS,$(OS_ARCH)))
+ifneq (,$(filter FreeBSD HP-UX Linux NetBSD OpenBSD SunOS,$(OS_ARCH)))
 OS_RELEASE	:= $(basename $(OS_RELEASE))
 
 # Allow the user to ignore the OS_VERSION, which is usually irrelevant.
@@ -120,18 +112,28 @@ FINAL_LINK_COMP_NAMES = $(DEPTH)/config/final-link-comp-names
 MOZ_UNICHARUTIL_LIBS = $(LIBXUL_DIST)/lib/$(LIB_PREFIX)unicharutil_s.$(LIB_SUFFIX)
 MOZ_WIDGET_SUPPORT_LIBS    = $(DIST)/lib/$(LIB_PREFIX)widgetsupport_s.$(LIB_SUFFIX)
 
+ifdef _MSC_VER
+ifdef .PYMAKE
+PYCOMMANDPATH += $(topsrcdir)/build
+CC_WRAPPER ?= %cl InvokeClWithDependencyGeneration
+CXX_WRAPPER ?= %cl InvokeClWithDependencyGeneration
+else
+CC_WRAPPER ?= $(PYTHON) -O $(topsrcdir)/build/cl.py
+CXX_WRAPPER ?= $(PYTHON) -O $(topsrcdir)/build/cl.py
+endif # .PYMAKE
+endif # _MSC_VER
+
 CC := $(CC_WRAPPER) $(CC)
 CXX := $(CXX_WRAPPER) $(CXX)
 MKDIR ?= mkdir
 SLEEP ?= sleep
 TOUCH ?= touch
 
-ifndef .PYMAKE
-PYTHON_PATH = $(PYTHON) $(topsrcdir)/config/pythonpath.py
-else
+ifdef .PYMAKE
 PYCOMMANDPATH += $(topsrcdir)/config
-PYTHON_PATH = %pythonpath main
 endif
+
+PYTHON_PATH = $(PYTHON) $(topsrcdir)/config/pythonpath.py
 
 # determine debug-related options
 _DEBUG_ASFLAGS :=
@@ -562,6 +564,7 @@ ifdef MACOSX_DEPLOYMENT_TARGET
 export MACOSX_DEPLOYMENT_TARGET
 PBBUILD_SETTINGS += MACOSX_DEPLOYMENT_TARGET="$(MACOSX_DEPLOYMENT_TARGET)"
 endif # MACOSX_DEPLOYMENT_TARGET
+
 ifdef MOZ_OPTIMIZE
 ifeq (2,$(MOZ_OPTIMIZE))
 # Only override project defaults if the config specified explicit settings
@@ -570,6 +573,11 @@ endif # MOZ_OPTIMIZE=2
 endif # MOZ_OPTIMIZE
 endif # OS_ARCH=Darwin
 
+ifdef MOZ_USING_CCACHE
+ifdef CLANG_CXX
+export CCACHE_CPP2=1
+endif
+endif
 
 ifdef MOZ_NATIVE_MAKEDEPEND
 MKDEPEND_DIR =
@@ -676,10 +684,6 @@ install_cmd ?= $(INSTALL) $(1)
 SYSINSTALL	= $(NSINSTALL) -t
 # This isn't necessarily true, just here
 sysinstall_cmd = install_cmd
-
-# Directory nsinstall.
-DIR_INSTALL = $(INSTALL)
-dir_install_cmd = install_cmd
 
 #
 # Localization build automation
@@ -815,3 +819,7 @@ PLY_INCLUDE = -I$(topsrcdir)/other-licenses/ply
 endif
 
 export CL_INCLUDES_PREFIX
+
+ifeq ($(MOZ_WIDGET_GTK),2)
+MOZ_GTK2_CFLAGS := -I$(topsrcdir)/widget/gtk2/compat $(MOZ_GTK2_CFLAGS)
+endif
