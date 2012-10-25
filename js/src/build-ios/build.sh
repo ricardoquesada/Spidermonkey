@@ -33,7 +33,7 @@ mv libjs_static.a libjs_static.armv7s.a
 ls | grep -v libjs_static.armv7.a | grep -v libjs_static.armv7s.a | grep -v build_ios_static_fat.sh | xargs rm -rf
 
 # create i386 version (simulator)
-../configure --with-ios-target=iPhoneSimulator --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION --disable-shared-js --disable-tests --disable-ion --enable-llvm-hacks
+../configure --with-ios-target=iPhoneSimulator --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION --disable-shared-js --disable-tests --disable-ion --enable-llvm-hacks --enable-debug
 make -j$cpus
 if (( $? )) ; then
     echo "error when compiling i386 (iOS Simulator) version of the library"
