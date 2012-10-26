@@ -1,7 +1,7 @@
 # git ignore template from: http://cocoaheads.tumblr.com/post/1350304132/gitignore-template-for-xcode3-4
 # cocos2d specific
 PLBlocks.framework/*
-*.pyc 
+*.pyc
 
 # old school
 .svn
@@ -44,5 +44,8 @@ Backup[ ]of[ ]*.numbers/
 js/src/build-android
 js/src/build-ios
 
-js/src/builtin/*.pyc
-js/src/config/*.pyc
+# Ignore the Android dist files/directories
+./include
+./lib
+./include/
+./lib/
