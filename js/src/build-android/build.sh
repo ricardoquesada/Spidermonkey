@@ -47,9 +47,9 @@ host_os=`uname -s | tr "[:upper:]" "[:lower:]"`
              --enable-strip \
              --enable-install-strip \
              --enable-debug \
-             --disable-methodjit \
-             --disable-monoic \
-             --disable-polyic
+             --disable-ion \
+             --disable-jm \
+             --disable-tm
 
 # make
 make -j4
