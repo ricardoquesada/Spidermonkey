@@ -1148,7 +1148,7 @@ dnl Android libstdc++, placed here so it can use MOZ_ARCH
 dnl computed above.
 dnl ========================================================
 
-MOZ_ANDROID_STLPORT
+MOZ_ANDROID_LIBSTDCPLUSPLUS
 
 dnl ========================================================
 dnl Suppress Clang Argument Warnings
