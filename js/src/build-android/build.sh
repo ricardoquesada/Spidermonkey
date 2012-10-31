@@ -41,6 +41,7 @@ host_os=`uname -s | tr "[:upper:]" "[:lower:]"`
              --with-android-version=14 \
              --enable-application=mobile/android \
              --with-android-toolchain=$HOME/bin/android-ndk/toolchains/arm-linux-androideabi-4.6/prebuilt/${host_os}-x86 \
+             --with-android-gnu-compiler-version=4.6 \
              --target=arm-linux-androideabi \
              --disable-shared-js \
              --disable-tests \
