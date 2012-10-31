@@ -15,6 +15,14 @@ MOZ_ARG_WITH_STRING(android-toolchain,
                           location of the android toolchain],
     android_toolchain=$withval)
 
+dnl default gnu compiler version is 4.6
+android_gnu_compiler_version=4.6
+
+MOZ_ARG_WITH_STRING(android-gnu-compiler-version,
+[  --with-android-gnu-compiler-version=VER
+                          gnu compiler version to use, default 4.6],
+    android_gnu_compiler_version=$withval)
+
 dnl default android_version is different per target cpu
 case "$target_cpu" in
 arm)
@@ -200,6 +208,41 @@ if test "$OS_TARGET" = "Android" -a -z "$gonkdir"; then
     LIBS="$LIBS $STLPORT_LIBS"
 fi
 AC_SUBST([STLPORT_SOURCES])
+
+])
+
+AC_DEFUN([MOZ_ANDROID_LIBSTDCPLUSPLUS],
+[
+
+if test "$OS_TARGET" = "Android" -a -z "$gonkdir"; then
+    case "${CPU_ARCH}-${MOZ_ARCH}" in
+    arm-armv7*)
+        ANDROID_CPU_ARCH=armeabi-v7a
+        ;;
+    arm-*)
+        ANDROID_CPU_ARCH=armeabi
+        ;;
+    x86-*)
+        ANDROID_CPU_ARCH=x86
+        ;;
+    mips-*) # When target_cpu is mipsel, CPU_ARCH is mips
+        ANDROID_CPU_ARCH=mips
+        ;;
+    esac
+
+    if test -z "$LIBSTDCPLUSPLUS_CPPFLAGS$LIBSTDCPLUSPLUS_LDFLAGS$LIBSTDCPLUSPLUS_LIBS"; then
+        if test -e "$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/libs/$ANDROID_CPU_ARCH/libgnustl_static.a"; then
+            LIBSTDCPLUSPLUS_LDFLAGS="-L$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/libs/$ANDROID_CPU_ARCH/"
+        else
+            AC_MSG_ERROR([Couldn't find path to gnu-libstdc++ in the android ndk])
+        fi
+        LIBSTDCPLUSPLUS_CPPFLAGS="-I$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/include -I$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/libs/$ANDROID_CPU_ARCH/include"
+        LIBSTDCPLUSPLUS_LIBS="-lgnustl_static"
+    fi
+    CXXFLAGS="$CXXFLAGS $LIBSTDCPLUSPLUS_CPPFLAGS"
+    LDFLAGS="$LDFLAGS $LIBSTDCPLUSPLUS_LDFLAGS"
+    LIBS="$LIBS $LIBSTDCPLUSPLUS_LIBS"
+fi
 
 ])
 
