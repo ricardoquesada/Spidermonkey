@@ -44,12 +44,14 @@ ChromeObjectWrapper::getPropertyDescriptor(JSContext *cx, JSObject *wrapper,
         desc->obj = NULL;
 
     // If we found something, were doing a set, or have no proto, we're done.
-    JSObject *wrapperProto = JS_GetPrototype(wrapper);
+    JSObject *wrapperProto;
+    if (!JS_GetPrototype(cx, wrapper, &wrapperProto))
+	return false;
     if (desc->obj || set || !wrapperProto)
         return true;
 
     // If not, try doing the lookup on the prototype.
-    JS_ASSERT(js::IsObjectInContextCompartment(wrapper, cx));
+    MOZ_ASSERT(js::IsObjectInContextCompartment(wrapper, cx));
     return JS_GetPropertyDescriptorById(cx, wrapperProto, id, 0, desc);
 }
 
@@ -61,12 +63,14 @@ ChromeObjectWrapper::has(JSContext *cx, JSObject *wrapper, jsid id, bool *bp)
         return false;
 
     // If we found something or have no prototype, we're done.
-    JSObject *wrapperProto = JS_GetPrototype(wrapper);
+    JSObject *wrapperProto;
+    if (!JS_GetPrototype(cx, wrapper, &wrapperProto))
+	return false;
     if (*bp || !wrapperProto)
         return true;
 
     // Try the prototype if that failed.
-    JS_ASSERT(js::IsObjectInContextCompartment(wrapper, cx));
+    MOZ_ASSERT(js::IsObjectInContextCompartment(wrapper, cx));
     JSPropertyDescriptor desc;
     memset(&desc, 0, sizeof(desc));
     if (!JS_GetPropertyDescriptorById(cx, wrapperProto, id, 0, &desc))
@@ -102,12 +106,14 @@ ChromeObjectWrapper::get(JSContext *cx, JSObject *wrapper, JSObject *receiver,
     }
 
     // If we have no proto, we're done.
-    JSObject *wrapperProto = JS_GetPrototype(wrapper);
+    JSObject *wrapperProto;
+    if (!JS_GetPrototype(cx, wrapper, &wrapperProto))
+	return false;
     if (!wrapperProto)
         return true;
 
     // Try the prototype.
-    JS_ASSERT(js::IsObjectInContextCompartment(wrapper, cx));
+    MOZ_ASSERT(js::IsObjectInContextCompartment(wrapper, cx));
     return js::GetGeneric(cx, wrapperProto, receiver, id, vp);
 }
 

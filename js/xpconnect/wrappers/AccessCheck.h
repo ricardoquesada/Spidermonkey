@@ -19,12 +19,16 @@ namespace xpc {
 class AccessCheck {
   public:
     static bool subsumes(JSCompartment *a, JSCompartment *b);
+    static bool subsumes(JSObject *a, JSObject *b);
+    static bool wrapperSubsumes(JSObject *wrapper);
     static bool subsumesIgnoringDomain(JSCompartment *a, JSCompartment *b);
     static bool isChrome(JSCompartment *compartment);
+    static bool isChrome(JSObject *obj);
     static bool callerIsChrome();
     static nsIPrincipal *getPrincipal(JSCompartment *compartment);
     static bool isCrossOriginAccessPermitted(JSContext *cx, JSObject *obj, jsid id,
                                              js::Wrapper::Action act);
+    static bool callerIsXBL(JSContext *cx);
     static bool isSystemOnlyAccessPermitted(JSContext *cx);
     static bool isLocationObjectSameOrigin(JSContext *cx, JSObject *wrapper);
 

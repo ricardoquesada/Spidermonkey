@@ -82,12 +82,11 @@ namespace JSC {
 
   class ExecutableAllocator;
 
-  enum CodeKind { METHOD_CODE, REGEXP_CODE };
+  enum CodeKind { JAEGER_CODE, ION_CODE, REGEXP_CODE };
 
-  // These are reference-counted. A new one starts with a count of 1. 
+  // These are reference-counted. A new one starts with a count of 1.
   class ExecutablePool {
 
-    JS_DECLARE_ALLOCATION_FRIENDS_FOR_PRIVATE_CONSTRUCTOR;
     friend class ExecutableAllocator;
 private:
     struct Allocation {
@@ -105,10 +104,11 @@ private:
 
     // Reference count for automatic reclamation.
     unsigned m_refCount;
- 
+
     // Number of bytes currently used for Method and Regexp JIT code.
-    size_t m_mjitCodeMethod;
-    size_t m_mjitCodeRegexp;
+    size_t m_jaegerCodeBytes;
+    size_t m_ionCodeBytes;
+    size_t m_regexpCodeBytes;
 
 public:
     // Flag for downstream use, whether to try to release references to this pool.
@@ -119,14 +119,21 @@ public:
     size_t m_gcNumber;
 
     void release(bool willDestroy = false)
-    { 
+    {
         JS_ASSERT(m_refCount != 0);
         // XXX: disabled, see bug 654820.
         //JS_ASSERT_IF(willDestroy, m_refCount == 1);
-        if (--m_refCount == 0) {
-            js::UnwantedForeground::delete_(this);
-        }
+        if (--m_refCount == 0)
+            js_delete(this);
     }
+
+    ExecutablePool(ExecutableAllocator* allocator, Allocation a)
+      : m_allocator(allocator), m_freePtr(a.pages), m_end(m_freePtr + a.size), m_allocation(a),
+        m_refCount(1), m_jaegerCodeBytes(0), m_ionCodeBytes(0), m_regexpCodeBytes(0),
+        m_destroy(false), m_gcNumber(0)
+    { }
+
+    ~ExecutablePool();
 
 private:
     // It should be impossible for us to roll over, because only small
@@ -138,28 +145,22 @@ private:
         ++m_refCount;
     }
 
-    ExecutablePool(ExecutableAllocator* allocator, Allocation a)
-      : m_allocator(allocator), m_freePtr(a.pages), m_end(m_freePtr + a.size), m_allocation(a),
-        m_refCount(1), m_mjitCodeMethod(0), m_mjitCodeRegexp(0), m_destroy(false), m_gcNumber(0)
-    { }
-
-    ~ExecutablePool();
-
     void* alloc(size_t n, CodeKind kind)
     {
         JS_ASSERT(n <= available());
         void *result = m_freePtr;
         m_freePtr += n;
 
-        if ( kind == REGEXP_CODE )
-            m_mjitCodeRegexp += n;
-        else
-            m_mjitCodeMethod += n;
-
+        switch (kind) {
+          case JAEGER_CODE: m_jaegerCodeBytes += n;          break;
+          case ION_CODE:    m_ionCodeBytes    += n;          break;
+          case REGEXP_CODE: m_regexpCodeBytes += n;          break;
+          default:          JS_NOT_REACHED("bad code kind"); break;
+        }
         return result;
     }
-    
-    size_t available() const { 
+
+    size_t available() const {
         JS_ASSERT(m_end >= m_freePtr);
         return m_end - m_freePtr;
     }
@@ -211,6 +212,13 @@ public:
         //JS_ASSERT(m_pools.empty());     // if this asserts we have a pool leak
     }
 
+    void purge() {
+        for (size_t i = 0; i < m_smallPools.length(); i++)
+            m_smallPools[i]->release();
+
+	m_smallPools.clear();
+    }
+
     // alloc() returns a pointer to some memory, and also (by reference) a
     // pointer to reference-counted pool. The caller owns a reference to the
     // pool; i.e. alloc() increments the count before returning the object.
@@ -245,7 +253,7 @@ public:
         m_pools.remove(m_pools.lookup(pool));   // this asserts if |pool| is not in m_pools
     }
 
-    void sizeOfCode(size_t *method, size_t *regexp, size_t *unused) const;
+    void sizeOfCode(size_t *jaeger, size_t *ion, size_t *regexp, size_t *unused) const;
 
     void setDestroyCallback(DestroyCallback destroyCallback) {
         this->destroyCallback = destroyCallback;
@@ -304,7 +312,7 @@ private:
         if (!a.pages)
             return NULL;
 
-        ExecutablePool *pool = js::OffTheBooks::new_<ExecutablePool>(this, a);
+        ExecutablePool *pool = js_new<ExecutablePool>(this, a);
         if (!pool) {
             systemRelease(a);
             return NULL;
@@ -497,3 +505,4 @@ private:
 #endif // ENABLE(ASSEMBLER)
 
 #endif // !defined(ExecutableAllocator)
+

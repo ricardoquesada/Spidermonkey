@@ -18,7 +18,7 @@ StubCompiler::StubCompiler(JSContext *cx, mjit::Compiler &cc, FrameState &frame)
 : cx(cx),
   cc(cc),
   frame(frame),
-  masm(&cc.sps),
+  masm(&cc.sps, &cc.PC),
   generation(1),
   lastGeneration(0),
   exits(CompilerAllocPolicy(cx, cc)),
@@ -147,7 +147,7 @@ JSC::MacroAssembler::Call
 StubCompiler::emitStubCall(void *ptr, RejoinState rejoin, Uses uses, int32_t slots)
 {
     JaegerSpew(JSpew_Insns, " ---- BEGIN SLOW CALL CODE ---- \n");
-    masm.bumpStubCount(cc.script, cc.PC, Registers::tempCallReg());
+    masm.bumpStubCount(cc.script_, cc.PC, Registers::tempCallReg());
     DataLabelPtr inlinePatch;
     Call cl = masm.fallibleVMCall(cx->typeInferenceEnabled(),
                                   ptr, cc.outerPC(), &inlinePatch, slots);
@@ -177,8 +177,8 @@ StubCompiler::emitStubCall(void *ptr, RejoinState rejoin, Uses uses, int32_t slo
 void
 StubCompiler::fixCrossJumps(uint8_t *ncode, size_t offset, size_t total)
 {
-    JSC::LinkBuffer fast(ncode, total, JSC::METHOD_CODE);
-    JSC::LinkBuffer slow(ncode + offset, total - offset, JSC::METHOD_CODE);
+    JSC::LinkBuffer fast(ncode, total, JSC::JAEGER_CODE);
+    JSC::LinkBuffer slow(ncode + offset, total - offset, JSC::JAEGER_CODE);
 
     for (size_t i = 0; i < exits.length(); i++)
         fast.link(exits[i].from, slow.locationOf(exits[i].to));

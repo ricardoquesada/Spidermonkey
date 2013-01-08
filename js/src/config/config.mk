@@ -27,6 +27,20 @@ ifndef INCLUDED_AUTOCONF_MK
 include $(DEPTH)/config/autoconf.mk
 endif
 
+space = $(NULL) $(NULL)
+
+# Include defs.mk files that can be found in $(srcdir)/$(DEPTH),
+# $(srcdir)/$(DEPTH-1), $(srcdir)/$(DEPTH-2), etc., and $(srcdir)
+# where $(DEPTH-1) is one level less of depth, $(DEPTH-2), two, etc.
+# i.e. for DEPTH=../../.., DEPTH-1 is ../.. and DEPTH-2 is ..
+# These defs.mk files are used to define variables in a directory
+# and all its subdirectories, recursively.
+__depth := $(subst /, ,$(DEPTH))
+ifeq (.,$(__depth))
+__depth :=
+endif
+$(foreach __d,$(__depth) .,$(eval __depth = $(wordlist 2,$(words $(__depth)),$(__depth))$(eval -include $(subst $(space),/,$(strip $(srcdir) $(__depth) defs.mk)))))
+
 COMMA = ,
 
 # Sanity check some variables
@@ -50,9 +64,6 @@ $(foreach x,$(CHECK_VARS),$(check-variable))
 
 core_abspath = $(if $(findstring :,$(1)),$(1),$(if $(filter /%,$(1)),$(1),$(CURDIR)/$(1)))
 core_realpath = $(if $(realpath $(1)),$(realpath $(1)),$(call core_abspath,$(1)))
-
-nullstr :=
-space :=$(nullstr) # EOL
 
 core_winabspath = $(firstword $(subst /, ,$(call core_abspath,$(1)))):$(subst $(space),,$(patsubst %,\\%,$(wordlist 2,$(words $(subst /, ,$(call core_abspath,$(1)))), $(strip $(subst /, ,$(call core_abspath,$(1)))))))
 
@@ -374,14 +385,17 @@ JAVA_GEN_DIR  = _javagen
 JAVA_DIST_DIR = $(DEPTH)/$(JAVA_GEN_DIR)
 JAVA_IFACES_PKG_NAME = org/mozilla/interfaces
 
-OS_INCLUDES += $(NSPR_CFLAGS) $(NSS_CFLAGS) $(MOZ_JPEG_CFLAGS) $(MOZ_PNG_CFLAGS) $(MOZ_ZLIB_CFLAGS)
+OS_INCLUDES += $(MOZ_JPEG_CFLAGS) $(MOZ_PNG_CFLAGS) $(MOZ_ZLIB_CFLAGS)
 
+# NSPR_CFLAGS and NSS_CFLAGS must appear ahead of OS_INCLUDES to avoid Linux
+# builds wrongly picking up system NSPR/NSS header files.
 INCLUDES = \
   $(LOCAL_INCLUDES) \
   -I$(srcdir) \
   -I. \
   -I$(DIST)/include \
   $(if $(LIBXUL_SDK),-I$(LIBXUL_SDK)/include) \
+  $(NSPR_CFLAGS) $(NSS_CFLAGS) \
   $(OS_INCLUDES) \
   $(NULL)
 
@@ -579,14 +593,6 @@ export CCACHE_CPP2=1
 endif
 endif
 
-ifdef MOZ_NATIVE_MAKEDEPEND
-MKDEPEND_DIR =
-MKDEPEND = $(MOZ_NATIVE_MAKEDEPEND)
-else
-MKDEPEND_DIR = $(CONFIG_TOOLS)/mkdepend
-MKDEPEND = $(MKDEPEND_DIR)/mkdepend$(BIN_SUFFIX)
-endif
-
 # Set link flags according to whether we want a console.
 ifdef MOZ_WINCONSOLE
 ifeq ($(MOZ_WINCONSOLE),1)
@@ -632,7 +638,7 @@ endif
 
 ######################################################################
 
-GARBAGE		+= $(DEPENDENCIES) $(MKDEPENDENCIES) $(MKDEPENDENCIES).bak core $(wildcard core.[0-9]*) $(wildcard *.err) $(wildcard *.pure) $(wildcard *_pure_*.o) Templates.DB
+GARBAGE		+= $(DEPENDENCIES) core $(wildcard core.[0-9]*) $(wildcard *.err) $(wildcard *.pure) $(wildcard *_pure_*.o) Templates.DB
 
 ifeq ($(OS_ARCH),Darwin)
 ifndef NSDISTMODE
@@ -755,6 +761,9 @@ endif
 OPTIMIZE_JARS_CMD = $(PYTHON) $(call core_abspath,$(topsrcdir)/config/optimizejars.py)
 
 CREATE_PRECOMPLETE_CMD = $(PYTHON) $(call core_abspath,$(topsrcdir)/config/createprecomplete.py)
+
+# MDDEPDIR is the subdirectory where dependency files are stored
+MDDEPDIR := .deps
 
 EXPAND_LIBS_EXEC = $(PYTHON) $(topsrcdir)/config/pythonpath.py -I$(DEPTH)/config $(topsrcdir)/config/expandlibs_exec.py $(if $@,--depend $(MDDEPDIR)/$(@F).pp --target $@)
 EXPAND_LIBS_GEN = $(PYTHON) $(topsrcdir)/config/pythonpath.py -I$(DEPTH)/config $(topsrcdir)/config/expandlibs_gen.py $(if $@,--depend $(MDDEPDIR)/$(@F).pp)

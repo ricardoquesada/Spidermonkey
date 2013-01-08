@@ -17,6 +17,7 @@ CPPSRCS = \
   tests.cpp \
   selfTest.cpp \
   testAddPropertyPropcache.cpp \
+  testArrayBuffer.cpp \
   testArgumentsObject.cpp \
   testBindCallable.cpp \
   testBug604087.cpp \
@@ -56,6 +57,7 @@ CPPSRCS = \
   testScriptInfo.cpp \
   testScriptObject.cpp \
   testSetProperty.cpp \
+  testSourcePolicy.cpp \
   testStringBuffer.cpp \
   testTrap.cpp \
   testTypedArrays.cpp \
@@ -66,6 +68,7 @@ CPPSRCS = \
   testProfileStrings.cpp \
   testJSEvaluateScript.cpp \
   testErrorCopying.cpp \
+  testEnclosingFunction.cpp \
   $(NULL)
 
 CSRCS = \

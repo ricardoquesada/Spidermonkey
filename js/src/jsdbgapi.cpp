@@ -9,7 +9,6 @@
  * JS debugging API.
  */
 #include <string.h>
-#include <stdarg.h>
 #include "jsprvtd.h"
 #include "jstypes.h"
 #include "jsutil.h"
@@ -34,6 +33,7 @@
 #include "frontend/BytecodeEmitter.h"
 #include "frontend/Parser.h"
 #include "vm/Debugger.h"
+#include "ion/Ion.h"
 
 #include "jsatominlines.h"
 #include "jsinferinlines.h"
@@ -46,10 +46,6 @@
 
 #include "jsautooplen.h"
 #include "mozilla/Util.h"
-
-#ifdef __APPLE__
-#include "sharkctl.h"
-#endif
 
 using namespace js;
 using namespace js::gc;
@@ -255,7 +251,7 @@ JS_SetWatchPoint(JSContext *cx, JSObject *obj_, jsid id,
     if (!obj)
         return false;
 
-    Value v;
+    RootedValue v(cx);
     unsigned attrs;
 
     RootedId propid(cx);
@@ -353,16 +349,14 @@ JS_GetLinePCs(JSContext *cx, JSScript *script,
               unsigned startLine, unsigned maxLines,
               unsigned* count, unsigned** retLines, jsbytecode*** retPCs)
 {
-    unsigned* lines;
-    jsbytecode** pcs;
     size_t len = (script->length > maxLines ? maxLines : script->length);
-    lines = (unsigned*) cx->malloc_(len * sizeof(unsigned));
+    unsigned *lines = cx->pod_malloc<unsigned>(len);
     if (!lines)
         return JS_FALSE;
 
-    pcs = (jsbytecode**) cx->malloc_(len * sizeof(jsbytecode*));
+    jsbytecode **pcs = cx->pod_malloc<jsbytecode*>(len);
     if (!pcs) {
-        cx->free_(lines);
+        js_free(lines);
         return JS_FALSE;
     }
 
@@ -391,12 +385,12 @@ JS_GetLinePCs(JSContext *cx, JSScript *script,
     if (retLines)
         *retLines = lines;
     else
-        cx->free_(lines);
+        js_free(lines);
 
     if (retPCs)
         *retPCs = pcs;
     else
-        cx->free_(pcs);
+        js_free(pcs);
 
     return JS_TRUE;
 }
@@ -417,7 +411,7 @@ extern JS_PUBLIC_API(uintptr_t *)
 JS_GetFunctionLocalNameArray(JSContext *cx, JSFunction *fun, void **markp)
 {
     BindingVector bindings(cx);
-    if (!FillBindingVector(fun->script()->bindings, &bindings))
+    if (!FillBindingVector(fun->script(), &bindings))
         return NULL;
 
     /* Munge data into the API this method implements.  Avert your eyes! */
@@ -479,11 +473,8 @@ JS_GetScriptOriginPrincipals(JSScript *script)
 
 /************************************************************************/
 
-/*
- *  Stack Frame Iterator
- */
 JS_PUBLIC_API(JSStackFrame *)
-JS_FrameIterator(JSContext *cx, JSStackFrame **iteratorp)
+JS_BrokenFrameIterator(JSContext *cx, JSStackFrame **iteratorp)
 {
     StackFrame *fp = Valueify(*iteratorp);
     *iteratorp = Jsvalify((fp == NULL) ? js_GetTopStackFrame(cx, FRAME_EXPAND_ALL) : fp->prev());
@@ -525,9 +516,25 @@ JS_GetFrameAnnotation(JSContext *cx, JSStackFrame *fpArg)
 }
 
 JS_PUBLIC_API(void)
-JS_SetFrameAnnotation(JSContext *cx, JSStackFrame *fp, void *annotation)
+JS_SetTopFrameAnnotation(JSContext *cx, void *annotation)
 {
-    Valueify(fp)->setAnnotation(annotation);
+    StackFrame *fp = cx->fp();
+    JS_ASSERT_IF(fp->beginsIonActivation(), !fp->annotation());
+
+    // Note that if this frame is running in Ion, the actual calling frame
+    // could be inlined or a callee and thus we won't have a correct |fp|.
+    // To account for this, ion::InvalidationBailout will transfer an
+    // annotation from the old cx->fp() to the new top frame. This works
+    // because we will never EnterIon on a frame with an annotation.
+    fp->setAnnotation(annotation);
+
+    JSScript *script = fp->script();
+
+    ReleaseAllJITCode(cx->runtime->defaultFreeOp());
+
+    // Ensure that we'll never try to compile this again.
+    JS_ASSERT(!script->hasIonScript());
+    script->ion = ION_DISABLED_SCRIPT;
 }
 
 JS_PUBLIC_API(JSObject *)
@@ -692,6 +699,18 @@ JS_GetScriptVersion(JSContext *cx, JSScript *script)
     return VersionNumber(script->getVersion());
 }
 
+JS_PUBLIC_API(bool)
+JS_GetScriptUserBit(JSScript *script)
+{
+    return script->userBit;
+}
+
+JS_PUBLIC_API(void)
+JS_SetScriptUserBit(JSScript *script, bool b)
+{
+    script->userBit = b;
+}
+
 /***************************************************************************/
 
 JS_PUBLIC_API(void)
@@ -751,7 +770,7 @@ JS_EvaluateInStackFrame(JSContext *cx, JSStackFrame *fp,
     length = (unsigned) len;
     ok = JS_EvaluateUCInStackFrame(cx, fp, chars, length, filename, lineno,
                                    rval);
-    cx->free_(chars);
+    js_free(chars);
 
     return ok;
 }
@@ -815,7 +834,7 @@ JS_GetPropertyDescArray(JSContext *cx, JSObject *obj_, JSPropertyDescArray *pda)
         if (!Proxy::enumerate(cx, obj, props))
             return false;
 
-        pd = (JSPropertyDesc *)cx->calloc_(props.length() * sizeof(JSPropertyDesc));
+        pd = cx->pod_calloc<JSPropertyDesc>(props.length());
         if (!pd)
             return false;
 
@@ -853,7 +872,7 @@ JS_GetPropertyDescArray(JSContext *cx, JSObject *obj_, JSPropertyDescArray *pda)
         return true;
     }
 
-    pd = (JSPropertyDesc *)cx->malloc_(obj->propertyCount() * sizeof(JSPropertyDesc));
+    pd = cx->pod_malloc<JSPropertyDesc>(obj->propertyCount());
     if (!pd)
         return false;
     for (Shape::Range r = obj->lastProperty()->all(); !r.empty(); r.popFront()) {
@@ -896,7 +915,7 @@ JS_PutPropertyDescArray(JSContext *cx, JSPropertyDescArray *pda)
         if (pd[i].flags & JSPD_ALIAS)
             js_RemoveRoot(cx->runtime, &pd[i].alias);
     }
-    cx->free_(pd);
+    js_free(pd);
     pda->array = NULL;
     pda->length = 0;
 }
@@ -1052,652 +1071,6 @@ JS_GetGlobalDebugHooks(JSRuntime *rt)
 
 /************************************************************************/
 
-/* Profiling-related API */
-
-/* Thread-unsafe error management */
-
-static char gLastError[2000];
-
-static void
-#ifdef __GNUC__
-__attribute__((unused,format(printf,1,2)))
-#endif
-UnsafeError(const char *format, ...)
-{
-    va_list args;
-    va_start(args, format);
-    (void) vsnprintf(gLastError, sizeof(gLastError), format, args);
-    va_end(args);
-
-    gLastError[sizeof(gLastError) - 1] = '\0';
-}
-
-JS_PUBLIC_API(const char *)
-JS_UnsafeGetLastProfilingError()
-{
-    return gLastError;
-}
-
-JS_PUBLIC_API(JSBool)
-JS_StartProfiling(const char *profileName)
-{
-    JSBool ok = JS_TRUE;
-#if defined(MOZ_SHARK) && defined(__APPLE__)
-    if (!Shark::Start()) {
-        UnsafeError("Failed to start Shark for %s", profileName);
-        ok = JS_FALSE;
-    }
-#endif
-#ifdef MOZ_VTUNE
-    if (!js_StartVtune(profileName))
-        ok = JS_FALSE;
-#endif
-#ifdef __linux__
-    if (!js_StartPerf())
-        ok = JS_FALSE;
-#endif
-    return ok;
-}
-
-JS_PUBLIC_API(JSBool)
-JS_StopProfiling(const char *profileName)
-{
-    JSBool ok = JS_TRUE;
-#if defined(MOZ_SHARK) && defined(__APPLE__)
-    Shark::Stop();
-#endif
-#ifdef MOZ_VTUNE
-    if (!js_StopVtune())
-        ok = JS_FALSE;
-#endif
-#ifdef __linux__
-    if (!js_StopPerf())
-        ok = JS_FALSE;
-#endif
-    return ok;
-}
-
-/*
- * Start or stop whatever platform- and configuration-specific profiling
- * backends are available.
- */
-static JSBool
-ControlProfilers(bool toState)
-{
-    JSBool ok = JS_TRUE;
-
-    if (! Probes::ProfilingActive && toState) {
-#if defined(MOZ_SHARK) && defined(__APPLE__)
-        if (!Shark::Start()) {
-            UnsafeError("Failed to start Shark");
-            ok = JS_FALSE;
-        }
-#endif
-#ifdef MOZ_CALLGRIND
-        if (! js_StartCallgrind()) {
-            UnsafeError("Failed to start Callgrind");
-            ok = JS_FALSE;
-        }
-#endif
-#ifdef MOZ_VTUNE
-        if (! js_ResumeVtune())
-            ok = JS_FALSE;
-#endif
-    } else if (Probes::ProfilingActive && ! toState) {
-#if defined(MOZ_SHARK) && defined(__APPLE__)
-        Shark::Stop();
-#endif
-#ifdef MOZ_CALLGRIND
-        if (! js_StopCallgrind()) {
-            UnsafeError("failed to stop Callgrind");
-            ok = JS_FALSE;
-        }
-#endif
-#ifdef MOZ_VTUNE
-        if (! js_PauseVtune())
-            ok = JS_FALSE;
-#endif
-    }
-
-    Probes::ProfilingActive = toState;
-
-    return ok;
-}
-
-/*
- * Pause/resume whatever profiling mechanism is currently compiled
- * in, if applicable. This will not affect things like dtrace.
- *
- * Do not mix calls to these APIs with calls to the individual
- * profilers' pause/resume functions, because only overall state is
- * tracked, not the state of each profiler.
- */
-JS_PUBLIC_API(JSBool)
-JS_PauseProfilers(const char *profileName)
-{
-    return ControlProfilers(false);
-}
-
-JS_PUBLIC_API(JSBool)
-JS_ResumeProfilers(const char *profileName)
-{
-    return ControlProfilers(true);
-}
-
-JS_PUBLIC_API(JSBool)
-JS_DumpProfile(const char *outfile, const char *profileName)
-{
-    JSBool ok = JS_TRUE;
-#ifdef MOZ_CALLGRIND
-    js_DumpCallgrind(outfile);
-#endif
-    return ok;
-}
-
-#ifdef MOZ_PROFILING
-
-struct RequiredStringArg {
-    JSContext *mCx;
-    char *mBytes;
-    RequiredStringArg(JSContext *cx, unsigned argc, jsval *vp, size_t argi, const char *caller)
-        : mCx(cx), mBytes(NULL)
-    {
-        if (argc <= argi) {
-            JS_ReportError(cx, "%s: not enough arguments", caller);
-        } else if (!JSVAL_IS_STRING(JS_ARGV(cx, vp)[argi])) {
-            JS_ReportError(cx, "%s: invalid arguments (string expected)", caller);
-        } else {
-            mBytes = JS_EncodeString(cx, JSVAL_TO_STRING(JS_ARGV(cx, vp)[argi]));
-        }
-    }
-    operator void*() {
-        return (void*) mBytes;
-    }
-    ~RequiredStringArg() {
-        if (mBytes)
-            mCx->free_(mBytes);
-    }
-};
-
-static JSBool
-StartProfiling(JSContext *cx, unsigned argc, jsval *vp)
-{
-    if (argc == 0) {
-        JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_StartProfiling(NULL)));
-        return JS_TRUE;
-    }
-
-    RequiredStringArg profileName(cx, argc, vp, 0, "startProfiling");
-    if (!profileName)
-        return JS_FALSE;
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_StartProfiling(profileName.mBytes)));
-    return JS_TRUE;
-}
-
-static JSBool
-StopProfiling(JSContext *cx, unsigned argc, jsval *vp)
-{
-    if (argc == 0) {
-        JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_StopProfiling(NULL)));
-        return JS_TRUE;
-    }
-
-    RequiredStringArg profileName(cx, argc, vp, 0, "stopProfiling");
-    if (!profileName)
-        return JS_FALSE;
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_StopProfiling(profileName.mBytes)));
-    return JS_TRUE;
-}
-
-static JSBool
-PauseProfilers(JSContext *cx, unsigned argc, jsval *vp)
-{
-    if (argc == 0) {
-        JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_PauseProfilers(NULL)));
-        return JS_TRUE;
-    }
-
-    RequiredStringArg profileName(cx, argc, vp, 0, "pauseProfiling");
-    if (!profileName)
-        return JS_FALSE;
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_PauseProfilers(profileName.mBytes)));
-    return JS_TRUE;
-}
-
-static JSBool
-ResumeProfilers(JSContext *cx, unsigned argc, jsval *vp)
-{
-    if (argc == 0) {
-        JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_ResumeProfilers(NULL)));
-        return JS_TRUE;
-    }
-
-    RequiredStringArg profileName(cx, argc, vp, 0, "resumeProfiling");
-    if (!profileName)
-        return JS_FALSE;
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_ResumeProfilers(profileName.mBytes)));
-    return JS_TRUE;
-}
-
-/* Usage: DumpProfile([filename[, profileName]]) */
-static JSBool
-DumpProfile(JSContext *cx, unsigned argc, jsval *vp)
-{
-    bool ret;
-    if (argc == 0) {
-        ret = JS_DumpProfile(NULL, NULL);
-    } else {
-        RequiredStringArg filename(cx, argc, vp, 0, "dumpProfile");
-        if (!filename)
-            return JS_FALSE;
-
-        if (argc == 1) {
-            ret = JS_DumpProfile(filename.mBytes, NULL);
-        } else {
-            RequiredStringArg profileName(cx, argc, vp, 1, "dumpProfile");
-            if (!profileName)
-                return JS_FALSE;
-
-            ret = JS_DumpProfile(filename.mBytes, profileName.mBytes);
-        }
-    }
-
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(ret));
-    return true;
-}
-
-#ifdef MOZ_SHARK
-
-static JSBool
-IgnoreAndReturnTrue(JSContext *cx, unsigned argc, jsval *vp)
-{
-    JS_SET_RVAL(cx, vp, JSVAL_TRUE);
-    return true;
-}
-
-#endif
-
-#ifdef MOZ_CALLGRIND
-static JSBool
-StartCallgrind(JSContext *cx, unsigned argc, jsval *vp)
-{
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_StartCallgrind()));
-    return JS_TRUE;
-}
-
-static JSBool
-StopCallgrind(JSContext *cx, unsigned argc, jsval *vp)
-{
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_StopCallgrind()));
-    return JS_TRUE;
-}
-
-static JSBool
-DumpCallgrind(JSContext *cx, unsigned argc, jsval *vp)
-{
-    if (argc == 0) {
-        JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_DumpCallgrind(NULL)));
-        return JS_TRUE;
-    }
-
-    RequiredStringArg outFile(cx, argc, vp, 0, "dumpCallgrind");
-    if (!outFile)
-        return JS_FALSE;
-
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_DumpCallgrind(outFile.mBytes)));
-    return JS_TRUE;
-}
-#endif
-
-#ifdef MOZ_VTUNE
-static JSBool
-StartVtune(JSContext *cx, unsigned argc, jsval *vp)
-{
-    RequiredStringArg profileName(cx, argc, vp, 0, "startVtune");
-    if (!profileName)
-        return JS_FALSE;
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_StartVtune(profileName.mBytes)));
-    return JS_TRUE;
-}
-
-static JSBool
-StopVtune(JSContext *cx, unsigned argc, jsval *vp)
-{
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_StopVtune()));
-    return JS_TRUE;
-}
-
-static JSBool
-PauseVtune(JSContext *cx, unsigned argc, jsval *vp)
-{
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_PauseVtune()));
-    return JS_TRUE;
-}
-
-static JSBool
-ResumeVtune(JSContext *cx, unsigned argc, jsval *vp)
-{
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_ResumeVtune()));
-    return JS_TRUE;
-}
-#endif
-
-static JSFunctionSpec profiling_functions[] = {
-    JS_FN("startProfiling",  StartProfiling,      1,0),
-    JS_FN("stopProfiling",   StopProfiling,       1,0),
-    JS_FN("pauseProfilers",  PauseProfilers,      1,0),
-    JS_FN("resumeProfilers", ResumeProfilers,     1,0),
-    JS_FN("dumpProfile",     DumpProfile,         2,0),
-#ifdef MOZ_SHARK
-    /* Keep users of the old shark API happy. */
-    JS_FN("connectShark",    IgnoreAndReturnTrue, 0,0),
-    JS_FN("disconnectShark", IgnoreAndReturnTrue, 0,0),
-    JS_FN("startShark",      StartProfiling,      0,0),
-    JS_FN("stopShark",       StopProfiling,       0,0),
-#endif
-#ifdef MOZ_CALLGRIND
-    JS_FN("startCallgrind", StartCallgrind,       0,0),
-    JS_FN("stopCallgrind",  StopCallgrind,        0,0),
-    JS_FN("dumpCallgrind",  DumpCallgrind,        1,0),
-#endif
-#ifdef MOZ_VTUNE
-    JS_FN("startVtune",     js_StartVtune,        1,0),
-    JS_FN("stopVtune",      js_StopVtune,         0,0),
-    JS_FN("pauseVtune",     js_PauseVtune,        0,0),
-    JS_FN("resumeVtune",    js_ResumeVtune,       0,0),
-#endif
-    JS_FS_END
-};
-
-#endif
-
-JS_PUBLIC_API(JSBool)
-JS_DefineProfilingFunctions(JSContext *cx, JSObject *objArg)
-{
-    RootedObject obj(cx, objArg);
-
-    assertSameCompartment(cx, obj);
-#ifdef MOZ_PROFILING
-    return JS_DefineFunctions(cx, obj, profiling_functions);
-#else
-    return true;
-#endif
-}
-
-#ifdef MOZ_CALLGRIND
-
-#include <valgrind/callgrind.h>
-
-JS_FRIEND_API(JSBool)
-js_StartCallgrind()
-{
-    JS_SILENCE_UNUSED_VALUE_IN_EXPR(CALLGRIND_START_INSTRUMENTATION);
-    JS_SILENCE_UNUSED_VALUE_IN_EXPR(CALLGRIND_ZERO_STATS);
-    return true;
-}
-
-JS_FRIEND_API(JSBool)
-js_StopCallgrind()
-{
-    JS_SILENCE_UNUSED_VALUE_IN_EXPR(CALLGRIND_STOP_INSTRUMENTATION);
-    return true;
-}
-
-JS_FRIEND_API(JSBool)
-js_DumpCallgrind(const char *outfile)
-{
-    if (outfile) {
-        JS_SILENCE_UNUSED_VALUE_IN_EXPR(CALLGRIND_DUMP_STATS_AT(outfile));
-    } else {
-        JS_SILENCE_UNUSED_VALUE_IN_EXPR(CALLGRIND_DUMP_STATS);
-    }
-
-    return true;
-}
-
-#endif /* MOZ_CALLGRIND */
-
-#ifdef MOZ_VTUNE
-#include <VTuneApi.h>
-
-static const char *vtuneErrorMessages[] = {
-  "unknown, error #0",
-  "invalid 'max samples' field",
-  "invalid 'samples per buffer' field",
-  "invalid 'sample interval' field",
-  "invalid path",
-  "sample file in use",
-  "invalid 'number of events' field",
-  "unknown, error #7",
-  "internal error",
-  "bad event name",
-  "VTStopSampling called without calling VTStartSampling",
-  "no events selected for event-based sampling",
-  "events selected cannot be run together",
-  "no sampling parameters",
-  "sample database already exists",
-  "sampling already started",
-  "time-based sampling not supported",
-  "invalid 'sampling parameters size' field",
-  "invalid 'event size' field",
-  "sampling file already bound",
-  "invalid event path",
-  "invalid license",
-  "invalid 'global options' field",
-
-};
-
-bool
-js_StartVtune(const char *profileName)
-{
-    VTUNE_EVENT events[] = {
-        { 1000000, 0, 0, 0, "CPU_CLK_UNHALTED.CORE" },
-        { 1000000, 0, 0, 0, "INST_RETIRED.ANY" },
-    };
-
-    U32 n_events = sizeof(events) / sizeof(VTUNE_EVENT);
-    char *default_filename = "mozilla-vtune.tb5";
-    JSString *str;
-    U32 status;
-
-    VTUNE_SAMPLING_PARAMS params = {
-        sizeof(VTUNE_SAMPLING_PARAMS),
-        sizeof(VTUNE_EVENT),
-        0, 0, /* Reserved fields */
-        1,    /* Initialize in "paused" state */
-        0,    /* Max samples, or 0 for "continuous" */
-        4096, /* Samples per buffer */
-        0.1,  /* Sampling interval in ms */
-        1,    /* 1 for event-based sampling, 0 for time-based */
-
-        n_events,
-        events,
-        default_filename,
-    };
-
-    if (profileName) {
-        char filename[strlen(profileName) + strlen("-vtune.tb5") + 1];
-        snprintf(filename, sizeof(filename), "%s-vtune.tb5", profileName);
-        params.tb5Filename = filename;
-    }
-
-    status = VTStartSampling(&params);
-
-    if (params.tb5Filename != default_filename)
-        Foreground::free_(params.tb5Filename);
-
-    if (status != 0) {
-        if (status == VTAPI_MULTIPLE_RUNS)
-            VTStopSampling(0);
-        if (status < sizeof(vtuneErrorMessages))
-            UnsafeError("Vtune setup error: %s", vtuneErrorMessages[status]);
-        else
-            UnsafeError("Vtune setup error: %d", status);
-        return false;
-    }
-    return true;
-}
-
-bool
-js_StopVtune()
-{
-    U32 status = VTStopSampling(1);
-    if (status) {
-        if (status < sizeof(vtuneErrorMessages))
-            UnsafeError("Vtune shutdown error: %s", vtuneErrorMessages[status]);
-        else
-            UnsafeError("Vtune shutdown error: %d", status);
-        return false;
-    }
-    return true;
-}
-
-bool
-js_PauseVtune()
-{
-    VTPause();
-    return true;
-}
-
-bool
-js_ResumeVtune()
-{
-    VTResume();
-    return true;
-}
-
-#endif /* MOZ_VTUNE */
-
-#ifdef __linux__
-
-/*
- * Code for starting and stopping |perf|, the Linux profiler.
- *
- * Output from profiling is written to mozperf.data in your cwd.
- *
- * To enable, set MOZ_PROFILE_WITH_PERF=1 in your environment.
- *
- * To pass additional parameters to |perf record|, provide them in the
- * MOZ_PROFILE_PERF_FLAGS environment variable.  If this variable does not
- * exist, we default it to "--call-graph".  (If you don't want --call-graph but
- * don't want to pass any other args, define MOZ_PROFILE_PERF_FLAGS to the empty
- * string.)
- *
- * If you include --pid or --output in MOZ_PROFILE_PERF_FLAGS, you're just
- * asking for trouble.
- *
- * Our split-on-spaces logic is lame, so don't expect MOZ_PROFILE_PERF_FLAGS to
- * work if you pass an argument which includes a space (e.g.
- * MOZ_PROFILE_PERF_FLAGS="-e 'foo bar'").
- */
-
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <signal.h>
-
-static bool perfInitialized = false;
-static pid_t perfPid = 0;
-
-JSBool js_StartPerf()
-{
-    const char *outfile = "mozperf.data";
-
-    if (perfPid != 0) {
-        UnsafeError("js_StartPerf: called while perf was already running!\n");
-        return false;
-    }
-
-    // Bail if MOZ_PROFILE_WITH_PERF is empty or undefined.
-    if (!getenv("MOZ_PROFILE_WITH_PERF") ||
-        !strlen(getenv("MOZ_PROFILE_WITH_PERF"))) {
-        return true;
-    }
-
-    /*
-     * Delete mozperf.data the first time through -- we're going to append to it
-     * later on, so we want it to be clean when we start out.
-     */
-    if (!perfInitialized) {
-        perfInitialized = true;
-        unlink(outfile);
-        char cwd[4096];
-        printf("Writing perf profiling data to %s/%s\n",
-               getcwd(cwd, sizeof(cwd)), outfile);
-    }
-
-    pid_t mainPid = getpid();
-
-    pid_t childPid = fork();
-    if (childPid == 0) {
-        /* perf record --append --pid $mainPID --output=$outfile $MOZ_PROFILE_PERF_FLAGS */
-
-        char mainPidStr[16];
-        snprintf(mainPidStr, sizeof(mainPidStr), "%d", mainPid);
-        const char *defaultArgs[] = {"perf", "record", "--append",
-                                     "--pid", mainPidStr, "--output", outfile};
-
-        Vector<const char*, 0, SystemAllocPolicy> args;
-        args.append(defaultArgs, ArrayLength(defaultArgs));
-
-        const char *flags = getenv("MOZ_PROFILE_PERF_FLAGS");
-        if (!flags) {
-            flags = "--call-graph";
-        }
-
-        // Split |flags| on spaces.  (Don't bother to free it -- we're going to
-        // exec anyway.)
-        char *toksave;
-        char *tok = strtok_r(strdup(flags), " ", &toksave);
-        while (tok) {
-            args.append(tok);
-            tok = strtok_r(NULL, " ", &toksave);
-        }
-
-        args.append((char*) NULL);
-
-        execvp("perf", const_cast<char**>(args.begin()));
-
-        /* Reached only if execlp fails. */
-        fprintf(stderr, "Unable to start perf.\n");
-        exit(1);
-    }
-    else if (childPid > 0) {
-        perfPid = childPid;
-
-        /* Give perf a chance to warm up. */
-        usleep(500 * 1000);
-        return true;
-    }
-    else {
-        UnsafeError("js_StartPerf: fork() failed\n");
-        return false;
-    }
-}
-
-JSBool js_StopPerf()
-{
-    if (perfPid == 0) {
-        UnsafeError("js_StopPerf: perf is not running.\n");
-        return true;
-    }
-
-    if (kill(perfPid, SIGINT)) {
-        UnsafeError("js_StopPerf: kill failed\n");
-
-        // Try to reap the process anyway.
-        waitpid(perfPid, NULL, WNOHANG);
-    }
-    else {
-        waitpid(perfPid, NULL, 0);
-    }
-
-    perfPid = 0;
-    return true;
-}
-
-#endif /* __linux__ */
-
 JS_PUBLIC_API(void)
 JS_DumpBytecode(JSContext *cx, JSScript *scriptArg)
 {
@@ -1801,5 +1174,267 @@ js_CallContextDebugHandler(JSContext *cx)
       default:
         return JS_TRUE;
     }
+}
+
+JS_PUBLIC_API(StackDescription *)
+JS::DescribeStack(JSContext *cx, unsigned maxFrames)
+{
+    Vector<FrameDescription> frames(cx);
+
+    for (ScriptFrameIter i(cx); !i.done(); ++i) {
+        FrameDescription desc;
+        desc.script = i.script();
+        desc.lineno = PCToLineNumber(i.script(), i.pc());
+        desc.fun = i.fp()->maybeFun();
+        if (!frames.append(desc))
+            return NULL;
+        if (frames.length() == maxFrames)
+            break;
+    }
+
+    StackDescription *desc = js_new<StackDescription>();
+    if (!desc)
+        return NULL;
+
+    desc->nframes = frames.length();
+    desc->frames = frames.extractRawBuffer();
+    return desc;
+}
+
+JS_PUBLIC_API(void)
+JS::FreeStackDescription(JSContext *cx, StackDescription *desc)
+{
+    js_delete(desc->frames);
+    js_delete(desc);
+}
+
+class AutoPropertyDescArray
+{
+    JSContext *cx_;
+    JSPropertyDescArray descArray_;
+
+  public:
+    AutoPropertyDescArray(JSContext *cx)
+      : cx_(cx)
+    {
+        PodZero(&descArray_);
+    }
+    ~AutoPropertyDescArray()
+    {
+        if (descArray_.array)
+            JS_PutPropertyDescArray(cx_, &descArray_);
+    }
+
+    void fetch(JSObject *obj) {
+        JS_ASSERT(!descArray_.array);
+        if (!JS_GetPropertyDescArray(cx_, obj, &descArray_))
+            descArray_.array = NULL;
+    }
+
+    JSPropertyDescArray * operator ->() {
+        return &descArray_;
+    }
+};
+
+static const char *
+FormatValue(JSContext *cx, const Value &v, JSAutoByteString &bytes)
+{
+    JSString *str = ToString(cx, v);
+    if (!str)
+        return NULL;
+    const char *buf = bytes.encode(cx, str);
+    if (!buf)
+        return NULL;
+    const char *found = strstr(buf, "function ");
+    if (found && (found - buf <= 2))
+        return "[function]";
+    return buf;
+}
+
+static char *
+FormatFrame(JSContext *cx, const ScriptFrameIter &iter, char *buf, int num,
+            JSBool showArgs, JSBool showLocals, JSBool showThisProps)
+{
+    JSScript* script = iter.script();
+    jsbytecode* pc = iter.pc();
+
+    JSAutoCompartment ac(cx, iter.fp()->scopeChain());
+
+    const char *filename = script->filename;
+    unsigned lineno = PCToLineNumber(script, pc);
+    JSFunction *fun = iter.fp()->maybeFun();
+    JSString *funname = NULL;
+    if (fun)
+        funname = fun->atom();
+
+    JSObject *callObj = NULL;
+    AutoPropertyDescArray callProps(cx);
+
+    if (showArgs || showLocals) {
+        callObj = JS_GetFrameCallObject(cx, Jsvalify(iter.fp()));
+        if (callObj)
+            callProps.fetch(callObj);
+    }
+
+    Value thisVal = UndefinedValue();
+    AutoPropertyDescArray thisProps(cx);
+    if (ComputeThis(cx, iter.fp())) {
+        thisVal = iter.fp()->thisValue();
+        if (showThisProps && !thisVal.isPrimitive())
+            thisProps.fetch(&thisVal.toObject());
+    }
+
+    // print the frame number and function name
+    if (funname) {
+        JSAutoByteString funbytes;
+        buf = JS_sprintf_append(buf, "%d %s(", num, funbytes.encode(cx, funname));
+    } else if (fun) {
+        buf = JS_sprintf_append(buf, "%d anonymous(", num);
+    } else {
+        buf = JS_sprintf_append(buf, "%d <TOP LEVEL>", num);
+    }
+    if (!buf)
+        return buf;
+
+    // print the function arguments
+    if (showArgs && callObj) {
+        uint32_t namedArgCount = 0;
+        for (uint32_t i = 0; i < callProps->length; i++) {
+            JSPropertyDesc* desc = &callProps->array[i];
+            JSAutoByteString nameBytes;
+            const char *name = NULL;
+            if (JSVAL_IS_STRING(desc->id))
+                name = FormatValue(cx, desc->id, nameBytes);
+
+            JSAutoByteString valueBytes;
+            const char *value = FormatValue(cx, desc->value, valueBytes);
+
+            buf = JS_sprintf_append(buf, "%s%s%s%s%s%s",
+                                    namedArgCount ? ", " : "",
+                                    name ? name :"",
+                                    name ? " = " : "",
+                                    desc->value.isString() ? "\"" : "",
+                                    value ? value : "?unknown?",
+                                    desc->value.isString() ? "\"" : "");
+            if (!buf)
+                return buf;
+            namedArgCount++;
+        }
+
+        // print any unnamed trailing args (found in 'arguments' object)
+        Value val;
+        if (JS_GetProperty(cx, callObj, "arguments", &val) && val.isObject()) {
+            uint32_t argCount;
+            JSObject* argsObj = &val.toObject();
+            if (JS_GetProperty(cx, argsObj, "length", &val) &&
+                ToUint32(cx, val, &argCount) &&
+                argCount > namedArgCount)
+            {
+                for (uint32_t k = namedArgCount; k < argCount; k++) {
+                    char number[8];
+                    JS_snprintf(number, 8, "%d", (int) k);
+
+                    if (JS_GetProperty(cx, argsObj, number, &val)) {
+                        JSAutoByteString valueBytes;
+                        const char *value = FormatValue(cx, val, valueBytes);
+                        buf = JS_sprintf_append(buf, "%s%s%s%s",
+                                                k ? ", " : "",
+                                                val.isString() ? "\"" : "",
+                                                value ? value : "?unknown?",
+                                                val.isString() ? "\"" : "");
+                        if (!buf)
+                            return buf;
+                    }
+                }
+            }
+        }
+    }
+
+    // print filename and line number
+    buf = JS_sprintf_append(buf, "%s [\"%s\":%d]\n",
+                            fun ? ")" : "",
+                            filename ? filename : "<unknown>",
+                            lineno);
+    if (!buf)
+        return buf;
+
+    // print local variables
+    if (showLocals && callProps->array) {
+        for (uint32_t i = 0; i < callProps->length; i++) {
+            JSPropertyDesc* desc = &callProps->array[i];
+            JSAutoByteString nameBytes;
+            JSAutoByteString valueBytes;
+            const char *name = FormatValue(cx, desc->id, nameBytes);
+            const char *value = FormatValue(cx, desc->value, valueBytes);
+
+            if (name && value) {
+                buf = JS_sprintf_append(buf, "    %s = %s%s%s\n",
+                                        name,
+                                        desc->value.isString() ? "\"" : "",
+                                        value,
+                                        desc->value.isString() ? "\"" : "");
+                if (!buf)
+                    return buf;
+            }
+        }
+    }
+
+    // print the value of 'this'
+    if (showLocals) {
+        if (!thisVal.isUndefined()) {
+            JSAutoByteString thisValBytes;
+            if (JSString* thisValStr = ToString(cx, thisVal)) {
+                if (const char *str = thisValBytes.encode(cx, thisValStr)) {
+                    buf = JS_sprintf_append(buf, "    this = %s\n", str);
+                    if (!buf)
+                        return buf;
+                }
+            }
+        } else {
+            buf = JS_sprintf_append(buf, "    <failed to get 'this' value>\n");
+        }
+    }
+
+    // print the properties of 'this', if it is an object
+    if (showThisProps && thisProps->array) {
+        for (uint32_t i = 0; i < thisProps->length; i++) {
+            JSPropertyDesc* desc = &thisProps->array[i];
+            if (desc->flags & JSPD_ENUMERATE) {
+                JSAutoByteString nameBytes;
+                JSAutoByteString valueBytes;
+                const char *name = FormatValue(cx, desc->id, nameBytes);
+                const char *value = FormatValue(cx, desc->value, valueBytes);
+                if (name && value) {
+                    buf = JS_sprintf_append(buf, "    this.%s = %s%s%s\n",
+                                            name,
+                                            desc->value.isString() ? "\"" : "",
+                                            value,
+                                            desc->value.isString() ? "\"" : "");
+                    if (!buf)
+                        return buf;
+                }
+            }
+        }
+    }
+
+    return buf;
+}
+
+JS_PUBLIC_API(char *)
+JS::FormatStackDump(JSContext *cx, char *buf,
+                      JSBool showArgs, JSBool showLocals,
+                      JSBool showThisProps)
+{
+    int num = 0;
+
+    for (ScriptFrameIter i(cx); !i.done(); ++i) {
+        buf = FormatFrame(cx, i, buf, num, showArgs, showLocals, showThisProps);
+        num++;
+    }
+
+    if (!num)
+        buf = JS_sprintf_append(buf, "JavaScript stack is empty\n");
+
+    return buf;
 }
 

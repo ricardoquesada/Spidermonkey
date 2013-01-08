@@ -29,16 +29,38 @@ class NameResolver
 
     /* Test whether a ParseNode represents a function invocation */
     bool call(ParseNode *pn) {
-        return pn && pn->isKind(PNK_LP);
+        return pn && pn->isKind(PNK_CALL);
     }
 
     /*
-     * Some special atoms like 'prototype' and '__proto__' aren't useful to show
-     * up in function names.
+     * Append a reference to a property named |name| to |buf|. If |name| is
+     * a proper identifier name, then we append '.name'; otherwise, we
+     * append '["name"]'.
+     *
+     * Note that we need the IsIdentifier check for atoms from both
+     * PNK_NAME nodes and PNK_STRING nodes: given code like a["b c"], the
+     * front end will produce a PNK_DOT with a PNK_NAME child whose name
+     * contains spaces.
      */
-    bool special(JSAtom *atom) {
-        return cx->runtime->atomState.protoAtom == atom ||
-               cx->runtime->atomState.classPrototypeAtom == atom;
+    bool appendPropertyReference(JSAtom *name) {
+        if (IsIdentifier(name))
+            return buf->append(".") && buf->append(name);
+
+        /* Quote the string as needed. */
+        JSString *source = js_QuoteString(cx, name, '"');
+        return source && buf->append("[") && buf->append(source) && buf->append("]");
+    }
+
+    /* Append a number to buf. */
+    bool appendNumber(double n) {
+        char number[30];
+        int digits = JS_snprintf(number, sizeof(number), "%g", n);
+        return buf->appendInflated(number, digits);
+    }
+
+    /* Append "[<n>]" to buf, referencing a property named by a numeric literal. */
+    bool appendNumericPropertyReference(double n) {
+        return buf->append("[") && appendNumber(n) && buf->append("]");
     }
 
     /*
@@ -48,24 +70,19 @@ class NameResolver
     bool nameExpression(ParseNode *n) {
         switch (n->getKind()) {
             case PNK_DOT:
-                return nameExpression(n->expr()) &&
-                       (special(n->pn_atom) ||
-                        (buf->append(".") && buf->append(n->pn_atom)));
+                return nameExpression(n->expr()) && appendPropertyReference(n->pn_atom);
 
             case PNK_NAME:
                 return buf->append(n->pn_atom);
 
-            case PNK_LB:
+            case PNK_ELEM:
                 return nameExpression(n->pn_left) &&
                        buf->append("[") &&
                        nameExpression(n->pn_right) &&
                        buf->append("]");
 
-            case PNK_NUMBER: {
-                char number[30];
-                int digits = JS_snprintf(number, sizeof(number), "%g", n->pn_dval);
-                return buf->appendInflated(number, digits);
-            }
+            case PNK_NUMBER:
+                return appendNumber(n->pn_dval);
 
             /*
              * Technically this isn't an "abort" situation, we're just confused
@@ -129,12 +146,12 @@ class NameResolver
 
                 case PNK_COLON:
                     /*
-                     * If this is a PNK_COLON, but our parent is not a PNK_RC,
+                     * If this is a PNK_COLON, but our parent is not a PNK_OBJECT,
                      * then this is a label and we're done naming. Otherwise we
-                     * record the PNK_COLON but skip the PNK_RC so we're not
+                     * record the PNK_COLON but skip the PNK_OBJECT so we're not
                      * flagged as a contributor.
                      */
-                    if (pos == 0 || !parents[pos - 1]->isKind(PNK_RC))
+                    if (pos == 0 || !parents[pos - 1]->isKind(PNK_OBJECT))
                         return NULL;
                     pos--;
                     /* fallthrough */
@@ -156,9 +173,9 @@ class NameResolver
      * listed, then it is skipped. Otherwise an intelligent name is guessed to
      * assign to the function's displayAtom field
      */
-    JSAtom *resolveFun(ParseNode *pn, JSAtom *prefix) {
+    JSAtom *resolveFun(ParseNode *pn, HandleAtom prefix) {
         JS_ASSERT(pn != NULL && pn->isKind(PNK_FUNCTION));
-        JSFunction *fun = pn->pn_funbox->function();
+        RootedFunction fun(cx, pn->pn_funbox->function());
         if (nparents == 0)
             return NULL;
 
@@ -202,15 +219,12 @@ class NameResolver
             ParseNode *node = toName[pos];
 
             if (node->isKind(PNK_COLON)) {
-                if (node->pn_left->isKind(PNK_NAME)) {
-                    /* special atoms are skipped, but others are dot-appended */
-                    if (!special(node->pn_left->pn_atom)) {
-                        if (!buf.append(".") || !buf.append(node->pn_left->pn_atom))
-                            return NULL;
-                    }
-                } else if (node->pn_left->isKind(PNK_STRING)) {
-                    /* If a string is explicitly specified, don't see if its special */
-                    if (!buf.append(".") || !buf.append(node->pn_left->pn_atom))
+                ParseNode *left = node->pn_left;
+                if (left->isKind(PNK_NAME) || left->isKind(PNK_STRING)) {
+                    if (!appendPropertyReference(left->pn_atom))
+                        return NULL;
+                } else if (left->isKind(PNK_NUMBER)) {
+                    if (!appendNumericPropertyReference(left->pn_dval))
                         return NULL;
                 }
             } else {
@@ -247,19 +261,20 @@ class NameResolver
     }
 
   public:
-    NameResolver(JSContext *cx) : cx(cx), nparents(0), buf(NULL) {}
+    explicit NameResolver(JSContext *cx) : cx(cx), nparents(0), buf(NULL) {}
 
     /*
      * Resolve all names for anonymous functions recursively within the
      * ParseNode instance given. The prefix is for each subsequent name, and
      * should initially be NULL.
      */
-    void resolve(ParseNode *cur, JSAtom *prefix = NULL) {
+    void resolve(ParseNode *cur, HandleAtom prefixArg = NullPtr()) {
+        RootedAtom prefix(cx, prefixArg);
         if (cur == NULL)
             return;
 
         if (cur->isKind(PNK_FUNCTION) && cur->isArity(PN_FUNC)) {
-            JSAtom *prefix2 = resolveFun(cur, prefix);
+            RootedAtom prefix2(cx, resolveFun(cur, prefix));
             /*
              * If a function looks like (function(){})() where the parent node
              * of the definition of the function is a call, then it shouldn't

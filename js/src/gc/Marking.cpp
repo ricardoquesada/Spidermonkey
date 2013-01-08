@@ -1,4 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=4 sw=4 tw=79 et:
  */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -15,6 +16,7 @@
 #include "jsobjinlines.h"
 #include "jsscopeinlines.h"
 
+#include "ion/IonCode.h"
 #include "vm/String-inl.h"
 
 void * const js::NullPtr::constNullValue = NULL;
@@ -116,7 +118,7 @@ MarkInternal(JSTracer *trc, T **thingp)
             PushMarkStack(static_cast<GCMarker *>(trc), thing);
     } else {
         trc->callback(trc, (void **)thingp, GetGCThingTraceKind(thing));
-        JS_SET_TRACING_LOCATION(trc, NULL);
+        JS_UNSET_TRACING_LOCATION(trc);
     }
 
     trc->debugPrinter = NULL;
@@ -231,6 +233,7 @@ bool Is##base##Marked(EncapsulatedPtr<type> *thingp)                            
 
 DeclMarkerImpl(BaseShape, BaseShape)
 DeclMarkerImpl(BaseShape, UnownedBaseShape)
+DeclMarkerImpl(IonCode, ion::IonCode)
 DeclMarkerImpl(Object, ArgumentsObject)
 DeclMarkerImpl(Object, DebugScopeObject)
 DeclMarkerImpl(Object, GlobalObject)
@@ -276,6 +279,9 @@ MarkKind(JSTracer *trc, void **thingp, JSGCTraceKind kind)
       case JSTRACE_TYPE_OBJECT:
         MarkInternal(trc, reinterpret_cast<types::TypeObject **>(thingp));
         break;
+      case JSTRACE_IONCODE:
+        MarkInternal(trc, reinterpret_cast<ion::IonCode **>(thingp));
+        break;
 #if JS_HAS_XML_SUPPORT
       case JSTRACE_XML:
         MarkInternal(trc, reinterpret_cast<JSXML **>(thingp));
@@ -285,14 +291,26 @@ MarkKind(JSTracer *trc, void **thingp, JSGCTraceKind kind)
 }
 
 void
-MarkGCThingRoot(JSTracer *trc, void **thingp, const char *name)
+MarkGCThingInternal(JSTracer *trc, void **thingp, const char *name)
 {
-    JS_ROOT_MARKING_ASSERT(trc);
     JS_SET_TRACING_NAME(trc, name);
     JS_ASSERT(thingp);
     if (!*thingp)
         return;
     MarkKind(trc, thingp, GetGCThingTraceKind(*thingp));
+}
+
+void
+MarkGCThingRoot(JSTracer *trc, void **thingp, const char *name)
+{
+    JS_ROOT_MARKING_ASSERT(trc);
+    MarkGCThingInternal(trc, thingp, name);
+}
+
+void
+MarkGCThingUnbarriered(JSTracer *trc, void **thingp, const char *name)
+{
+    MarkGCThingInternal(trc, thingp, name);
 }
 
 /*** ID Marking ***/
@@ -312,7 +330,7 @@ MarkIdInternal(JSTracer *trc, jsid *id)
         *id = OBJECT_TO_JSID(obj);
     } else {
         /* Unset realLocation manually if we do not call MarkInternal. */
-        JS_SET_TRACING_LOCATION(trc, NULL);
+        JS_UNSET_TRACING_LOCATION(trc);
     }
 }
 
@@ -373,7 +391,7 @@ MarkValueInternal(JSTracer *trc, Value *v)
             v->setObjectOrNull((JSObject *)thing);
     } else {
         /* Unset realLocation manually if we do not call MarkInternal. */
-        JS_SET_TRACING_LOCATION(trc, NULL);
+        JS_UNSET_TRACING_LOCATION(trc);
     }
 }
 
@@ -599,6 +617,15 @@ PushMarkStack(GCMarker *gcmarker, Shape *thing)
     /* We mark shapes directly rather than pushing on the stack. */
     if (thing->markIfUnmarked(gcmarker->getMarkColor()))
         ScanShape(gcmarker, thing);
+}
+
+void
+PushMarkStack(GCMarker *gcmarker, ion::IonCode *thing)
+{
+    JS_COMPARTMENT_ASSERT(gcmarker->runtime, thing);
+
+    if (thing->markIfUnmarked(gcmarker->getMarkColor()))
+        gcmarker->pushIonCode(thing);
 }
 
 static inline void
@@ -862,7 +889,7 @@ ScanTypeObject(GCMarker *gcmarker, types::TypeObject *type)
         }
     }
 
-    if (type->proto)
+    if (TaggedProto(type->proto).isObject())
         PushMarkStack(gcmarker, type->proto);
 
     if (type->singleton && !type->lazy())
@@ -887,7 +914,7 @@ MarkChildren(JSTracer *trc, types::TypeObject *type)
             MarkId(trc, &prop->id, "type_prop");
     }
 
-    if (type->proto)
+    if (TaggedProto(type->proto).isObject())
         MarkObject(trc, &type->proto, "type_proto");
 
     if (type->singleton && !type->lazy())
@@ -900,6 +927,14 @@ MarkChildren(JSTracer *trc, types::TypeObject *type)
 
     if (type->interpretedFunction)
         MarkObject(trc, &type->interpretedFunction, "type_function");
+}
+
+void
+MarkChildren(JSTracer *trc, ion::IonCode *code)
+{
+#ifdef JS_ION
+    code->trace(trc);
+#endif
 }
 
 #if JS_HAS_XML_SUPPORT
@@ -944,6 +979,10 @@ PushArena(GCMarker *gcmarker, ArenaHeader *aheader)
 
       case JSTRACE_TYPE_OBJECT:
         PushArenaTyped<js::types::TypeObject>(gcmarker, aheader);
+        break;
+
+      case JSTRACE_IONCODE:
+        PushArenaTyped<js::ion::IonCode>(gcmarker, aheader);
         break;
 
 #if JS_HAS_XML_SUPPORT
@@ -1082,6 +1121,8 @@ GCMarker::processMarkStackOther(SliceBudget &budget, uintptr_t tag, uintptr_t ad
             pushValueArray(obj, vp, end);
         else
             pushObject(obj);
+    } else if (tag == IonCodeTag) {
+        MarkChildren(this, reinterpret_cast<ion::IonCode *>(addr));
     } else if (tag == ArenaTag) {
         ArenaHeader *aheader = reinterpret_cast<ArenaHeader *>(addr);
         AllocKind thingKind = aheader->getAllocKind();
@@ -1297,6 +1338,10 @@ TraceChildren(JSTracer *trc, void *thing, JSGCTraceKind kind)
 
       case JSTRACE_SHAPE:
         MarkChildren(trc, static_cast<Shape *>(thing));
+        break;
+
+      case JSTRACE_IONCODE:
+        MarkChildren(trc, (js::ion::IonCode *)thing);
         break;
 
       case JSTRACE_BASE_SHAPE:

@@ -15,23 +15,18 @@ namespace js {
 namespace frontend {
 
 inline
-SharedContext::SharedContext(JSContext *cx, JSObject *scopeChain, JSFunction *fun,
-                             FunctionBox *funbox, StrictMode::StrictModeState sms)
+SharedContext::SharedContext(JSContext *cx, bool isFun, StrictMode sms)
   : context(cx),
-    fun_(cx, fun),
-    funbox_(funbox),
-    scopeChain_(cx, scopeChain),
-    cxFlags(cx),
+    isFunction(isFun),
+    anyCxFlags(),
     strictModeState(sms)
 {
-    JS_ASSERT((fun && !scopeChain_) || (!fun && !funbox));
 }
 
 inline bool
 SharedContext::inStrictMode()
 {
     JS_ASSERT(strictModeState != StrictMode::UNKNOWN);
-    JS_ASSERT_IF(inFunction() && funbox(), funbox()->strictModeState == strictModeState);
     return strictModeState == StrictMode::STRICT;
 }
 
@@ -39,6 +34,26 @@ inline bool
 SharedContext::needStrictChecks()
 {
     return context->hasStrictOption() || strictModeState != StrictMode::NOTSTRICT;
+}
+
+inline GlobalSharedContext *
+SharedContext::asGlobal()
+{
+    JS_ASSERT(!isFunction);
+    return static_cast<GlobalSharedContext*>(this);
+}
+
+inline FunctionBox *
+SharedContext::asFunbox()
+{
+    JS_ASSERT(isFunction);
+    return static_cast<FunctionBox*>(this);
+}
+
+GlobalSharedContext::GlobalSharedContext(JSContext *cx, JSObject *scopeChain, StrictMode sms)
+  : SharedContext(cx, /* isFunction = */ false, sms),
+    scopeChain_(cx, scopeChain)
+{
 }
 
 } /* namespace frontend */

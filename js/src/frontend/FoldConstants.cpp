@@ -201,9 +201,9 @@ FoldXMLConstants(JSContext *cx, ParseNode *pn, Parser *parser)
     RootedString str(cx);
     if ((pn->pn_xflags & PNX_CANTFOLD) == 0) {
         if (kind == PNK_XMLETAGO)
-            accum = cx->runtime->atomState.etagoAtom;
+            accum = cx->names().etago;
         else if (kind == PNK_XMLSTAGO || kind == PNK_XMLPTAGC)
-            accum = cx->runtime->atomState.stagoAtom;
+            accum = cx->names().stago;
     }
 
     /*
@@ -245,7 +245,7 @@ FoldXMLConstants(JSContext *cx, ParseNode *pn, Parser *parser)
             break;
 
           case PNK_XMLPI: {
-            XMLProcessingInstruction &pi = pn2->asXMLProcessingInstruction();
+            XMLProcessingInstruction &pi = pn2->as<XMLProcessingInstruction>();
             str = js_MakeXMLPIString(cx, pi.target(), pi.data());
             if (!str)
                 return false;
@@ -307,9 +307,9 @@ FoldXMLConstants(JSContext *cx, ParseNode *pn, Parser *parser)
         str = NULL;
         if ((pn->pn_xflags & PNX_CANTFOLD) == 0) {
             if (kind == PNK_XMLPTAGC)
-                str = cx->runtime->atomState.ptagcAtom;
+                str = cx->names().ptagc;
             else if (kind == PNK_XMLSTAGO || kind == PNK_XMLETAGO)
-                str = cx->runtime->atomState.tagcAtom;
+                str = cx->names().tagc;
         }
         if (str) {
             accum = js_ConcatStrings(cx, accum, str);
@@ -418,7 +418,7 @@ frontend::FoldConstants(JSContext *cx, ParseNode *pn, Parser *parser, bool inGen
 
         /* Don't fold a parenthesized call expression. See bug 537673. */
         pn1 = pn2 = pn->pn_head;
-        if ((pn->isKind(PNK_LP) || pn->isKind(PNK_NEW)) && pn2->isInParens())
+        if ((pn->isKind(PNK_CALL) || pn->isKind(PNK_NEW)) && pn2->isInParens())
             pn2 = pn2->pn_next;
 
         /* Save the list head in pn1 for later use. */
@@ -672,13 +672,13 @@ frontend::FoldConstants(JSContext *cx, ParseNode *pn, Parser *parser, bool inGen
             }
 
             /* Allocate a new buffer and string descriptor for the result. */
-            jschar *chars = (jschar *) cx->malloc_((length + 1) * sizeof(jschar));
+            jschar *chars = cx->pod_malloc<jschar>(length + 1);
             if (!chars)
                 return false;
             chars[length] = 0;
             JSString *str = js_NewString(cx, chars, length);
             if (!str) {
-                cx->free_(chars);
+                js_free(chars);
                 return false;
             }
 

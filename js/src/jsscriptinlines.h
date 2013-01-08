@@ -98,14 +98,14 @@ JSScript::getCallerFunction()
     return getFunction(0);
 }
 
-inline JSObject *
+inline js::RegExpObject *
 JSScript::getRegExp(size_t index)
 {
     js::ObjectArray *arr = regexps();
     JS_ASSERT(uint32_t(index) < arr->length);
     JSObject *obj = arr->vector[index];
     JS_ASSERT(obj->isRegExp());
-    return obj;
+    return (js::RegExpObject *) obj;
 }
 
 inline bool
@@ -120,17 +120,6 @@ JSScript::isEmpty() const
     return JSOp(*pc) == JSOP_STOP;
 }
 
-inline bool
-JSScript::hasGlobal() const
-{
-    /*
-     * Make sure that we don't try to query information about global objects
-     * which have had their scopes cleared. compileAndGo code should not run
-     * anymore against such globals.
-     */
-    return compileAndGo && !global().isCleared();
-}
-
 inline js::GlobalObject &
 JSScript::global() const
 {
@@ -139,13 +128,6 @@ JSScript::global() const
      * can assert that maybeGlobal is non-null here.
      */
     return *compartment()->maybeGlobal();
-}
-
-inline bool
-JSScript::hasClearedGlobal() const
-{
-    JS_ASSERT(types);
-    return global().isCleared();
 }
 
 #ifdef JS_METHODJIT

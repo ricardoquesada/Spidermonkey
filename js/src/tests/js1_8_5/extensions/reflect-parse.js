@@ -226,6 +226,9 @@ assertDecl("function foo(a=4) { }", funDecl(ident("foo"), [ident("a")], blockStm
 assertDecl("function foo(a, b=4) { }", funDecl(ident("foo"), [ident("a"), ident("b")], blockStmt([]), [lit(4)]));
 assertDecl("function foo(a, b=4, ...rest) { }",
            funDecl(ident("foo"), [ident("a"), ident("b")], blockStmt([]), [lit(4)], ident("rest")));
+assertDecl("function foo(a=(function () {})) { function a() {} }",
+           funDecl(ident("foo"), [ident("a")], blockStmt([funDecl(ident("a"), [], blockStmt([]))]),
+                   [funExpr(ident("a"), [], blockStmt([]))]));
 
 
 // Bug 591437: rebound args have their defs turned into uses
@@ -258,6 +261,8 @@ assertExpr("this", thisExpr);
 assertExpr("foo", ident("foo"));
 assertExpr("foo.bar", dotExpr(ident("foo"), ident("bar")));
 assertExpr("foo[bar]", memExpr(ident("foo"), ident("bar")));
+assertExpr("foo['bar']", memExpr(ident("foo"), lit("bar")));
+assertExpr("foo[42]", memExpr(ident("foo"), lit(42)));
 assertExpr("(function(){})", funExpr(null, [], blockStmt([])));
 assertExpr("(function f() {})", funExpr(ident("f"), [], blockStmt([])));
 assertExpr("(function f(x,y,z) {})", funExpr(ident("f"), [ident("x"),ident("y"),ident("z")], blockStmt([])));

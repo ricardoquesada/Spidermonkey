@@ -63,7 +63,7 @@ namespace CType {
   static JSBool CreateArray(JSContext* cx, unsigned argc, jsval* vp);
   static JSBool ToString(JSContext* cx, unsigned argc, jsval* vp);
   static JSBool ToSource(JSContext* cx, unsigned argc, jsval* vp);
-  static JSBool HasInstance(JSContext* cx, JSHandleObject obj, const jsval* v, JSBool* bp);
+  static JSBool HasInstance(JSContext* cx, JSHandleObject obj, JSMutableHandleValue v, JSBool* bp);
 
 
   /*
@@ -717,7 +717,9 @@ InitCTypeClass(JSContext* cx, HandleObject parent)
     return NULL;
 
   RootedObject ctor(cx, JS_GetFunctionObject(fun));
-  RootedObject fnproto(cx, JS_GetPrototype(ctor));
+  RootedObject fnproto(cx);
+  if (!JS_GetPrototype(cx, ctor, fnproto.address()))
+    return NULL;
   JS_ASSERT(ctor);
   JS_ASSERT(fnproto);
 
@@ -1928,11 +1930,15 @@ ConvertToJS(JSContext* cx,
     if (!numeric_limits<type>::is_signed) {                                    \
       value = *static_cast<type*>(data);                                       \
       /* Get ctypes.UInt64.prototype from ctypes.CType.prototype. */           \
-      proto = CType::GetProtoFromType(typeObj, SLOT_UINT64PROTO);              \
+      proto = CType::GetProtoFromType(cx, typeObj, SLOT_UINT64PROTO);          \
+      if (!proto)                                                              \
+        return false;                                                          \
     } else {                                                                   \
       value = int64_t(*static_cast<type*>(data));                              \
       /* Get ctypes.Int64.prototype from ctypes.CType.prototype. */            \
-      proto = CType::GetProtoFromType(typeObj, SLOT_INT64PROTO);               \
+      proto = CType::GetProtoFromType(cx, typeObj, SLOT_INT64PROTO);     \
+      if (!proto)                                                              \
+        return false;                                                          \
     }                                                                          \
                                                                                \
     JSObject* obj = Int64Base::Construct(cx, proto, value,                     \
@@ -1986,6 +1992,47 @@ ConvertToJS(JSContext* cx,
   }
 
   return true;
+}
+
+// Determine if the contents of a typed array can be converted without
+// ambiguity to a C type. Elements of a Int8Array are converted to
+// ctypes.int8_t, UInt8Array to ctypes.uint8_t, etc.
+bool CanConvertTypedArrayItemTo(JSObject *baseType, JSObject *valObj, JSContext *cx) {
+  TypeCode baseTypeCode = CType::GetTypeCode(baseType);
+  if (baseTypeCode == TYPE_void_t) {
+    return true;
+  }
+  TypeCode elementTypeCode;
+  switch (JS_GetTypedArrayType(valObj, cx)) {
+  case TypedArray::TYPE_INT8:
+    elementTypeCode = TYPE_int8_t;
+    break;
+  case TypedArray::TYPE_UINT8:
+  case TypedArray::TYPE_UINT8_CLAMPED:
+    elementTypeCode = TYPE_uint8_t;
+    break;
+  case TypedArray::TYPE_INT16:
+    elementTypeCode = TYPE_int16_t;
+    break;
+  case TypedArray::TYPE_UINT16:
+    elementTypeCode = TYPE_uint16_t;
+    break;
+  case TypedArray::TYPE_INT32:
+    elementTypeCode = TYPE_int32_t;
+    break;
+  case TypedArray::TYPE_UINT32:
+    elementTypeCode = TYPE_uint32_t;
+    break;
+  case TypedArray::TYPE_FLOAT32:
+    elementTypeCode = TYPE_float32_t;
+    break;
+  case TypedArray::TYPE_FLOAT64:
+    elementTypeCode = TYPE_float64_t;
+    break;
+  default:
+    return false;
+  }
+  return elementTypeCode == baseTypeCode;
 }
 
 // Implicitly convert jsval 'val' to a C binary representation of CType
@@ -2149,7 +2196,7 @@ ImplicitConvert(JSContext* cx,
           return false;
 
         char** charBuffer = static_cast<char**>(buffer);
-        *charBuffer = cx->array_new<char>(nbytes + 1);
+        *charBuffer = cx->pod_malloc<char>(nbytes + 1);
         if (!*charBuffer) {
           JS_ReportAllocationOverflow(cx);
           return false;
@@ -2166,7 +2213,7 @@ ImplicitConvert(JSContext* cx,
         // JSString's buffer, but this approach is safer if the caller happens
         // to modify the string.)
         jschar** jscharBuffer = static_cast<jschar**>(buffer);
-        *jscharBuffer = cx->array_new<jschar>(sourceLength + 1);
+        *jscharBuffer = cx->pod_malloc<jschar>(sourceLength + 1);
         if (!*jscharBuffer) {
           JS_ReportAllocationOverflow(cx);
           return false;
@@ -2186,6 +2233,16 @@ ImplicitConvert(JSContext* cx,
       // Just as with C arrays, we make no effort to
       // keep the ArrayBuffer alive.
       *static_cast<void**>(buffer) = JS_GetArrayBufferData(valObj, cx);
+      break;
+    } if (!JSVAL_IS_PRIMITIVE(val) && JS_IsTypedArrayObject(valObj, cx)) {
+      if(!CanConvertTypedArrayItemTo(baseType, valObj, cx)) {
+        return TypeError(cx, "typed array with the appropriate type", val);
+      }
+
+      // Convert TypedArray to pointer without any copy.
+      // Just as with C arrays, we make no effort to
+      // keep the TypedArray alive.
+      *static_cast<void**>(buffer) = JS_GetArrayBufferViewData(valObj, cx);
       break;
     }
     return TypeError(cx, "pointer", val);
@@ -2255,7 +2312,7 @@ ImplicitConvert(JSContext* cx,
       // Convert into an intermediate, in case of failure.
       size_t elementSize = CType::GetSize(baseType);
       size_t arraySize = elementSize * targetLength;
-      AutoPtr<char>::Array intermediate(cx->array_new<char>(arraySize));
+      AutoPtr<char> intermediate(cx->pod_malloc<char>(arraySize));
       if (!intermediate) {
         JS_ReportAllocationOverflow(cx);
         return false;
@@ -2276,18 +2333,32 @@ ImplicitConvert(JSContext* cx,
     } else if (!JSVAL_IS_PRIMITIVE(val) &&
                JS_IsArrayBufferObject(valObj, cx)) {
       // Check that array is consistent with type, then
-      // copy the array. As with C arrays, data is *not*
-      // copied back to the ArrayBuffer at the end of a
-      // function call, so do not expect this to work
-      // as an inout argument.
+      // copy the array.
       uint32_t sourceLength = JS_GetArrayBufferByteLength(valObj, cx);
       size_t elementSize = CType::GetSize(baseType);
       size_t arraySize = elementSize * targetLength;
       if (arraySize != size_t(sourceLength)) {
-        JS_ReportError(cx, "ArrayType length does not match source array length");
+        JS_ReportError(cx, "ArrayType length does not match source ArrayBuffer length");
         return false;
       }
       memcpy(buffer, JS_GetArrayBufferData(valObj, cx), sourceLength);
+      break;
+    }  else if (!JSVAL_IS_PRIMITIVE(val) &&
+               JS_IsTypedArrayObject(valObj, cx)) {
+      // Check that array is consistent with type, then
+      // copy the array.
+      if(!CanConvertTypedArrayItemTo(baseType, valObj, cx)) {
+        return TypeError(cx, "typed array with the appropriate type", val);
+      }
+
+      uint32_t sourceLength = JS_GetTypedArrayByteLength(valObj, cx);
+      size_t elementSize = CType::GetSize(baseType);
+      size_t arraySize = elementSize * targetLength;
+      if (arraySize != size_t(sourceLength)) {
+        JS_ReportError(cx, "typed array length does not match source TypedArray length");
+        return false;
+      }
+      memcpy(buffer, JS_GetArrayBufferViewData(valObj, cx), sourceLength);
       break;
     } else {
       // Don't implicitly convert to string. Users can implicitly convert
@@ -2306,7 +2377,7 @@ ImplicitConvert(JSContext* cx,
 
       // Convert into an intermediate, in case of failure.
       size_t structSize = CType::GetSize(targetType);
-      AutoPtr<char>::Array intermediate(cx->array_new<char>(structSize));
+      AutoPtr<char> intermediate(cx->pod_malloc<char>(structSize));
       if (!intermediate) {
         JS_ReportAllocationOverflow(cx);
         return false;
@@ -3067,7 +3138,7 @@ CType::Finalize(JSFreeOp *fop, JSObject* obj)
     slot = JS_GetReservedSlot(obj, SLOT_FFITYPE);
     if (!JSVAL_IS_VOID(slot)) {
       ffi_type* ffiType = static_cast<ffi_type*>(JSVAL_TO_PRIVATE(slot));
-      FreeOp::get(fop)->array_delete(ffiType->elements);
+      FreeOp::get(fop)->free_(ffiType->elements);
       FreeOp::get(fop)->delete_(ffiType);
     }
 
@@ -3357,17 +3428,20 @@ CType::GetProtoFromCtor(JSObject* obj, CTypeProtoSlot slot)
 }
 
 JSObject*
-CType::GetProtoFromType(JSObject* obj, CTypeProtoSlot slot)
+CType::GetProtoFromType(JSContext* cx, JSObject* obj, CTypeProtoSlot slot)
 {
   JS_ASSERT(IsCType(obj));
 
   // Get the prototype of the type object.
-  JSObject* proto = JS_GetPrototype(obj);
+  JSObject* proto;
+  if (!JS_GetPrototype(cx, obj, &proto))
+    return NULL;
   JS_ASSERT(proto);
   JS_ASSERT(CType::IsCTypeProto(proto));
 
   // Get the requested ctypes.{Pointer,Array,Struct,Function}Type.prototype.
   jsval result = JS_GetReservedSlot(proto, slot);
+  JS_ASSERT(!JSVAL_IS_PRIMITIVE(result));
   return JSVAL_TO_OBJECT(result);
 }
 
@@ -3524,7 +3598,7 @@ CType::ToSource(JSContext* cx, unsigned argc, jsval* vp)
 }
 
 JSBool
-CType::HasInstance(JSContext* cx, JSHandleObject obj, const jsval* v, JSBool* bp)
+CType::HasInstance(JSContext* cx, JSHandleObject obj, JSMutableHandleValue v, JSBool* bp)
 {
   JS_ASSERT(CType::IsCType(obj));
 
@@ -3534,11 +3608,15 @@ CType::HasInstance(JSContext* cx, JSHandleObject obj, const jsval* v, JSBool* bp
   JS_ASSERT(CData::IsCDataProto(prototype));
 
   *bp = JS_FALSE;
-  if (JSVAL_IS_PRIMITIVE(*v))
+  if (JSVAL_IS_PRIMITIVE(v))
     return JS_TRUE;
 
-  JSObject* proto = JSVAL_TO_OBJECT(*v);
-  while ((proto = JS_GetPrototype(proto))) {
+  JSObject* proto = JSVAL_TO_OBJECT(v);
+  for (;;) {
+    if (!JS_GetPrototype(cx, proto, &proto))
+      return JS_FALSE;
+    if (!proto)
+      break;
     if (proto == prototype) {
       *bp = JS_TRUE;
       break;
@@ -3552,15 +3630,16 @@ CType::GetGlobalCTypes(JSContext* cx, JSObject* obj)
 {
   JS_ASSERT(CType::IsCType(obj));
 
-  JSObject *objTypeProto = JS_GetPrototype(obj);
-  if (!objTypeProto) {
-  }
+  JSObject *objTypeProto;
+  if (!JS_GetPrototype(cx, obj, &objTypeProto))
+    return NULL;
   JS_ASSERT(objTypeProto);
   JS_ASSERT(CType::IsCTypeProto(objTypeProto));
 
   jsval valCTypes = JS_GetReservedSlot(objTypeProto, SLOT_CTYPES);
   JS_ASSERT(!JSVAL_IS_PRIMITIVE(valCTypes));
 
+  JS_ASSERT(!JSVAL_IS_PRIMITIVE(valCTypes));
   return JSVAL_TO_OBJECT(valCTypes);
 }
 
@@ -3653,8 +3732,12 @@ PointerType::CreateInternal(JSContext* cx, HandleObject baseType)
   // of this type, or ctypes.FunctionType.prototype for function pointers.
   CTypeProtoSlot slotId = CType::GetTypeCode(baseType) == TYPE_function ?
     SLOT_FUNCTIONDATAPROTO : SLOT_POINTERDATAPROTO;
-  RootedObject dataProto(cx, CType::GetProtoFromType(baseType, slotId));
-  RootedObject typeProto(cx, CType::GetProtoFromType(baseType, SLOT_POINTERPROTO));
+  RootedObject dataProto(cx, CType::GetProtoFromType(cx, baseType, slotId));
+  if (!dataProto)
+    return NULL;
+  RootedObject typeProto(cx, CType::GetProtoFromType(cx, baseType, SLOT_POINTERPROTO));
+  if (!typeProto)
+    return NULL;
 
   // Create a new CType object with the common properties and slots.
   JSObject* typeObj = CType::Create(cx, typeProto, dataProto, TYPE_pointer,
@@ -3971,8 +4054,12 @@ ArrayType::CreateInternal(JSContext* cx,
 {
   // Get ctypes.ArrayType.prototype and the common prototype for CData objects
   // of this type, from ctypes.CType.prototype.
-  RootedObject typeProto(cx, CType::GetProtoFromType(baseType, SLOT_ARRAYPROTO));
-  RootedObject dataProto(cx, CType::GetProtoFromType(baseType, SLOT_ARRAYDATAPROTO));
+  RootedObject typeProto(cx, CType::GetProtoFromType(cx, baseType, SLOT_ARRAYPROTO));
+  if (!typeProto)
+    return NULL;
+  RootedObject dataProto(cx, CType::GetProtoFromType(cx, baseType, SLOT_ARRAYDATAPROTO));
+  if (!dataProto)
+    return NULL;
 
   // Determine the size of the array from the base type, if possible.
   // The size of the base type must be defined.
@@ -4202,7 +4289,7 @@ ArrayType::BuildFFIType(JSContext* cx, JSObject* obj)
   ffiType->type = FFI_TYPE_STRUCT;
   ffiType->size = CType::GetSize(obj);
   ffiType->alignment = CType::GetAlignment(obj);
-  ffiType->elements = cx->array_new<ffi_type*>(length + 1);
+  ffiType->elements = cx->pod_malloc<ffi_type*>(length + 1);
   if (!ffiType->elements) {
     JS_ReportAllocationOverflow(cx);
     return NULL;
@@ -4515,7 +4602,9 @@ StructType::DefineInternal(JSContext* cx, JSObject* typeObj_, JSObject* fieldsOb
 
   // Get the common prototype for CData objects of this type from
   // ctypes.CType.prototype.
-  RootedObject dataProto(cx, CType::GetProtoFromType(typeObj, SLOT_STRUCTDATAPROTO));
+  RootedObject dataProto(cx, CType::GetProtoFromType(cx, typeObj, SLOT_STRUCTDATAPROTO));
+  if (!dataProto)
+    return JS_FALSE;
 
   // Set up the 'prototype' and 'prototype.constructor' properties.
   // The prototype will reflect the struct fields as properties on CData objects
@@ -4553,7 +4642,10 @@ StructType::DefineInternal(JSContext* cx, JSObject* typeObj_, JSObject* fieldsOb
         return JS_FALSE;
 
       RootedObject fieldType(cx, NULL);
-      JSFlatString* name = ExtractStructField(cx, item.jsval_value(), fieldType.address());
+      JSFlatString* flat = ExtractStructField(cx, item.jsval_value(), fieldType.address());
+      if (!flat)
+        return JS_FALSE;
+      Rooted<JSStableString*> name(cx, flat->ensureStable(cx));
       if (!name)
         return JS_FALSE;
       fieldRootsArray[i] = OBJECT_TO_JSVAL(fieldType);
@@ -4644,9 +4736,9 @@ StructType::BuildFFIType(JSContext* cx, JSObject* obj)
   }
   ffiType->type = FFI_TYPE_STRUCT;
 
-  AutoPtr<ffi_type*>::Array elements;
+  AutoPtr<ffi_type*> elements;
   if (len != 0) {
-    elements = cx->array_new<ffi_type*>(len + 1);
+    elements = cx->pod_malloc<ffi_type*>(len + 1);
     if (!elements) {
       JS_ReportOutOfMemory(cx);
       return NULL;
@@ -4665,7 +4757,7 @@ StructType::BuildFFIType(JSContext* cx, JSObject* obj)
     // Represent an empty struct as having a size of 1 byte, just like C++.
     JS_ASSERT(structSize == 1);
     JS_ASSERT(structAlign == 1);
-    elements = cx->array_new<ffi_type*>(2);
+    elements = cx->pod_malloc<ffi_type*>(2);
     if (!elements) {
       JS_ReportOutOfMemory(cx);
       return NULL;
@@ -5012,14 +5104,14 @@ struct AutoValue
 
   ~AutoValue()
   {
-    UnwantedForeground::array_delete(static_cast<char*>(mData));
+    js_free(mData);
   }
 
   bool SizeToType(JSContext* cx, JSObject* type)
   {
     // Allocate a minimum of sizeof(ffi_arg) to handle small integers.
     size_t size = Align(CType::GetSize(type), sizeof(ffi_arg));
-    mData = cx->array_new<char>(size);
+    mData = js_malloc(size);
     if (mData)
       memset(mData, 0, size);
     return mData != NULL;
@@ -5369,10 +5461,14 @@ FunctionType::CreateInternal(JSContext* cx,
 
   // Get ctypes.FunctionType.prototype and the common prototype for CData objects
   // of this type, from ctypes.CType.prototype.
-  RootedObject typeProto(cx, CType::GetProtoFromType(fninfo->mReturnType,
+  RootedObject typeProto(cx, CType::GetProtoFromType(cx, fninfo->mReturnType,
                                                      SLOT_FUNCTIONPROTO));
-  RootedObject dataProto(cx, CType::GetProtoFromType(fninfo->mReturnType,
+  if (!typeProto)
+    return NULL;
+  RootedObject dataProto(cx, CType::GetProtoFromType(cx, fninfo->mReturnType,
                                                      SLOT_FUNCTIONDATAPROTO));
+  if (!dataProto)
+    return NULL;
 
   // Create a new CType object with the common properties and slots.
   JSObject* typeObj = CType::Create(cx, typeProto, dataProto, TYPE_function,
@@ -5569,24 +5665,17 @@ FunctionType::Call(JSContext* cx,
   int savedErrno = errno;
   errno = 0;
 
-  // suspend the request before we call into the function, since the call
-  // may block or otherwise take a long time to return.
-  {
-    JSAutoSuspendRequest suspend(cx);
-    ffi_call(&fninfo->mCIF, FFI_FN(fn), returnValue.mData,
-             reinterpret_cast<void**>(values.begin()));
+  ffi_call(&fninfo->mCIF, FFI_FN(fn), returnValue.mData,
+           reinterpret_cast<void**>(values.begin()));
 
-    // Save error value.
-    // We need to save it before leaving the scope of |suspend| as destructing
-    // |suspend| has the side-effect of clearing |GetLastError|
-    // (see bug 684017).
+  // Save error value.
+  // We need to save it before leaving the scope of |suspend| as destructing
+  // |suspend| has the side-effect of clearing |GetLastError|
+  // (see bug 684017).
 
-    errnoStatus = errno;
+  errnoStatus = errno;
 #if defined(XP_WIN)
-    lastErrorStatus = GetLastError();
-#endif // defined(XP_WIN)
-  }
-#if defined(XP_WIN)
+  lastErrorStatus = GetLastError();
   SetLastError(savedLastError);
 #endif // defined(XP_WIN)
 
@@ -5594,6 +5683,8 @@ FunctionType::Call(JSContext* cx,
 
   // Store the error value for later consultation with |ctypes.getStatus|
   JSObject *objCTypes = CType::GetGlobalCTypes(cx, typeObj);
+  if (!objCTypes)
+    return false;
 
   JS_SetReservedSlot(objCTypes, SLOT_ERRNO, INT_TO_JSVAL(errnoStatus));
 #if defined(XP_WIN)
@@ -5744,7 +5835,9 @@ CClosure::Create(JSContext* cx,
 
   // Get the prototype of the FunctionType object, of class CTypeProto,
   // which stores our JSContext for use with the closure.
-  JSObject* proto = JS_GetPrototype(typeObj);
+  JSObject* proto;
+  if (!JS_GetPrototype(cx, typeObj, &proto))
+    return NULL;
   JS_ASSERT(proto);
   JS_ASSERT(CType::IsCTypeProto(proto));
 
@@ -6068,11 +6161,11 @@ CData::Create(JSContext* cx,
   } else {
     // Initialize our own buffer.
     size_t size = CType::GetSize(typeObj);
-    data = cx->array_new<char>(size);
+    data = (char*)cx->malloc_(size);
     if (!data) {
       // Report a catchable allocation error.
       JS_ReportAllocationOverflow(cx);
-      Foreground::delete_(buffer);
+      js_free(buffer);
       return NULL;
     }
 
@@ -6104,7 +6197,7 @@ CData::Finalize(JSFreeOp *fop, JSObject* obj)
   char** buffer = static_cast<char**>(JSVAL_TO_PRIVATE(slot));
 
   if (owns)
-    FreeOp::get(fop)->array_delete(*buffer);
+    FreeOp::get(fop)->free_(*buffer);
   FreeOp::get(fop)->delete_(buffer);
 }
 
@@ -6910,6 +7003,8 @@ CDataFinalizer::Methods::Dispose(JSContext* cx, unsigned argc, jsval *vp)
   JS_ASSERT(!JSVAL_IS_PRIMITIVE(valType));
 
   JSObject *objCTypes = CType::GetGlobalCTypes(cx, JSVAL_TO_OBJECT(valType));
+  if (!objCTypes)
+    return JS_FALSE;
 
   jsval valCodePtrType = JS_GetReservedSlot(obj, SLOT_DATAFINALIZER_CODETYPE);
   JS_ASSERT(!JSVAL_IS_PRIMITIVE(valCodePtrType));

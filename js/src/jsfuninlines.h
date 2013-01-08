@@ -14,11 +14,28 @@
 #include "vm/GlobalObject.h"
 
 #include "vm/ScopeObject-inl.h"
+#include "vm/String-inl.h"
 
 inline bool
 JSFunction::inStrictMode() const
 {
     return script()->strictModeCode;
+}
+
+inline void
+JSFunction::initAtom(JSAtom *atom)
+{
+    atom_.init(atom);
+}
+
+inline void
+JSFunction::setGuessedAtom(JSAtom *atom)
+{
+    JS_ASSERT(this->atom_ == NULL);
+    JS_ASSERT(atom != NULL);
+    JS_ASSERT(!hasGuessedAtom());
+    this->atom_ = atom;
+    this->flags |= JSFUN_HAS_GUESSED_ATOM;
 }
 
 inline JSObject *
@@ -137,6 +154,7 @@ IsNativeFunction(const js::Value &v, JSNative native)
 static JS_ALWAYS_INLINE bool
 ClassMethodIsNative(JSContext *cx, HandleObject obj, Class *clasp, HandleId methodid, JSNative native)
 {
+    JS_ASSERT(!obj->isProxy());
     JS_ASSERT(obj->getClass() == clasp);
 
     Value v;

@@ -34,6 +34,7 @@
 #include "nsIScriptContext.h"
 #include "nsJSEnvironment.h"
 #include "nsXMLHttpRequest.h"
+#include "mozilla/Telemetry.h"
 
 using namespace mozilla;
 using namespace js;
@@ -77,7 +78,7 @@ char* xpc_CloneAllAccess()
 
 char * xpc_CheckAccessList(const PRUnichar* wideName, const char* list[])
 {
-    nsCAutoString asciiName;
+    nsAutoCString asciiName;
     CopyUTF16toUTF8(nsDependentString(wideName), asciiName);
 
     for (const char** p = list; *p; p++)
@@ -882,7 +883,7 @@ nsXPCComponents_Classes::NewEnumerate(nsIXPConnectWrappedNative *wrapper,
                 NS_SUCCEEDED(e->GetNext(getter_AddRefs(isup))) && isup) {
                 nsCOMPtr<nsISupportsCString> holder(do_QueryInterface(isup));
                 if (holder) {
-                    nsCAutoString name;
+                    nsAutoCString name;
                     if (NS_SUCCEEDED(holder->GetData(name))) {
                         JSString* idstr = JS_NewStringCopyN(cx, name.get(), name.Length());
                         if (idstr &&
@@ -1403,7 +1404,10 @@ nsXPCComponents_Results::NewResolve(nsIXPConnectWrappedNative *wrapper,
         nsresult rv;
         while (nsXPCException::IterateNSResults(&rv, &rv_name, nullptr, &iter)) {
             if (!strcmp(name.ptr(), rv_name)) {
-                jsval val = JS_NumberValue((double)rv);
+                // The two casts below is required since nsresult is an enum,
+                // and it can be interpreted as a signed integer if we directly
+                // cast to a double.
+                jsval val = JS_NumberValue((double)(uint32_t)rv);
 
                 *objp = obj;
                 if (!JS_DefinePropertyById(cx, obj, id, val,
@@ -1876,7 +1880,7 @@ struct NS_STACK_CLASS ExceptionArgParser
     }
 
     bool parseResult(JS::Value &v) {
-        return JS_ValueToECMAInt32(cx, v, (int32_t*) &eResult);
+        return JS_ValueToECMAUint32(cx, v, (uint32_t*) &eResult);
     }
 
     bool parseStack(JS::Value &v) {
@@ -2700,7 +2704,7 @@ nsXPCComponents_Utils::LookupMethod(const JS::Value& object,
     // first param must be a JSObject
     if (!object.isObject())
         return NS_ERROR_XPC_BAD_CONVERT_JS;
-    JSObject *obj = &object.toObject();
+    js::RootedObject obj(cx, &object.toObject());
 
     // second param must be a string.
     if (!JSVAL_IS_STRING(name))
@@ -2784,9 +2788,16 @@ nsXPCComponents_Utils::ReportError(const JS::Value &error, JSContext *cx)
 
         uint32_t column = err->uctokenptr - err->uclinebuf;
 
+        const PRUnichar* ucmessage =
+            static_cast<const PRUnichar*>(err->ucmessage);
+        const PRUnichar* uclinebuf =
+            static_cast<const PRUnichar*>(err->uclinebuf);
+
         nsresult rv = scripterr->InitWithWindowID(
-                static_cast<const PRUnichar*>(err->ucmessage), fileUni.get(),
-                static_cast<const PRUnichar*>(err->uclinebuf), err->lineno,
+                ucmessage ? nsDependentString(ucmessage) : EmptyString(),
+                fileUni,
+                uclinebuf ? nsDependentString(uclinebuf) : EmptyString(),
+                err->lineno,
                 column, err->flags, "XPConnect JavaScript", innerWindowID);
         NS_ENSURE_SUCCESS(rv, NS_OK);
 
@@ -2817,9 +2828,9 @@ nsXPCComponents_Utils::ReportError(const JS::Value &error, JSContext *cx)
         return NS_OK;
 
     nsresult rv = scripterr->InitWithWindowID(
-            reinterpret_cast<const PRUnichar *>(msgchars),
-            NS_ConvertUTF8toUTF16(fileName).get(),
-            nullptr, lineNo, 0, 0, "XPConnect JavaScript", innerWindowID);
+            nsDependentString(static_cast<const PRUnichar *>(msgchars)),
+            NS_ConvertUTF8toUTF16(fileName),
+            EmptyString(), lineNo, 0, 0, "XPConnect JavaScript", innerWindowID);
     NS_ENSURE_SUCCESS(rv, NS_OK);
 
     console->LogMessage(scripterr);
@@ -2997,7 +3008,7 @@ sandbox_convert(JSContext *cx, JSHandleObject obj, JSType type, JSMutableHandleV
     return JS_ConvertStub(cx, obj, type, vp);
 }
 
-static JSClass SandboxClass = {
+JSClass SandboxClass = {
     "Sandbox",
     XPCONNECT_GLOBAL_FLAGS,
     JS_PropertyStub,   JS_PropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
@@ -3045,15 +3056,6 @@ WrapForSandbox(JSContext *cx, bool wantXrays, jsval *vp)
            ? JS_WrapValue(cx, vp)
            : xpc::WrapperFactory::WaiveXrayAndWrap(cx, vp);
 }
-
-// Needed to distinguish multiple compartments with the same origin from each
-// other. The only thing we need out of identity objects are unique addresses.
-class Identity MOZ_FINAL : public nsISupports
-{
-    NS_DECL_ISUPPORTS
-};
-
-NS_IMPL_ISUPPORTS0(Identity)
 
 xpc::SandboxProxyHandler xpc::sandboxProxyHandler;
 
@@ -3162,10 +3164,10 @@ xpc::SandboxProxyHandler::getPropertyDescriptor(JSContext *cx, JSObject *proxy,
                                                 jsid id_, bool set,
                                                 PropertyDescriptor *desc)
 {
-    JS::RootedObject obj(cx, wrappedObject(proxy));
-    JS::RootedId id(cx, id_);
+    js::RootedObject obj(cx, wrappedObject(proxy));
+    js::RootedId id(cx, id_);
 
-    JS_ASSERT(js::GetObjectCompartment(obj) == js::GetObjectCompartment(proxy));
+    MOZ_ASSERT(js::GetObjectCompartment(obj) == js::GetObjectCompartment(proxy));
     // XXXbz Not sure about the JSRESOLVE_QUALIFIED here, but we have
     // no way to tell for sure whether to use it.
     if (!JS_GetPropertyDescriptorById(cx, obj, id,
@@ -3260,9 +3262,8 @@ xpc_CreateSandboxObject(JSContext *cx, jsval *vp, nsISupports *prinOrSop, Sandbo
     JSCompartment *compartment;
     JSObject *sandbox;
 
-    nsRefPtr<Identity> identity = new Identity();
-    rv = xpc_CreateGlobalObject(cx, &SandboxClass, principal, identity,
-                                options.wantXrays, &sandbox, &compartment);
+    rv = xpc::CreateGlobalObject(cx, &SandboxClass, principal,
+                                 options.wantXrays, &sandbox, &compartment);
     NS_ENSURE_SUCCESS(rv, rv);
 
     JS::AutoObjectRooter tvr(cx, sandbox);
@@ -3317,7 +3318,7 @@ xpc_CreateSandboxObject(JSContext *cx, jsval *vp, nsISupports *prinOrSop, Sandbo
               return NS_ERROR_XPC_UNEXPECTED;
 
           if (options.wantComponents &&
-              !nsXPCComponents::AttachComponentsObject(ccx, scope, sandbox))
+              !nsXPCComponents::AttachComponentsObject(ccx, scope))
               return NS_ERROR_XPC_UNEXPECTED;
 
           if (!XPCNativeWrapper::AttachNewConstructorObject(ccx, sandbox))
@@ -3841,25 +3842,7 @@ xpc_EvalInSandbox(JSContext *cx, JSObject *sandbox, const nsAString& source,
 {
     JS_AbortIfWrongThread(JS_GetRuntime(cx));
 
-#ifdef DEBUG
-    // NB: The "unsafe" unwrap here is OK because we must be called from chrome.
-    {
-        nsIScriptSecurityManager *ssm = XPCWrapper::GetSecurityManager();
-        if (ssm) {
-            JSStackFrame *fp;
-            nsIPrincipal *subjectPrincipal =
-                ssm->GetCxSubjectPrincipalAndFrame(cx, &fp);
-            bool system;
-            ssm->IsSystemPrincipal(subjectPrincipal, &system);
-            if (fp && !system) {
-                ssm->IsCapabilityEnabled("UniversalXPConnect", &system);
-                NS_ASSERTION(system, "Bad caller!");
-            }
-        }
-    }
-#endif
-
-    sandbox = XPCWrapper::UnsafeUnwrapSecurityWrapper(sandbox);
+    sandbox = js::UnwrapObjectChecked(cx, sandbox);
     if (!sandbox || js::GetObjectJSClass(sandbox) != &SandboxClass) {
         return NS_ERROR_INVALID_ARG;
     }
@@ -3873,7 +3856,7 @@ xpc_EvalInSandbox(JSContext *cx, JSObject *sandbox, const nsAString& source,
         return NS_ERROR_FAILURE;
     }
 
-    nsCAutoString filenameBuf;
+    nsAutoCString filenameBuf;
     if (!filename) {
         // Default to the spec of the principal.
         nsJSPrincipals::get(prin)->GetScriptLocation(filenameBuf);
@@ -3918,7 +3901,7 @@ xpc_EvalInSandbox(JSContext *cx, JSObject *sandbox, const nsAString& source,
         JS::CompileOptions options(sandcx->GetJSContext());
         options.setPrincipals(nsJSPrincipals::get(prin))
                .setFileAndLine(filename, lineNo);
-        JS::RootedObject rootedSandbox(sandcx->GetJSContext(), sandbox);
+        js::RootedObject rootedSandbox(sandcx->GetJSContext(), sandbox);
         bool ok = JS::Evaluate(sandcx->GetJSContext(), rootedSandbox, options,
                                PromiseFlatString(source).get(), source.Length(), &v);
         if (ok && returnStringOnly && !(JSVAL_IS_VOID(v))) {
@@ -4152,7 +4135,7 @@ nsXPCComponents_Utils::GetGlobalForObject(const JS::Value& object,
   // a wrapper for the foreign global. So we need to unwrap before getting the
   // parent, enter the compartment for the duration of the call, and wrap the
   // result.
-  JS::Rooted<JSObject*> obj(cx, JSVAL_TO_OBJECT(object));
+  js::Rooted<JSObject*> obj(cx, JSVAL_TO_OBJECT(object));
   obj = js::UnwrapObject(obj);
   {
     JSAutoCompartment ac(cx, obj);
@@ -4320,6 +4303,28 @@ nsXPCComponents_Utils::RecomputeWrappers(const jsval &vobj, JSContext *cx)
     return NS_OK;
 }
 
+/* jsval getComponentsForScope(jsval vscope); */
+NS_IMETHODIMP
+nsXPCComponents_Utils::GetComponentsForScope(const jsval &vscope, JSContext *cx,
+                                             jsval *rval)
+{
+    if (!vscope.isObject())
+        return NS_ERROR_INVALID_ARG;
+    JSObject *scopeObj = js::UnwrapObject(&vscope.toObject());
+    XPCWrappedNativeScope *scope =
+      XPCWrappedNativeScope::FindInJSObjectScope(cx, scopeObj);
+    if (!scope)
+        return NS_ERROR_FAILURE;
+    XPCCallContext ccx(NATIVE_CALLER, cx);
+    JSObject *components = scope->GetComponentsJSObject(ccx);
+    if (!components)
+        return NS_ERROR_FAILURE;
+    *rval = ObjectValue(*components);
+    if (!JS_WrapValue(cx, rval))
+        return NS_ERROR_FAILURE;
+    return NS_OK;
+}
+
 NS_IMETHODIMP
 nsXPCComponents_Utils::Dispatch(const jsval &runnable_, const jsval &scope,
                                 JSContext *cx)
@@ -4425,6 +4430,7 @@ GENERATE_JSOPTION_GETTER_SETTER(Relimit, JSOPTION_RELIMIT)
 GENERATE_JSOPTION_GETTER_SETTER(Methodjit, JSOPTION_METHODJIT)
 GENERATE_JSOPTION_GETTER_SETTER(Methodjit_always, JSOPTION_METHODJIT_ALWAYS)
 GENERATE_JSOPTION_GETTER_SETTER(Strict_mode, JSOPTION_STRICT_MODE)
+GENERATE_JSOPTION_GETTER_SETTER(Ion, JSOPTION_ION)
 
 #undef GENERATE_JSOPTION_GETTER_SETTER
 
@@ -4710,7 +4716,10 @@ nsXPCComponents::GetProperty(nsIXPConnectWrappedNative *wrapper,
 
     nsresult rv = NS_OK;
     if (doResult) {
-        *vp = JS_NumberValue((double) res);
+        // The two casts below is required since nsresult is an enum,
+        // and it can be interpreted as a signed integer if we directly
+        // cast to a double.
+        *vp = JS_NumberValue((double)(uint32_t) res);
         rv = NS_SUCCESS_I_DID_SOMETHING;
     }
 
@@ -4744,46 +4753,56 @@ nsXPCComponents::SetProperty(nsIXPConnectWrappedNative *wrapper,
     return NS_ERROR_XPC_CANT_MODIFY_PROP_ON_WN;
 }
 
+static JSBool
+ContentComponentsGetterOp(JSContext *cx, JSHandleObject obj, JSHandleId id,
+                          JSMutableHandleValue vp)
+{
+    // If chrome is accessing the Components object of content, allow.
+    MOZ_ASSERT(nsContentUtils::GetCurrentJSContext() == cx);
+    if (nsContentUtils::IsCallerChrome())
+        return true;
+
+    // If the caller is XBL, this is ok.
+    if (AccessCheck::callerIsXBL(cx))
+        return true;
+
+    // Do Telemetry on how often this happens.
+    Telemetry::Accumulate(Telemetry::COMPONENTS_OBJECT_ACCESSED_BY_CONTENT, true);
+
+    // Warn once.
+    JSAutoCompartment ac(cx, obj);
+    nsCOMPtr<nsPIDOMWindow> win =
+        do_QueryInterface(nsJSUtils::GetStaticScriptGlobal(cx, obj));
+    if (win) {
+        nsCOMPtr<nsIDocument> doc =
+            do_QueryInterface(win->GetExtantDocument());
+        if (doc)
+            doc->WarnOnceAbout(nsIDocument::eComponents, /* asError = */ true);
+    }
+
+    return true;
+}
+
 // static
 JSBool
 nsXPCComponents::AttachComponentsObject(XPCCallContext& ccx,
                                         XPCWrappedNativeScope* aScope,
-                                        JSObject* aGlobal)
+                                        JSObject* aTarget)
 {
-    if (!aGlobal)
+    JSObject *components = aScope->GetComponentsJSObject(ccx);
+    if (!components)
         return false;
 
-    nsXPCComponents* components = aScope->GetComponents();
-    if (!components) {
-        components = new nsXPCComponents(aScope);
-        if (!components)
-            return false;
-        aScope->SetComponents(components);
-    }
-
-    nsCOMPtr<nsIXPCComponents> cholder(components);
-
-    AutoMarkingNativeInterfacePtr iface(ccx);
-    iface = XPCNativeInterface::GetNewOrUsed(ccx, &NS_GET_IID(nsIXPCComponents));
-
-    if (!iface)
-        return false;
-
-    nsCOMPtr<XPCWrappedNative> wrapper;
-    xpcObjectHelper helper(cholder);
-    XPCWrappedNative::GetNewOrUsed(ccx, helper, aScope, iface, getter_AddRefs(wrapper));
-    if (!wrapper)
-        return false;
-
-    // The call to wrap() here is necessary even though the object is same-
-    // compartment, because it applies our security wrapper.
-    js::Value v = ObjectValue(*wrapper->GetFlatJSObject());
-    if (!JS_WrapValue(ccx, &v))
-        return false;
+    JSObject *global = aScope->GetGlobalJSObject();
+    MOZ_ASSERT(js::IsObjectInContextCompartment(global, ccx));
+    if (!aTarget)
+        aTarget = global;
 
     jsid id = ccx.GetRuntime()->GetStringID(XPCJSRuntime::IDX_COMPONENTS);
-    return JS_DefinePropertyById(ccx, aGlobal, id, v, nullptr, nullptr,
-                                 JSPROP_PERMANENT | JSPROP_READONLY);
+    JSPropertyOp getter = AccessCheck::isChrome(global) ? nullptr
+                                                        : &ContentComponentsGetterOp;
+    return JS_DefinePropertyById(ccx, aTarget, id, js::ObjectValue(*components),
+                                 getter, nullptr, JSPROP_PERMANENT | JSPROP_READONLY);
 }
 
 /* void lookupMethod (); */

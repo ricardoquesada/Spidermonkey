@@ -17,7 +17,7 @@ using namespace js;
 PropertyCacheEntry *
 PropertyCache::fill(JSContext *cx, JSObject *obj, JSObject *pobj, Shape *shape)
 {
-    JS_ASSERT(this == &JS_PROPERTY_CACHE(cx));
+    JS_ASSERT(this == &cx->propertyCache());
     JS_ASSERT(!cx->runtime->isHeapBusy());
 
     /*
@@ -110,7 +110,7 @@ PropertyCache::fullTest(JSContext *cx, jsbytecode *pc, JSObject **objp, JSObject
     JSObject *obj, *pobj;
     JSScript *script = cx->stack.currentScript();
 
-    JS_ASSERT(this == &JS_PROPERTY_CACHE(cx));
+    JS_ASSERT(this == &cx->propertyCache());
     JS_ASSERT(uint32_t(pc - script->code) < script->length);
 
     JSOp op = JSOp(*pc);
@@ -163,8 +163,8 @@ PropertyCache::fullTest(JSContext *cx, jsbytecode *pc, JSObject **objp, JSObject
 
     if (pobj->lastProperty() == entry->pshape) {
 #ifdef DEBUG
-        PropertyName *name = GetNameFromBytecode(cx, script, pc, op);
-        JS_ASSERT(pobj->nativeContainsNoAllocation(NameToId(name)));
+        Rooted<PropertyName*> name(cx, GetNameFromBytecode(cx, script, pc, op));
+        JS_ASSERT(pobj->nativeContainsNoAllocation(name));
 #endif
         *pobjp = pobj;
         return NULL;

@@ -59,23 +59,20 @@ js_json_parse(JSContext *cx, unsigned argc, Value *vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     /* Step 1. */
-    JSLinearString *linear;
-    if (argc >= 1) {
-        JSString *str = ToString(cx, args[0]);
-        if (!str)
-            return false;
-        linear = str->ensureLinear(cx);
-        if (!linear)
-            return false;
-    } else {
-        linear = cx->runtime->atomState.typeAtoms[JSTYPE_VOID];
-    }
-    JS::Anchor<JSString *> anchor(linear);
+    JSString *str = (argc >= 1) ? ToString(cx, args[0]) : cx->names().undefined;
+    if (!str)
+        return false;
+
+    JSStableString *stable = str->ensureStable(cx);
+    if (!stable)
+        return false;
+
+    JS::Anchor<JSString *> anchor(stable);
 
     RootedValue reviver(cx, (argc >= 2) ? args[1] : UndefinedValue());
 
     /* Steps 2-5. */
-    return ParseJSONWithReviver(cx, linear->chars(), linear->length(), reviver, args.rval());
+    return ParseJSONWithReviver(cx, stable->chars(), stable->length(), reviver, args.rval());
 }
 
 /* ES5 15.12.3. */
@@ -281,7 +278,7 @@ PreprocessValue(JSContext *cx, HandleObject holder, KeyType key, MutableHandleVa
     /* Step 2. */
     if (vp.get().isObject()) {
         RootedValue toJSON(cx);
-        RootedId id(cx, NameToId(cx->runtime->atomState.toJSONAtom));
+        RootedId id(cx, NameToId(cx->names().toJSON));
         Rooted<JSObject*> obj(cx, &vp.get().toObject());
         if (!GetMethod(cx, obj, id, 0, &toJSON))
             return false;
@@ -725,7 +722,7 @@ js_Stringify(JSContext *cx, MutableHandleValue vp, JSObject *replacer_, Value sp
         return false;
 
     /* Step 10. */
-    RootedId emptyId(cx, NameToId(cx->runtime->atomState.emptyAtom));
+    RootedId emptyId(cx, NameToId(cx->names().empty));
     if (!DefineNativeProperty(cx, wrapper, emptyId, vp, JS_PropertyStub, JS_StrictPropertyStub,
                               JSPROP_ENUMERATE, 0, 0))
     {
@@ -856,10 +853,10 @@ Revive(JSContext *cx, HandleValue reviver, MutableHandleValue vp)
     if (!obj)
         return false;
 
-    if (!JSObject::defineProperty(cx, obj, cx->runtime->atomState.emptyAtom, vp))
+    if (!JSObject::defineProperty(cx, obj, cx->names().empty, vp))
         return false;
 
-    Rooted<jsid> id(cx, NameToId(cx->runtime->atomState.emptyAtom));
+    Rooted<jsid> id(cx, NameToId(cx->names().empty));
     return Walk(cx, obj, id, reviver, vp);
 }
 
@@ -887,7 +884,7 @@ ParseJSONWithReviver(JSContext *cx, const jschar *chars, size_t length, HandleVa
 static JSBool
 json_toSource(JSContext *cx, unsigned argc, Value *vp)
 {
-    vp->setString(CLASS_NAME(cx, JSON));
+    vp->setString(cx->names().JSON);
     return JS_TRUE;
 }
 #endif
@@ -902,7 +899,7 @@ static JSFunctionSpec json_static_methods[] = {
 };
 
 JSObject *
-js_InitJSONClass(JSContext *cx, JSObject *obj)
+js_InitJSONClass(JSContext *cx, HandleObject obj)
 {
     Rooted<GlobalObject*> global(cx, &obj->asGlobal());
 

@@ -31,15 +31,12 @@ struct StmtInfoPC : public StmtInfoBase {
 
     uint32_t        blockid;        /* for simplified dominance computation */
 
-    /* True if type == STMT_BLOCK and this block is a function body. */
-    bool            isFunctionBodyBlock;
-
-    StmtInfoPC(JSContext *cx) : StmtInfoBase(cx), isFunctionBodyBlock(false) {}
+    StmtInfoPC(JSContext *cx) : StmtInfoBase(cx) {}
 };
 
 typedef HashSet<JSAtom *> FuncStmtSet;
 struct Parser;
-struct SharedContext;
+class SharedContext;
 
 typedef Vector<Definition *, 16> DeclVector;
 
@@ -84,12 +81,12 @@ struct ParseContext                 /* tree context for semantic checks */
     }
 
     uint32_t numArgs() const {
-        JS_ASSERT(sc->inFunction());
+        JS_ASSERT(sc->isFunction);
         return args_.length();
     }
 
     uint32_t numVars() const {
-        JS_ASSERT(sc->inFunction());
+        JS_ASSERT(sc->isFunction);
         return vars_.length();
     }
 
@@ -151,13 +148,12 @@ struct ParseContext                 /* tree context for semantic checks */
      *  - Sometimes a script's bindings are accessed at runtime to retrieve the
      *    contents of the lexical scope (e.g., from the debugger).
      */
-    bool generateFunctionBindings(JSContext *cx, Bindings *bindings) const;
+    bool generateFunctionBindings(JSContext *cx, InternalHandle<Bindings*> bindings) const;
 
   public:
     ParseNode       *yieldNode;     /* parse node for a yield expression that might
                                        be an error if we turn out to be inside a
                                        generator expression */
-    FunctionBox     *functionList;
 
     // A strict mode error found in this scope or one of its children. It is
     // used only when strictModeState is UNKNOWN. If the scope turns out to be
@@ -174,8 +170,6 @@ struct ParseContext                 /* tree context for semantic checks */
 
     ParseContext     *parent;       /* Enclosing function or global context.  */
 
-    ParseNode       *innermostWith; /* innermost WITH parse node */
-
     FuncStmtSet     *funcStmts;     /* Set of (non-top-level) function statements
                                        that will alias any top-level bindings with
                                        the same name. */
@@ -189,6 +183,10 @@ struct ParseContext                 /* tree context for semantic checks */
     // source code, and cleared when that region is exited.
     bool            parsingForInit:1;   /* true while parsing init expr of for;
                                            exclude 'in' */
+    bool            parsingWith:1;  /* true while we are within a
+                                       with-statement or E4X filter-expression
+                                       in the current ParseContext chain
+                                       (which stops at the top-level or an eval() */
 
     // Set when parsing a declaration-like destructuring pattern.  This flag
     // causes PrimaryExpr to create PN_NAME parse nodes for variable references
@@ -301,13 +299,13 @@ struct Parser : private AutoGCRooter
      */
     ObjectBox *newObjectBox(JSObject *obj);
 
-    FunctionBox *newFunctionBox(JSObject *obj, ParseContext *pc, StrictMode::StrictModeState sms);
+    FunctionBox *newFunctionBox(JSFunction *fun, ParseContext *pc, StrictMode sms);
 
     /*
      * Create a new function object given parse context (pc) and a name (which
      * is optional if this is a function expression).
      */
-    JSFunction *newFunction(ParseContext *pc, JSAtom *atom, FunctionSyntaxKind kind);
+    JSFunction *newFunction(ParseContext *pc, HandleAtom atom, FunctionSyntaxKind kind);
 
     void trace(JSTracer *trc);
 
@@ -340,7 +338,7 @@ struct Parser : private AutoGCRooter
     void prepareNodeForMutation(ParseNode *pn) { return allocator.prepareNodeForMutation(pn); }
 
     /* new_ methods for creating parse nodes. These report OOM on context. */
-    JS_DECLARE_NEW_METHODS(allocParseNode, inline)
+    JS_DECLARE_NEW_METHODS(new_, allocParseNode, inline)
 
     ParseNode *cloneNode(const ParseNode &other) {
         ParseNode *node = allocParseNode(sizeof(ParseNode));

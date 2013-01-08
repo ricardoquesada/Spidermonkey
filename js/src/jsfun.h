@@ -80,12 +80,15 @@ struct JSFunction : public JSObject
     bool hasGuessedAtom()    const { return flags & JSFUN_HAS_GUESSED_ATOM; }
     bool isInterpreted()     const { return flags & JSFUN_INTERPRETED; }
     bool isNative()          const { return !isInterpreted(); }
-    bool isSelfHostedBuiltin()  const { return flags & JSFUN_SELF_HOSTED; }
+    bool isSelfHostedBuiltin() const { return flags & JSFUN_SELF_HOSTED; }
+    bool isBuiltin()         const { return isNative() || isSelfHostedBuiltin(); }
+    bool isSelfHostedConstructor() const { return flags & JSFUN_SELF_HOSTED_CTOR; }
     bool isNativeConstructor() const { return flags & JSFUN_CONSTRUCTOR; }
     bool isHeavyweight()     const { return JSFUN_HEAVYWEIGHT_TEST(flags); }
     bool isFunctionPrototype() const { return flags & JSFUN_PROTOTYPE; }
     bool isInterpretedConstructor() const {
-        return isInterpreted() && !isFunctionPrototype() && !isSelfHostedBuiltin();
+        return isInterpreted() && !isFunctionPrototype() &&
+               (!isSelfHostedBuiltin() || isSelfHostedConstructor());
     }
     bool isNamedLambda()     const {
         return (flags & JSFUN_LAMBDA) && atom_ && !hasGuessedAtom();
@@ -110,16 +113,10 @@ struct JSFunction : public JSObject
     }
 
     JSAtom *atom() const { return hasGuessedAtom() ? NULL : atom_.get(); }
-    void initAtom(JSAtom *atom) { atom_.init(atom); }
+    inline void initAtom(JSAtom *atom);
     JSAtom *displayAtom() const { return atom_; }
 
-    void setGuessedAtom(JSAtom *atom) {
-        JS_ASSERT(this->atom_ == NULL);
-        JS_ASSERT(atom != NULL);
-        JS_ASSERT(!hasGuessedAtom());
-        this->atom_ = atom;
-        this->flags |= JSFUN_HAS_GUESSED_ATOM;
-    }
+    inline void setGuessedAtom(JSAtom *atom);
 
     /* uint16_t representation bounds number of call object dynamic slots. */
     enum { MAX_ARGS_AND_VARS = 2 * ((1U << 16) - 1) };
@@ -133,10 +130,11 @@ struct JSFunction : public JSObject
     inline void initEnvironment(JSObject *obj);
 
     static inline size_t offsetOfEnvironment() { return offsetof(JSFunction, u.i.env_); }
+    static inline size_t offsetOfAtom() { return offsetof(JSFunction, atom_); }
 
-    JSScript *script() const {
+    JS::HandleScript script() const {
         JS_ASSERT(isInterpreted());
-        return *(js::HeapPtrScript *)&u.i.script_;
+        return JS::HandleScript::fromMarkedLocation(&u.i.script_);
     }
 
     js::HeapPtrScript &mutableScript() {
@@ -147,8 +145,8 @@ struct JSFunction : public JSObject
     inline void setScript(JSScript *script_);
     inline void initScript(JSScript *script_);
 
-    JSScript *maybeScript() const {
-        return isInterpreted() ? script() : NULL;
+    JS::HandleScript maybeScript() const {
+        return isInterpreted() ? script() : JS::NullPtr();
     }
 
     JSNative native() const {
@@ -238,11 +236,11 @@ JSObject::toFunction() const
 }
 
 extern JSString *
-fun_toStringHelper(JSContext *cx, JSObject *obj, unsigned indent);
+fun_toStringHelper(JSContext *cx, js::HandleObject obj, unsigned indent);
 
 extern JSFunction *
-js_NewFunction(JSContext *cx, JSObject *funobj, JSNative native, unsigned nargs,
-               unsigned flags, js::HandleObject parent, JSAtom *atom,
+js_NewFunction(JSContext *cx, js::HandleObject funobj, JSNative native, unsigned nargs,
+               unsigned flags, js::HandleObject parent, js::HandleAtom atom,
                js::gc::AllocKind kind = JSFunction::FinalizeKind);
 
 extern JSFunction * JS_FASTCALL

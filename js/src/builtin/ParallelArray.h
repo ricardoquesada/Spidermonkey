@@ -133,6 +133,7 @@ class ParallelArrayObject : public JSObject {
         // Set the index vector according to a scalar index.
         inline bool fromScalar(uint32_t index);
 
+        inline bool inBounds() const;
         bool isInitialized() const;
     };
 
@@ -345,7 +346,7 @@ class ParallelArrayObject : public JSObject {
     static bool toLocaleString(JSContext *cx, CallArgs args);
     static bool toSource(JSContext *cx, CallArgs args);
 
-    static void mark(JSTracer *trc, JSObject *obj);
+    static void mark(JSTracer *trc, RawObject obj);
     static JSBool lookupGeneric(JSContext *cx, HandleObject obj, HandleId id,
                                 MutableHandleObject objp, MutableHandleShape propp);
     static JSBool lookupProperty(JSContext *cx, HandleObject obj, HandlePropertyName name,
@@ -412,6 +413,6 @@ class ParallelArrayObject : public JSObject {
 } // namespace js
 
 extern JSObject *
-js_InitParallelArrayClass(JSContext *cx, JSObject *obj);
+js_InitParallelArrayClass(JSContext *cx, js::HandleObject obj);
 
 #endif // ParallelArray_h__

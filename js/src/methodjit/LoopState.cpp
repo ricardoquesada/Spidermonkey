@@ -17,39 +17,6 @@ using namespace js::mjit;
 using namespace js::analyze;
 using namespace js::types;
 
-inline bool
-SafeAdd(int32_t one, int32_t two, int32_t *res)
-{
-    *res = one + two;
-    int64_t ores = (int64_t)one + (int64_t)two;
-    if (ores == (int64_t)*res)
-        return true;
-    JaegerSpew(JSpew_Analysis, "Overflow computing %d + %d\n", one, two);
-    return false;
-}
-
-inline bool
-SafeSub(int32_t one, int32_t two, int32_t *res)
-{
-    *res = one - two;
-    int64_t ores = (int64_t)one - (int64_t)two;
-    if (ores == (int64_t)*res)
-        return true;
-    JaegerSpew(JSpew_Analysis, "Overflow computing %d - %d\n", one, two);
-    return false;
-}
-
-inline bool
-SafeMul(int32_t one, int32_t two, int32_t *res)
-{
-    *res = one * two;
-    int64_t ores = (int64_t)one * (int64_t)two;
-    if (ores == (int64_t)*res)
-        return true;
-    JaegerSpew(JSpew_Analysis, "Overflow computing %d * %d\n", one, two);
-    return false;
-}
-
 LoopState::LoopState(JSContext *cx, analyze::CrossScriptSSA *ssa,
                      mjit::Compiler *cc, FrameState *frame)
     : cx(cx), ssa(ssa),
@@ -75,9 +42,9 @@ bool
 LoopState::init(jsbytecode *head, Jump entry, jsbytecode *entryTarget)
 {
     this->lifetime = outerAnalysis->getLoop(head);
-    JS_ASSERT(lifetime &&
-              lifetime->head == uint32_t(head - outerScript->code) &&
-              lifetime->entry == uint32_t(entryTarget - outerScript->code));
+    JS_ASSERT(lifetime);
+    JS_ASSERT(lifetime->head == uint32_t(head - outerScript->code));
+    JS_ASSERT(lifetime->entry == uint32_t(entryTarget - outerScript->code));
 
     this->entry = entry;
 
@@ -882,7 +849,7 @@ LoopState::invariantProperty(const CrossSSAValue &obj, jsid id)
     if (skipAnalysis)
         return NULL;
 
-    if (id == NameToId(cx->runtime->atomState.lengthAtom))
+    if (id == NameToId(cx->names().length))
         return NULL;
 
     uint32_t objSlot;
@@ -955,7 +922,7 @@ LoopState::cannotIntegerOverflow(const CrossSSAValue &pushed)
     jsbytecode *PC = ssa->getFrame(pushed.frame).script->code + pushed.v.pushedOffset();
     ScriptAnalysis *analysis = ssa->getFrame(pushed.frame).script->analysis();
 
-    if (!analysis->integerOperation(cx, PC))
+    if (!analysis->integerOperation(PC))
         return false;
 
     uint32_t baseSlot = UNASSIGNED;
@@ -1438,7 +1405,7 @@ LoopState::restoreInvariants(jsbytecode *pc, Assembler &masm,
     }
 
     if (temporaryCopies)
-        cx->delete_(temporaryCopies);
+        js_delete(temporaryCopies);
 }
 
 /* Loop analysis methods. */
@@ -1500,7 +1467,7 @@ LoopState::getLoopTestAccess(const SSAValue &v, uint32_t *pslot, int32_t *pconst
       case JSOP_DECARG:
       case JSOP_ARGINC:
       case JSOP_ARGDEC: {
-        if (!outerAnalysis->integerOperation(cx, pc))
+        if (!outerAnalysis->integerOperation(pc))
             return false;
         uint32_t slot = GetBytecodeSlot(outerScript, pc);
         if (outerAnalysis->slotEscapes(slot))
@@ -1643,7 +1610,7 @@ LoopState::analyzeLoopIncrements()
         JSOp op = JSOp(*pc);
         const JSCodeSpec *cs = &js_CodeSpec[op];
         if (cs->format & (JOF_INC | JOF_DEC)) {
-            if (!outerAnalysis->integerOperation(cx, pc))
+            if (!outerAnalysis->integerOperation(pc))
                 continue;
 
             Increment inc;
@@ -1681,7 +1648,8 @@ LoopState::definiteArrayAccess(const SSAValue &obj, const SSAValue &index)
     if (objTypes->hasObjectFlags(cx, OBJECT_FLAG_NON_DENSE_ARRAY))
         return false;
 
-    if (ArrayPrototypeHasIndexedProperty(cx, outerScript))
+    RootedScript rOuterScript(cx, outerScript);
+    if (ArrayPrototypeHasIndexedProperty(cx, rOuterScript))
         return false;
 
     uint32_t objSlot;
@@ -2103,7 +2071,7 @@ LoopState::getEntryValue(const CrossSSAValue &iv, uint32_t *pslot, int32_t *pcon
       case JSOP_GETARG:
       case JSOP_ARGINC:
       case JSOP_INCARG: {
-        if (cv.frame != CrossScriptSSA::OUTER_FRAME || !analysis->integerOperation(cx, pc))
+        if (cv.frame != CrossScriptSSA::OUTER_FRAME || !analysis->integerOperation(pc))
             return false;
         uint32_t slot = GetBytecodeSlot(outerScript, pc);
         if (outerAnalysis->slotEscapes(slot))

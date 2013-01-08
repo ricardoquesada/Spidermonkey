@@ -31,12 +31,12 @@ SPSProfiler::~SPSProfiler()
 {
     if (strings.initialized()) {
         for (ProfileStringMap::Enum e(strings); !e.empty(); e.popFront())
-            rt->array_delete(e.front().value);
+            js_free(const_cast<char *>(e.front().value));
     }
 #ifdef JS_METHODJIT
     if (jminfo.initialized()) {
         for (JITInfoMap::Enum e(jminfo); !e.empty(); e.popFront())
-            rt->delete_(e.front().value);
+            js_delete(e.front().value);
     }
 #endif
 }
@@ -44,9 +44,9 @@ SPSProfiler::~SPSProfiler()
 void
 SPSProfiler::setProfilingStack(ProfileEntry *stack, uint32_t *size, uint32_t max)
 {
-    JS_ASSERT(!enabled());
+    JS_ASSERT_IF(size_ && *size_ != 0, !enabled());
     if (!strings.initialized())
-        strings.init(max);
+        strings.init();
     stack_ = stack;
     size_  = size;
     max_   = max;
@@ -76,7 +76,7 @@ SPSProfiler::profileString(JSContext *cx, JSScript *script, JSFunction *maybeFun
     if (str == NULL)
         return NULL;
     if (!strings.add(s, script, str)) {
-        rt->array_delete(str);
+        js_free(const_cast<char *>(str));
         return NULL;
     }
     return str;
@@ -97,7 +97,7 @@ SPSProfiler::onScriptFinalized(JSScript *script)
     if (ProfileStringMap::Ptr entry = strings.lookup(script)) {
         const char *tofree = entry->value;
         strings.remove(entry);
-        rt->array_delete(tofree);
+        js_free(const_cast<char *>(tofree));
     }
 }
 
@@ -126,6 +126,7 @@ SPSProfiler::exit(JSContext *cx, JSScript *script, JSFunction *maybeFun)
         /* Can't fail lookup because we should already be in the set */
         JS_ASSERT(str != NULL);
         JS_ASSERT(stack_[*size_].js());
+        JS_ASSERT(stack_[*size_].script() == script);
         JS_ASSERT(strcmp((const char*) stack_[*size_].label(), str) == 0);
         stack_[*size_].setLabel(NULL);
         stack_[*size_].setPC(NULL);
@@ -191,7 +192,7 @@ SPSProfiler::allocProfileString(JSContext *cx, JSScript *script, JSFunction *may
         return NULL;
 
     size_t len = buf.length();
-    char *cstr = rt->array_new<char>(len + 1);
+    char *cstr = js_pod_malloc<char>(len + 1);
     if (cstr == NULL)
         return NULL;
 
@@ -379,7 +380,7 @@ SPSProfiler::unregisterScript(JSScript *script, mjit::JITChunk *chunk)
     }
     if (info->chunks.length() == 0) {
         jminfo.remove(ptr);
-        rt->delete_(info);
+        js_delete(info);
     }
 }
 #endif
@@ -392,21 +393,27 @@ SPSEntryMarker::SPSEntryMarker(JSRuntime *rt JS_GUARD_OBJECT_NOTIFIER_PARAM_NO_I
         profiler = NULL;
         return;
     }
+    size_before = *profiler->size_;
     profiler->push("js::RunScript", this, NULL, NULL);
 }
 
 SPSEntryMarker::~SPSEntryMarker()
 {
-    if (profiler != NULL)
+    if (profiler != NULL) {
         profiler->pop();
+        JS_ASSERT(size_before == *profiler->size_);
+    }
 }
 
 JS_FRIEND_API(jsbytecode*)
 ProfileEntry::pc() volatile {
+    JS_ASSERT_IF(idx != NullPCIndex, idx >= 0 && uint32_t(idx) < script()->length);
     return idx == NullPCIndex ? NULL : script()->code + idx;
 }
 
 JS_FRIEND_API(void)
 ProfileEntry::setPC(jsbytecode *pc) volatile {
+    JS_ASSERT_IF(pc != NULL, script()->code <= pc &&
+                             pc < script()->code + script()->length);
     idx = pc == NULL ? NullPCIndex : pc - script()->code;
 }

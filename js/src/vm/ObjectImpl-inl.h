@@ -65,6 +65,42 @@ js::ObjectImpl::nativeLookupNoAllocation(PropertyName *name)
 }
 
 inline bool
+js::ObjectImpl::nativeContains(JSContext *cx, JS::Handle<jsid> id)
+{
+    return nativeLookup(cx, id) != NULL;
+}
+
+inline bool
+js::ObjectImpl::nativeContains(JSContext *cx, JS::Handle<PropertyName*> name)
+{
+    return nativeLookup(cx, name) != NULL;
+}
+
+inline bool
+js::ObjectImpl::nativeContains(JSContext *cx, JS::Handle<Shape*> shape)
+{
+    return nativeLookup(cx, shape->propid()) == shape;
+}
+
+inline bool
+js::ObjectImpl::nativeContainsNoAllocation(jsid id)
+{
+    return nativeLookupNoAllocation(id) != NULL;
+}
+
+inline bool
+js::ObjectImpl::nativeContainsNoAllocation(PropertyName *name)
+{
+    return nativeLookupNoAllocation(name) != NULL;
+}
+
+inline bool
+js::ObjectImpl::nativeContainsNoAllocation(Shape &shape)
+{
+    return nativeLookupNoAllocation(shape.propid()) == &shape;
+}
+
+inline bool
 js::ObjectImpl::isExtensible() const
 {
     return !lastProperty()->hasObjectFlag(BaseShape::NOT_EXTENSIBLE);
@@ -210,7 +246,8 @@ ValueCompartment(const js::Value &value)
     return static_cast<js::gc::Cell *>(value.toGCThing())->compartment();
 }
 
-static bool
+#ifdef DEBUG
+inline bool
 IsValueInCompartment(js::Value v, JSCompartment *comp)
 {
     if (!v.isMarkable())
@@ -218,6 +255,7 @@ IsValueInCompartment(js::Value v, JSCompartment *comp)
     JSCompartment *vcomp = ValueCompartment(v);
     return vcomp == comp->rt->atomsCompartment || vcomp == comp;
 }
+#endif
 
 inline void
 js::ObjectImpl::setSlot(uint32_t slot, const js::Value &value)

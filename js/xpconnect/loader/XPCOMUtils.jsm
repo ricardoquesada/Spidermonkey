@@ -84,18 +84,18 @@
  *  var components = [MyComponent];
  *
  * 3. Define the NSGetFactory entry point:
- *  const NSGetFactory = XPCOMUtils.generateNSGetFactory(components);
+ *  this.NSGetFactory = XPCOMUtils.generateNSGetFactory(components);
  */
 
 
-var EXPORTED_SYMBOLS = [ "XPCOMUtils" ];
+this.EXPORTED_SYMBOLS = [ "XPCOMUtils" ];
 
 const Cc = Components.classes;
 const Ci = Components.interfaces;
 const Cr = Components.results;
 const Cu = Components.utils;
 
-var XPCOMUtils = {
+this.XPCOMUtils = {
   /**
    * Generate a QueryInterface implementation. The returned function must be
    * assigned to the 'QueryInterface' property of a JS object. When invoked on
@@ -171,9 +171,13 @@ var XPCOMUtils = {
    */
   defineLazyGetter: function XPCU_defineLazyGetter(aObject, aName, aLambda)
   {
-    aObject.__defineGetter__(aName, function() {
-      delete aObject[aName];
-      return aObject[aName] = aLambda.apply(aObject);
+    Object.defineProperty(aObject, aName, {
+      get: function () {
+        delete aObject[aName];
+        return aObject[aName] = aLambda.apply(aObject);
+      },
+      configurable: true,
+      enumerable: true
     });
   },
 

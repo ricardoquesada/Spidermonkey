@@ -41,8 +41,11 @@ class StringObject : public JSObject
         return size_t(getFixedSlot(LENGTH_SLOT).toInt32());
     }
 
-    static size_t getPrimitiveValueOffset() {
+    static size_t offsetOfPrimitiveValue() {
         return getFixedSlotOffset(PRIMITIVE_VALUE_SLOT);
+    }
+    static size_t offsetOfLength() {
+        return getFixedSlotOffset(LENGTH_SLOT);
     }
 
   private:
@@ -56,7 +59,7 @@ class StringObject : public JSObject
 
     /* For access to init, as String.prototype is special. */
     friend JSObject *
-    ::js_InitStringClass(JSContext *cx, JSObject *global);
+    ::js_InitStringClass(JSContext *cx, js::HandleObject global);
 
     /*
      * Compute the initial shape to associate with fresh String objects, which

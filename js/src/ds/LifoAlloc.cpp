@@ -7,8 +7,6 @@
 
 #include "LifoAlloc.h"
 
-#include <new>
-
 using namespace js;
 
 namespace js {
@@ -142,3 +140,12 @@ LifoAlloc::transferUnusedFrom(LifoAlloc *other)
         other->last = other->latest;
     }
 }
+
+bool
+LifoAlloc::ensureUnusedApproximateSlow(size_t n)
+{
+    // This relies on the behavior that releasing a chunk does not immediately free it.
+    LifoAllocScope scope(this);
+    return !!getOrCreateChunk(n);
+}
+

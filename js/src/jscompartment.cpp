@@ -6,6 +6,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jscntxt.h"
+#include "jsdate.h"
 #include "jscompartment.h"
 #include "jsgc.h"
 #include "jsiter.h"
@@ -28,6 +29,10 @@
 #include "jsgcinlines.h"
 #include "jsobjinlines.h"
 #include "jsscopeinlines.h"
+#ifdef JS_ION
+#include "ion/IonCompartment.h"
+#include "ion/Ion.h"
+#endif
 
 #if ENABLE_YARR_JIT
 #include "assembler/jit/ExecutableAllocator.h"
@@ -45,6 +50,7 @@ JSCompartment::JSCompartment(JSRuntime *rt)
     gcStoreBuffer(&gcNursery),
 #endif
     needsBarrier_(false),
+    ionUsingBarriers_(false),
     gcScheduled(false),
     gcState(NoGC),
     gcPreserveCode(false),
@@ -62,7 +68,6 @@ JSCompartment::JSCompartment(JSRuntime *rt)
     lastAnimationTime(0),
     regExps(rt),
     propertyTree(thisForCtor()),
-    emptyTypeObject(NULL),
     gcMallocAndFreeBytes(0),
     gcTriggerMallocAndFreeBytes(0),
     gcMallocBytes(0),
@@ -70,20 +75,35 @@ JSCompartment::JSCompartment(JSRuntime *rt)
     watchpointMap(NULL),
     scriptCountsMap(NULL),
     debugScriptMap(NULL)
+#ifdef JS_ION
+    , ionCompartment_(NULL)
+#endif
 {
     setGCMaxMallocBytes(rt->gcMaxMallocBytes * 0.9);
 }
 
 JSCompartment::~JSCompartment()
 {
-    Foreground::delete_(watchpointMap);
-    Foreground::delete_(scriptCountsMap);
-    Foreground::delete_(debugScriptMap);
+#ifdef JS_ION
+    js_delete(ionCompartment_);
+#endif
+
+    js_delete(watchpointMap);
+    js_delete(scriptCountsMap);
+    js_delete(debugScriptMap);
 }
 
 bool
 JSCompartment::init(JSContext *cx)
 {
+    /*
+     * As a hack, we clear our timezone cache every time we create a new
+     * compartment.  This ensures that the cache is always relatively fresh, but
+     * shouldn't interfere with benchmarks which create tons of date objects
+     * (unless they also create tons of iframes, which seems unlikely).
+     */
+    js_ClearDateCaches();
+
     activeAnalysis = activeInference = false;
     types.init(cx);
 
@@ -104,6 +124,9 @@ JSCompartment::init(JSContext *cx)
 
         if (!gcStoreBuffer.enable())
             return false;
+    } else {
+        gcNursery.disable();
+        gcStoreBuffer.disable();
     }
 #endif
 
@@ -111,7 +134,7 @@ JSCompartment::init(JSContext *cx)
 }
 
 void
-JSCompartment::setNeedsBarrier(bool needs)
+JSCompartment::setNeedsBarrier(bool needs, ShouldUpdateIon updateIon)
 {
 #ifdef JS_METHODJIT
     /* ClearAllFrames calls compileBarriers() and needs the old value. */
@@ -119,8 +142,38 @@ JSCompartment::setNeedsBarrier(bool needs)
     if (compileBarriers(needs) != old)
         mjit::ClearAllFrames(this);
 #endif
+
+#ifdef JS_ION
+    if (updateIon == UpdateIon && needs != ionUsingBarriers_) {
+        ion::ToggleBarriers(this, needs);
+        ionUsingBarriers_ = needs;
+    }
+#endif
+
     needsBarrier_ = needs;
 }
+
+#ifdef JS_ION
+bool
+JSCompartment::ensureIonCompartmentExists(JSContext *cx)
+{
+    using namespace js::ion;
+    if (ionCompartment_)
+        return true;
+
+    /* Set the compartment early, so linking works. */
+    ionCompartment_ = cx->new_<IonCompartment>();
+
+    if (!ionCompartment_ || !ionCompartment_->initialize(cx)) {
+        if (ionCompartment_)
+            delete ionCompartment_;
+        ionCompartment_ = NULL;
+        return false;
+    }
+
+    return true;
+}
+#endif
 
 static bool
 WrapForSameCompartment(JSContext *cx, HandleObject obj, Value *vp)
@@ -231,24 +284,17 @@ JSCompartment::wrap(JSContext *cx, Value *vp)
         if (vp->isObject()) {
             RootedObject obj(cx, &vp->toObject());
             JS_ASSERT(obj->isCrossCompartmentWrapper());
-            if (obj->getParent() != global) {
-                do {
-                    if (!JSObject::setParent(cx, obj, global))
-                        return false;
-                    obj = obj->getProto();
-                } while (obj && obj->isCrossCompartmentWrapper());
-            }
+            JS_ASSERT(obj->getParent() == global);
         }
         return true;
     }
 
     if (vp->isString()) {
         RootedValue orig(cx, *vp);
-        JSString *str = vp->toString();
-        const jschar *chars = str->getChars(cx);
-        if (!chars)
+        JSStableString *str = vp->toString()->ensureStable(cx);
+        if (!str)
             return false;
-        JSString *wrapped = js_NewStringCopyN(cx, chars, str->length());
+        JSString *wrapped = js_NewStringCopyN(cx, str->chars(), str->length());
         if (!wrapped)
             return false;
         vp->setString(wrapped);
@@ -257,19 +303,7 @@ JSCompartment::wrap(JSContext *cx, Value *vp)
 
     RootedObject obj(cx, &vp->toObject());
 
-    /*
-     * Recurse to wrap the prototype. Long prototype chains will run out of
-     * stack, causing an error in CHECK_RECURSE.
-     *
-     * Wrapping the proto before creating the new wrapper and adding it to the
-     * cache helps avoid leaving a bad entry in the cache on OOM. But note that
-     * if we wrapped both proto and parent, we would get infinite recursion
-     * here (since Object.prototype->parent->proto leads to Object.prototype
-     * itself).
-     */
-    RootedObject proto(cx, obj->getProto());
-    if (!wrap(cx, proto.address()))
-        return false;
+    JSObject *proto = Proxy::LazyProto;
 
     /*
      * We hand in the original wrapped object into the wrap hook to allow
@@ -409,6 +443,15 @@ JSCompartment::markCrossCompartmentWrappers(JSTracer *trc)
 }
 
 void
+JSCompartment::mark(JSTracer *trc)
+{
+#ifdef JS_ION
+    if (ionCompartment_)
+        ionCompartment_->mark(trc, this);
+#endif
+}
+
+void
 JSCompartment::markTypes(JSTracer *trc)
 {
     /*
@@ -416,7 +459,7 @@ JSCompartment::markTypes(JSTracer *trc)
      * compartment. These can be referred to directly by type sets, which we
      * cannot modify while code which depends on these type sets is active.
      */
-    JS_ASSERT(activeAnalysis || gcPreserveCode);
+    JS_ASSERT(activeAnalysis || isPreservingCode());
 
     for (CellIterUnderGC i(this, FINALIZE_SCRIPT); !i.done(); i.next()) {
         JSScript *script = i.get<JSScript>();
@@ -444,7 +487,7 @@ JSCompartment::discardJitCode(FreeOp *fop, bool discardConstraints)
 
     /*
      * Kick all frames on the stack into the interpreter, and release all JIT
-     * code in the compartment unless gcPreserveCode is set, in which case
+     * code in the compartment unless code is being preserved, in which case
      * purge all caches in the JIT scripts. Even if we are not releasing all
      * JIT code, we still need to release code for scripts which are in the
      * middle of a native or getter stub call, as these stubs will have been
@@ -452,21 +495,19 @@ JSCompartment::discardJitCode(FreeOp *fop, bool discardConstraints)
      */
     mjit::ClearAllFrames(this);
 
-    if (gcPreserveCode) {
-        for (CellIterUnderGC i(this, FINALIZE_SCRIPT); !i.done(); i.next()) {
-            JSScript *script = i.get<JSScript>();
-            for (int constructing = 0; constructing <= 1; constructing++) {
-                for (int barriers = 0; barriers <= 1; barriers++) {
-                    mjit::JITScript *jit = script->getJIT((bool) constructing, (bool) barriers);
-                    if (jit)
-                        jit->purgeCaches();
-                }
-            }
-        }
+    if (isPreservingCode()) {
+        PurgeJITCaches(this);
     } else {
+# ifdef JS_ION
+        /* Only mark OSI points if code is being discarded. */
+        ion::InvalidateAll(fop, this);
+# endif
         for (CellIterUnderGC i(this, FINALIZE_SCRIPT); !i.done(); i.next()) {
             JSScript *script = i.get<JSScript>();
             mjit::ReleaseScriptCode(fop, script);
+# ifdef JS_ION
+            ion::FinishInvalidation(fop, script);
+# endif
 
             /*
              * Use counts for scripts are reset on GC. After discarding code we
@@ -512,13 +553,15 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
         sweepNewTypeObjectTable(newTypeObjects);
         sweepNewTypeObjectTable(lazyTypeObjects);
 
-        if (emptyTypeObject && !IsTypeObjectMarked(emptyTypeObject.unsafeGet()))
-            emptyTypeObject = NULL;
-
         sweepBreakpoints(fop);
 
         if (global_ && !IsObjectMarked(&global_))
             global_ = NULL;
+
+#ifdef JS_ION
+        if (ionCompartment_)
+            ionCompartment_->sweep(fop);
+#endif
 
         /* JIT code can hold references on RegExpShared, so sweep regexps after clearing code. */
         regExps.sweep(rt);
@@ -551,7 +594,7 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
             gcstats::AutoPhase ap2(rt->gcStats, gcstats::PHASE_DISCARD_TI);
 
             for (CellIterUnderGC i(this, FINALIZE_SCRIPT); !i.done(); i.next()) {
-                JSScript *script = i.get<JSScript>();
+                RawScript script = i.get<JSScript>();
                 if (script->types) {
                     types::TypeScript::Sweep(fop, script);
 
@@ -809,11 +852,19 @@ JSCompartment::sweepBreakpoints(FreeOp *fop)
     }
 }
 
-size_t
-JSCompartment::sizeOfShapeTable(JSMallocSizeOfFun mallocSizeOf)
+void
+JSCompartment::sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf, size_t *compartmentObject,
+                                   TypeInferenceSizes *tiSizes, size_t *shapesCompartmentTables,
+                                   size_t *crossCompartmentWrappersArg, size_t *regexpCompartment,
+                                   size_t *debuggeesSet)
 {
-    return baseShapes.sizeOfExcludingThis(mallocSizeOf)
-         + initialShapes.sizeOfExcludingThis(mallocSizeOf)
-         + newTypeObjects.sizeOfExcludingThis(mallocSizeOf)
-         + lazyTypeObjects.sizeOfExcludingThis(mallocSizeOf);
+    *compartmentObject = mallocSizeOf(this);
+    sizeOfTypeInferenceData(tiSizes, mallocSizeOf);
+    *shapesCompartmentTables = baseShapes.sizeOfExcludingThis(mallocSizeOf)
+                             + initialShapes.sizeOfExcludingThis(mallocSizeOf)
+                             + newTypeObjects.sizeOfExcludingThis(mallocSizeOf)
+                             + lazyTypeObjects.sizeOfExcludingThis(mallocSizeOf);
+    *crossCompartmentWrappersArg = crossCompartmentWrappers.sizeOfExcludingThis(mallocSizeOf);
+    *regexpCompartment = regExps.sizeOfExcludingThis(mallocSizeOf);
+    *debuggeesSet = debuggees.sizeOfExcludingThis(mallocSizeOf);
 }

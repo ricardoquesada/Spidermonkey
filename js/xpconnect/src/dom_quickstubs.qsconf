@@ -230,7 +230,9 @@ members = [
     'nsIDOMHTMLElement.itemId',
     'nsIDOMHTMLElement.properties',
     'nsIDOMHTMLElement.hidden',
+    'nsIDOMHTMLElement.click',
     'nsIDOMHTMLElement.tabIndex',
+    'nsIDOMHTMLElement.focus',
     'nsIDOMHTMLElement.accessKey',
     'nsIDOMHTMLElement.accessKeyLabel',
     'nsIDOMHTMLElement.draggable',
@@ -412,31 +414,6 @@ members = [
     # FileReader
     'nsIDOMFileReader.*',
     
-    # XHR
-    'nsIXMLHttpRequest.*',
-    # nsIXMLHttpRequest.channel is not used on the web, and more
-    # importantly relies on the CAPS check that quickstubs don't make.
-    '-nsIXMLHttpRequest.channel',
-    # various XHR things use ACString and AUTF8String and [cstring]
-    # which quickstubs don't handle as return values (or at all in the
-    # case of AUTF8String) yet.
-    '-nsIXMLHttpRequest.statusText',
-    '-nsIXMLHttpRequest.getAllResponseHeaders',
-    '-nsIXMLHttpRequest.getResponseHeader',
-    '-nsIXMLHttpRequest.setRequestHeader',
-    '-nsIXMLHttpRequest.overrideMimeType',
-    # nsIXMLHttpRequestUpload doesn't live in its own IDL file, so
-    # can't be quickstubbed
-    '-nsIXMLHttpRequest.upload',
-
-    # WebSocket
-    'nsIWebSocket.*',
-
-    # webgl
-    'nsIDOMWebGLRenderingContext.*',
-    # getContextAttributes is directly manipulating its return value
-    '-nsIDOMWebGLRenderingContext.getContextAttributes',
-
     # Audio
     'nsIDOMNotifyAudioAvailableEvent.frameBuffer',
     'nsIDOMNotifyAudioAvailableEvent.time',
@@ -486,22 +463,7 @@ irregularFilenames = {
 
     'nsIDOMBlob': 'nsIDOMFile',
 
-    'nsIWebGLTexture': 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLBuffer': 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLProgram': 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLShader': 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLShaderArray': 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLFramebuffer': 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLRenderbuffer': 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLShaderPrecisionFormat' : 'nsIDOMWebGLRenderingContext',
     'nsIWebGLActiveInfo': 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLUniformLocation': 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLExtension': 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLExtensionStandardDerivatives' : 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLExtensionTextureFilterAnisotropic' : 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLExtensionLoseContext' : 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLExtensionCompressedTextureS3TC' : 'nsIDOMWebGLRenderingContext',
-    'nsIWebGLExtensionDepthTexture' : 'nsIDOMWebGLRenderingContext',
 
     'nsIIndexedDatabaseUsageCallback': 'nsIIndexedDatabaseManager',
 
@@ -530,7 +492,6 @@ customIncludes = [
     ]
 
 customQuickStubs = [
-    'CustomQS_WebGL.h',
     'CustomQS_Canvas2D.h'
     ]
 
@@ -563,7 +524,7 @@ nsIDOMHTMLDocument_Write_customMethodCallCode = """
 nsIDOMStorage_Clear_customMethodCallCode = """
     rv = self->Clear();
     if (NS_SUCCEEDED(rv))
-        JS_ClearScope(cx, obj);
+        JS_ClearNonGlobalObject(cx, obj);
 """
 
 CUSTOM_QS = {
@@ -798,13 +759,10 @@ customMethodCalls = {
     'nsIDOMNodeSelector_QuerySelector': {
         'thisType': 'nsINode',
         'code': '    nsIContent* result = '
-                'nsGenericElement::doQuerySelector(self, arg0, &rv);'
+                'self->QuerySelector(arg0, &rv);'
         },
     'nsIDOMNodeSelector_QuerySelectorAll': {
-        'thisType': 'nsINode',
-        'code': '    nsCOMPtr<nsIDOMNodeList> result;\n'
-                '    rv = nsGenericElement::doQuerySelectorAll(self, '
-                'arg0, getter_AddRefs(result));'
+        'thisType': 'nsINode'
         },
     'nsIDOMNode_Normalize': {
         'thisType': 'nsINode',
@@ -855,6 +813,52 @@ customMethodCalls = {
         },
     'nsIDOMHTMLElement_': {
         'thisType': 'nsGenericHTMLElement'
+        },
+    'nsIDOMHTMLElement_DOMClick': {
+        'thisType' : 'nsGenericHTMLElement',
+        'code': '    self->Click();',
+        'canFail': False
+        },
+    'nsIDOMHTMLElement_GetTabIndex': {
+        'thisType' : 'nsGenericHTMLElement',
+        'code': '    int32_t result = self->TabIndex();',
+        'canFail': False
+        },
+    'nsIDOMHTMLElement_SetTabIndex': {
+        'thisType' : 'nsGenericHTMLElement',
+        'code': '    mozilla::ErrorResult error;\n'
+                '    self->SetTabIndex(arg0, error);\n'
+                '    rv = error.ErrorCode();'
+        },
+    'nsIDOMHTMLElement_DOMFocus': {
+        'thisType' : 'nsGenericHTMLElement',
+        'code': '    mozilla::ErrorResult error;\n'
+                '    self->Focus(error);\n'
+                '    rv = error.ErrorCode();'
+        },
+    'nsIDOMHTMLElement_GetDraggable': {
+        'thisType' : 'nsGenericHTMLElement',
+        'code': '    bool result = self->Draggable();',
+        'canFail': False
+        },
+    'nsIDOMHTMLElement_SetDraggable': {
+        'thisType' : 'nsGenericHTMLElement',
+        'code': '    mozilla::ErrorResult error;\n'
+                '    self->SetDraggable(arg0, error);\n'
+                '    rv = error.ErrorCode();'
+        },
+    'nsIDOMHTMLElement_GetInnerHTML': {
+        'thisType' : 'nsGenericHTMLElement',
+        'code': '    nsString result;\n'
+                '    mozilla::ErrorResult error;\n'
+                '    self->GetInnerHTML(result, error);\n'
+                '    rv = error.ErrorCode();'
+        },
+    'nsIDOMHTMLElement_SetInnerHTML': {
+        'thisType' : 'nsGenericHTMLElement',
+        'code': '    mozilla::ErrorResult error;\n'
+                '    self->SetInnerHTML(arg0, error);\n'
+                '    rv = error.ErrorCode();'
         },
     'nsIDOMElementCSSInlineStyle_GetStyle': {
         'thisType': 'nsStyledElement',
@@ -969,9 +973,6 @@ customMethodCalls = {
         'thisType' : 'nsIDOMWindow',
         'unwrapThisFailureFatal' : False
         },
-    # WebGL
-    'nsIDOMWebGLRenderingContext_TexImage2D': CUSTOM_QS,
-    'nsIDOMWebGLRenderingContext_TexSubImage2D': CUSTOM_QS,
     # Canvas 2D
     'nsIDOMCanvasRenderingContext2D_CreateImageData': CUSTOM_QS,
     'nsIDOMCanvasRenderingContext2D_PutImageData': CUSTOM_QS,

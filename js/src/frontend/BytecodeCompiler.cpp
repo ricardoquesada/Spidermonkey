@@ -100,9 +100,9 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
         return NULL;
     parser.sct = &sct;
 
-    SharedContext sc(cx, scopeChain, /* fun = */ NULL, /* funbox = */ NULL, StrictModeFromContext(cx));
+    GlobalSharedContext globalsc(cx, scopeChain, StrictModeFromContext(cx));
 
-    ParseContext pc(&parser, &sc, staticLevel, /* bodyid = */ 0);
+    ParseContext pc(&parser, &globalsc, staticLevel, /* bodyid = */ 0);
     if (!pc.init())
         return NULL;
 
@@ -114,7 +114,8 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
 
     // Global/eval script bindings are always empty (all names are added to the
     // scope dynamically via JSOP_DEFFUN/VAR).
-    if (!script->bindings.initWithTemporaryStorage(cx, 0, 0, NULL))
+    InternalHandle<Bindings*> bindings(script, &script->bindings);
+    if (!Bindings::initWithTemporaryStorage(cx, bindings, 0, 0, NULL))
         return NULL;
 
     // We can specialize a bit for the given scope chain if that scope chain is the global object.
@@ -122,14 +123,14 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
     JS_ASSERT_IF(globalScope, globalScope->isNative());
     JS_ASSERT_IF(globalScope, JSCLASS_HAS_GLOBAL_FLAG_AND_SLOTS(globalScope->getClass()));
 
-    BytecodeEmitter bce(/* parent = */ NULL, &parser, &sc, script, callerFrame, !!globalScope,
+    BytecodeEmitter bce(/* parent = */ NULL, &parser, &globalsc, script, callerFrame, !!globalScope,
                         options.lineno, options.selfHostingMode);
     if (!bce.init())
         return NULL;
 
     /* If this is a direct call to eval, inherit the caller's strictness.  */
     if (callerFrame && callerFrame->script()->strictModeCode)
-        sc.strictModeState = StrictMode::STRICT;
+        globalsc.strictModeState = StrictMode::STRICT;
 
     if (options.compileAndGo) {
         if (source) {
@@ -149,12 +150,13 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
              * function captured in case it refers to an upvar, and someone
              * wishes to decompile it while it's running.
              */
-            ObjectBox *funbox = parser.newObjectBox(callerFrame->fun());
+            JSFunction *fun = callerFrame->fun();
+            ObjectBox *funbox = parser.newFunctionBox(fun, &pc, 
+                                                      fun->inStrictMode() ? StrictMode::STRICT 
+                                                                          : StrictMode::NOTSTRICT);
             if (!funbox)
                 return NULL;
-            funbox->emitLink = bce.objectList.lastbox;
-            bce.objectList.lastbox = funbox;
-            bce.objectList.length++;
+            bce.objectList.add(funbox);
         }
     }
 
@@ -176,7 +178,7 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
         if (!ok)
             return NULL;
     }
-    JS_ASSERT(sc.strictModeState != StrictMode::UNKNOWN);
+    JS_ASSERT(globalsc.strictModeState != StrictMode::UNKNOWN);
     for (;;) {
         TokenKind tt = tokenStream.peekToken(TSF_OPERAND);
         if (tt <= TOK_EOF) {
@@ -194,8 +196,6 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
             return NULL;
         if (!NameFunctions(cx, pn))
             return NULL;
-
-        pc.functionList = NULL;
 
         if (!EmitTree(cx, &bce, pn))
             return NULL;
@@ -225,7 +225,7 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
 
     // It's an error to use |arguments| in a function that has a rest parameter.
     if (callerFrame && callerFrame->isFunctionFrame() && callerFrame->fun()->hasRest()) {
-        PropertyName *arguments = cx->runtime->atomState.argumentsAtom;
+        HandlePropertyName arguments = cx->names().arguments;
         for (AtomDefnRange r = pc.lexdeps->all(); !r.empty(); r.popFront()) {
             if (r.front().key() == arguments) {
                 parser.reportError(NULL, JSMSG_ARGUMENTS_AND_REST);
@@ -275,12 +275,13 @@ frontend::CompileFunctionBody(JSContext *cx, HandleFunction fun, CompileOptions 
     parser.sct = &sct;
 
     JS_ASSERT(fun);
-    SharedContext funsc(cx, /* scopeChain = */ NULL, fun, /* funbox = */ NULL,
-                        StrictModeFromContext(cx));
+
+    StrictMode sms = StrictModeFromContext(cx);
+    FunctionBox *funbox = parser.newFunctionBox(fun, /* outerpc = */ NULL, sms);
     fun->setArgCount(formals.length());
 
     unsigned staticLevel = 0;
-    ParseContext funpc(&parser, &funsc, staticLevel, /* bodyid = */ 0);
+    ParseContext funpc(&parser, funbox, staticLevel, /* bodyid = */ 0);
     if (!funpc.init())
         return false;
 
@@ -310,7 +311,7 @@ frontend::CompileFunctionBody(JSContext *cx, HandleFunction fun, CompileOptions 
      * at the end.
      */
     ParseNode *pn = parser.functionBody(Parser::StatementListBody);
-    if (!pn) 
+    if (!pn)
         return false;
 
     if (!parser.tokenStream.matchToken(TOK_EOF)) {
@@ -326,16 +327,17 @@ frontend::CompileFunctionBody(JSContext *cx, HandleFunction fun, CompileOptions 
     if (!script)
         return false;
 
-    if (!funpc.generateFunctionBindings(cx, &script->bindings))
+    InternalHandle<Bindings*> bindings(script, &script->bindings);
+    if (!funpc.generateFunctionBindings(cx, bindings))
         return false;
 
-    BytecodeEmitter funbce(/* parent = */ NULL, &parser, &funsc, script, /* callerFrame = */ NULL,
+    BytecodeEmitter funbce(/* parent = */ NULL, &parser, funbox, script, /* callerFrame = */ NULL,
                            /* hasGlobalScope = */ false, options.lineno);
     if (!funbce.init())
         return false;
 
     if (!NameFunctions(cx, pn))
-        return NULL;
+        return false;
 
     if (fn->pn_body) {
         JS_ASSERT(fn->pn_body->isKind(PNK_ARGSBODY));

@@ -98,10 +98,10 @@ bool enterScript(JSContext *, JSScript *, JSFunction *, StackFrame *);
 bool exitScript(JSContext *, JSScript *, JSFunction *, StackFrame *);
 
 /* Executing a script */
-bool startExecution(JSContext *cx, JSScript *script);
+bool startExecution(JSScript *script);
 
 /* Script has completed execution */
-bool stopExecution(JSContext *cx, JSScript *script);
+bool stopExecution(JSScript *script);
 
 /* Heap has been resized */
 bool resizeHeap(JSCompartment *compartment, size_t oldSize, size_t newSize);
@@ -251,7 +251,7 @@ void DTraceExitJSFun(JSContext *cx, JSFunction *fun, JSScript *script);
 bool ETWCreateRuntime(JSRuntime *rt);
 bool ETWDestroyRuntime(JSRuntime *rt);
 bool ETWShutdown();
-bool ETWCallTrackingActive(JSContext *cx);
+bool ETWCallTrackingActive();
 bool ETWEnterJSFun(JSContext *cx, JSFunction *fun, JSScript *script, int counter);
 bool ETWExitJSFun(JSContext *cx, JSFunction *fun, JSScript *script, int counter);
 bool ETWCreateObject(JSContext *cx, JSObject *obj);
@@ -274,7 +274,7 @@ bool ETWGCEndSweepPhase();
 bool ETWCustomMark(JSString *string);
 bool ETWCustomMark(const char *string);
 bool ETWCustomMark(int marker);
-bool ETWStartExecution(JSContext *cx, JSScript *script);
+bool ETWStartExecution(JSScript *script);
 bool ETWStopExecution(JSContext *cx, JSScript *script);
 bool ETWResizeHeap(JSCompartment *compartment, size_t oldSize, size_t newSize);
 #endif
@@ -298,7 +298,7 @@ Probes::callTrackingActive(JSContext *cx)
         return true;
 #endif
 #ifdef MOZ_ETW
-    if (ProfilingActive && ETWCallTrackingActive(cx))
+    if (ProfilingActive && ETWCallTrackingActive())
         return true;
 #endif
     return false;
@@ -357,8 +357,16 @@ Probes::exitScript(JSContext *cx, JSScript *script, JSFunction *maybeFun,
 #endif
 
     JSRuntime *rt = cx->runtime;
-    if (fp->hasPushedSPSFrame())
+    /*
+     * Coming from IonMonkey, the fp might not be known (fp == NULL), but
+     * IonMonkey will only call exitScript() when absolutely necessary, so it is
+     * guaranteed that fp->hasPushedSPSFrame() would have been true
+     */
+    if ((fp == NULL && rt->spsProfiler.enabled()) ||
+        (fp != NULL && fp->hasPushedSPSFrame()))
+    {
         rt->spsProfiler.exit(cx, script, maybeFun);
+    }
     return ok;
 }
 
@@ -673,7 +681,7 @@ Probes::CustomMark(int marker)
 }
 
 inline bool
-Probes::startExecution(JSContext *cx, JSScript *script)
+Probes::startExecution(JSScript *script)
 {
     bool ok = true;
 
@@ -683,7 +691,7 @@ Probes::startExecution(JSContext *cx, JSScript *script)
                                  script->lineno);
 #endif
 #ifdef MOZ_ETW
-    if (ProfilingActive && !ETWStartExecution(cx, script))
+    if (ProfilingActive && !ETWStartExecution(script))
         ok = false;
 #endif
 
@@ -691,7 +699,7 @@ Probes::startExecution(JSContext *cx, JSScript *script)
 }
 
 inline bool
-Probes::stopExecution(JSContext *cx, JSScript *script)
+Probes::stopExecution(JSScript *script)
 {
     bool ok = true;
 
@@ -701,7 +709,7 @@ Probes::stopExecution(JSContext *cx, JSScript *script)
                                 script->lineno);
 #endif
 #ifdef MOZ_ETW
-    if (ProfilingActive && !ETWStopExecution(cx, script))
+    if (ProfilingActive && !ETWStopExecution(script))
         ok = false;
 #endif
 

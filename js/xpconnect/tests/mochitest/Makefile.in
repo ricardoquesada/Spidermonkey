@@ -67,6 +67,8 @@ MOCHITEST_FILES =	bug500931_helper.html \
 		test_bug781476.html \
 		file_bug781476.html \
 		test_bug789713.html \
+		file_bug795275.html \
+		file_bug795275.xml \
 		file_bug799348.html \
 		file_nodelists.html \
 		file_exnstack.html \
@@ -78,6 +80,7 @@ MOCHITEST_FILES =	bug500931_helper.html \
 		file_mozMatchesSelector.html \
 		file_bug720619.html \
 		test_bug720619.html \
+		test_bug785096.html \
 		$(NULL)
 
 MOCHITEST_CHROME_FILES	= \

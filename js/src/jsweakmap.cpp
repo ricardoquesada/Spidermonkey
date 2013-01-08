@@ -235,7 +235,7 @@ WeakMap_set_impl(JSContext *cx, CallArgs args)
     if (!map) {
         map = cx->new_<ObjectValueMap>(cx, thisObj.get());
         if (!map->init()) {
-            cx->delete_(map);
+            js_delete(map);
             JS_ReportOutOfMemory(cx);
             return false;
         }
@@ -290,14 +290,14 @@ JS_NondeterministicGetWeakMapKeys(JSContext *cx, JSObject *obj, JSObject **ret)
 }
 
 static void
-WeakMap_mark(JSTracer *trc, JSObject *obj)
+WeakMap_mark(JSTracer *trc, RawObject obj)
 {
     if (ObjectValueMap *map = GetObjectMap(obj))
         map->trace(trc);
 }
 
 static void
-WeakMap_finalize(FreeOp *fop, JSObject *obj)
+WeakMap_finalize(FreeOp *fop, RawObject obj)
 {
     if (ObjectValueMap *map = GetObjectMap(obj)) {
         map->check();
@@ -350,7 +350,7 @@ static JSFunctionSpec weak_map_methods[] = {
 };
 
 JSObject *
-js_InitWeakMapClass(JSContext *cx, JSObject *obj)
+js_InitWeakMapClass(JSContext *cx, HandleObject obj)
 {
     JS_ASSERT(obj->isNative());
 
@@ -361,7 +361,7 @@ js_InitWeakMapClass(JSContext *cx, JSObject *obj)
         return NULL;
 
     RootedFunction ctor(cx, global->createConstructor(cx, WeakMap_construct,
-                                                      CLASS_NAME(cx, WeakMap), 0));
+                                                      cx->names().WeakMap, 0));
     if (!ctor)
         return NULL;
 

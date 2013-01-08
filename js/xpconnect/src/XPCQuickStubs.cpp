@@ -6,7 +6,6 @@
 #include "mozilla/Util.h"
 
 #include "jsapi.h"
-#include "jsatom.h"
 #include "jsfriendapi.h"
 #include "nsCOMPtr.h"
 #include "xpcprivate.h"
@@ -409,7 +408,7 @@ ThrowCallFailed(JSContext *cx, nsresult rv,
                 const char *ifaceName, jsid memberId, const char *memberName)
 {
     /* Only one of memberId or memberName should be given. */
-    JS_ASSERT(JSID_IS_VOID(memberId) != !memberName);
+    MOZ_ASSERT(JSID_IS_VOID(memberId) != !memberName);
 
     // From XPCThrower::ThrowBadResult.
     char* sz;
@@ -493,7 +492,7 @@ ThrowBadArg(JSContext *cx, nsresult rv, const char *ifaceName,
             jsid memberId, const char *memberName, unsigned paramnum)
 {
     /* Only one memberId or memberName should be given. */
-    JS_ASSERT(JSID_IS_VOID(memberId) != !memberName);
+    MOZ_ASSERT(JSID_IS_VOID(memberId) != !memberName);
 
     // From XPCThrower::ThrowBadParam.
     char* sz;
@@ -900,7 +899,7 @@ xpc_qsJsvalToCharStr(JSContext *cx, jsval v, JSAutoByteString *bytes)
 {
     JSString *str;
 
-    JS_ASSERT(!bytes->ptr());
+    MOZ_ASSERT(!bytes->ptr());
     if (JSVAL_IS_STRING(v)) {
         str = JSVAL_TO_STRING(v);
     } else if (JSVAL_IS_VOID(v) || JSVAL_IS_NULL(v)) {
@@ -937,17 +936,6 @@ xpc_qsJsvalToWcharStr(JSContext *cx, jsval v, jsval *pval, const PRUnichar **pst
 }
 
 namespace xpc {
-
-bool
-StringToJsval(JSContext *cx, nsAString &str, JS::Value *rval)
-{
-    // From the T_DOMSTRING case in XPCConvert::NativeData2JS.
-    if (str.IsVoid()) {
-        *rval = JSVAL_NULL;
-        return true;
-    }
-    return NonVoidStringToJsval(cx, str, rval);
-}
 
 bool
 NonVoidStringToJsval(JSContext *cx, nsAString &str, JS::Value *rval)

@@ -78,11 +78,11 @@ NewObjectCache::fill(EntryIndex entry_, Class *clasp, gc::Cell *key, gc::AllocKi
 }
 
 inline void
-NewObjectCache::fillProto(EntryIndex entry, Class *clasp, JSObject *proto, gc::AllocKind kind, JSObject *obj)
+NewObjectCache::fillProto(EntryIndex entry, Class *clasp, js::TaggedProto proto, gc::AllocKind kind, JSObject *obj)
 {
-    JS_ASSERT(!proto->isGlobal());
-    JS_ASSERT(obj->getProto() == proto);
-    return fill(entry, clasp, proto, kind, obj);
+    JS_ASSERT_IF(proto.isObject(), !proto.toObject()->isGlobal());
+    JS_ASSERT(obj->getTaggedProto() == proto);
+    return fill(entry, clasp, proto.raw(), kind, obj);
 }
 
 inline void
@@ -134,12 +134,6 @@ struct PreserveRegsGuard
     FrameRegs &regs_;
 };
 
-inline GSNCache *
-GetGSNCache(JSContext *cx)
-{
-    return &cx->runtime->gsnCache;
-}
-
 #if JS_HAS_XML_SUPPORT
 
 class AutoNamespaceArray : protected AutoGCRooter {
@@ -176,7 +170,7 @@ class AutoPtr
   public:
     explicit AutoPtr(JSContext *cx) : cx(cx), value(NULL) {}
     ~AutoPtr() {
-        cx->delete_<T>(value);
+        js_delete<T>(value);
     }
 
     void operator=(T *ptr) { value = ptr; }
@@ -226,8 +220,6 @@ class CompartmentChecker
                 fail(compartment, c);
         }
     }
-
-    void check(JSPrincipals *) { /* nothing for now */ }
 
     void check(JSObject *obj) {
         if (obj)
@@ -557,7 +549,7 @@ JSContext::ensureParseMapPool()
 {
     if (parseMapPool_)
         return true;
-    parseMapPool_ = js::OffTheBooks::new_<js::frontend::ParseMapPool>(this);
+    parseMapPool_ = js_new<js::frontend::ParseMapPool>(this);
     return parseMapPool_;
 }
 
@@ -565,44 +557,6 @@ inline js::PropertyTree&
 JSContext::propertyTree()
 {
     return compartment->propertyTree;
-}
-
-inline bool
-JSContext::hasEnteredCompartment() const
-{
-    return enterCompartmentDepth_ > 0;
-}
-
-inline void
-JSContext::enterCompartment(JSCompartment *c)
-{
-    enterCompartmentDepth_++;
-    compartment = c;
-    if (throwing)
-        wrapPendingException();
-}
-
-inline void
-JSContext::leaveCompartment(JSCompartment *oldCompartment)
-{
-    JS_ASSERT(hasEnteredCompartment());
-    enterCompartmentDepth_--;
-
-    /*
-     * Before we entered the current compartment, 'compartment' was
-     * 'oldCompartment', so we might want to simply set it back. However, we
-     * currently have this terrible scheme whereby defaultCompartmentObject_
-     * can be updated while enterCompartmentDepth_ > 0. In this case,
-     * oldCompartment != defaultCompartmentObject_->compartment and we must
-     * ignore oldCompartment.
-     */
-    if (hasEnteredCompartment() || !defaultCompartmentObject_)
-        compartment = oldCompartment;
-    else
-        compartment = defaultCompartmentObject_->compartment();
-
-    if (throwing)
-        wrapPendingException();
 }
 
 inline void

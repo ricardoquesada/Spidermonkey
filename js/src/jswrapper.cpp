@@ -96,8 +96,9 @@ js::UnwrapObject(JSObject *wrapped, bool stopAtOuter, unsigned *flagsp)
 }
 
 JS_FRIEND_API(JSObject *)
-js::UnwrapObjectChecked(JSContext *cx, JSObject *obj)
+js::UnwrapObjectChecked(JSContext *cx, RawObject objArg)
 {
+    RootedObject obj(cx, objArg);
     while (true) {
         JSObject *wrapper = obj;
         obj = UnwrapOneChecked(cx, obj);
@@ -107,7 +108,7 @@ js::UnwrapObjectChecked(JSContext *cx, JSObject *obj)
 }
 
 JS_FRIEND_API(JSObject *)
-js::UnwrapOneChecked(JSContext *cx, JSObject *obj)
+js::UnwrapOneChecked(JSContext *cx, HandleObject obj)
 {
     // Checked unwraps should never unwrap outer windows.
     if (!obj->isWrapper() ||
@@ -118,15 +119,12 @@ js::UnwrapOneChecked(JSContext *cx, JSObject *obj)
 
     Wrapper *handler = Wrapper::wrapperHandler(obj);
     bool rvOnFailure;
-    if (!handler->enter(cx, obj, JSID_VOID,
-                        Wrapper::PUNCTURE, &rvOnFailure))
-    {
-        return rvOnFailure ? obj : NULL;
-    }
-    obj = Wrapper::wrappedObject(obj);
-    JS_ASSERT(obj);
+    if (!handler->enter(cx, obj, JSID_VOID, Wrapper::PUNCTURE, &rvOnFailure))
+        return rvOnFailure ? (JSObject*) obj : NULL;
+    JSObject *ret = Wrapper::wrappedObject(obj);
+    JS_ASSERT(ret);
 
-    return obj;
+    return ret;
 }
 
 bool
@@ -218,14 +216,8 @@ IndirectWrapper::defaultValue(JSContext *cx, JSObject *wrapper_, JSType hint, Va
 {
     RootedObject wrapper(cx, wrapper_);
 
-    // NB: In addition to clearing the pending exception, we also have to temporarily
-    // disable the error reporter, because SpiderMonkey calls it directly if there's
-    // no JS code on the stack, which might be the case here.
     bool status;
-    JSErrorReporter reporter = JS_SetErrorReporter(cx, NULL);
-    bool ok = enter(cx, wrapper_, JSID_VOID, PUNCTURE, &status);
-    JS_SetErrorReporter(cx, reporter);
-    if (!ok) {
+    if (!enter(cx, wrapper_, JSID_VOID, PUNCTURE, &status)) {
         RootedValue v(cx);
         JS_ClearPendingException(cx);
         if (!DefaultValue(cx, wrapper, hint, &v))
@@ -323,14 +315,8 @@ DirectWrapper::defaultValue(JSContext *cx, JSObject *wrapper_, JSType hint, Valu
 {
     RootedObject wrapper(cx, wrapper_);
 
-    // NB: In addition to clearing the pending exception, we also have to temporarily
-    // disable the error reporter, because SpiderMonkey calls it directly if there's
-    // no JS code on the stack, which might be the case here.
     bool status;
-    JSErrorReporter reporter = JS_SetErrorReporter(cx, NULL);
-    bool ok = enter(cx, wrapper_, JSID_VOID, PUNCTURE, &status);
-    JS_SetErrorReporter(cx, reporter);
-    if (!ok) {
+    if (!enter(cx, wrapper_, JSID_VOID, PUNCTURE, &status)) {
         RootedValue v(cx);
         JS_ClearPendingException(cx);
         if (!DefaultValue(cx, wrapper, hint, &v))
@@ -421,11 +407,11 @@ DirectWrapper::nativeCall(JSContext *cx, IsAcceptableThis test, NativeImpl impl,
 }
 
 bool
-DirectWrapper::hasInstance(JSContext *cx, JSObject *wrapper, const Value *vp, bool *bp)
+DirectWrapper::hasInstance(JSContext *cx, HandleObject wrapper, MutableHandleValue v, bool *bp)
 {
     *bp = false; // default result if we refuse to perform this action
     const jsid id = JSID_VOID;
-    GET(IndirectProxyHandler::hasInstance(cx, wrapper, vp, bp));
+    GET(IndirectProxyHandler::hasInstance(cx, wrapper, v, bp));
 }
 
 JSString *
@@ -645,7 +631,7 @@ CanReify(Value *vp)
 
 struct AutoCloseIterator
 {
-    AutoCloseIterator(JSContext *cx, JSObject *obj) : cx(cx), obj(obj) {}
+    AutoCloseIterator(JSContext *cx, JSObject *obj) : cx(cx), obj(cx, obj) {}
 
     ~AutoCloseIterator() { if (obj) CloseIterator(cx, obj); }
 
@@ -653,13 +639,13 @@ struct AutoCloseIterator
 
   private:
     JSContext *cx;
-    JSObject *obj;
+    RootedObject obj;
 };
 
 static bool
 Reify(JSContext *cx, JSCompartment *origin, Value *vp)
 {
-    PropertyIteratorObject *iterObj = &vp->toObject().asPropertyIterator();
+    Rooted<PropertyIteratorObject*> iterObj(cx, &vp->toObject().asPropertyIterator());
     NativeIterator *ni = iterObj->getNativeIterator();
 
     AutoCloseIterator close(cx, iterObj);
@@ -792,13 +778,12 @@ CrossCompartmentWrapper::nativeCall(JSContext *cx, IsAcceptableThis test, Native
 }
 
 bool
-CrossCompartmentWrapper::hasInstance(JSContext *cx, JSObject *wrapper, const Value *vp, bool *bp)
+CrossCompartmentWrapper::hasInstance(JSContext *cx, HandleObject wrapper, MutableHandleValue v, bool *bp)
 {
     AutoCompartment call(cx, wrappedObject(wrapper));
-    Value v = *vp;
-    if (!cx->compartment->wrap(cx, &v))
+    if (!cx->compartment->wrap(cx, v.address()))
         return false;
-    return DirectWrapper::hasInstance(cx, wrapper, &v, bp);
+    return DirectWrapper::hasInstance(cx, wrapper, v, bp);
 }
 
 JSString *
@@ -853,6 +838,33 @@ CrossCompartmentWrapper::iteratorNext(JSContext *cx, JSObject *wrapper, Value *v
            NOTHING,
            IndirectProxyHandler::iteratorNext(cx, wrapper, vp),
            cx->compartment->wrap(cx, vp));
+}
+
+bool
+CrossCompartmentWrapper::getPrototypeOf(JSContext *cx, JSObject *proxy, JSObject **protop)
+{
+    assertSameCompartment(cx, proxy);
+
+    if (!proxy->getTaggedProto().isLazy()) {
+        *protop = proxy->getTaggedProto().toObjectOrNull();
+        return true;
+    }
+
+    RootedObject proto(cx);
+    {
+        RootedObject wrapped(cx, wrappedObject(proxy));
+        AutoCompartment call(cx, wrapped);
+        if (!JSObject::getProto(cx, wrapped, &proto))
+            return false;
+        if (proto)
+            proto->setDelegate(cx);
+    }
+
+    if (!proxy->compartment()->wrap(cx, proto.address()))
+        return false;
+
+    *protop = proto;
+    return true;
 }
 
 CrossCompartmentWrapper CrossCompartmentWrapper::singleton(0u);
@@ -977,7 +989,7 @@ DeadObjectProxy::nativeCall(JSContext *cx, IsAcceptableThis test, NativeImpl imp
 }
 
 bool
-DeadObjectProxy::hasInstance(JSContext *cx, JSObject *proxy, const Value *vp,
+DeadObjectProxy::hasInstance(JSContext *cx, HandleObject proxy, MutableHandleValue v,
                              bool *bp)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
@@ -1032,6 +1044,13 @@ DeadObjectProxy::getElementIfPresent(JSContext *cx, JSObject *obj, JSObject *rec
     return false;
 }
 
+bool
+DeadObjectProxy::getPrototypeOf(JSContext *cx, JSObject *proxy, JSObject **protop)
+{
+    *protop = NULL;
+    return true;
+}
+
 DeadObjectProxy DeadObjectProxy::singleton;
 int DeadObjectProxy::sDeadObjectFamily;
 
@@ -1045,7 +1064,7 @@ js::NewDeadProxyObject(JSContext *cx, JSObject *parent)
 }
 
 void
-js::NukeCrossCompartmentWrapper(JSObject *wrapper)
+js::NukeCrossCompartmentWrapper(JSContext *cx, JSObject *wrapper)
 {
     JS_ASSERT(IsCrossCompartmentWrapper(wrapper));
 
@@ -1104,7 +1123,7 @@ js::NukeCrossCompartmentWrappers(JSContext* cx,
             if (targetFilter.match(wrapped->compartment())) {
                 // We found a wrapper to nuke.
                 e.removeFront();
-                NukeCrossCompartmentWrapper(wobj);
+                NukeCrossCompartmentWrapper(cx, wobj);
             }
         }
     }
@@ -1138,7 +1157,7 @@ js::RemapWrapper(JSContext *cx, JSObject *wobj, JSObject *newTarget)
 
     // When we remove origv from the wrapper map, its wrapper, wobj, must
     // immediately cease to be a cross-compartment wrapper. Neuter it.
-    NukeCrossCompartmentWrapper(wobj);
+    NukeCrossCompartmentWrapper(cx, wobj);
 
     // First, we wrap it in the new compartment. This will return
     // a new wrapper.

@@ -151,14 +151,10 @@ private:
 
 public:
     static JSObject *create(JSContext *cx, JSObject *scope, ListType *list,
-                            nsWrapperCache* cache, bool *triedToWrap);
+                            nsWrapperCache* cache);
 
-    static JSObject *getPrototype(JSContext *cx, JSObject *receiver, bool *enabled);
-    static bool DefineDOMInterface(JSContext *cx, JSObject *receiver, bool *enabled)
-    {
-        return !!getPrototype(cx, receiver, enabled);
-    }
-
+    static JSObject *getPrototype(JSContext *cx, JSObject *receiver);
+    static bool DefineDOMInterface(JSContext *cx, JSObject *receiver, bool *enabled);
     bool getPropertyDescriptor(JSContext *cx, JSObject *proxy, jsid id, bool set,
                                JSPropertyDescriptor *desc);
     bool getOwnPropertyDescriptor(JSContext *cx, JSObject *proxy, jsid id, bool set,
@@ -180,7 +176,7 @@ public:
     bool iterate(JSContext *cx, JSObject *proxy, unsigned flags, JS::Value *vp);
 
     /* Spidermonkey extensions. */
-    bool hasInstance(JSContext *cx, JSObject *proxy, const JS::Value *vp, bool *bp);
+    bool hasInstance(JSContext *cx, JS::HandleObject proxy, JS::MutableHandleValue vp, bool *bp);
     JSString *obj_toString(JSContext *cx, JSObject *proxy);
     void finalize(JSFreeOp *fop, JSObject *proxy);
 
@@ -216,6 +212,9 @@ struct nsISupportsResult
     nsISupports *mResult;
     nsWrapperCache *mCache;
 };
+
+JSObject* GetXrayExpandoChain(JSObject *obj);
+void SetXrayExpandoChain(JSObject *obj, JSObject *chain);
 
 }
 }

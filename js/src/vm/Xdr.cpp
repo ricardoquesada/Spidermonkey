@@ -32,7 +32,7 @@ namespace js {
 void
 XDRBuffer::freeBuffer()
 {
-    Foreground::free_(base);
+    js_free(base);
 #ifdef DEBUG
     memset(this, 0xe2, sizeof *this);
 #endif
@@ -51,7 +51,7 @@ XDRBuffer::grow(size_t n)
         return false;
     }
 
-    void *data = OffTheBooks::realloc_(base, newCapacity);
+    void *data = js_realloc(base, newCapacity);
     if (!data) {
         js_ReportOutOfMemory(cx());
         return false;
@@ -131,14 +131,14 @@ XDRState<mode>::codeFunction(JSMutableHandleObject objp)
 
 template<XDRMode mode>
 bool
-XDRState<mode>::codeScript(JSScript **scriptp)
+XDRState<mode>::codeScript(MutableHandleScript scriptp)
 {
-    JSScript *script;
+    RootedScript script(cx());
     if (mode == XDR_DECODE) {
         script = NULL;
-        *scriptp = NULL;
+        scriptp.set(NULL);
     } else {
-        script = *scriptp;
+        script = scriptp.get();
     }
 
     if (!VersionCheck(this))
@@ -151,7 +151,7 @@ XDRState<mode>::codeScript(JSScript **scriptp)
         JS_ASSERT(!script->compileAndGo);
         js_CallNewScriptHook(cx(), script, NULL);
         Debugger::onNewScript(cx(), script, NULL);
-        *scriptp = script;
+        scriptp.set(script);
     }
 
     return true;

@@ -250,7 +250,7 @@ jsds_SyncFilter (FilterRecord *rec, jsdIFilter *filter)
     if (NS_FAILED(rv))
         return false;    
 
-    nsCAutoString urlPattern;
+    nsAutoCString urlPattern;
     rv = filter->GetUrlPattern (urlPattern);
     if (NS_FAILED(rv))
         return false;
@@ -520,7 +520,7 @@ jsds_ErrorHookProc (JSDContext *jsdc, JSContext *cx, const char *message,
         val = getter_AddRefs(jsdValue::FromPtr(jsdc, jsdv));
     }
     
-    nsCAutoString fileName;
+    nsAutoCString fileName;
     uint32_t    line;
     uint32_t    pos;
     uint32_t    flags;
@@ -1027,9 +1027,7 @@ jsdScript::CreatePPLineMap()
         JSString *jsstr;
 
         {
-            JS::AutoEnterScriptCompartment ac;
-            if (!ac.enter(cx, script))
-                return nullptr;
+            JSAutoCompartment ac(cx, script);
 
             jsstr = JS_DecompileScript (cx, script, "ppscript", 4);
             if (!jsstr)
@@ -1130,9 +1128,7 @@ jsdScript::GetVersion (int32_t *_rval)
     ASSERT_VALID_EPHEMERAL;
     JSContext *cx = JSD_GetDefaultJSContext (mCx);
     JSScript *script = JSD_GetJSScript(mCx, mScript);
-    JS::AutoEnterScriptCompartment ac;
-    if (!ac.enter(cx, script))
-        return NS_ERROR_FAILURE;
+    JSAutoCompartment ac(cx, script);
     *_rval = static_cast<int32_t>(JS_GetScriptVersion(cx, script));
     return NS_OK;
 }
@@ -1324,14 +1320,12 @@ jsdScript::GetFunctionSource(nsAString & aFunctionSource)
 
     JSString *jsstr;
     mozilla::Maybe<JSAutoCompartment> ac;
-    JS::AutoEnterScriptCompartment asc;
     if (fun) {
         ac.construct(cx, JS_GetFunctionObject(fun));
         jsstr = JS_DecompileFunction (cx, fun, 4);
     } else {
         JSScript *script = JSD_GetJSScript (mCx, mScript);
-        if (!asc.enter(cx, script))
-            return NS_ERROR_FAILURE;
+        ac.construct(cx, script);
         jsstr = JS_DecompileScript (cx, script, "ppscript", 4);
     }
     if (!jsstr)

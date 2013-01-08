@@ -51,6 +51,13 @@
 #ifdef XP_WIN
 #include <windows.h>
 #include <shlobj.h>
+
+// we want a wmain entry point
+#define XRE_DONT_PROTECT_DLL_LOAD
+#define XRE_WANT_ENVIRON
+#include "nsWindowsWMain.cpp"
+#define snprintf _snprintf
+#define strcasecmp _stricmp
 #endif
 
 #ifdef ANDROID
@@ -1374,18 +1381,6 @@ FullTrustSecMan::GetSystemPrincipal(nsIPrincipal **_retval)
     return *_retval ? NS_OK : NS_ERROR_FAILURE;
 }
 
-/* [noscript] nsIPrincipal getCertificatePrincipal (in AUTF8String aCertFingerprint, in AUTF8String aSubjectName, in AUTF8String aPrettyName, in nsISupports aCert, in nsIURI aURI); */
-NS_IMETHODIMP
-FullTrustSecMan::GetCertificatePrincipal(const nsACString & aCertFingerprint,
-                                         const nsACString & aSubjectName,
-                                         const nsACString & aPrettyName,
-                                         nsISupports *aCert, nsIURI *aURI,
-                                         nsIPrincipal **_retval)
-{
-    NS_IF_ADDREF(*_retval = mSystemPrincipal);
-    return *_retval ? NS_OK : NS_ERROR_FAILURE;
-}
-
 /* [noscript] nsIPrincipal getSimpleCodebasePrincipal (in nsIURI aURI); */
 NS_IMETHODIMP
 FullTrustSecMan::GetSimpleCodebasePrincipal(nsIURI *aURI, nsIPrincipal **_retval)
@@ -1420,30 +1415,6 @@ NS_IMETHODIMP
 FullTrustSecMan::GetDocShellCodebasePrincipal(nsIURI *aURI, nsIDocShell* aDocShell, nsIPrincipal **_retval)
 {
     return GetSimpleCodebasePrincipal(aURI, _retval);
-}
-
-/* [noscript] short requestCapability (in nsIPrincipal principal, in string capability); */
-NS_IMETHODIMP
-FullTrustSecMan::RequestCapability(nsIPrincipal *principal,
-                                   const char *capability, int16_t *_retval)
-{
-    *_retval = nsIPrincipal::ENABLE_GRANTED;
-    return NS_OK;
-}
-
-/* boolean isCapabilityEnabled (in string capability); */
-NS_IMETHODIMP
-FullTrustSecMan::IsCapabilityEnabled(const char *capability, bool *_retval)
-{
-    *_retval = true;
-    return NS_OK;
-}
-
-/* void enableCapability (in string capability); */
-NS_IMETHODIMP
-FullTrustSecMan::EnableCapability(const char *capability)
-{
-    return NS_OK;;
 }
 
 /* [noscript] nsIPrincipal getObjectPrincipal (in JSContextPtr cx, in JSObjectPtr obj); */
@@ -1590,19 +1561,13 @@ nsXPCFunctionThisTranslator::~nsXPCFunctionThisTranslator()
 #endif
 }
 
-/* nsISupports TranslateThis (in nsISupports aInitialThis, in nsIInterfaceInfo aInterfaceInfo, in uint16_t aMethodIndex, out bool aHideFirstParamFromJS, out nsIIDPtr aIIDOfResult); */
+/* nsISupports TranslateThis (in nsISupports aInitialThis); */
 NS_IMETHODIMP
 nsXPCFunctionThisTranslator::TranslateThis(nsISupports *aInitialThis,
-                                           nsIInterfaceInfo *aInterfaceInfo,
-                                           uint16_t aMethodIndex,
-                                           bool *aHideFirstParamFromJS,
-                                           nsIID * *aIIDOfResult,
                                            nsISupports **_retval)
 {
     NS_IF_ADDREF(aInitialThis);
     *_retval = aInitialThis;
-    *aHideFirstParamFromJS = false;
-    *aIIDOfResult = nullptr;
     return NS_OK;
 }
 
@@ -1639,7 +1604,7 @@ GetCurrentWorkingDirectory(nsAString& workingDirectory)
     workingDirectory.SetLength(requiredLength);
     workingDirectory.Replace(workingDirectory.Length() - 1, 1, L'\\');
 #elif defined(XP_UNIX)
-    nsCAutoString cwd;
+    nsAutoCString cwd;
     // 1024 is just a guess at a sane starting value
     size_t bufsize = 1024;
     char* result = nullptr;
@@ -1845,7 +1810,7 @@ main(int argc, char **argv, char **envp)
 #ifdef TEST_TranslateThis
         nsCOMPtr<nsIXPCFunctionThisTranslator>
             translator(new nsXPCFunctionThisTranslator);
-        xpc->SetFunctionThisTranslator(NS_GET_IID(nsITestXPCFunctionCallback), translator, nullptr);
+        xpc->SetFunctionThisTranslator(NS_GET_IID(nsITestXPCFunctionCallback), translator);
 #endif
 
         nsCOMPtr<nsIJSContextStack> cxstack = do_GetService("@mozilla.org/js/xpc/ContextStack;1");
@@ -1926,7 +1891,7 @@ main(int argc, char **argv, char **envp)
                         (void**) getter_AddRefs(bogus));
 #endif
             JS_DropPrincipals(rt, gJSPrincipals);
-            JS_ClearScope(cx, glob);
+            JS_SetAllNonReservedSlotsToUndefined(cx, glob);
             JS_GC(rt);
             JSContext *oldcx;
             cxstack->Pop(&oldcx);
