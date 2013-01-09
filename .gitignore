@@ -45,9 +45,11 @@ js/src/configure
 # Note : to override .gitignore and commit changes to files in this directory
 # use "git commit -f <filename>"
 js/src/build-android
+js/src/build-ios
+js/src/build-win32
+js/src/build-osx
 
 # Ignore the Android dist files/directories
 ./include
 ./lib
-./include/
-./lib/
+js/src/autom4te.cache

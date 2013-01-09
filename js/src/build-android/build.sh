@@ -1,6 +1,7 @@
 # options
 develop=
 release=
+RELEASE_DIR="spidermonkey-android"
 
 usage(){
 cat << EOF
