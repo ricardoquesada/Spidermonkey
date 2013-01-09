@@ -2,7 +2,7 @@
 
 # configure
 ../configure --disable-tests \
-             --enable-debug \
+             --disable-debug \
              --disable-methodjit \
              --disable-monoic \
              --disable-polyic
