@@ -20,6 +20,8 @@
 #include "jsscopeinlines.h"
 #include "jstypedarrayinlines.h"
 
+using mozilla::DebugOnly;
+
 namespace js {
 namespace mjit {
 
@@ -143,9 +145,10 @@ class Assembler : public ValueAssembler
         vmframe(vmframe),
         pc(NULL)
     {
+        AutoAssertNoGC nogc;
         startLabel = label();
         if (vmframe)
-            sps->setPushed(vmframe->script());
+            sps->setPushed(vmframe->script().get(nogc));
     }
 
     Assembler(MJITInstrumentation *sps, jsbytecode **pc)

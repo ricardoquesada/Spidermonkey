@@ -39,6 +39,7 @@
 #include "vm/StringObject.h"
 
 #include "jsatominlines.h"
+#include "jscompartmentinlines.h"
 #include "jsfuninlines.h"
 #include "jsgcinlines.h"
 #include "jsinferinlines.h"
@@ -385,7 +386,7 @@ JSObject::setArrayLength(JSContext *cx, js::HandleObject obj, uint32_t length)
 inline void
 JSObject::setDenseArrayLength(uint32_t length)
 {
-    /* Variant of setArrayLength for use on dense arrays where the length cannot overflow int32. */
+    /* Variant of setArrayLength for use on dense arrays where the length cannot overflow int32_t. */
     JS_ASSERT(isDenseArray());
     JS_ASSERT(length <= INT32_MAX);
     getElementsHeader()->length = length;
@@ -1204,11 +1205,13 @@ JSObject::isWrapper() const
 inline js::GlobalObject &
 JSObject::global() const
 {
+#ifdef DEBUG
     JSObject *obj = const_cast<JSObject *>(this);
     while (JSObject *parent = obj->getParent())
         obj = parent;
     JS_ASSERT(&obj->asGlobal() == compartment()->maybeGlobal());
-    return obj->asGlobal();
+#endif
+    return *compartment()->maybeGlobal();
 }
 
 static inline bool
@@ -1314,7 +1317,7 @@ inline bool
 IsInternalFunctionObject(JSObject *funobj)
 {
     JSFunction *fun = funobj->toFunction();
-    return (fun->flags & JSFUN_LAMBDA) && !funobj->getParent();
+    return fun->isLambda() && !funobj->getParent();
 }
 
 class AutoPropDescArrayRooter : private AutoGCRooter

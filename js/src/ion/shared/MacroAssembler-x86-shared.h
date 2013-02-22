@@ -64,9 +64,6 @@ class MacroAssemblerX86Shared : public Assembler
         j(ConditionFromDoubleCondition(cond), label);
     }
 
-    void move32(const Address &address, const Register &dest) {
-        movl(Operand(address), dest);
-    }
     void move32(const Imm32 &imm, const Register &dest) {
         if (imm.value == 0)
             xorl(dest, dest);
@@ -219,10 +216,6 @@ class MacroAssemblerX86Shared : public Assembler
     void store16(const S &src, const T &dest) {
         movw(src, Operand(dest));
     }
-    void load16ZeroExtend_mask(const Address &src, Imm32 mask, const Register &dest) {
-        load32(src, dest);
-        and32(mask, dest);
-    }
     void load16SignExtend(const Address &src, const Register &dest) {
         movxwl(Operand(src), dest);
     }
@@ -357,14 +350,14 @@ class MacroAssemblerX86Shared : public Assembler
     // Builds an exit frame on the stack, with a return address to an internal
     // non-function. Returns offset to be passed to markSafepointAt().
     bool buildFakeExitFrame(const Register &scratch, uint32 *offset) {
-        DebugOnly<uint32> initialDepth = framePushed();
+        mozilla::DebugOnly<uint32> initialDepth = framePushed();
 
         CodeLabel *cl = new CodeLabel();
         if (!addCodeLabel(cl))
             return false;
         mov(cl->dest(), scratch);
 
-        uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_JS);
+        uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
         Push(Imm32(descriptor));
         Push(scratch);
 
@@ -376,14 +369,14 @@ class MacroAssemblerX86Shared : public Assembler
     }
 
     bool buildOOLFakeExitFrame(void *fakeReturnAddr) {
-        uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_JS);
+        uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
         Push(Imm32(descriptor));
         Push(ImmWord(fakeReturnAddr));
         return true;
     }
 
     void callWithExitFrame(IonCode *target) {
-        uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_JS);
+        uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
         Push(Imm32(descriptor));
         call(target);
     }

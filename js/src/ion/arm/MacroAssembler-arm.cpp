@@ -18,7 +18,7 @@ isValueDTRDCandidate(ValueOperand &val)
     // b) Aligned to a multiple of two.
     if ((val.typeReg().code() != (val.payloadReg().code() + 1)))
         return false;
-    else if ((val.payloadReg().code() & 1) != 0)
+    if ((val.payloadReg().code() & 1) != 0)
         return false;
     return true;
 }
@@ -65,18 +65,22 @@ MacroAssemblerARM::branchTruncateDouble(const FloatRegister &src, const Register
     ma_b(fail, Assembler::Equal);
 }
 
+void
+MacroAssemblerARM::inc64(AbsoluteAddress dest)
+{
+    JS_NOT_REACHED("NYI");
+}
+
 bool
 MacroAssemblerARM::alu_dbl(Register src1, Imm32 imm, Register dest, ALUOp op,
                            SetCond_ sc, Condition c)
 {
-    if ((sc == SetCond && ! condsAreSafe(op)) || !can_dbl(op)) {
+    if ((sc == SetCond && ! condsAreSafe(op)) || !can_dbl(op))
         return false;
-    }
     ALUOp interop = getDestVariant(op);
     Imm8::TwoImm8mData both = Imm8::encodeTwoImms(imm.value);
-    if (both.fst.invalid) {
+    if (both.fst.invalid)
         return false;
-    }
     // for the most part, there is no good reason to set the condition
     // codes for the first instruction.
     // we can do better things if the second instruction doesn't
@@ -86,7 +90,6 @@ MacroAssemblerARM::alu_dbl(Register src1, Imm32 imm, Register dest, ALUOp op,
     // unfortunately, it is horribly brittle.
     as_alu(ScratchRegister, src1, both.fst, interop, NoSetCond, c);
     as_alu(dest, ScratchRegister, both.snd, op, sc, c);
-    // we succeeded!
     return true;
 }
 
@@ -98,9 +101,8 @@ MacroAssemblerARM::ma_alu(Register src1, Imm32 imm, Register dest,
 {
     // As it turns out, if you ask for a compare-like instruction
     // you *probably* want it to set condition codes.
-    if (dest == InvalidReg) {
+    if (dest == InvalidReg)
         JS_ASSERT(sc == SetCond);
-    }
 
     // The operator gives us the ability to determine how
     // this can be used.
@@ -143,6 +145,7 @@ MacroAssemblerARM::ma_alu(Register src1, Imm32 imm, Register dest,
                 as_movw(dest, (uint16)imm.value, c);
                 return;
             }
+
             // If they asked for a mvn rfoo, imm, where ~imm fits into 16 bits
             // then do it.
             if (op == op_mvn && (((~imm.value) & ~ 0xffff) == 0)) {
@@ -150,6 +153,7 @@ MacroAssemblerARM::ma_alu(Register src1, Imm32 imm, Register dest,
                 as_movw(dest, (uint16)~imm.value, c);
                 return;
             }
+
             // TODO: constant dedup may enable us to add dest, r0, 23 *if*
             // we are attempting to load a constant that looks similar to one
             // that already exists
@@ -180,6 +184,7 @@ MacroAssemblerARM::ma_alu(Register src1, Imm32 imm, Register dest,
         // Both operations should take 1 cycle, where as add dest, tmp ror 4
         // takes two cycles to execute.
     }
+
     // Either a) this isn't ARMv7 b) this isn't a move
     // start by attempting to generate a two instruction form.
     // Some things cannot be made into two-inst forms correctly.
@@ -191,10 +196,12 @@ MacroAssemblerARM::ma_alu(Register src1, Imm32 imm, Register dest,
     // one instruction variant.
     if (alu_dbl(src1, imm, dest, op, sc, c))
         return;
+
     // And try with its negative.
     if (negOp != op_invalid &&
         alu_dbl(src1, negImm, dest, negOp, sc, c))
         return;
+
     // Well, damn. We can use two 16 bit mov's, then do the op
     // or we can do a single load from a pool then op.
     if (hasMOVWT()) {
@@ -207,7 +214,6 @@ MacroAssemblerARM::ma_alu(Register src1, Imm32 imm, Register dest,
         JS_NOT_REACHED("non-ARMv7 loading of immediates NYI.");
     }
     as_alu(dest, src1, O2Reg(ScratchRegister), op, sc, c);
-    // done!
 }
 
 void
@@ -336,43 +342,38 @@ MacroAssemblerARM::ma_rol(Register shift, Register src, Register dst)
     // Move not (dest <- ~src)
 
 void
-MacroAssemblerARM::ma_mvn(Imm32 imm, Register dest,
-                          SetCond_ sc, Assembler::Condition c)
+MacroAssemblerARM::ma_mvn(Imm32 imm, Register dest, SetCond_ sc, Assembler::Condition c)
 {
     ma_alu(InvalidReg, imm, dest, op_mvn, sc, c);
 }
 
 void
-MacroAssemblerARM::ma_mvn(Register src1, Register dest,
-                          SetCond_ sc, Assembler::Condition c)
+MacroAssemblerARM::ma_mvn(Register src1, Register dest, SetCond_ sc, Assembler::Condition c)
 {
     as_alu(dest, InvalidReg, O2Reg(src1), op_mvn, sc, c);
 }
 
 // Negate (dest <- -src), src is a register, rather than a general op2.
 void
-MacroAssemblerARM::ma_neg(Register src1, Register dest,
-                          SetCond_ sc, Assembler::Condition c)
+MacroAssemblerARM::ma_neg(Register src1, Register dest, SetCond_ sc, Assembler::Condition c)
 {
     as_rsb(dest, src1, Imm8(0), sc, c);
 }
 
-    // and
+// And.
 void
-MacroAssemblerARM::ma_and(Register src, Register dest,
-                          SetCond_ sc, Assembler::Condition c)
+MacroAssemblerARM::ma_and(Register src, Register dest, SetCond_ sc, Assembler::Condition c)
 {
     ma_and(dest, src, dest);
 }
 void
 MacroAssemblerARM::ma_and(Register src1, Register src2, Register dest,
-            SetCond_ sc, Assembler::Condition c)
+                          SetCond_ sc, Assembler::Condition c)
 {
     as_and(dest, src1, O2Reg(src2), sc, c);
 }
 void
-MacroAssemblerARM::ma_and(Imm32 imm, Register dest,
-                          SetCond_ sc, Assembler::Condition c)
+MacroAssemblerARM::ma_and(Imm32 imm, Register dest, SetCond_ sc, Assembler::Condition c)
 {
     ma_alu(dest, imm, dest, op_and, sc, c);
 }
@@ -384,18 +385,16 @@ MacroAssemblerARM::ma_and(Imm32 imm, Register src1, Register dest,
 }
 
 
-    // bit clear (dest <- dest & ~imm) or (dest <- src1 & ~src2)
+// Bit clear (dest <- dest & ~imm) or (dest <- src1 & ~src2).
 void
-MacroAssemblerARM::ma_bic(Imm32 imm, Register dest,
-                          SetCond_ sc, Assembler::Condition c)
+MacroAssemblerARM::ma_bic(Imm32 imm, Register dest, SetCond_ sc, Assembler::Condition c)
 {
     ma_alu(dest, imm, dest, op_bic, sc, c);
 }
 
-    // exclusive or
+// Exclusive or.
 void
-MacroAssemblerARM::ma_eor(Register src, Register dest,
-            SetCond_ sc, Assembler::Condition c)
+MacroAssemblerARM::ma_eor(Register src, Register dest, SetCond_ sc, Assembler::Condition c)
 {
     ma_eor(dest, src, dest, sc, c);
 }
@@ -406,8 +405,7 @@ MacroAssemblerARM::ma_eor(Register src1, Register src2, Register dest,
     as_eor(dest, src1, O2Reg(src2), sc, c);
 }
 void
-MacroAssemblerARM::ma_eor(Imm32 imm, Register dest,
-                          SetCond_ sc, Assembler::Condition c)
+MacroAssemblerARM::ma_eor(Imm32 imm, Register dest, SetCond_ sc, Assembler::Condition c)
 {
     ma_alu(dest, imm, dest, op_eor, sc, c);
 }
@@ -418,10 +416,9 @@ MacroAssemblerARM::ma_eor(Imm32 imm, Register src1, Register dest,
     ma_alu(src1, imm, dest, op_eor, sc, c);
 }
 
-    // or
+// Or.
 void
-MacroAssemblerARM::ma_orr(Register src, Register dest,
-                          SetCond_ sc, Assembler::Condition c)
+MacroAssemblerARM::ma_orr(Register src, Register dest, SetCond_ sc, Assembler::Condition c)
 {
     ma_orr(dest, src, dest, sc, c);
 }
@@ -432,20 +429,19 @@ MacroAssemblerARM::ma_orr(Register src1, Register src2, Register dest,
     as_orr(dest, src1, O2Reg(src2), sc, c);
 }
 void
-MacroAssemblerARM::ma_orr(Imm32 imm, Register dest,
-                          SetCond_ sc, Assembler::Condition c)
+MacroAssemblerARM::ma_orr(Imm32 imm, Register dest, SetCond_ sc, Assembler::Condition c)
 {
     ma_alu(dest, imm, dest, op_orr, sc, c);
 }
 void
 MacroAssemblerARM::ma_orr(Imm32 imm, Register src1, Register dest,
-                SetCond_ sc, Assembler::Condition c)
+                          SetCond_ sc, Assembler::Condition c)
 {
     ma_alu(src1, imm, dest, op_orr, sc, c);
 }
 
-    // arithmetic based ops
-    // add with carry
+// Arithmetic-based ops.
+// Add with carry.
 void
 MacroAssemblerARM::ma_adc(Imm32 imm, Register dest, SetCond_ sc, Condition c)
 {
@@ -462,7 +458,7 @@ MacroAssemblerARM::ma_adc(Register src1, Register src2, Register dest, SetCond_ 
     as_alu(dest, src1, O2Reg(src2), op_adc, sc, c);
 }
 
-    // add
+// Add.
 void
 MacroAssemblerARM::ma_add(Imm32 imm, Register dest, SetCond_ sc, Condition c)
 {
@@ -490,7 +486,7 @@ MacroAssemblerARM::ma_add(Register src1, Imm32 op, Register dest, SetCond_ sc, C
     ma_alu(src1, op, dest, op_add, sc, c);
 }
 
-    // subtract with carry
+// Subtract with carry.
 void
 MacroAssemblerARM::ma_sbc(Imm32 imm, Register dest, SetCond_ sc, Condition c)
 {
@@ -507,7 +503,7 @@ MacroAssemblerARM::ma_sbc(Register src1, Register src2, Register dest, SetCond_ 
     as_alu(dest, src1, O2Reg(src2), op_sbc, sc, c);
 }
 
-    // subtract
+// Subtract.
 void
 MacroAssemblerARM::ma_sub(Imm32 imm, Register dest, SetCond_ sc, Condition c)
 {
@@ -534,7 +530,7 @@ MacroAssemblerARM::ma_sub(Register src1, Imm32 op, Register dest, SetCond_ sc, C
     ma_alu(src1, op, dest, op_sub, sc, c);
 }
 
-    // reverse subtract
+// Severse subtract.
 void
 MacroAssemblerARM::ma_rsb(Imm32 imm, Register dest, SetCond_ sc, Condition c)
 {
@@ -556,7 +552,7 @@ MacroAssemblerARM::ma_rsb(Register src1, Imm32 op2, Register dest, SetCond_ sc, 
     ma_alu(src1, op2, dest, op_rsb, sc, c);
 }
 
-    // reverse subtract with carry
+// Reverse subtract with carry.
 void
 MacroAssemblerARM::ma_rsc(Imm32 imm, Register dest, SetCond_ sc, Condition c)
 {
@@ -573,8 +569,8 @@ MacroAssemblerARM::ma_rsc(Register src1, Register src2, Register dest, SetCond_ 
     as_alu(dest, src1, O2Reg(src2), op_rsc, sc, c);
 }
 
-    // compares/tests
-    // compare negative (sets condition codes as src1 + src2 would)
+// Compares/tests.
+// Compare negative (sets condition codes as src1 + src2 would).
 void
 MacroAssemblerARM::ma_cmn(Register src1, Imm32 imm, Condition c)
 {
@@ -591,7 +587,7 @@ MacroAssemblerARM::ma_cmn(Register src1, Operand op, Condition c)
     JS_NOT_REACHED("Feature NYI");
 }
 
-// compare (src - src2)
+// Compare (src - src2).
 void
 MacroAssemblerARM::ma_cmp(Register src1, Imm32 imm, Condition c)
 {
@@ -632,7 +628,7 @@ MacroAssemblerARM::ma_cmp(Register src1, Register src2, Condition c)
     as_cmp(src1, O2Reg(src2), c);
 }
 
-    // test for equality, (src1^src2)
+// Test for equality, (src1^src2).
 void
 MacroAssemblerARM::ma_teq(Register src1, Imm32 imm, Condition c)
 {
@@ -650,7 +646,7 @@ MacroAssemblerARM::ma_teq(Register src1, Operand op, Condition c)
 }
 
 
-// test (src1 & src2)
+// Test (src1 & src2).
 void
 MacroAssemblerARM::ma_tst(Register src1, Imm32 imm, Condition c)
 {
@@ -688,11 +684,14 @@ MacroAssemblerARM::ma_check_mul(Register src1, Register src2, Register dest, Con
     if (cond == Equal || cond == NotEqual) {
         as_smull(ScratchRegister, dest, src1, src2, SetCond);
         return cond;
-    } else if (cond == Overflow) {
+    }
+    
+    if (cond == Overflow) {
         as_smull(ScratchRegister, dest, src1, src2);
         as_cmp(ScratchRegister, asr(dest, 31));
         return NotEqual;
     }
+
     JS_NOT_REACHED("Condition NYI");
     return Always;
 
@@ -705,11 +704,14 @@ MacroAssemblerARM::ma_check_mul(Register src1, Imm32 imm, Register dest, Conditi
     if (cond == Equal || cond == NotEqual) {
         as_smull(ScratchRegister, dest, ScratchRegister, src1, SetCond);
         return cond;
-    } else if (cond == Overflow) {
+    }
+    
+    if (cond == Overflow) {
         as_smull(ScratchRegister, dest, ScratchRegister, src1);
         as_cmp(ScratchRegister, asr(dest, 31));
         return NotEqual;
     }
+
     JS_NOT_REACHED("Condition NYI");
     return Always;
 }
@@ -773,8 +775,8 @@ MacroAssemblerARM::ma_mod_mask(Register src, Register dest, Register hold, int32
 
 }
 
-// memory
-// shortcut for when we know we're transferring 32 bits of data
+// Memory.
+// Shortcut for when we know we're transferring 32 bits of data.
 void
 MacroAssemblerARM::ma_dtr(LoadStore ls, Register rn, Imm32 offset, Register rt,
                           Index mode, Assembler::Condition cc)
@@ -850,7 +852,8 @@ MacroAssemblerARM::ma_ldrsb(EDtrAddr addr, Register rt, Index mode, Condition cc
     as_extdtr(IsLoad, 8, true, mode, rt, addr, cc);
 }
 void
-MacroAssemblerARM::ma_ldrd(EDtrAddr addr, Register rt, DebugOnly<Register> rt2, Index mode, Condition cc)
+MacroAssemblerARM::ma_ldrd(EDtrAddr addr, Register rt, DebugOnly<Register> rt2,
+                           Index mode, Condition cc)
 {
     JS_ASSERT((rt.code() & 1) == 0);
     JS_ASSERT(rt2.value.code() == rt.code() + 1);
@@ -868,7 +871,7 @@ MacroAssemblerARM::ma_strb(Register rt, DTRAddr addr, Index mode, Condition cc)
     as_dtr(IsStore, 8, mode, rt, addr, cc);
 }
 
-// specialty for moving N bits of data, where n == 8,16,32,64
+// Specialty for moving N bits of data, where n == 8,16,32,64.
 void
 MacroAssemblerARM::ma_dataTransferN(LoadStore ls, int size, bool IsSigned,
                           Register rn, Register rm, Register rt,
@@ -891,6 +894,7 @@ MacroAssemblerARM::ma_dataTransferN(LoadStore ls, int size, bool IsSigned,
             as_dtr(ls, size, mode, rt, DTRAddr(rn, DtrOffImm(off)), cc);
             return;
         }
+
         // We cannot encode this offset in a a single ldr. For mode == index,
         // try to encode it as |add scratch, base, imm; ldr dest, [scratch, +offset]|.
         // This does not wark for mode == PreIndex or mode == PostIndex.
@@ -929,6 +933,7 @@ MacroAssemblerARM::ma_dataTransferN(LoadStore ls, int size, bool IsSigned,
             as_dtr(IsLoad, size, Offset, pc, DTRAddr(ScratchRegister, DtrOffImm(0)), cc);
             return;
         }
+
         int bottom = off & 0xfff;
         int neg_bottom = 0x1000 - bottom;
         // For a regular offset, base == ScratchRegister does what we want.  Modify the
@@ -1031,7 +1036,7 @@ MacroAssemblerARM::ma_pop(Register r)
 void
 MacroAssemblerARM::ma_push(Register r)
 {
-    // pushing sp is not well defined, use two instructions
+    // Pushing sp is not well defined: use two instructions.
     if (r == sp) {
         ma_mov(sp, ScratchRegister);
         r = ScratchRegister;
@@ -1054,7 +1059,7 @@ MacroAssemblerARM::ma_vpush(VFPRegister r)
     finishFloatTransfer();
 }
 
-// branches when done from within arm-specific code
+// Branches when done from within arm-specific code.
 void
 MacroAssemblerARM::ma_b(Label *dest, Assembler::Condition c, bool isPatchable)
 {
@@ -1067,7 +1072,7 @@ MacroAssemblerARM::ma_bx(Register dest, Assembler::Condition c)
     as_bx(dest, c);
 }
 
-Assembler::RelocBranchStyle
+static Assembler::RelocBranchStyle
 b_type()
 {
     return Assembler::B_LDR;
@@ -1101,15 +1106,15 @@ MacroAssemblerARM::ma_b(void *target, Relocation::Kind reloc, Assembler::Conditi
     }
 }
 
-// this is almost NEVER necessary, we'll basically never be calling a label
-// except, possibly in the crazy bailout-table case.
+// This is almost NEVER necessary: we'll basically never be calling a label,
+// except possibly in the crazy bailout-table case.
 void
 MacroAssemblerARM::ma_bl(Label *dest, Assembler::Condition c)
 {
     as_bl(dest, c);
 }
 
-//VFP/ALU
+// VFP/ALU
 void
 MacroAssemblerARM::ma_vadd(FloatRegister src1, FloatRegister src2, FloatRegister dst)
 {
@@ -1135,25 +1140,31 @@ MacroAssemblerARM::ma_vdiv(FloatRegister src1, FloatRegister src2, FloatRegister
 }
 
 void
-MacroAssemblerARM::ma_vmov(FloatRegister src, FloatRegister dest)
+MacroAssemblerARM::ma_vmov(FloatRegister src, FloatRegister dest, Condition cc)
 {
-    as_vmov(dest, src);
+    as_vmov(dest, src, cc);
 }
 
 void
-MacroAssemblerARM::ma_vneg(FloatRegister src, FloatRegister dest)
+MacroAssemblerARM::ma_vneg(FloatRegister src, FloatRegister dest, Condition cc)
 {
-    as_vneg(dest, src);
+    as_vneg(dest, src, cc);
 }
 
 void
-MacroAssemblerARM::ma_vabs(FloatRegister src, FloatRegister dest)
+MacroAssemblerARM::ma_vabs(FloatRegister src, FloatRegister dest, Condition cc)
 {
-    as_vabs(dest, src);
+    as_vabs(dest, src, cc);
 }
 
 void
-MacroAssemblerARM::ma_vimm(double value, FloatRegister dest)
+MacroAssemblerARM::ma_vsqrt(FloatRegister src, FloatRegister dest, Condition cc)
+{
+    as_vsqrt(dest, src, cc);
+}
+
+void
+MacroAssemblerARM::ma_vimm(double value, FloatRegister dest, Condition cc)
 {
     union DoublePun {
         struct {
@@ -1166,79 +1177,81 @@ MacroAssemblerARM::ma_vimm(double value, FloatRegister dest)
         double d;
     } dpun;
     dpun.d = value;
+
     if ((dpun.s.lo) == 0) {
         if (dpun.s.hi == 0) {
-            // to zero a register, load 1.0, then execute dN <- dN - dN
+            // To zero a register, load 1.0, then execute dN <- dN - dN
             VFPImm dblEnc(0x3FF00000);
-            as_vimm(dest, dblEnc);
-            as_vsub(dest, dest, dest);
+            as_vimm(dest, dblEnc, cc);
+            as_vsub(dest, dest, dest, cc);
             return;
         }
+
         VFPImm dblEnc(dpun.s.hi);
         if (dblEnc.isValid()) {
-            as_vimm(dest, dblEnc);
+            as_vimm(dest, dblEnc, cc);
             return;
         }
 
     }
-    // fall back to putting the value in a pool.
-    as_FImm64Pool(dest, value);
+    // Fall back to putting the value in a pool.
+    as_FImm64Pool(dest, value, NULL, cc);
 }
 
 void
-MacroAssemblerARM::ma_vcmp(FloatRegister src1, FloatRegister src2)
+MacroAssemblerARM::ma_vcmp(FloatRegister src1, FloatRegister src2, Condition cc)
 {
-    as_vcmp(VFPRegister(src1), VFPRegister(src2));
+    as_vcmp(VFPRegister(src1), VFPRegister(src2), cc);
 }
 void
-MacroAssemblerARM::ma_vcmpz(FloatRegister src1)
+MacroAssemblerARM::ma_vcmpz(FloatRegister src1, Condition cc)
 {
-    as_vcmpz(VFPRegister(src1));
-}
-
-void
-MacroAssemblerARM::ma_vcvt_F64_I32(FloatRegister src, FloatRegister dest)
-{
-    as_vcvt(VFPRegister(dest).sintOverlay(), VFPRegister(src));
-}
-void
-MacroAssemblerARM::ma_vcvt_F64_U32(FloatRegister src, FloatRegister dest)
-{
-    as_vcvt(VFPRegister(dest).uintOverlay(), VFPRegister(src));
-}
-void
-MacroAssemblerARM::ma_vcvt_I32_F64(FloatRegister dest, FloatRegister src)
-{
-    as_vcvt(VFPRegister(dest), VFPRegister(src).sintOverlay());
-}
-void
-MacroAssemblerARM::ma_vcvt_U32_F64(FloatRegister dest, FloatRegister src)
-{
-    as_vcvt(VFPRegister(dest), VFPRegister(src).uintOverlay());
+    as_vcmpz(VFPRegister(src1), cc);
 }
 
 void
-MacroAssemblerARM::ma_vxfer(FloatRegister src, Register dest)
+MacroAssemblerARM::ma_vcvt_F64_I32(FloatRegister src, FloatRegister dest, Condition cc)
 {
-    as_vxfer(dest, InvalidReg, VFPRegister(src).singleOverlay(), FloatToCore);
+    as_vcvt(VFPRegister(dest).sintOverlay(), VFPRegister(src), false, cc);
+}
+void
+MacroAssemblerARM::ma_vcvt_F64_U32(FloatRegister src, FloatRegister dest, Condition cc)
+{
+    as_vcvt(VFPRegister(dest).uintOverlay(), VFPRegister(src), false, cc);
+}
+void
+MacroAssemblerARM::ma_vcvt_I32_F64(FloatRegister dest, FloatRegister src, Condition cc)
+{
+    as_vcvt(VFPRegister(dest), VFPRegister(src).sintOverlay(), false, cc);
+}
+void
+MacroAssemblerARM::ma_vcvt_U32_F64(FloatRegister dest, FloatRegister src, Condition cc)
+{
+    as_vcvt(VFPRegister(dest), VFPRegister(src).uintOverlay(), false, cc);
 }
 
 void
-MacroAssemblerARM::ma_vxfer(FloatRegister src, Register dest1, Register dest2)
+MacroAssemblerARM::ma_vxfer(FloatRegister src, Register dest, Condition cc)
 {
-    as_vxfer(dest1, dest2, VFPRegister(src), FloatToCore);
+    as_vxfer(dest, InvalidReg, VFPRegister(src).singleOverlay(), FloatToCore, cc);
 }
 
 void
-MacroAssemblerARM::ma_vxfer(VFPRegister src, Register dest)
+MacroAssemblerARM::ma_vxfer(FloatRegister src, Register dest1, Register dest2, Condition cc)
 {
-    as_vxfer(dest, InvalidReg, src, FloatToCore);
+    as_vxfer(dest1, dest2, VFPRegister(src), FloatToCore, cc);
 }
 
 void
-MacroAssemblerARM::ma_vxfer(VFPRegister src, Register dest1, Register dest2)
+MacroAssemblerARM::ma_vxfer(VFPRegister src, Register dest, Condition cc)
 {
-    as_vxfer(dest1, dest2, src, FloatToCore);
+    as_vxfer(dest, InvalidReg, src, FloatToCore, cc);
+}
+
+void
+MacroAssemblerARM::ma_vxfer(VFPRegister src, Register dest1, Register dest2, Condition cc)
+{
+    as_vxfer(dest1, dest2, src, FloatToCore, cc);
 }
 
 void
@@ -1251,6 +1264,7 @@ MacroAssemblerARM::ma_vdtr(LoadStore ls, const Operand &addr, VFPRegister rt, Co
         as_vdtr(ls, rt, addr.toVFPAddr(), cc);
         return;
     }
+
     // We cannot encode this offset in a a single ldr.  Try to encode it as
     // an add scratch, base, imm; ldr dest, [scratch, +offset].
     int bottom = off & (0xff << 2);
@@ -1289,39 +1303,39 @@ MacroAssemblerARM::ma_vdtr(LoadStore ls, const Operand &addr, VFPRegister rt, Co
 }
 
 void
-MacroAssemblerARM::ma_vldr(VFPAddr addr, VFPRegister dest)
+MacroAssemblerARM::ma_vldr(VFPAddr addr, VFPRegister dest, Condition cc)
 {
-    as_vdtr(IsLoad, dest, addr);
+    as_vdtr(IsLoad, dest, addr, cc);
 }
 void
-MacroAssemblerARM::ma_vldr(const Operand &addr, VFPRegister dest)
+MacroAssemblerARM::ma_vldr(const Operand &addr, VFPRegister dest, Condition cc)
 {
-    ma_vdtr(IsLoad, addr, dest);
-}
-
-void
-MacroAssemblerARM::ma_vstr(VFPRegister src, VFPAddr addr)
-{
-    as_vdtr(IsStore, src, addr);
+    ma_vdtr(IsLoad, addr, dest, cc);
 }
 
 void
-MacroAssemblerARM::ma_vstr(VFPRegister src, const Operand &addr)
+MacroAssemblerARM::ma_vstr(VFPRegister src, VFPAddr addr, Condition cc)
 {
-    ma_vdtr(IsStore, addr, src);
+    as_vdtr(IsStore, src, addr, cc);
+}
+
+void
+MacroAssemblerARM::ma_vstr(VFPRegister src, const Operand &addr, Condition cc)
+{
+    ma_vdtr(IsStore, addr, src, cc);
 }
 void
-MacroAssemblerARM::ma_vstr(VFPRegister src, Register base, Register index, int32 shift)
+MacroAssemblerARM::ma_vstr(VFPRegister src, Register base, Register index, int32 shift, Condition cc)
 {
-    as_add(ScratchRegister, base, lsl(index, shift));
-    ma_vstr(src, Operand(ScratchRegister, 0));
+    as_add(ScratchRegister, base, lsl(index, shift), NoSetCond, cc);
+    ma_vstr(src, Operand(ScratchRegister, 0), cc);
 }
 
 bool
 MacroAssemblerARMCompat::buildFakeExitFrame(const Register &scratch, uint32 *offset)
 {
     DebugOnly<uint32> initialDepth = framePushed();
-    uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_JS);
+    uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
 
     Push(Imm32(descriptor)); // descriptor_
 
@@ -1347,12 +1361,12 @@ bool
 MacroAssemblerARMCompat::buildOOLFakeExitFrame(void *fakeReturnAddr)
 {
     DebugOnly<uint32> initialDepth = framePushed();
-    uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_JS);
+    uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
 
     Push(Imm32(descriptor)); // descriptor_
 
     enterNoPool();
-    push(Imm32((uint32) fakeReturnAddr));
+    Push(Imm32((uint32) fakeReturnAddr));
     leaveNoPool();
 
     return true;
@@ -1361,7 +1375,7 @@ MacroAssemblerARMCompat::buildOOLFakeExitFrame(void *fakeReturnAddr)
 void
 MacroAssemblerARMCompat::callWithExitFrame(IonCode *target)
 {
-    uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_JS);
+    uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
     Push(Imm32(descriptor)); // descriptor
 
     addPendingJump(m_buffer.nextOffset(), target->raw(), Relocation::IONCODE);
@@ -1373,7 +1387,7 @@ void
 MacroAssemblerARMCompat::callWithExitFrame(IonCode *target, Register dynStack)
 {
     ma_add(Imm32(framePushed()), dynStack);
-    makeFrameDescriptor(dynStack, IonFrame_JS);
+    makeFrameDescriptor(dynStack, IonFrame_OptimizedJS);
     Push(dynStack); // descriptor
 
     addPendingJump(m_buffer.nextOffset(), target->raw(), Relocation::IONCODE);
@@ -1474,11 +1488,6 @@ MacroAssemblerARMCompat::move32(const Imm32 &imm, const Register &dest)
     ma_mov(imm, dest);
 }
 void
-MacroAssemblerARMCompat::move32(const Address &src, const Register &dest)
-{
-    movePtr(src, dest);
-}
-void
 MacroAssemblerARMCompat::movePtr(const Register &src, const Register &dest)
 {
     ma_mov(src, dest);
@@ -1492,11 +1501,6 @@ void
 MacroAssemblerARMCompat::movePtr(const ImmGCPtr &imm, const Register &dest)
 {
     ma_mov(imm, dest);
-}
-void
-MacroAssemblerARMCompat::movePtr(const Address &src, const Register &dest)
-{
-    loadPtr(src, dest);
 }
 void
 MacroAssemblerARMCompat::load8ZeroExtend(const Address &address, const Register &dest)
@@ -1535,6 +1539,7 @@ MacroAssemblerARMCompat::load8SignExtend(const BaseIndex &src, const Register &d
         ma_lsl(Imm32::ShiftOf(src.scale), index, ScratchRegister);
         index = ScratchRegister;
     }
+
     if (src.offset != 0) {
         if (index != ScratchRegister) {
             ma_mov(index, ScratchRegister);
@@ -1552,13 +1557,6 @@ MacroAssemblerARMCompat::load16ZeroExtend(const Address &address, const Register
 }
 
 void
-MacroAssemblerARMCompat::load16ZeroExtend_mask(const Address &address, Imm32 mask, const Register &dest)
-{
-    load16ZeroExtend(address, dest);
-    ma_and(mask, dest, dest);
-}
-
-void
 MacroAssemblerARMCompat::load16ZeroExtend(const BaseIndex &src, const Register &dest)
 {
     Register index = src.index;
@@ -1568,6 +1566,7 @@ MacroAssemblerARMCompat::load16ZeroExtend(const BaseIndex &src, const Register &
         ma_lsl(Imm32::ShiftOf(src.scale), index, ScratchRegister);
         index = ScratchRegister;
     }
+
     if (src.offset != 0) {
         if (index != ScratchRegister) {
             ma_mov(index, ScratchRegister);
@@ -1594,6 +1593,7 @@ MacroAssemblerARMCompat::load16SignExtend(const BaseIndex &src, const Register &
         ma_lsl(Imm32::ShiftOf(src.scale), index, ScratchRegister);
         index = ScratchRegister;
     }
+
     if (src.offset != 0) {
         if (index != ScratchRegister) {
             ma_mov(index, ScratchRegister);
@@ -1766,6 +1766,7 @@ MacroAssemblerARMCompat::store16(const Register &src, const BaseIndex &address)
         ma_lsl(Imm32::ShiftOf(address.scale), index, ScratchRegister);
         index = ScratchRegister;
     }
+
     if (address.offset != 0) {
         ma_add(index, Imm32(address.offset), ScratchRegister);
         index = ScratchRegister;
@@ -1951,6 +1952,7 @@ MacroAssemblerARMCompat::branchDouble(DoubleCondition cond, const FloatRegister 
         bind(&unordered);
         return;
     }
+
     if (cond == DoubleEqualOrUnordered) {
         ma_b(label, VFP_Unordered);
         ma_b(label, VFP_Equal);
@@ -1962,12 +1964,10 @@ MacroAssemblerARMCompat::branchDouble(DoubleCondition cond, const FloatRegister 
 
 // higher level tag testing code
 Operand ToPayload(Operand base) {
-    return Operand(Register::FromCode(base.base()),
-                   base.disp());
+    return Operand(Register::FromCode(base.base()), base.disp());
 }
 Operand ToType(Operand base) {
-    return Operand(Register::FromCode(base.base()),
-                   base.disp() + sizeof(void *));
+    return Operand(Register::FromCode(base.base()), base.disp() + sizeof(void *));
 }
 
 Assembler::Condition
@@ -1989,9 +1989,7 @@ Assembler::Condition
 MacroAssemblerARMCompat::testDouble(Assembler::Condition cond, const ValueOperand &value)
 {
     JS_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
-    Assembler::Condition actual = (cond == Equal)
-        ? Below
-        : AboveOrEqual;
+    Assembler::Condition actual = (cond == Equal) ? Below : AboveOrEqual;
     ma_cmp(value.typeReg(), ImmTag(JSVAL_TAG_CLEAR));
     return actual;
 }
@@ -2215,9 +2213,8 @@ MacroAssemblerARMCompat::unboxValue(const ValueOperand &src, AnyRegister dest)
         bind(&notInt32);
         unboxDouble(src, dest.fpu());
         bind(&end);
-    } else {
-        if (src.payloadReg() != dest.gpr())
-            as_mov(dest.gpr(), O2Reg(src.payloadReg()));
+    } else if (src.payloadReg() != dest.gpr()) {
+        as_mov(dest.gpr(), O2Reg(src.payloadReg()));
     }
 }
 
@@ -2230,8 +2227,7 @@ MacroAssemblerARMCompat::unboxPrivate(const ValueOperand &src, Register dest)
 void
 MacroAssemblerARMCompat::boxDouble(const FloatRegister &src, const ValueOperand &dest)
 {
-    as_vxfer(dest.payloadReg(), dest.typeReg(),
-             VFPRegister(src), FloatToCore);
+    as_vxfer(dest.payloadReg(), dest.typeReg(), VFPRegister(src), FloatToCore);
 }
 
 void
@@ -2502,11 +2498,10 @@ void
 MacroAssemblerARMCompat::storePayload(const Value &val, Operand dest)
 {
     jsval_layout jv = JSVAL_TO_IMPL(val);
-    if (val.isMarkable()) {
+    if (val.isMarkable())
         ma_mov(ImmGCPtr((gc::Cell *)jv.s.payload.ptr), lr);
-    } else {
+    else
         ma_mov(Imm32(jv.s.payload.i32), lr);
-    }
     ma_str(lr, ToPayload(dest));
 }
 void
@@ -2524,11 +2519,10 @@ void
 MacroAssemblerARMCompat::storePayload(const Value &val, Register base, Register index, int32 shift)
 {
     jsval_layout jv = JSVAL_TO_IMPL(val);
-    if (val.isMarkable()) {
+    if (val.isMarkable())
         ma_mov(ImmGCPtr((gc::Cell *)jv.s.payload.ptr), ScratchRegister);
-    } else {
+    else
         ma_mov(Imm32(jv.s.payload.i32), ScratchRegister);
-    }
     JS_STATIC_ASSERT(NUNBOX32_PAYLOAD_OFFSET == 0);
     // If NUNBOX32_PAYLOAD_OFFSET is not zero, the memory operand [base + index << shift + imm]
     // cannot be encoded into a single instruction, and cannot be integrated into the as_dtr call.
@@ -2717,11 +2711,11 @@ MacroAssemblerARMCompat::passABIArg(const FloatRegister &freg)
 void MacroAssemblerARMCompat::checkStackAlignment()
 {
 #ifdef DEBUG
-        Label good;
-        ma_tst(sp, Imm32(StackAlignment - 1));
-        ma_b(&good, Equal);
-        breakpoint();
-        bind(&good);
+    Label good;
+    ma_tst(sp, Imm32(StackAlignment - 1));
+    ma_b(&good, Equal);
+    breakpoint();
+    bind(&good);
 #endif
 }
 
@@ -2749,9 +2743,8 @@ MacroAssemblerARMCompat::callWithABI(void *fun, Result result)
         emitter.finish();
     }
     for (int i = 0; i < 2; i++) {
-        if (!floatArgsInGPR[i].isInvalid()) {
+        if (!floatArgsInGPR[i].isInvalid())
             ma_vxfer(floatArgsInGPR[i], Register::FromCode(i*2), Register::FromCode(i*2+1));
-        }
     }
     checkStackAlignment();
     ma_call(fun);

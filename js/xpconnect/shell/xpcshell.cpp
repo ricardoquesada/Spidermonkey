@@ -459,8 +459,12 @@ Load(JSContext *cx, unsigned argc, jsval *vp)
                            filename.ptr());
             return false;
         }
-        JSScript *script = JS_CompileUTF8FileHandleForPrincipals(cx, obj, filename.ptr(),
-                                                                 file, gJSPrincipals);
+        JS::CompileOptions options(cx);
+        options.setUTF8(true)
+               .setFileAndLine(filename.ptr(), 1)
+               .setPrincipals(gJSPrincipals);
+        js::RootedObject rootedObj(cx, obj);
+        JSScript *script = JS::Compile(cx, rootedObj, options, file);
         fclose(file);
         if (!script)
             return false;
@@ -686,7 +690,6 @@ static const struct JSOption {
     uint32_t    flag;
 } js_options[] = {
     {"atline",          JSOPTION_ATLINE},
-    {"relimit",         JSOPTION_RELIMIT},
     {"strict",          JSOPTION_STRICT},
     {"werror",          JSOPTION_WERROR},
     {"allow_xml",       JSOPTION_ALLOW_XML},
@@ -792,6 +795,24 @@ Parent(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
+static JSBool
+Atob(JSContext *cx, unsigned argc, jsval *vp)
+{
+    if (!argc)
+        return true;
+
+    return xpc::Base64Decode(cx, JS_ARGV(cx, vp)[0], &JS_RVAL(cx, vp));
+}
+
+static JSBool
+Btoa(JSContext *cx, unsigned argc, jsval *vp)
+{
+  if (!argc)
+      return true;
+
+  return xpc::Base64Encode(cx, JS_ARGV(cx, vp)[0], &JS_RVAL(cx, vp));
+}
+
 static JSFunctionSpec glob_functions[] = {
     JS_FS("print",           Print,          0,0),
     JS_FS("readline",        ReadLine,       1,0),
@@ -806,12 +827,14 @@ static JSFunctionSpec glob_functions[] = {
     JS_FS("gczeal",          GCZeal,         1,0),
 #endif
     JS_FS("options",         Options,        0,0),
-    JS_FN("parent",     Parent,         1,0),
+    JS_FN("parent",          Parent,         1,0),
 #ifdef DEBUG
     JS_FS("dumpHeap",        DumpHeap,       5,0),
 #endif
     JS_FS("sendCommand",     SendCommand,    1,0),
     JS_FS("getChildGlobalObject", GetChildGlobalObject, 0,0),
+    JS_FS("atob",            Atob,           1,0),
+    JS_FS("btoa",            Btoa,           1,0),
     JS_FS_END
 };
 
@@ -1009,9 +1032,12 @@ ProcessFile(JSContext *cx, JSObject *obj, const char *filename, FILE *file,
         ungetc(ch, file);
         DoBeginRequest(cx);
 
-        script = JS_CompileUTF8FileHandleForPrincipals(cx, obj, filename, file,
-                                                       gJSPrincipals);
-
+        JS::CompileOptions options(cx);
+        options.setUTF8(true)
+               .setFileAndLine(filename, 1)
+               .setPrincipals(gJSPrincipals);
+        js::RootedObject rootedObj(cx, obj);
+        script = JS::Compile(cx, rootedObj, options, file);
         if (script && !compileOnly)
             (void)JS_ExecuteScript(cx, obj, script, &result);
         DoEndRequest(cx);
@@ -1040,7 +1066,7 @@ ProcessFile(JSContext *cx, JSObject *obj, const char *filename, FILE *file,
             }
             bufp += strlen(bufp);
             lineno++;
-        } while (!JS_BufferIsCompilableUnit(cx, false, obj, buffer, strlen(buffer)));
+        } while (!JS_BufferIsCompilableUnit(cx, obj, buffer, strlen(buffer)));
 
         DoBeginRequest(cx);
         /* Clear any pending exception from previous failed compiles.  */
@@ -1449,14 +1475,6 @@ FullTrustSecMan::CheckSameOriginURI(nsIURI *aSourceURI, nsIURI *aTargetURI,
     return NS_OK;
 }
 
-/* [noscript] nsIPrincipal getPrincipalFromContext (in JSContextPtr cx); */
-NS_IMETHODIMP
-FullTrustSecMan::GetPrincipalFromContext(JSContext * cx, nsIPrincipal **_retval)
-{
-    NS_IF_ADDREF(*_retval = mSystemPrincipal);
-    return *_retval ? NS_OK : NS_ERROR_FAILURE;
-}
-
 /* [noscript] nsIPrincipal getChannelPrincipal (in nsIChannel aChannel); */
 NS_IMETHODIMP
 FullTrustSecMan::GetChannelPrincipal(nsIChannel *aChannel, nsIPrincipal **_retval)
@@ -1476,13 +1494,6 @@ FullTrustSecMan::IsSystemPrincipal(nsIPrincipal *aPrincipal, bool *_retval)
 NS_IMETHODIMP_(nsIPrincipal *)
 FullTrustSecMan::GetCxSubjectPrincipal(JSContext *cx)
 {
-    return mSystemPrincipal;
-}
-
-NS_IMETHODIMP_(nsIPrincipal *)
-FullTrustSecMan::GetCxSubjectPrincipalAndFrame(JSContext *cx, JSStackFrame **fp)
-{
-    *fp = nullptr;
     return mSystemPrincipal;
 }
 
@@ -1828,7 +1839,7 @@ main(int argc, char **argv, char **envp)
         nsresult rv = rtsvc->GetBackstagePass(getter_AddRefs(backstagePass));
         if (NS_FAILED(rv)) {
             fprintf(gErrFile, "+++ Failed to get backstage pass from rtsvc: %8x\n",
-                    rv);
+                    static_cast<uint32_t>(rv));
             return 1;
         }
 
@@ -2066,6 +2077,13 @@ XPCShellDirProvider::GetFiles(const char *prop, nsISimpleEnumerator* *result)
             NS_FAILED(file->AppendNative(NS_LITERAL_CSTRING("preferences"))))
             return NS_ERROR_FAILURE;
 
+        dirs.AppendObject(file);
+        return NS_NewArrayEnumerator(result, dirs);
+    } else if (!strcmp(prop, NS_APP_PLUGINS_DIR_LIST)) {
+        nsCOMPtr<nsIFile> file;
+        mGREDir->Clone(getter_AddRefs(file));
+        file->AppendNative(NS_LITERAL_CSTRING("plugins"));
+        nsCOMArray<nsIFile> dirs;
         dirs.AppendObject(file);
         return NS_NewArrayEnumerator(result, dirs);
     }

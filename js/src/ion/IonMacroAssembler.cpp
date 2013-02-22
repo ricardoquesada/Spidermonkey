@@ -88,7 +88,7 @@ MacroAssembler::PushRegsInMask(RegisterSet set)
 }
 
 void
-MacroAssembler::PopRegsInMask(RegisterSet set)
+MacroAssembler::PopRegsInMaskIgnore(RegisterSet set, RegisterSet ignore)
 {
     size_t diff = set.gprs().size() * STACK_SLOT_SIZE +
                   set.fpus().size() * sizeof(double);
@@ -96,11 +96,13 @@ MacroAssembler::PopRegsInMask(RegisterSet set)
 
     for (GeneralRegisterIterator iter(set.gprs()); iter.more(); iter++) {
         diff -= STACK_SLOT_SIZE;
-        loadPtr(Address(StackPointer, diff), *iter);
+        if (!ignore.has(*iter))
+            loadPtr(Address(StackPointer, diff), *iter);
     }
     for (FloatRegisterIterator iter(set.fpus()); iter.more(); iter++) {
         diff -= sizeof(double);
-        loadDouble(Address(StackPointer, diff), *iter);
+        if (!ignore.has(*iter))
+            loadDouble(Address(StackPointer, diff), *iter);
     }
 
     freeStack(reserved);
@@ -424,7 +426,7 @@ MacroAssembler::maybeRemoveOsrFrame(Register scratch)
     // indicative of working inside an existing bailout. In this case, remove
     // the OSR frame, so we don't explode the stack with repeated bailouts.
     Label osrRemoved;
-    movePtr(Address(StackPointer, IonCommonFrameLayout::offsetOfDescriptor()), scratch);
+    loadPtr(Address(StackPointer, IonCommonFrameLayout::offsetOfDescriptor()), scratch);
     and32(Imm32(FRAMETYPE_MASK), scratch);
     branch32(Assembler::NotEqual, scratch, Imm32(IonFrame_Osr), &osrRemoved);
     addPtr(Imm32(sizeof(IonOsrFrameLayout)), StackPointer);
@@ -524,7 +526,7 @@ MacroAssembler::generateBailoutTail(Register scratch)
 
     branch32(Equal, ReturnReg, Imm32(BAILOUT_RETURN_BOUNDS_CHECK), &boundscheck);
     branch32(Equal, ReturnReg, Imm32(BAILOUT_RETURN_OVERRECURSED), &overrecursed);
-    branch32(Equal, ReturnReg, Imm32(BAILOUT_RETURN_INVALIDATE), &invalidate);
+    branch32(Equal, ReturnReg, Imm32(BAILOUT_RETURN_SHAPE_GUARD), &invalidate);
 
     // Fall-through: cached shape guard failure.
     {
@@ -539,7 +541,7 @@ MacroAssembler::generateBailoutTail(Register scratch)
     bind(&invalidate);
     {
         setupUnalignedABICall(0, scratch);
-        callWithABI(JS_FUNC_TO_DATA_PTR(void *, ForceInvalidation));
+        callWithABI(JS_FUNC_TO_DATA_PTR(void *, ShapeGuardFailure));
 
         branchTest32(Zero, ReturnReg, ReturnReg, &exception);
         jump(&interpret);

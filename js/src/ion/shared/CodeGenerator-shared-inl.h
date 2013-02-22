@@ -41,6 +41,12 @@ ToRegister(const LDefinition *def)
     return ToRegister(*def->output());
 }
 
+static inline Register
+ToRegisterOrInvalid(const LAllocation *a)
+{
+    return a ? ToRegister(*a) : InvalidReg;
+}
+
 static inline FloatRegister
 ToFloatRegister(const LAllocation &a)
 {
@@ -177,6 +183,14 @@ CodeGeneratorShared::restoreLive(LInstruction *ins)
     JS_ASSERT(!ins->isCall());
     LSafepoint *safepoint = ins->safepoint();
     masm.PopRegsInMask(safepoint->liveRegs());
+}
+
+void
+CodeGeneratorShared::restoreLiveIgnore(LInstruction *ins, RegisterSet ignore)
+{
+    JS_ASSERT(!ins->isCall());
+    LSafepoint *safepoint = ins->safepoint();
+    masm.PopRegsInMaskIgnore(safepoint->liveRegs(), ignore);
 }
 
 } // ion

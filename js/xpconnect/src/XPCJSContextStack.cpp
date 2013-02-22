@@ -16,7 +16,7 @@
 #include "mozilla/dom/BindingUtils.h"
 
 using namespace mozilla;
-using mozilla::dom::DestroyProtoOrIfaceCache;
+using mozilla::dom::DestroyProtoAndIfaceCache;
 
 /***************************************************************************/
 
@@ -127,7 +127,7 @@ SafeFinalize(JSFreeOp *fop, JSObject* obj)
     nsIScriptObjectPrincipal* sop =
         static_cast<nsIScriptObjectPrincipal*>(xpc_GetJSPrivate(obj));
     NS_IF_RELEASE(sop);
-    DestroyProtoOrIfaceCache(obj);
+    DestroyProtoAndIfaceCache(obj);
 }
 
 static JSClass global_class = {
@@ -181,12 +181,7 @@ XPCJSContextStack::GetSafeJSContext()
 
         JS_SetErrorReporter(mSafeJSContext, mozJSLoaderErrorReporter);
 
-        JSCompartment *compartment;
-        nsresult rv = xpc::CreateGlobalObject(mSafeJSContext, &global_class,
-                                              principal, false, &glob,
-                                              &compartment);
-        if (NS_FAILED(rv))
-            glob = nullptr;
+        glob = xpc::CreateGlobalObject(mSafeJSContext, &global_class, principal);
 
         if (glob) {
             // Make sure the context is associated with a proper compartment

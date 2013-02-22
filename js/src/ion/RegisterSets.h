@@ -123,6 +123,7 @@ class ValueOperand
     Register scratchReg() const {
         return valueReg();
     }
+
 #endif
 
     ValueOperand() {}
@@ -136,8 +137,8 @@ class TypedOrValueRegister
 
     // Space to hold either an AnyRegister or a ValueOperand.
     union U {
-        AlignedStorage2<AnyRegister> typed;
-        AlignedStorage2<ValueOperand> value;
+        mozilla::AlignedStorage2<AnyRegister> typed;
+        mozilla::AlignedStorage2<ValueOperand> value;
     } data;
 
     AnyRegister &dataTyped() {
@@ -196,8 +197,8 @@ class ConstantOrRegister
 
     // Space to hold either a Value or a TypedOrValueRegister.
     union U {
-        AlignedStorage2<Value> constant;
-        AlignedStorage2<TypedOrValueRegister> reg;
+        mozilla::AlignedStorage2<Value> constant;
+        mozilla::AlignedStorage2<TypedOrValueRegister> reg;
     } data;
 
     Value &dataValue() {
@@ -427,6 +428,22 @@ class RegisterSet {
             add(any.fpu());
         else
             add(any.gpr());
+    }
+    void add(ValueOperand value) {
+#if defined(JS_NUNBOX32)
+        add(value.payloadReg());
+        add(value.typeReg());
+#elif defined(JS_PUNBOX64)
+        add(value.valueReg());
+#else
+#error "Bad architecture"
+#endif
+    }
+    void add(TypedOrValueRegister reg) {
+        if (reg.hasValue())
+            add(reg.valueReg());
+        else if (reg.hasTyped())
+            add(reg.typedReg());
     }
     void addUnchecked(Register reg) {
         gpr_.addUnchecked(reg);

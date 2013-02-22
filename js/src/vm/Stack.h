@@ -499,8 +499,7 @@ class StackFrame
     inline Value &unaliasedActual(unsigned i, MaybeCheckAliasing = CHECK_ALIASING);
     template <class Op> inline void forEachUnaliasedActual(Op op);
 
-    typedef Vector<Value, 16, SystemAllocPolicy> CopyVector;
-    bool copyRawFrameSlots(CopyVector *v);
+    bool copyRawFrameSlots(AutoValueVector *v);
 
     inline unsigned numFormalArgs() const;
     inline unsigned numActualArgs() const;
@@ -585,7 +584,7 @@ class StackFrame
     void popBlock(JSContext *cx);
 
     /*
-     * With 
+     * With
      *
      * Entering/leaving a with (or E4X filter) block pushes/pops an object 
      * on the scope chain. Pushing uses pushOnScopeChain, popping should use
@@ -609,12 +608,12 @@ class StackFrame
      *   the same VMFrame. Other calls force expansion of the inlined frames.
      */
 
-    HandleScript script() const {
+    js::Return<JSScript*> script() const {
         return isFunctionFrame()
                ? isEvalFrame()
-                 ? HandleScript::fromMarkedLocation(&u.evalScript)
-                 : fun()->script()
-               : HandleScript::fromMarkedLocation(&exec.script);
+                 ? u.evalScript
+                 : (JSScript*)fun()->script().unsafeGet()
+               : exec.script;
     }
 
     /*
@@ -1199,7 +1198,8 @@ class FrameRegs
     }
 
     void setToEndOfScript() {
-        JSScript *script = fp()->script();
+        AutoAssertNoGC nogc;
+        RawScript script = fp()->script().get(nogc);
         sp = fp()->base();
         pc = script->code + script->length - JSOP_STOP_LENGTH;
         JS_ASSERT(*pc == JSOP_STOP);
@@ -1385,7 +1385,7 @@ class StackSpace
         return (Value *)fp >= base_ && (Value *)fp <= trustedEnd_;
     }
 
-    void markAndClobberFrame(JSTracer *trc, StackFrame *fp, Value *slotsEnd, jsbytecode *pc);
+    void markFrame(JSTracer *trc, StackFrame *fp, Value *slotsEnd);
 
   public:
     StackSpace();
@@ -1438,7 +1438,7 @@ class StackSpace
     bool tryBumpLimit(JSContext *cx, Value *from, unsigned nvals, Value **limit);
 
     /* Called during GC: mark segments, frames, and slots under firstUnused. */
-    void markAndClobber(JSTracer *trc);
+    void mark(JSTracer *trc);
 
     /* Called during GC: sets active flag on compartments with active frames. */
     void markActiveCompartments();
@@ -1451,6 +1451,7 @@ class StackSpace
     JS_FRIEND_API(size_t) sizeOf();
 
 #ifdef DEBUG
+    /* Only used in assertion of debuggers API. */
     bool containsSlow(StackFrame *fp);
 #endif
 };
@@ -1540,9 +1541,6 @@ class ContextStack
 
     /* The StackSpace currently hosting this ContextStack. */
     StackSpace &space() const { return *space_; }
-
-    /* Return whether the given frame is in this context's stack. */
-    bool containsSlow(const StackFrame *target) const;
 
     /*** Stack manipulation ***/
 
@@ -1714,6 +1712,7 @@ class GeneratorFrameGuard : public FrameGuard
 class StackIter
 {
     friend class ContextStack;
+    PerThreadData *perThread_;
     JSContext    *maybecx_;
   public:
     enum SavedOption { STOP_AT_SAVED, GO_THROUGH_SAVED };
@@ -1729,8 +1728,8 @@ class StackIter
 
     StackSegment *seg_;
     jsbytecode   *pc_;
-    JSScript     *script_;
-    CallArgs     args_;
+    RootedScript  script_;
+    CallArgs      args_;
 
 #ifdef JS_ION
     ion::IonActivationIterator ionActivations_;
@@ -1751,12 +1750,15 @@ class StackIter
   public:
     StackIter(JSContext *cx, SavedOption = STOP_AT_SAVED);
     StackIter(JSRuntime *rt, StackSegment &seg);
+    StackIter(const StackIter &iter);
 
     bool done() const { return state_ == DONE; }
     StackIter &operator++();
 
     bool operator==(const StackIter &rhs) const;
     bool operator!=(const StackIter &rhs) const { return !(*this == rhs); }
+
+    JSCompartment *compartment() const;
 
     bool isScript() const {
         JS_ASSERT(!done());
@@ -1784,14 +1786,29 @@ class StackIter
     bool isNonEvalFunctionFrame() const;
     bool isConstructing() const;
 
-    // :TODO: Add && !isIon() in JS_ASSERT of fp() and sp().
-    StackFrame *fp() const { JS_ASSERT(isScript()); return fp_; }
+    /*
+     * When entering IonMonkey, the top interpreter frame (pushed by the caller)
+     * is kept on the stack as bookkeeping (with runningInIon() set). The
+     * contents of the frame are ignored by Ion code (and GC) and thus
+     * immediately become garbage and must not be touched directly.
+     */
+    StackFrame *interpFrame() const { JS_ASSERT(isScript() && !isIon()); return fp_; }
+
     jsbytecode *pc() const { JS_ASSERT(isScript()); return pc_; }
-    JSScript   *script() const { JS_ASSERT(isScript()); return script_; }
+    js::Return<JSScript*> script() const { JS_ASSERT(isScript()); return script_; }
     JSFunction *callee() const;
     Value       calleev() const;
     unsigned    numActualArgs() const;
+
+    JSObject   *scopeChain() const;
+
+    // Ensure that thisv is correct, see ComputeThis.
+    bool        computeThis() const;
     Value       thisv() const;
+
+    JSFunction *maybeCallee() const {
+        return isFunctionFrame() ? callee() : NULL;
+    }
 
     // These are only valid for the top frame.
     size_t      numFrameSlots() const;
@@ -1847,7 +1864,8 @@ class AllFramesIter
     bool done() const { return fp_ == NULL; }
     AllFramesIter& operator++();
 
-    StackFrame *fp() const { return fp_; }
+    bool        isIon() const { return fp_->runningInIon(); }
+    StackFrame *interpFrame() const { return fp_; }
 
   private:
     void settle();

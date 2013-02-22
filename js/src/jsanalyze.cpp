@@ -12,6 +12,8 @@
 #include "jsinferinlines.h"
 #include "jsobjinlines.h"
 
+using mozilla::DebugOnly;
+
 namespace js {
 namespace analyze {
 
@@ -279,7 +281,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
          * Assign an observed type set to each reachable JOF_TYPESET opcode.
          * This may be less than the number of type sets in the script if some
          * are unreachable, and may be greater in case the number of type sets
-         * overflows a uint16. In the latter case a single type set will be
+         * overflows a uint16_t. In the latter case a single type set will be
          * used for the observed types of all ops after the overflow.
          */
         if ((js_CodeSpec[op].format & JOF_TYPESET) && cx->typeInferenceEnabled()) {
@@ -454,10 +456,6 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
           }
 
           case JSOP_CALLLOCAL:
-          case JSOP_INCLOCAL:
-          case JSOP_DECLOCAL:
-          case JSOP_LOCALINC:
-          case JSOP_LOCALDEC:
           case JSOP_SETLOCAL: {
             uint32_t local = GET_SLOTNO(pc);
             if (local >= script_->nfixed) {
@@ -468,10 +466,6 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
           }
 
           case JSOP_SETARG:
-          case JSOP_INCARG:
-          case JSOP_DECARG:
-          case JSOP_ARGINC:
-          case JSOP_ARGDEC:
             modifiesArguments_ = true;
             isInlineable = false;
             break;
@@ -787,22 +781,6 @@ ScriptAnalysis::analyzeLifetimes(JSContext *cx)
             uint32_t slot = GetBytecodeSlot(script_, pc);
             if (!slotEscapes(slot))
                 killVariable(cx, lifetimes[slot], offset, saved, savedCount);
-            break;
-          }
-
-          case JSOP_INCARG:
-          case JSOP_DECARG:
-          case JSOP_ARGINC:
-          case JSOP_ARGDEC:
-          case JSOP_INCLOCAL:
-          case JSOP_DECLOCAL:
-          case JSOP_LOCALINC:
-          case JSOP_LOCALDEC: {
-            uint32_t slot = GetBytecodeSlot(script_, pc);
-            if (!slotEscapes(slot)) {
-                killVariable(cx, lifetimes[slot], offset, saved, savedCount);
-                addVariable(cx, lifetimes[slot], offset, saved, savedCount);
-            }
             break;
           }
 
@@ -1403,8 +1381,8 @@ ScriptAnalysis::analyzeSSA(JSContext *cx)
             }
             if (xuses > nuses) {
                 /*
-                 * For SETLOCAL, INCLOCAL, etc. opcodes, add an extra popped
-                 * value holding the value of the local before the op.
+                 * For SETLOCAL, etc. opcodes, add an extra popped value
+                 * holding the value of the local before the op.
                  */
                 uint32_t slot = GetBytecodeSlot(script_, pc);
                 if (trackSlot(slot))

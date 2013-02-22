@@ -82,13 +82,15 @@ class WorkerThreadState
 struct WorkerThread
 {
     JSRuntime *runtime;
+
+    mozilla::Maybe<PerThreadData> threadData;
     PRThread *thread;
 
     /* Indicate to an idle thread that it should finish executing. */
     bool terminate;
 
-    /* Any script currently being compiled for Ion on this thread. */
-    JSScript *ionScript;
+    /* Any builder currently being compiled by Ion on this thread. */
+    ion::IonBuilder *ionBuilder;
 
     void destroy();
 
@@ -104,13 +106,19 @@ struct WorkerThread
  * Schedule an Ion compilation for a script, given a builder which has been
  * generated and read everything needed from the VM state.
  */
-bool StartOffThreadIonCompile(JSContext *cx, ion::IonBuilder *builder);
+bool
+StartOffThreadIonCompile(JSContext *cx, ion::IonBuilder *builder);
 
 /*
  * Cancel a scheduled or in progress Ion compilation for script. If script is
  * NULL, all compilations for the compartment are cancelled.
  */
-void CancelOffThreadIonCompile(JSCompartment *compartment, JSScript *script);
+void
+CancelOffThreadIonCompile(JSCompartment *compartment, JSScript *script);
+
+/* Return true iff off-thread compilation is possible. */
+bool
+OffThreadCompilationAvailable(JSContext *cx);
 
 class AutoLockWorkerThreadState
 {
@@ -124,6 +132,7 @@ class AutoLockWorkerThreadState
     {
         JS_GUARD_OBJECT_NOTIFIER_INIT;
 #ifdef JS_PARALLEL_COMPILATION
+        JS_ASSERT(rt->workerThreadState);
         rt->workerThreadState->lock();
 #else
         (void)this->rt;
@@ -150,6 +159,7 @@ class AutoUnlockWorkerThreadState
     {
         JS_GUARD_OBJECT_NOTIFIER_INIT;
 #ifdef JS_PARALLEL_COMPILATION
+        JS_ASSERT(rt->workerThreadState);
         rt->workerThreadState->unlock();
 #else
         (void)this->rt;

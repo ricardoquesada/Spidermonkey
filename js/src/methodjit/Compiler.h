@@ -287,6 +287,12 @@ class Compiler : public BaseCompiler
         { }
     };
 
+    struct InternalCompileTrigger {
+        jsbytecode *pc;
+        Jump inlineJump;
+        Label stubLabel;
+    };
+
     struct DoublePatch {
         double d;
         DataLabelPtr label;
@@ -429,6 +435,7 @@ private:
 #endif
     js::Vector<CallPatchInfo, 64, CompilerAllocPolicy> callPatches;
     js::Vector<InternalCallSite, 64, CompilerAllocPolicy> callSites;
+    js::Vector<InternalCompileTrigger, 4, CompilerAllocPolicy> compileTriggers;
     js::Vector<DoublePatch, 16, CompilerAllocPolicy> doubleList;
     js::Vector<JSObject*, 0, CompilerAllocPolicy> rootedTemplates;
     js::Vector<RegExpShared*, 0, CompilerAllocPolicy> rootedRegExps;
@@ -703,8 +710,6 @@ private:
     bool booleanJumpScript(JSOp op, jsbytecode *target);
     bool jsop_ifneq(JSOp op, jsbytecode *target);
     bool jsop_andor(JSOp op, jsbytecode *target);
-    bool jsop_arginc(JSOp op, uint32_t slot);
-    bool jsop_localinc(JSOp op, uint32_t slot);
     bool jsop_newinit();
     bool jsop_regexp();
     void jsop_initmethod();

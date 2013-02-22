@@ -20,6 +20,7 @@
     _(Parameter)                    \
     _(Callee)                       \
     _(TableSwitch)                  \
+    _(TableSwitchV)                 \
     _(Goto)                         \
     _(NewArray)                     \
     _(NewObject)                    \
@@ -65,6 +66,7 @@
     _(IsNullOrUndefinedAndBranch)   \
     _(MinMaxI)                      \
     _(MinMaxD)                      \
+    _(NegD)                         \
     _(AbsI)                         \
     _(AbsD)                         \
     _(SqrtD)                        \
@@ -143,6 +145,7 @@
     _(BindNameCache)                \
     _(CallGetProperty)              \
     _(GetNameCache)                 \
+    _(CallGetIntrinsicValue)        \
     _(CallGetElement)               \
     _(CallSetElement)               \
     _(CallSetProperty)              \
@@ -165,6 +168,7 @@
     _(Floor)                        \
     _(Round)                        \
     _(In)                           \
+    _(InArray)                      \
     _(InstanceOfO)                  \
     _(InstanceOfV)                  \
     _(CallInstanceOf)               \

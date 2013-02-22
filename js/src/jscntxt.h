@@ -11,6 +11,7 @@
 #define jscntxt_h___
 
 #include "mozilla/Attributes.h"
+#include "mozilla/LinkedList.h"
 
 #include <string.h>
 
@@ -42,9 +43,7 @@
 #pragma warning(disable:4355) /* Silence warning about "this" used in base member initializer list */
 #endif
 
-JS_BEGIN_EXTERN_C
 struct DtoaState;
-JS_END_EXTERN_C
 
 extern void
 js_ReportOutOfMemory(JSContext *cx);
@@ -92,6 +91,7 @@ class JaegerRuntime;
 class MathCache;
 
 namespace ion {
+class IonRuntime;
 class IonActivation;
 }
 
@@ -390,8 +390,70 @@ struct JSAtomState
 #define NAME_OFFSET(name)       offsetof(JSAtomState, name)
 #define OFFSET_TO_NAME(rt,off)  (*(js::FixedHeapPtr<js::PropertyName>*)((char*)&(rt)->atomState + (off)))
 
+namespace js {
+
+/*
+ * Encapsulates portions of the runtime/context that are tied to a
+ * single active thread.  Normally, as most JS is single-threaded,
+ * there is only one instance of this struct, embedded in the
+ * JSRuntime as the field |mainThread|.  During Parallel JS sections,
+ * however, there will be one instance per worker thread.
+ *
+ * The eventual plan is to designate thread-safe portions of the
+ * interpreter and runtime by having them take |PerThreadData*|
+ * arguments instead of |JSContext*| or |JSRuntime*|.
+ */
+class PerThreadData : public js::PerThreadDataFriendFields
+{
+    /*
+     * Backpointer to the full shared JSRuntime* with which this
+     * thread is associaed.  This is private because accessing the
+     * fields of this runtime can provoke race conditions, so the
+     * intention is that access will be mediated through safe
+     * functions like |associatedWith()| below.
+     */
+    JSRuntime *runtime_;
+
+  public:
+    /*
+     * We save all conservative scanned roots in this vector so that
+     * conservative scanning can be "replayed" deterministically. In DEBUG mode,
+     * this allows us to run a non-incremental GC after every incremental GC to
+     * ensure that no objects were missed.
+     */
+#ifdef DEBUG
+    struct SavedGCRoot {
+        void *thing;
+        JSGCTraceKind kind;
+
+        SavedGCRoot(void *thing, JSGCTraceKind kind) : thing(thing), kind(kind) {}
+    };
+    js::Vector<SavedGCRoot, 0, js::SystemAllocPolicy> gcSavedRoots;
+
+    bool                gcRelaxRootChecks;
+    int                 gcAssertNoGCDepth;
+#endif
+
+    PerThreadData(JSRuntime *runtime);
+
+    bool associatedWith(const JSRuntime *rt) { return runtime_ == rt; }
+};
+
+} // namespace js
+
 struct JSRuntime : js::RuntimeFriendFields
 {
+    /* Per-thread data for the main thread that is associated with
+     * this JSRuntime, as opposed to any worker threads used in
+     * parallel sections.  See definition of |PerThreadData| struct
+     * above for more details.
+     *
+     * NB: This field is statically asserted to be at offset
+     * sizeof(RuntimeFriendFields). See
+     * PerThreadDataFriendFields::getMainThread.
+     */
+    js::PerThreadData mainThread;
+
     /* Default compartment. */
     JSCompartment       *atomsCompartment;
 
@@ -438,12 +500,14 @@ struct JSRuntime : js::RuntimeFriendFields
 #ifdef JS_METHODJIT
     js::mjit::JaegerRuntime *jaegerRuntime_;
 #endif
+    js::ion::IonRuntime *ionRuntime_;
 
     JSObject *selfHostedGlobal_;
 
     JSC::ExecutableAllocator *createExecutableAllocator(JSContext *cx);
     WTF::BumpPointerAllocator *createBumpPointerAllocator(JSContext *cx);
     js::mjit::JaegerRuntime *createJaegerRuntime(JSContext *cx);
+    js::ion::IonRuntime *createIonRuntime(JSContext *cx);
 
   public:
     JSC::ExecutableAllocator *getExecAlloc(JSContext *cx) {
@@ -471,10 +535,16 @@ struct JSRuntime : js::RuntimeFriendFields
         return *jaegerRuntime_;
     }
 #endif
+    js::ion::IonRuntime *getIonRuntime(JSContext *cx) {
+        return ionRuntime_ ? ionRuntime_ : createIonRuntime(cx);
+    }
 
     bool initSelfHosting(JSContext *cx);
     void markSelfHostedGlobal(JSTracer *trc);
-    JSFunction *getSelfHostedFunction(JSContext *cx, const char *name);
+    bool isSelfHostedGlobal(js::HandleObject global) {
+        return global == selfHostedGlobal_;
+    }
+    JSFunction *getSelfHostedFunction(JSContext *cx, js::Handle<js::PropertyName*> name);
     bool cloneSelfHostedValueById(JSContext *cx, js::HandleId id, js::HandleObject holder,
                                   js::MutableHandleValue vp);
 
@@ -567,6 +637,12 @@ struct JSRuntime : js::RuntimeFriendFields
     bool                gcShouldCleanUpEverything;
 
     /*
+     * The gray bits can become invalid if UnmarkGray overflows the stack. A
+     * full GC will reset this bit, since it fills in all the gray bits.
+     */
+    bool                gcGrayBitsValid;
+
+    /*
      * These flags must be kept separate so that a thread requesting a
      * compartment GC doesn't cancel another thread's concurrent request for a
      * full GC.
@@ -655,24 +731,23 @@ struct JSRuntime : js::RuntimeFriendFields
      */
     bool                gcExactScanningEnabled;
 
+
     /*
-     * We save all conservative scanned roots in this vector so that
-     * conservative scanning can be "replayed" deterministically. In DEBUG mode,
-     * this allows us to run a non-incremental GC after every incremental GC to
-     * ensure that no objects were missed.
+     * This is true if we are in the middle of a brain transplant (e.g.,
+     * JS_TransplantObject) or some other operation that can manipulate
+     * dead compartments.
      */
-#ifdef DEBUG
-    struct SavedGCRoot {
-        void *thing;
-        JSGCTraceKind kind;
+    bool                gcManipulatingDeadCompartments;
 
-        SavedGCRoot(void *thing, JSGCTraceKind kind) : thing(thing), kind(kind) {}
-    };
-    js::Vector<SavedGCRoot, 0, js::SystemAllocPolicy> gcSavedRoots;
-
-    bool                gcRelaxRootChecks;
-    int                 gcAssertNoGCDepth;
-#endif
+    /*
+     * This field is incremented each time we mark an object inside a
+     * compartment with no incoming cross-compartment pointers. Typically if
+     * this happens it signals that an incremental GC is marking too much
+     * stuff. At various times we check this counter and, if it has changed, we
+     * run an immediate, non-incremental GC to clean up the dead
+     * compartments. This should happen very rarely.
+     */
+    unsigned            gcObjectsMarkedInDeadCompartments;
 
     bool                gcPoke;
 
@@ -783,10 +858,10 @@ struct JSRuntime : js::RuntimeFriendFields
     js::PropertyName    *emptyString;
 
     /* List of active contexts sharing this runtime. */
-    JSCList             contextList;
+    mozilla::LinkedList<JSContext> contextList;
 
     bool hasContexts() const {
-        return !JS_CLIST_IS_EMPTY(&contextList);
+        return !contextList.isEmpty();
     }
 
     JS_SourceHook       sourceHook;
@@ -814,6 +889,12 @@ struct JSRuntime : js::RuntimeFriendFields
      * thread, if any, or a thread that is in a request and holds gcLock.
      */
     JSCList             debuggerList;
+
+    /*
+     * Head of circular list of all enabled Debuggers that have
+     * onNewGlobalObject handler methods established.
+     */
+    JSCList             onNewGlobalObjectWatchers;
 
     /* Bookkeeping information for debug scope objects. */
     js::DebugScopes     *debugScopes;
@@ -862,7 +943,7 @@ struct JSRuntime : js::RuntimeFriendFields
      * and for each JSObject::remove method call that frees a slot in the given
      * object. See js_NativeGet and js_NativeSet in jsobj.cpp.
      */
-    int32_t             propertyRemovals;
+    uint32_t            propertyRemovals;
 
     /* Number localization, used by jsnum.c */
     const char          *thousandsSeparator;
@@ -976,7 +1057,7 @@ struct JSRuntime : js::RuntimeFriendFields
         ionReturnOverride_ = v;
     }
 
-    JSRuntime();
+    JSRuntime(JSUseHelperThreads useHelperThreads);
     ~JSRuntime();
 
     bool init(uint32_t maxbytes);
@@ -1093,6 +1174,17 @@ struct JSRuntime : js::RuntimeFriendFields
 
     void sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf, JS::RuntimeSizes *runtime);
     size_t sizeOfExplicitNonHeap();
+
+  private:
+    JSUseHelperThreads useHelperThreads_;
+  public:
+    bool useHelperThreads() const {
+#ifdef JS_THREADSAFE
+        return useHelperThreads_ == JS_USE_HELPER_THREADS;
+#else
+        return false;
+#endif
+    }
 };
 
 /* Common macros to access thread-local caches in JSRuntime. */
@@ -1218,14 +1310,12 @@ FreeOp::free_(void* p) {
 
 } /* namespace js */
 
-struct JSContext : js::ContextFriendFields
+struct JSContext : js::ContextFriendFields,
+                   public mozilla::LinkedListElement<JSContext>
 {
     explicit JSContext(JSRuntime *rt);
     JSContext *thisDuringConstruction() { return this; }
     ~JSContext();
-
-    /* JSRuntime contextList linkage. */
-    JSCList             link;
 
   private:
     /* See JSContext::findVersion. */
@@ -1278,33 +1368,8 @@ struct JSContext : js::ContextFriendFields
         return enterCompartmentDepth_ > 0;
     }
 
-    void enterCompartment(JSCompartment *c) {
-        enterCompartmentDepth_++;
-        compartment = c;
-        if (throwing)
-            wrapPendingException();
-    }
-
-    inline void leaveCompartment(JSCompartment *oldCompartment) {
-        JS_ASSERT(hasEnteredCompartment());
-        enterCompartmentDepth_--;
-
-        /*
-         * Before we entered the current compartment, 'compartment' was
-         * 'oldCompartment', so we might want to simply set it back. However, we
-         * currently have this terrible scheme whereby defaultCompartmentObject_
-         * can be updated while enterCompartmentDepth_ > 0. In this case,
-         * oldCompartment != defaultCompartmentObject_->compartment and we must
-         * ignore oldCompartment.
-         */
-        if (hasEnteredCompartment() || !defaultCompartmentObject_)
-            compartment = oldCompartment;
-        else
-            compartment = defaultCompartmentObject_->compartment();
-
-        if (throwing)
-            wrapPendingException();
-    }
+    inline void enterCompartment(JSCompartment *c);
+    inline void leaveCompartment(JSCompartment *oldCompartment);
 
     /* See JS_SaveFrameChain/JS_RestoreFrameChain. */
   private:
@@ -1335,7 +1400,10 @@ struct JSContext : js::ContextFriendFields
     /* Current execution stack. */
     js::ContextStack    stack;
 
-    /* Current global. */
+    /*
+     * Current global. This is only safe to use within the scope of the
+     * AutoCompartment from which it's called.
+     */
     inline js::Handle<js::GlobalObject*> global() const;
 
     /* ContextStack convenience functions */
@@ -1497,9 +1565,6 @@ struct JSContext : js::ContextFriendFields
 
     DSTOffsetCache dstOffsetCache;
 
-    /* List of currently active non-escaping enumerators (for-in). */
-    js::PropertyIteratorObject *enumerators;
-
   private:
     /* Innermost-executing generator or null if no generator are executing. */
     JSGenerator *innermostGenerator_;
@@ -1585,11 +1650,6 @@ struct JSContext : js::ContextFriendFields
     bool runningWithTrustedPrincipals() const;
 
     JS_FRIEND_API(size_t) sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf) const;
-
-    static inline JSContext *fromLinkField(JSCList *link) {
-        JS_ASSERT(link);
-        return reinterpret_cast<JSContext *>(uintptr_t(link) - offsetof(JSContext, link));
-    }
 
     void mark(JSTracer *trc);
 
@@ -1808,27 +1868,25 @@ namespace js {
  * Enumerate all contexts in a runtime.
  */
 class ContextIter {
-    JSCList *begin;
-    JSCList *end;
+    JSContext *iter;
 
 public:
     explicit ContextIter(JSRuntime *rt) {
-        end = &rt->contextList;
-        begin = end->next;
+        iter = rt->contextList.getFirst();
     }
 
     bool done() const {
-        return begin == end;
+        return !iter;
     }
 
     void next() {
         JS_ASSERT(!done());
-        begin = begin->next;
+        iter = iter->getNext();
     }
 
     JSContext *get() const {
         JS_ASSERT(!done());
-        return JSContext::fromLinkField(begin);
+        return iter;
     }
 
     operator JSContext *() const {
@@ -1866,6 +1924,11 @@ extern JSBool
 js_ReportErrorNumberVA(JSContext *cx, unsigned flags, JSErrorCallback callback,
                        void *userRef, const unsigned errorNumber,
                        JSBool charArgs, va_list ap);
+
+extern bool
+js_ReportErrorNumberUCArray(JSContext *cx, unsigned flags, JSErrorCallback callback,
+                            void *userRef, const unsigned errorNumber,
+                            const jschar **args);
 
 extern JSBool
 js_ExpandErrorArguments(JSContext *cx, JSErrorCallback callback,
@@ -1975,12 +2038,6 @@ namespace mjit {
 #endif
 
 } /* namespace js */
-
-/* How much expansion of inlined frames to do when inspecting the stack. */
-enum FrameExpandKind {
-    FRAME_EXPAND_NONE = 0,
-    FRAME_EXPAND_ALL = 1
-};
 
 namespace js {
 
@@ -2127,6 +2184,7 @@ class RuntimeAllocPolicy
     RuntimeAllocPolicy(JSRuntime *rt) : runtime(rt) {}
     RuntimeAllocPolicy(JSContext *cx) : runtime(cx->runtime) {}
     void *malloc_(size_t bytes) { return runtime->malloc_(bytes); }
+    void *calloc_(size_t bytes) { return runtime->calloc_(bytes); }
     void *realloc_(void *p, size_t bytes) { return runtime->realloc_(p, bytes); }
     void free_(void *p) { js_free(p); }
     void reportAllocOverflow() const {}
@@ -2143,6 +2201,7 @@ class ContextAllocPolicy
     ContextAllocPolicy(JSContext *cx) : cx(cx) {}
     JSContext *context() const { return cx; }
     void *malloc_(size_t bytes) { return cx->malloc_(bytes); }
+    void *calloc_(size_t bytes) { return cx->calloc_(bytes); }
     void *realloc_(void *p, size_t oldBytes, size_t bytes) { return cx->realloc_(p, oldBytes, bytes); }
     void free_(void *p) { js_free(p); }
     void reportAllocOverflow() const { js_ReportAllocationOverflow(cx); }

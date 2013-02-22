@@ -271,12 +271,14 @@ OnUnknownMethod(JSContext *cx, HandleObject obj, Value idval, MutableHandleValue
 class TryNoteIter
 {
     const FrameRegs &regs;
-    JSScript *script;
+    RootedScript script; /* TryNotIter is always stack allocated. */
     uint32_t pcOffset;
     JSTryNote *tn, *tnEnd;
+
     void settle();
+
   public:
-    TryNoteIter(const FrameRegs &regs);
+    explicit TryNoteIter(JSContext *cx, const FrameRegs &regs);
     bool done() const;
     void operator++();
     JSTryNote *operator*() const { return tn; }
@@ -319,7 +321,7 @@ bool
 Throw(JSContext *cx, HandleValue v);
 
 bool
-GetProperty(JSContext *cx, HandleValue value, PropertyName *name, MutableHandleValue vp);
+GetProperty(JSContext *cx, HandleValue value, HandlePropertyName name, MutableHandleValue vp);
 
 bool
 GetScopeName(JSContext *cx, HandleObject obj, HandlePropertyName name, MutableHandleValue vp);

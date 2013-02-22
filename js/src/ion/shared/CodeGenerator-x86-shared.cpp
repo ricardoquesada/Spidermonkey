@@ -22,19 +22,19 @@ namespace ion {
 
 class DeferredJumpTable : public DeferredData
 {
-    LTableSwitch *lswitch;
+    MTableSwitch *mswitch;
 
   public:
-    DeferredJumpTable(LTableSwitch *lswitch)
-      : lswitch(lswitch)
+    DeferredJumpTable(MTableSwitch *mswitch)
+      : mswitch(mswitch)
     { }
-    
+
     void copy(IonCode *code, uint8 *buffer) const {
         void **jumpData = (void **)buffer;
 
         // For every case write the pointer to the start in the table
-        for (size_t j = 0; j < lswitch->mir()->numCases(); j++) { 
-            LBlock *caseblock = lswitch->mir()->getCase(j)->lir();
+        for (size_t j = 0; j < mswitch->numCases(); j++) {
+            LBlock *caseblock = mswitch->getCase(j)->lir();
             Label *caseheader = caseblock->label();
 
             uint32 offset = caseheader->offset();
@@ -44,7 +44,7 @@ class DeferredJumpTable : public DeferredData
     }
 };
 
-CodeGeneratorX86Shared::CodeGeneratorX86Shared(MIRGenerator *gen, LIRGraph &graph)
+CodeGeneratorX86Shared::CodeGeneratorX86Shared(MIRGenerator *gen, LIRGraph *graph)
   : CodeGeneratorShared(gen, graph),
     deoptLabel_(NULL)
 {
@@ -293,11 +293,8 @@ CodeGeneratorX86Shared::generateOutOfLineCode()
         // Push the frame size, so the handler can recover the IonScript.
         masm.push(Imm32(frameSize()));
 
-        JSContext *cx = GetIonContext()->cx;
-        IonCompartment *ion = cx->compartment->ionCompartment();
-        IonCode *handler = ion->getGenericBailoutHandler(cx);
-        if (!handler)
-            return false;
+        IonCompartment *ion = GetIonContext()->compartment->ionCompartment();
+        IonCode *handler = ion->getGenericBailoutHandler();
 
         masm.jmp(handler->raw(), Relocation::IONCODE);
     }
@@ -443,6 +440,21 @@ CodeGeneratorX86Shared::visitMinMaxD(LMinMaxD *ins)
     masm.movsd(second, output);
 
     masm.bind(&done);
+    return true;
+}
+
+bool
+CodeGeneratorX86Shared::visitNegD(LNegD *ins)
+{
+    // XOR the float in a float register with -0.0.
+    FloatRegister input = ToFloatRegister(ins->input());
+    JS_ASSERT(input == ToFloatRegister(ins->output()));
+
+    // From MacroAssemblerX86Shared::maybeInlineDouble
+    masm.pcmpeqw(ScratchFloatReg, ScratchFloatReg);
+    masm.psllq(Imm32(63), ScratchFloatReg);
+
+    masm.xorpd(ScratchFloatReg, input); // s ^ 0x80000000000000
     return true;
 }
 
@@ -933,40 +945,28 @@ CodeGeneratorX86Shared::visitMoveGroup(LMoveGroup *group)
 }
 
 bool
-CodeGeneratorX86Shared::visitTableSwitch(LTableSwitch *ins)
+CodeGeneratorX86Shared::emitTableSwitchDispatch(MTableSwitch *mir, const Register &index,
+                                                const Register &base)
 {
-    MTableSwitch *mir = ins->mir();
     Label *defaultcase = mir->getDefault()->lir()->label();
-    const LAllocation *temp;
-
-    if (ins->index()->isDouble()) {
-        temp = ins->tempInt();
-
-        // The input is a double, so try and convert it to an integer.
-        // If it does not fit in an integer, take the default case.
-        emitDoubleToInt32(ToFloatRegister(ins->index()), ToRegister(temp), defaultcase, false);
-    } else {
-        temp = ins->index();
-    }
 
     // Lower value with low value
     if (mir->low() != 0)
-        masm.subl(Imm32(mir->low()), ToRegister(temp));
+        masm.subl(Imm32(mir->low()), index);
 
     // Jump to default case if input is out of range
     int32 cases = mir->numCases();
-    masm.cmpl(ToRegister(temp), Imm32(cases));
+    masm.cmpl(index, Imm32(cases));
     masm.j(AssemblerX86Shared::AboveOrEqual, defaultcase);
 
     // Create a JumpTable that during linking will get written.
-    DeferredJumpTable *d = new DeferredJumpTable(ins);
+    DeferredJumpTable *d = new DeferredJumpTable(mir);
     if (!masm.addDeferredData(d, (1 << ScalePointer) * cases))
         return false;
 
     // Compute the position where a pointer to the right case stands.
-    const LAllocation *base = ins->tempPointer();
-    masm.mov(d->label(), ToRegister(base));
-    Operand pointer = Operand(ToRegister(base), ToRegister(temp), ScalePointer);
+    masm.mov(d->label(), base);
+    Operand pointer = Operand(base, index, ScalePointer);
 
     // Jump to the right case
     masm.jmp(pointer);
@@ -1326,13 +1326,9 @@ CodeGeneratorX86Shared::generateInvalidateEpilogue()
 
     masm.bind(&invalidate_);
 
-    JSContext *cx = GetIonContext()->cx;
-
     // Push the Ion script onto the stack (when we determine what that pointer is).
     invalidateEpilogueData_ = masm.pushWithPatch(ImmWord(uintptr_t(-1)));
-    IonCode *thunk = cx->compartment->ionCompartment()->getOrCreateInvalidationThunk(cx);
-    if (!thunk)
-        return false;
+    IonCode *thunk = GetIonContext()->compartment->ionCompartment()->getInvalidationThunk();
 
     masm.call(thunk);
 

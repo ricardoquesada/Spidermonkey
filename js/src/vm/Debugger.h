@@ -34,6 +34,7 @@ class Debugger {
         OnExceptionUnwind,
         OnNewScript,
         OnEnterFrame,
+        OnNewGlobalObject,
         HookCount
     };
 
@@ -55,7 +56,15 @@ class Debugger {
     GlobalObjectSet debuggees;          /* Debuggee globals. Cross-compartment weak references. */
     js::HeapPtrObject uncaughtExceptionHook; /* Strong reference. */
     bool enabled;
-    JSCList breakpoints;                /* cyclic list of all js::Breakpoints in this debugger */
+    JSCList breakpoints;                /* Circular list of all js::Breakpoints in this debugger */
+
+    /*
+     * If this Debugger is enabled, and has a onNewGlobalObject handler, then
+     * this link is inserted into the circular list headed by
+     * JSRuntime::onNewGlobalObjectWatchers. Otherwise, this is set to a
+     * singleton cycle.
+     */
+    JSCList onNewGlobalObjectWatchersLink;
 
     /*
      * Map from stack frames that are currently on the stack to Debugger.Frame
@@ -109,7 +118,7 @@ class Debugger {
      * do some things in the debugger compartment and some things in the
      * debuggee compartment.
      */
-    JSTrapStatus handleUncaughtException(Maybe<AutoCompartment> &ac, Value *vp, bool callHook);
+    JSTrapStatus handleUncaughtException(mozilla::Maybe<AutoCompartment> &ac, Value *vp, bool callHook);
 
     /*
      * Handle the result of a hook that is expected to return a resumption
@@ -136,10 +145,10 @@ class Debugger {
      *     anything else - Make a new TypeError the pending exception and
      *         return handleUncaughtException(ac, vp, callHook).
      */
-    JSTrapStatus parseResumptionValue(Maybe<AutoCompartment> &ac, bool ok, const Value &rv,
+    JSTrapStatus parseResumptionValue(mozilla::Maybe<AutoCompartment> &ac, bool ok, const Value &rv,
                                       Value *vp, bool callHook = true);
 
-    JSObject *unwrapDebuggeeArgument(JSContext *cx, const Value &v);
+    GlobalObject *unwrapDebuggeeArgument(JSContext *cx, const Value &v);
 
     static void traceObject(JSTracer *trc, RawObject obj);
     void trace(JSTracer *trc);
@@ -161,15 +170,19 @@ class Debugger {
     static JSBool setOnNewScript(JSContext *cx, unsigned argc, Value *vp);
     static JSBool getOnEnterFrame(JSContext *cx, unsigned argc, Value *vp);
     static JSBool setOnEnterFrame(JSContext *cx, unsigned argc, Value *vp);
+    static JSBool getOnNewGlobalObject(JSContext *cx, unsigned argc, Value *vp);
+    static JSBool setOnNewGlobalObject(JSContext *cx, unsigned argc, Value *vp);
     static JSBool getUncaughtExceptionHook(JSContext *cx, unsigned argc, Value *vp);
     static JSBool setUncaughtExceptionHook(JSContext *cx, unsigned argc, Value *vp);
     static JSBool addDebuggee(JSContext *cx, unsigned argc, Value *vp);
     static JSBool removeDebuggee(JSContext *cx, unsigned argc, Value *vp);
+    static JSBool removeAllDebuggees(JSContext *cx, unsigned argc, Value *vp);
     static JSBool hasDebuggee(JSContext *cx, unsigned argc, Value *vp);
     static JSBool getDebuggees(JSContext *cx, unsigned argc, Value *vp);
     static JSBool getNewestFrame(JSContext *cx, unsigned argc, Value *vp);
     static JSBool clearAllBreakpoints(JSContext *cx, unsigned argc, Value *vp);
     static JSBool findScripts(JSContext *cx, unsigned argc, Value *vp);
+    static JSBool findAllGlobals(JSContext *cx, unsigned argc, Value *vp);
     static JSBool wrap(JSContext *cx, unsigned argc, Value *vp);
     static JSBool construct(JSContext *cx, unsigned argc, Value *vp);
     static JSPropertySpec properties[];
@@ -180,13 +193,15 @@ class Debugger {
 
     static JSTrapStatus slowPathOnEnterFrame(JSContext *cx, Value *vp);
     static bool slowPathOnLeaveFrame(JSContext *cx, bool ok);
-    static void slowPathOnNewScript(JSContext *cx, JSScript *script,
+    static void slowPathOnNewScript(JSContext *cx, HandleScript script,
                                     GlobalObject *compileAndGoGlobal);
+    static bool slowPathOnNewGlobalObject(JSContext *cx, Handle<GlobalObject *> global);
     static JSTrapStatus dispatchHook(JSContext *cx, Value *vp, Hook which);
 
     JSTrapStatus fireDebuggerStatement(JSContext *cx, Value *vp);
     JSTrapStatus fireExceptionUnwind(JSContext *cx, Value *vp);
     JSTrapStatus fireEnterFrame(JSContext *cx, Value *vp);
+    JSTrapStatus fireNewGlobalObject(JSContext *cx, Handle<GlobalObject *> global, Value *vp);
 
     /*
      * Allocate and initialize a Debugger.Script instance whose referent is
@@ -202,6 +217,8 @@ class Debugger {
 
     static inline Debugger *fromLinks(JSCList *links);
     inline Breakpoint *firstBreakpoint() const;
+
+    static inline Debugger *fromOnNewGlobalObjectWatchersLink(JSCList *link);
 
   public:
     Debugger(JSContext *cx, JSObject *dbg);
@@ -240,8 +257,9 @@ class Debugger {
     static inline bool onLeaveFrame(JSContext *cx, bool ok);
     static inline JSTrapStatus onDebuggerStatement(JSContext *cx, Value *vp);
     static inline JSTrapStatus onExceptionUnwind(JSContext *cx, Value *vp);
-    static inline void onNewScript(JSContext *cx, JSScript *script,
+    static inline void onNewScript(JSContext *cx, HandleScript script,
                                    GlobalObject *compileAndGoGlobal);
+    static inline bool onNewGlobalObject(JSContext *cx, Handle<GlobalObject *> global);
     static JSTrapStatus onTrap(JSContext *cx, Value *vp);
     static JSTrapStatus onSingleStep(JSContext *cx, Value *vp);
 
@@ -249,6 +267,7 @@ class Debugger {
 
     inline bool observesEnterFrame() const;
     inline bool observesNewScript() const;
+    inline bool observesNewGlobalObject() const;
     inline bool observesGlobal(GlobalObject *global) const;
     inline bool observesFrame(StackFrame *fp) const;
     bool observesScript(JSScript *script) const;
@@ -332,7 +351,7 @@ class Debugger {
      * pending exception. (This ordinarily returns true even if the ok argument
      * is false.)
      */
-    bool receiveCompletionValue(Maybe<AutoCompartment> &ac, bool ok, Value val, Value *vp);
+    bool receiveCompletionValue(mozilla::Maybe<AutoCompartment> &ac, bool ok, Value val, Value *vp);
 
     /*
      * Return the Debugger.Script object for |script|, or create a new one if
@@ -421,7 +440,7 @@ class Breakpoint {
 Debugger *
 Debugger::fromLinks(JSCList *links)
 {
-    unsigned char *p = reinterpret_cast<unsigned char *>(links);
+    char *p = reinterpret_cast<char *>(links);
     return reinterpret_cast<Debugger *>(p - offsetof(Debugger, link));
 }
 
@@ -431,6 +450,12 @@ Debugger::firstBreakpoint() const
     if (JS_CLIST_IS_EMPTY(&breakpoints))
         return NULL;
     return Breakpoint::fromDebuggerLinks(JS_NEXT_LINK(&breakpoints));
+}
+
+Debugger *
+Debugger::fromOnNewGlobalObjectWatchersLink(JSCList *link) {
+    char *p = reinterpret_cast<char *>(link);
+    return reinterpret_cast<Debugger *>(p - offsetof(Debugger, onNewGlobalObjectWatchersLink));
 }
 
 const js::HeapPtrObject &
@@ -464,6 +489,12 @@ bool
 Debugger::observesNewScript() const
 {
     return enabled && getHook(OnNewScript);
+}
+
+bool
+Debugger::observesNewGlobalObject() const
+{
+    return enabled && getHook(OnNewGlobalObject);
 }
 
 bool
@@ -514,7 +545,7 @@ Debugger::onExceptionUnwind(JSContext *cx, Value *vp)
 }
 
 void
-Debugger::onNewScript(JSContext *cx, JSScript *script, GlobalObject *compileAndGoGlobal)
+Debugger::onNewScript(JSContext *cx, HandleScript script, GlobalObject *compileAndGoGlobal)
 {
     JS_ASSERT_IF(script->compileAndGo, compileAndGoGlobal);
     JS_ASSERT_IF(!script->compileAndGo, !compileAndGoGlobal);
@@ -522,9 +553,18 @@ Debugger::onNewScript(JSContext *cx, JSScript *script, GlobalObject *compileAndG
         slowPathOnNewScript(cx, script, compileAndGoGlobal);
 }
 
+bool
+Debugger::onNewGlobalObject(JSContext *cx, Handle<GlobalObject *> global)
+{
+    if (JS_CLIST_IS_EMPTY(&cx->runtime->onNewGlobalObjectWatchers))
+        return true;
+    return Debugger::slowPathOnNewGlobalObject(cx, global);
+}
+
 extern JSBool
-EvaluateInEnv(JSContext *cx, Handle<Env*> env, StackFrame *fp, const jschar *chars,
-              unsigned length, const char *filename, unsigned lineno, Value *rval);
+EvaluateInEnv(JSContext *cx, Handle<Env*> env, HandleValue thisv, StackFrame *fp,
+              StableCharPtr chars, unsigned length, const char *filename, unsigned lineno,
+              Value *rval);
 
 }
 

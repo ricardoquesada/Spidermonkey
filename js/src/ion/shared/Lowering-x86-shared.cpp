@@ -12,34 +12,17 @@
 using namespace js;
 using namespace js::ion;
 
-bool
-LIRGeneratorX86Shared::visitTableSwitch(MTableSwitch *tableswitch)
+LTableSwitch *
+LIRGeneratorX86Shared::newLTableSwitch(const LAllocation &in, const LDefinition &inputCopy,
+                                       MTableSwitch *tableswitch)
 {
-    MDefinition *opd = tableswitch->getOperand(0);
+    return new LTableSwitch(in, inputCopy, temp(), tableswitch);
+}
 
-    // There should be at least 1 successor. The default case!
-    JS_ASSERT(tableswitch->numSuccessors() > 0);
-
-    // If there are no cases, the default case is always taken.
-    if (tableswitch->numSuccessors() == 1)
-        return add(new LGoto(tableswitch->getDefault()));
-
-    // Case indices are numeric, so other types will always go to the default case.
-    if (opd->type() != MIRType_Int32 && opd->type() != MIRType_Double)
-        return add(new LGoto(tableswitch->getDefault()));
-
-    // Return an LTableSwitch, capable of handling either an integer or
-    // floating-point index.
-    LAllocation index;
-    LDefinition tempInt;
-    if (opd->type() == MIRType_Int32) {
-        index = useRegisterAtStart(opd);
-        tempInt = tempCopy(opd, 0);
-    } else {
-        index = useRegister(opd);
-        tempInt = temp(LDefinition::GENERAL);
-    }
-    return add(new LTableSwitch(index, tempInt, temp(LDefinition::GENERAL), tableswitch));
+LTableSwitchV *
+LIRGeneratorX86Shared::newLTableSwitchV(MTableSwitch *tableswitch)
+{
+    return new LTableSwitchV(temp(), tempFloat(), temp(), tableswitch);
 }
 
 bool
@@ -63,8 +46,14 @@ LIRGeneratorX86Shared::visitInterruptCheck(MInterruptCheck *ins)
 bool
 LIRGeneratorX86Shared::visitGuardShape(MGuardShape *ins)
 {
+    JS_ASSERT(ins->obj()->type() == MIRType_Object);
+
     LGuardShape *guard = new LGuardShape(useRegister(ins->obj()));
-    return assignSnapshot(guard, ins->bailoutKind()) && add(guard, ins);
+    if (!assignSnapshot(guard, ins->bailoutKind()))
+        return false;
+    if (!add(guard, ins))
+        return false;
+    return redefine(ins, ins->obj());
 }
 
 bool

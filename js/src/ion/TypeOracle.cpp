@@ -82,7 +82,7 @@ TypeInferenceOracle::binaryTypes(JSScript *script, jsbytecode *pc)
     JSOp op = (JSOp)*pc;
 
     BinaryTypes res;
-    if ((js_CodeSpec[op].format & JOF_INCDEC) || op == JSOP_NEG || op == JSOP_POS) {
+    if (op == JSOP_NEG || op == JSOP_POS) {
         res.lhsTypes = script->analysis()->poppedTypes(pc, 0);
         res.rhsTypes = NULL;
         res.outTypes = script->analysis()->pushedTypes(pc, 0);
@@ -92,30 +92,6 @@ TypeInferenceOracle::binaryTypes(JSScript *script, jsbytecode *pc)
         res.outTypes = script->analysis()->pushedTypes(pc, 0);
     }
     return res;
-}
-
-TypeOracle::BinaryTypes
-TypeInferenceOracle::incslot(JSScript *script, jsbytecode *pc)
-{
-    JSOp op = JSOp(*pc);
-    unsigned index = GET_SLOTNO(pc);
- 
-    StackTypeSet *types = NULL;
-    if (js_CodeSpec[op].type() == JOF_LOCAL) {
-        if (script->analysis()->trackSlot(LocalSlot(script, index)))
-            return binaryTypes(script, pc);
-        types = TypeScript::LocalTypes(script, index);
-    } else {
-        if (script->analysis()->trackSlot(ArgSlot(index)))
-            return binaryTypes(script, pc);
-        types = TypeScript::ArgTypes(script, index);
-    }
-
-    BinaryTypes b;
-    b.lhsTypes = types;
-    b.rhsTypes = NULL;
-    b.outTypes = script->analysis()->pushedTypes(pc, 0);
-    return b;
 }
 
 TypeOracle::Unary
@@ -137,7 +113,7 @@ TypeInferenceOracle::binaryOp(JSScript *script, jsbytecode *pc)
     JSOp op = (JSOp)*pc;
 
     Binary res;
-    if ((js_CodeSpec[op].format & JOF_INCDEC) || op == JSOP_NEG || op == JSOP_POS) {
+    if (op == JSOP_NEG || op == JSOP_POS) {
         res.lhs = getMIRType(script->analysis()->poppedTypes(pc, 0));
         res.rhs = MIRType_Int32;
         res.rval = getMIRType(script->analysis()->pushedTypes(pc, 0));
@@ -287,6 +263,31 @@ TypeInferenceOracle::propertyReadAccessGetter(JSScript *script, jsbytecode *pc)
 }
 
 bool
+TypeInferenceOracle::inObjectIsDenseArray(JSScript *script, jsbytecode *pc)
+{
+    // Check whether the object is a dense array and index is int32 or double.
+    StackTypeSet *id = script->analysis()->poppedTypes(pc, 1);
+    StackTypeSet *obj = script->analysis()->poppedTypes(pc, 0);
+
+    JSValueType idType = id->getKnownTypeTag();
+    if (idType != JSVAL_TYPE_INT32 && idType != JSVAL_TYPE_DOUBLE)
+        return false;
+
+    JSValueType objType = obj->getKnownTypeTag();
+    if (objType != JSVAL_TYPE_OBJECT)
+        return false;
+
+    return !obj->hasObjectFlags(cx, types::OBJECT_FLAG_NON_DENSE_ARRAY);
+}
+
+bool
+TypeInferenceOracle::inArrayIsPacked(JSScript *script, jsbytecode *pc)
+{
+    StackTypeSet *types = script->analysis()->poppedTypes(pc, 0);
+    return !types->hasObjectFlags(cx, types::OBJECT_FLAG_NON_PACKED_ARRAY);
+}
+
+bool
 TypeInferenceOracle::elementReadIsDenseArray(JSScript *script, jsbytecode *pc)
 {
     // Check whether the object is a dense array and index is int32 or double.
@@ -357,8 +358,11 @@ TypeInferenceOracle::elementReadIsString(JSScript *script, jsbytecode *pc)
     if (id->getKnownTypeTag() != JSVAL_TYPE_INT32)
         return false;
 
-    types::TypeSet *pushed = script->analysis()->pushedTypes(pc, 0);
-    if (!pushed->hasType(types::Type::StringType()))
+    // This function is used for jsop_getelem_string which should return
+    // undefined if this is out-side the string bounds. Currently we just
+    // fallback to a CallGetElement.
+    StackTypeSet *pushed = script->analysis()->pushedTypes(pc, 0);
+    if (pushed->getKnownTypeTag() != JSVAL_TYPE_STRING)
         return false;
 
     return true;
@@ -551,7 +555,8 @@ TypeInferenceOracle::canInlineCall(JSScript *caller, jsbytecode *pc)
 bool
 TypeInferenceOracle::canEnterInlinedFunction(JSFunction *target)
 {
-    JSScript *script = target->script();
+    AssertCanGC();
+    RootedScript script(cx, target->script());
     if (!script->hasAnalysis() || !script->analysis()->ranInference())
         return false;
 

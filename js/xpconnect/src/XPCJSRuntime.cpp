@@ -48,7 +48,6 @@ const char* XPCJSRuntime::mStrings[] = {
     "constructor",          // IDX_CONSTRUCTOR
     "toString",             // IDX_TO_STRING
     "toSource",             // IDX_TO_SOURCE
-    "valueOf",              // IDX_VALUE_OF
     "lastResult",           // IDX_LAST_RESULT
     "returnCode",           // IDX_RETURN_CODE
     "value",                // IDX_VALUE
@@ -67,8 +66,7 @@ const char* XPCJSRuntime::mStrings[] = {
     "baseURIObject",        // IDX_BASEURIOBJECT
     "nodePrincipal",        // IDX_NODEPRINCIPAL
     "documentURIObject",    // IDX_DOCUMENTURIOBJECT
-    "mozMatchesSelector",   // IDX_MOZMATCHESSELECTOR
-    "WebSocket"             // IDX_WEBSOCKET
+    "mozMatchesSelector"    // IDX_MOZMATCHESSELECTOR
 };
 
 /***************************************************************************/
@@ -214,9 +212,25 @@ ContextCallback(JSContext *cx, unsigned operation)
     return true;
 }
 
-xpc::CompartmentPrivate::~CompartmentPrivate()
+namespace xpc {
+
+CompartmentPrivate::~CompartmentPrivate()
 {
     MOZ_COUNT_DTOR(xpc::CompartmentPrivate);
+}
+
+CompartmentPrivate*
+EnsureCompartmentPrivate(JSObject *obj)
+{
+    JSCompartment *c = js::GetObjectCompartment(obj);
+    CompartmentPrivate *priv = GetCompartmentPrivate(c);
+    if (priv)
+        return priv;
+    priv = new CompartmentPrivate();
+    JS_SetCompartmentPrivate(c, priv);
+    return priv;
+}
+
 }
 
 static void
@@ -225,26 +239,11 @@ CompartmentDestroyedCallback(JSFreeOp *fop, JSCompartment *compartment)
     XPCJSRuntime* self = nsXPConnect::GetRuntimeInstance();
     if (!self)
         return;
-    XPCCompartmentSet &set = self->GetCompartmentSet();
 
     // Get the current compartment private into an AutoPtr (which will do the
     // cleanup for us), and null out the private (which may already be null).
     nsAutoPtr<CompartmentPrivate> priv(GetCompartmentPrivate(compartment));
     JS_SetCompartmentPrivate(compartment, nullptr);
-
-    // JSD creates compartments in our runtime without going through our creation
-    // code. This means that those compartments aren't in our set, and don't have
-    // compartment privates. JSD is on the way out, so let's just handle that
-    // case for now.
-    if (!priv) {
-        MOZ_ASSERT(!set.has(compartment));
-        return;
-    }
-
-    // Remove the compartment from the set.
-    MOZ_ASSERT(set.has(compartment));
-    set.remove(compartment);
-    return;
 }
 
 nsresult
@@ -312,7 +311,7 @@ static void
 TraceJSObject(void *aScriptThing, const char *name, void *aClosure)
 {
     JS_CALL_TRACER(static_cast<JSTracer*>(aClosure), aScriptThing,
-                   js_GetGCThingTraceKind(aScriptThing), name);
+                   js::GCThingTraceKind(aScriptThing), name);
 }
 
 static PLDHashOperator
@@ -320,14 +319,6 @@ TraceJSHolder(void *holder, nsScriptObjectTracer *&tracer, void *arg)
 {
     tracer->Trace(holder, TraceJSObject, arg);
 
-    return PL_DHASH_NEXT;
-}
-
-static PLDHashOperator
-TraceDOMExpandos(nsPtrHashKey<JSObject> *expando, void *aClosure)
-{
-    JS_CALL_OBJECT_TRACER(static_cast<JSTracer *>(aClosure), expando->GetKey(),
-                          "DOM expando object");
     return PL_DHASH_NEXT;
 }
 
@@ -351,14 +342,6 @@ void XPCJSRuntime::TraceXPConnectRoots(JSTracer *trc)
         static_cast<nsXPCWrappedJS*>(e)->TraceJS(trc);
 
     mJSHolders.Enumerate(TraceJSHolder, trc);
-
-    // Trace compartments.
-    XPCCompartmentSet &set = GetCompartmentSet();
-    for (XPCCompartmentRange r = set.all(); !r.empty(); r.popFront()) {
-        CompartmentPrivate *priv = GetCompartmentPrivate(r.front());
-        if (priv->domExpandoMap)
-            priv->domExpandoMap->EnumerateEntries(TraceDOMExpandos, trc);
-    }
 }
 
 struct Closure
@@ -375,7 +358,7 @@ CheckParticipatesInCycleCollection(void *aThing, const char *name, void *aClosur
     if (closure->cycleCollectionEnabled)
         return;
 
-    if (AddToCCKind(js_GetGCThingTraceKind(aThing)) &&
+    if (AddToCCKind(js::GCThingTraceKind(aThing)) &&
         xpc_IsGrayGCThing(aThing))
     {
         closure->cycleCollectionEnabled = true;
@@ -414,23 +397,32 @@ XPCJSRuntime::SuspectWrappedNative(XPCWrappedNative *wrapper,
         cb.NoteJSRoot(obj);
 }
 
-static PLDHashOperator
-SuspectDOMExpandos(nsPtrHashKey<JSObject> *key, void *arg)
+bool
+CanSkipWrappedJS(nsXPCWrappedJS *wrappedJS)
 {
-    Closure *closure = static_cast<Closure*>(arg);
-    JSObject* obj = key->GetKey();
-    nsISupports* native = nullptr;
-    if (dom::oldproxybindings::instanceIsProxy(obj)) {
-        native = static_cast<nsISupports*>(js::GetProxyPrivate(obj).toPrivate());
+    JSObject *obj = wrappedJS->GetJSObjectPreserveColor();
+    // If traversing wrappedJS wouldn't release it, nor
+    // cause any other objects to be added to the graph, no
+    // need to add it to the graph at all.
+    if (nsCCUncollectableMarker::sGeneration &&
+        (!obj || !xpc_IsGrayGCThing(obj)) &&
+        !wrappedJS->IsSubjectToFinalization() &&
+        wrappedJS->GetRootWrapper() == wrappedJS) {
+        if (!wrappedJS->IsAggregatedToNative()) {
+            return true;
+        } else {
+            nsISupports* agg = wrappedJS->GetAggregatedNativeObject();
+            nsXPCOMCycleCollectionParticipant* cp = nullptr;
+            CallQueryInterface(agg, &cp);
+            nsISupports* canonical = nullptr;
+            agg->QueryInterface(NS_GET_IID(nsCycleCollectionISupports),
+                                reinterpret_cast<void**>(&canonical));
+            if (cp && canonical && cp->CanSkipInCC(canonical)) {
+                return true;
+            }
+        }
     }
-    else {
-        const dom::DOMClass* clasp;
-        dom::DOMObjectSlot slot = GetDOMClass(obj, clasp);
-        MOZ_ASSERT(slot != dom::eNonDOMObject && clasp->mDOMObjectIsISupports);
-        native = dom::UnwrapDOMObject<nsISupports>(obj, slot);
-    }
-    closure->cb->NoteXPCOMRoot(native);
-    return PL_DHASH_NEXT;
+    return false;
 }
 
 void
@@ -466,15 +458,8 @@ XPCJSRuntime::AddXPConnectRoots(nsCycleCollectionTraversalCallback &cb)
 
     for (XPCRootSetElem *e = mWrappedJSRoots; e ; e = e->GetNextRoot()) {
         nsXPCWrappedJS *wrappedJS = static_cast<nsXPCWrappedJS*>(e);
-        JSObject *obj = wrappedJS->GetJSObjectPreserveColor();
-        // If traversing wrappedJS wouldn't release it, nor
-        // cause any other objects to be added to the graph, no
-        // need to add it to the graph at all.
-        if (nsCCUncollectableMarker::sGeneration &&
-            !cb.WantAllTraces() && (!obj || !xpc_IsGrayGCThing(obj)) &&
-            !wrappedJS->IsSubjectToFinalization() &&
-            wrappedJS->GetRootWrapper() == wrappedJS &&
-            !wrappedJS->IsAggregatedToNative()) {
+        if (!cb.WantAllTraces() &&
+            CanSkipWrappedJS(wrappedJS)) {
             continue;
         }
 
@@ -483,14 +468,6 @@ XPCJSRuntime::AddXPConnectRoots(nsCycleCollectionTraversalCallback &cb)
 
     Closure closure = { true, &cb };
     mJSHolders.Enumerate(NoteJSHolder, &closure);
-
-    // Suspect objects with expando objects.
-    XPCCompartmentSet &set = GetCompartmentSet();
-    for (XPCCompartmentRange r = set.all(); !r.empty(); r.popFront()) {
-        CompartmentPrivate *priv = GetCompartmentPrivate(r.front());
-        if (priv->domExpandoMap)
-            priv->domExpandoMap->EnumerateEntries(SuspectDOMExpandos, &closure);
-    }
 }
 
 static PLDHashOperator
@@ -560,7 +537,7 @@ ReleaseSliceNow(int32_t slice, void* data)
 {
     nsTArray<nsISupports *>* items =
         static_cast<nsTArray<nsISupports *>*>(data);
-    uint32_t counter = 0;
+    int32_t counter = 0;
     while (1) {
         uint32_t count = items->Length();
         if (!count) {
@@ -741,7 +718,6 @@ XPCJSRuntime::GCCallback(JSRuntime *rt, JSGCStatus status)
                     }
                 }
             }
-            self->GetXPConnect()->ClearGCBeforeCC();
             break;
         }
     }
@@ -783,14 +759,6 @@ XPCJSRuntime::FinalizeCallback(JSFreeOp *fop, JSFinalizeStatus status, JSBool is
 
             // Find dying scopes.
             XPCWrappedNativeScope::StartFinalizationPhaseOfGC(fop, self);
-
-            // Sweep compartments.
-            XPCCompartmentSet &set = self->GetCompartmentSet();
-            for (XPCCompartmentRange r = set.all(); !r.empty(); r.popFront()) {
-                CompartmentPrivate *priv = GetCompartmentPrivate(r.front());
-                if (priv->waiverWrapperMap)
-                    priv->waiverWrapperMap->Sweep();
-            }
 
             self->mDoingFinalization = true;
             break;
@@ -1501,24 +1469,46 @@ ReportCompartmentStats(const JS::CompartmentStats &cStats,
                      "heap taken by empty GC thing slots within non-empty "
                      "arenas.");
 
-    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/objects/non-function"),
-                     cStats.gcHeapObjectsNonFunction,
+    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/objects/ordinary"),
+                     cStats.gcHeapObjectsOrdinary,
                      "Memory on the garbage-collected JavaScript "
-                     "heap that holds non-function objects.");
+                     "heap that holds ordinary (i.e. not otherwise distinguished "
+                     "my memory reporters) objects.");
 
     CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/objects/function"),
                      cStats.gcHeapObjectsFunction,
                      "Memory on the garbage-collected JavaScript "
                      "heap that holds function objects.");
 
-    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/strings"),
-                     cStats.gcHeapStrings,
+    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/objects/dense-array"),
+                     cStats.gcHeapObjectsDenseArray,
                      "Memory on the garbage-collected JavaScript "
-                     "heap that holds string headers.  String headers contain "
+                     "heap that holds dense array objects.");
+
+    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/objects/slow-array"),
+                     cStats.gcHeapObjectsSlowArray,
+                     "Memory on the garbage-collected JavaScript "
+                     "heap that holds slow array objects.");
+
+    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/objects/cross-compartment-wrapper"),
+                     cStats.gcHeapObjectsCrossCompartmentWrapper,
+                     "Memory on the garbage-collected JavaScript "
+                     "heap that holds cross-compartment wrapper objects.");
+
+    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/strings/normal"),
+                     cStats.gcHeapStringsNormal,
+                     "Memory on the garbage-collected JavaScript "
+                     "heap that holds normal string headers.  String headers contain "
                      "various pieces of information about a string, but do not "
                      "contain (except in the case of very short strings) the "
                      "string characters;  characters in longer strings are "
                      "counted under 'gc-heap/string-chars' instead.");
+
+    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/strings/short"),
+                     cStats.gcHeapStringsShort,
+                     "Memory on the garbage-collected JavaScript "
+                     "heap that holds over-sized string headers, in which "
+                     "string characters are stored inline.");
 
     CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/scripts"),
                      cStats.gcHeapScripts,
@@ -1527,10 +1517,17 @@ ReportCompartmentStats(const JS::CompartmentStats &cStats,
                      "created for each user-defined function in a script. One "
                      "is also created for the top-level code in a script.");
 
-    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/shapes/tree"),
-                     cStats.gcHeapShapesTree,
-                     "Memory on the garbage-collected JavaScript "
-                     "heap that holds shapes that are in a property tree.");
+    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/shapes/tree/global-parented"),
+                     cStats.gcHeapShapesTreeGlobalParented,
+                     "Memory on the garbage-collected JavaScript heap that "
+                     "holds shapes that (a) are in a property tree, and (b) "
+                     "represent an object whose parent is the global object.");
+
+    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/shapes/tree/non-global-parented"),
+                     cStats.gcHeapShapesTreeNonGlobalParented,
+                     "Memory on the garbage-collected JavaScript heap that "
+                     "holds shapes that (a) are in a property tree, and (b) "
+                     "represent an object whose parent is not the global object.");
 
     CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/shapes/dict"),
                      cStats.gcHeapShapesDict,
@@ -1634,9 +1631,9 @@ ReportCompartmentStats(const JS::CompartmentStats &cStats,
                   cStats.compartmentObject,
                   "Memory used for the JSCompartment object itself.");
 
-    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("cross-compartment-wrappers"),
-                  cStats.crossCompartmentWrappers,
-                  "Memory used by cross-compartment wrappers.");
+    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("cross-compartment-wrapper-table"),
+                  cStats.crossCompartmentWrappersTable,
+                  "Memory used by the cross-compartment wrapper table.");
 
     CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("regexp-compartment"),
                   cStats.regexpCompartment,
@@ -1646,28 +1643,46 @@ ReportCompartmentStats(const JS::CompartmentStats &cStats,
                   cStats.debuggeesSet,
                   "Memory used by the debuggees set.");
 
-    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/script-main"),
-                  cStats.typeInferenceSizes.scripts,
-                  "Memory used during type inference to store type sets of "
-                  "variables and dynamically observed types.");
+    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/type-scripts"),
+                  cStats.typeInferenceSizes.typeScripts,
+                  "Memory used by type sets associated with scripts.");
 
-    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/object-main"),
-                  cStats.typeInferenceSizes.objects,
-                  "Memory used during type inference to store types and "
-                  "possible property types of JS objects.");
+    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/type-results"),
+                  cStats.typeInferenceSizes.typeResults,
+                  "Memory used by dynamic type results produced by scripts.");
 
-    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/tables"),
-                  cStats.typeInferenceSizes.tables,
-                  "Memory used during type inference for compartment-wide "
-                  "tables.");
+    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/analysis-pool"),
+                  cStats.typeInferenceSizes.analysisPool,
+                  "Memory holding transient analysis information used during type inference and "
+                  "compilation.");
 
-    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("analysis-temporary"),
-                  cStats.typeInferenceSizes.temporary,
-                  "Memory used during type inference and compilation to hold "
-                  "transient analysis information.  Cleared on GC.");
+    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/type-pool"),
+                  cStats.typeInferenceSizes.typePool,
+                  "Memory holding contents of type sets and related data.");
+
+    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/pending-arrays"),
+                  cStats.typeInferenceSizes.pendingArrays,
+                  "Memory used for solving constraints during type inference.");
+
+    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/allocation-site-tables"),
+                  cStats.typeInferenceSizes.allocationSiteTables,
+                  "Memory indexing type objects associated with allocation sites.");
+
+    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/array-type-tables"),
+                  cStats.typeInferenceSizes.arrayTypeTables,
+                  "Memory indexing type objects associated with array literals.");
+
+    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/object-type-tables"),
+                  cStats.typeInferenceSizes.objectTypeTables,
+                  "Memory indexing type objects associated with object literals.");
+
+    CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("type-inference/type-objects"),
+                  cStats.typeInferenceSizes.typeObjects,
+                  "Memory holding miscellaneous additional information associated with type "
+                  "objects.");
 
     CREPORT_BYTES2(cJSPathPrefix + NS_LITERAL_CSTRING("string-chars/non-huge"),
-                   cStats.nonHugeStringChars, nsPrintfCString(
+                   cStats.stringCharsNonHuge, nsPrintfCString(
                    "Memory allocated to hold characters of strings whose "
                    "characters take up less than than %d bytes of memory.\n\n"
                    "Sometimes more memory is allocated than necessary, to "
@@ -2227,7 +2242,6 @@ CompartmentNameCallback(JSRuntime *rt, JSCompartment *comp,
     memcpy(buf, name.get(), name.Length() + 1);
 }
 
-bool XPCJSRuntime::gNewDOMBindingsEnabled;
 bool XPCJSRuntime::gExperimentalBindingsEnabled;
 
 bool PreserveWrapper(JSContext *cx, JSObject *obj)
@@ -2381,8 +2395,6 @@ XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
 #endif
 
     DOM_InitInterfaces();
-    Preferences::AddBoolVarCache(&gNewDOMBindingsEnabled, "dom.new_bindings",
-                                 false);
     Preferences::AddBoolVarCache(&gExperimentalBindingsEnabled,
                                  "dom.experimental_bindings",
                                  false);
@@ -2391,7 +2403,7 @@ XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
     // these jsids filled in later when we have a JSContext to work with.
     mStrIDs[0] = JSID_VOID;
 
-    mJSRuntime = JS_NewRuntime(32L * 1024L * 1024L); // pref ?
+    mJSRuntime = JS_NewRuntime(32L * 1024L * 1024L, JS_USE_HELPER_THREADS); // pref ?
     if (!mJSRuntime)
         NS_RUNTIMEABORT("JS_NewRuntime failed.");
 
@@ -2456,8 +2468,6 @@ XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
 
     mJSHolders.Init(512);
 
-    mCompartmentSet.init();
-
     // Install a JavaScript 'debugger' keyword handler in debug builds only
 #ifdef DEBUG
     if (!JS_GetGlobalDebugHooks(mJSRuntime)->debuggerHandler)
@@ -2501,7 +2511,6 @@ XPCJSRuntime::newXPCJSRuntime(nsXPConnect* aXPConnect)
         self->GetNativeScriptableSharedMap()    &&
         self->GetDyingWrappedNativeProtoMap()   &&
         self->GetMapLock()                      &&
-        self->GetCompartmentSet().initialized() &&
         self->mWatchdogThread) {
         return self;
     }
@@ -2519,7 +2528,6 @@ JSBool
 XPCJSRuntime::OnJSContextNew(JSContext *cx)
 {
     // if it is our first context then we need to generate our string ids
-    JSBool ok = true;
     if (JSID_IS_VOID(mStrIDs[0])) {
         JS_SetGCParameterForThread(cx, JSGC_MAX_CODE_CACHE_BYTES, 16 * 1024 * 1024);
         {
@@ -2530,22 +2538,17 @@ XPCJSRuntime::OnJSContextNew(JSContext *cx)
                 JSString* str = JS_InternString(cx, mStrings[i]);
                 if (!str || !JS_ValueToId(cx, STRING_TO_JSVAL(str), &mStrIDs[i])) {
                     mStrIDs[0] = JSID_VOID;
-                    ok = false;
-                    break;
+                    return false;
                 }
                 mStrJSVals[i] = STRING_TO_JSVAL(str);
             }
         }
 
-        ok = mozilla::dom::DefineStaticJSVals(cx) &&
-             mozilla::dom::oldproxybindings::DefineStaticJSVals(cx);
-        if (!ok)
+        if (!mozilla::dom::DefineStaticJSVals(cx) ||
+            !InternStaticDictionaryJSVals(cx)) {
             return false;
-
-        ok = InternStaticDictionaryJSVals(cx);
+        }
     }
-    if (!ok)
-        return false;
 
     XPCContext* xpc = new XPCContext(this, cx);
     if (!xpc)

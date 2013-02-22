@@ -317,7 +317,7 @@ ParseContext::generateFunctionBindings(JSContext *cx, InternalHandle<Bindings*> 
 
     FunctionBox *funbox = sc->asFunbox();
     if (bindings->hasAnyAliasedBindings() || funbox->hasExtensibleScope())
-        funbox->function()->flags |= JSFUN_HEAVYWEIGHT;
+        funbox->function()->setIsHeavyweight();
 
     return true;
 }
@@ -1052,10 +1052,12 @@ Parser::newFunction(ParseContext *pc, HandleAtom atom, FunctionSyntaxKind kind)
     parent = pc->sc->isFunction ? NULL : pc->sc->asGlobal()->scopeChain();
 
     RootedFunction fun(context);
-    uint32_t flags = JSFUN_INTERPRETED | (kind == Expression ? JSFUN_LAMBDA : 0);
-    if (selfHostingMode)
-        flags |= JSFUN_SELF_HOSTED;
+    JSFunction::Flags flags = (kind == Expression)
+                              ? JSFunction::INTERPRETED_LAMBDA
+                              : JSFunction::INTERPRETED;
     fun = js_NewFunction(context, NullPtr(), NULL, 0, flags, parent, atom);
+    if (selfHostingMode)
+        fun->setIsSelfHostedBuiltin();
     if (fun && !compileAndGo) {
         if (!JSObject::clearParent(context, fun))
             return NULL;
@@ -1147,7 +1149,7 @@ LeaveFunction(ParseNode *fn, Parser *parser, PropertyName *funName = NULL,
                  * produce an error (in strict mode).
                  */
                 if (dn->isClosed() || dn->isAssigned())
-                    funbox->function()->flags |= JSFUN_HEAVYWEIGHT;
+                    funbox->function()->setIsHeavyweight();
                 continue;
             }
 
@@ -1632,7 +1634,7 @@ Parser::functionDef(HandlePropertyName funName, FunctionType type, FunctionSynta
 #if JS_HAS_EXPR_CLOSURES
     if (tokenStream.getToken(TSF_OPERAND) != TOK_LC) {
         tokenStream.ungetToken();
-        fun->flags |= JSFUN_EXPR_CLOSURE;
+        fun->setIsExprClosure();
         bodyType = ExpressionBody;
     }
 #else
@@ -1857,7 +1859,13 @@ Parser::processDirectives(ParseNode *stmts)
         bool isDirective = IsEscapeFreeStringLiteral(directive);
         JSAtom *atom = directive.atom();
         TokenKind next = tokenStream.peekTokenSameLine();
-        if (next != TOK_EOF && next != TOK_EOL && next != TOK_SEMI && next != TOK_RC) {
+
+        // We need to check whether the directive ends explicitly or implicitly
+        // due to ASI. In the latter case, the expression must not continue on
+        // the next line.
+        if (next != TOK_EOF && next != TOK_SEMI && next != TOK_RC &&
+           (next != TOK_EOL || TokenContinuesStringExpression(tokenStream.peekToken())))
+        {
             freeTree(stringNode);
             if (next == TOK_ERROR)
                 return false;
@@ -6941,8 +6949,8 @@ Parser::primaryExpr(TokenKind tt, bool afterDoubleDot)
         if (!pn)
             return NULL;
 
-        const jschar *chars = tokenStream.getTokenbuf().begin();
         size_t length = tokenStream.getTokenbuf().length();
+        const jschar *chars = tokenStream.getTokenbuf().begin();
         RegExpFlag flags = tokenStream.currentToken().regExpFlags();
         RegExpStatics *res = context->regExpStatics();
 

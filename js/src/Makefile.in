@@ -123,6 +123,7 @@ CPPSRCS		= \
 		BytecodeCompiler.cpp \
 		BytecodeEmitter.cpp \
 		FoldConstants.cpp \
+		Intl.cpp \
 		NameFunctions.cpp \
 		ParallelArray.cpp \
 		ParseMaps.cpp \
@@ -161,7 +162,6 @@ INSTALLED_HEADERS = \
 		jsdbgapi.h \
 		jsdhash.h \
 		jsfriendapi.h \
-		jsgc.h \
 		jslock.h \
 		json.h \
 		jsproxy.h \
@@ -187,11 +187,7 @@ EXPORTS_ds = \
 		$(NULL)
 
 EXPORTS_gc = \
-		Barrier.h \
-		Heap.h \
 		Root.h \
-		Statistics.h \
-		StoreBuffer.h \
 		$(NULL)
 
 ######################################################
@@ -212,6 +208,7 @@ EXPORTS_NAMESPACES += js
 # LegacyIntTypes.h below is deliberately exempted from this requirement.
 EXPORTS_js = \
 		HashTable.h \
+		HeapAPI.h \
 		LegacyIntTypes.h \
 		MemoryMetrics.h \
 		TemplateLib.h \
@@ -394,6 +391,7 @@ CPPSRCS += 	ExecutableAllocator.cpp \
 		YarrInterpreter.cpp \
 		YarrPattern.cpp \
 		YarrSyntaxChecker.cpp \
+		YarrCanonicalizeUCS2.cpp \
 		$(NONE)
 
 ifdef ENABLE_METHODJIT_SPEW
@@ -681,9 +679,6 @@ ifdef JS_VERSION
 DEFINES		+= -DJS_VERSION=$(JS_VERSION)
 endif
 
-# We do not want to have obsolete NSPR functionality in threadsafe builds.
-DEFINES   += -DNO_NSPR_10_SUPPORT
-
 ifneq ($(findstring -L,$(NSPR_LIBS)),)
 NSPR_STATIC_PATH = $(subst -L,,$(findstring -L,$(NSPR_LIBS)))
 else
@@ -726,6 +721,10 @@ MonoIC.$(OBJ_SUFFIX): CXXFLAGS += -GL-
 Compiler.$(OBJ_SUFFIX): CXXFLAGS += -GL-
 # Ditto (Bug 772303)
 RegExp.$(OBJ_SUFFIX): CXXFLAGS += -GL-
+endif
+# Ditto (Bug 810661)
+ifeq ($(CPU_ARCH),x86_64)
+CTypes.$(OBJ_SUFFIX): CXXFLAGS += -GL-
 endif
 endif # _MSC_VER
 
@@ -888,7 +887,8 @@ pm_linux.$(OBJ_SUFFIX): CXXFLAGS += $(LINUX_HEADERS_INCLUDES)
 endif
 
 # Prepare self-hosted JS code for embedding
-export:: selfhosted.out.h
+export:: selfhosting
+selfhosting:: selfhosted.out.h
 
 selfhosting_srcs := \
   $(srcdir)/builtin/array.js \

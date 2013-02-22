@@ -375,11 +375,31 @@ Range::subTruncate(const Range *lhs, const Range *rhs)
 Range
 Range::and_(const Range *lhs, const Range *rhs)
 {
-    int64_t lower = 0;
-    // If both numbers can be negative, issues can be had.
-    if (lhs->lower_ < 0 && rhs->lower_ < 0)
+    int64_t lower;
+    int64_t upper;
+
+    // If both numbers can be negative, result can be negative in the whole range
+    if (lhs->lower_ < 0 && rhs->lower_ < 0) {
         lower = INT_MIN;
-    int64_t upper = Max(lhs->upper_, rhs->upper_);
+        upper = Max(lhs->upper_, rhs->upper_);
+        Range ret(lower, upper);
+        return ret;
+    }
+
+    // Only one of both numbers can be negative.
+    // - result can't be negative
+    // - Upper bound is minimum of both upper range,
+    lower = 0;
+    upper = Min(lhs->upper_, rhs->upper_);
+
+    // EXCEPT when upper bound of non negative number is max value,
+    // because negative value can return the whole max value.
+    // -1 & 5 = 5
+    if (lhs->lower_ < 0)
+       upper = rhs->upper_;
+    if (rhs->lower_ < 0)
+        upper = lhs->upper_;
+
     Range ret(lower, upper);
     return ret;
 
@@ -415,6 +435,24 @@ Range::shr(const Range *lhs, int32 c)
         (int64_t)lhs->lower_ >> shift,
         (int64_t)lhs->upper_ >> shift);
     return ret;
+}
+
+bool
+Range::precisionLossMul(const Range *lhs, const Range *rhs)
+{
+    int64_t loss  = 1LL<<53; // result must be lower than 2^53
+    int64_t a = (int64_t)lhs->lower_ * (int64_t)rhs->lower_;
+    int64_t b = (int64_t)lhs->lower_ * (int64_t)rhs->upper_;
+    int64_t c = (int64_t)lhs->upper_ * (int64_t)rhs->lower_;
+    int64_t d = (int64_t)lhs->upper_ * (int64_t)rhs->upper_;
+    int64_t lower = Min( Min(a, b), Min(c, d) );
+    int64_t upper = Max( Max(a, b), Max(c, d) );
+    if (lower < 0)
+        lower = -lower;
+    if (upper < 0)
+        upper = -upper;
+
+    return lower > loss || upper > loss;
 }
 
 bool

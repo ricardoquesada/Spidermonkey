@@ -45,6 +45,8 @@ using namespace js::mjit::ic;
 #endif
 using namespace js::analyze;
 
+using mozilla::DebugOnly;
+
 #define RETURN_IF_OOM(retval)                                   \
     JS_BEGIN_MACRO                                              \
         if (oomInVector || masm.oom() || stubcc.masm.oom())     \
@@ -95,6 +97,7 @@ mjit::Compiler::Compiler(JSContext *cx, JSScript *outerScript,
 #endif
     callPatches(CompilerAllocPolicy(cx, *thisFromCtor())),
     callSites(CompilerAllocPolicy(cx, *thisFromCtor())),
+    compileTriggers(CompilerAllocPolicy(cx, *thisFromCtor())),
     doubleList(CompilerAllocPolicy(cx, *thisFromCtor())),
     rootedTemplates(CompilerAllocPolicy(cx, *thisFromCtor())),
     rootedRegExps(CompilerAllocPolicy(cx, *thisFromCtor())),
@@ -537,7 +540,7 @@ mjit::Compiler::performCompilation()
     JS_ASSERT(cx->compartment->activeInference);
 
     {
-        types::AutoEnterCompilation enter(cx, types::AutoEnterCompilation::JM);
+        types::AutoEnterCompilation enter(cx, types::CompilerOutput::MethodJIT);
         if (!enter.init(outerScript, isConstructing, chunkIndex)) {
             js_ReportOutOfMemory(cx);
             return Compile_Error;
@@ -1299,19 +1302,8 @@ void
 mjit::Compiler::markUndefinedLocal(uint32_t offset, uint32_t i)
 {
     uint32_t depth = ssa.getFrame(a->inlineIndex).depth;
-    uint32_t slot = LocalSlot(script_, i);
     Address local(JSFrameReg, sizeof(StackFrame) + (depth + i) * sizeof(Value));
-    if (!cx->typeInferenceEnabled() || !analysis->trackSlot(slot)) {
-        masm.storeValue(UndefinedValue(), local);
-    } else {
-        Lifetime *lifetime = analysis->liveness(slot).live(offset);
-        if (lifetime)
-            masm.storeValue(UndefinedValue(), local);
-#ifdef DEBUG
-        else
-            masm.storeValue(ObjectValueCrashOnTouch(), local);
-#endif
-    }
+    masm.storeValue(UndefinedValue(), local);
 }
 
 void
@@ -1436,6 +1428,7 @@ mjit::Compiler::finishThisUp()
                       sizeof(NativeMapEntry) * nNmapLive +
                       sizeof(InlineFrame) * inlineFrames.length() +
                       sizeof(CallSite) * callSites.length() +
+                      sizeof(CompileTrigger) * compileTriggers.length() +
                       sizeof(JSObject*) * rootedTemplates.length() +
                       sizeof(RegExpShared*) * rootedRegExps.length() +
                       sizeof(uint32_t) * monitoredBytecodes.length() +
@@ -1568,6 +1561,16 @@ mjit::Compiler::finishThisUp()
          */
         if (from.loopPatch.hasPatch)
             stubCode.patch(from.loopPatch.codePatch, result + codeOffset);
+    }
+
+    CompileTrigger *jitCompileTriggers = (CompileTrigger *)cursor;
+    chunk->nCompileTriggers = compileTriggers.length();
+    cursor += sizeof(CompileTrigger) * chunk->nCompileTriggers;
+    for (size_t i = 0; i < chunk->nCompileTriggers; i++) {
+        const InternalCompileTrigger &trigger = compileTriggers[i];
+        jitCompileTriggers[i].initialize(trigger.pc - outerScript->code,
+                                         fullCode.locationOf(trigger.inlineJump),
+                                         stubCode.locationOf(trigger.stubLabel));
     }
 
     JSObject **jitRootedTemplates = (JSObject **)cursor;
@@ -3053,48 +3056,6 @@ mjit::Compiler::generateMethod()
             frame.popn(2);
           END_CASE(JSOP_INITELEM)
 
-          BEGIN_CASE(JSOP_INCARG)
-          BEGIN_CASE(JSOP_DECARG)
-          BEGIN_CASE(JSOP_ARGINC)
-          BEGIN_CASE(JSOP_ARGDEC)
-            if (script_->hasScriptCounts) {
-                restoreVarType();
-                FrameEntry *fe = frame.getArg(GET_SLOTNO(PC));
-                if (fe->isTypeKnown())
-                    arithFirstUseType = fe->getKnownType();
-            }
-
-            if (!jsop_arginc(op, GET_SLOTNO(PC)))
-                return Compile_Retry;
-
-            if (script_->hasScriptCounts) {
-                FrameEntry *fe = frame.getArg(GET_SLOTNO(PC));
-                updateArithCounts(PC, fe, arithFirstUseType, JSVAL_TYPE_INT32);
-                arithUpdated = true;
-            }
-          END_CASE(JSOP_ARGDEC)
-
-          BEGIN_CASE(JSOP_INCLOCAL)
-          BEGIN_CASE(JSOP_DECLOCAL)
-          BEGIN_CASE(JSOP_LOCALINC)
-          BEGIN_CASE(JSOP_LOCALDEC)
-            if (script_->hasScriptCounts) {
-                restoreVarType();
-                FrameEntry *fe = frame.getLocal(GET_SLOTNO(PC));
-                if (fe->isTypeKnown())
-                    arithFirstUseType = fe->getKnownType();
-            }
-
-            if (!jsop_localinc(op, GET_SLOTNO(PC)))
-                return Compile_Retry;
-
-            if (script_->hasScriptCounts) {
-                FrameEntry *fe = frame.getLocal(GET_SLOTNO(PC));
-                updateArithCounts(PC, fe, arithFirstUseType, JSVAL_TYPE_INT32);
-                arithUpdated = true;
-            }
-          END_CASE(JSOP_LOCALDEC)
-
           BEGIN_CASE(JSOP_BINDNAME)
             jsop_bindname(script_->getName(GET_UINT32_INDEX(PC)));
           END_CASE(JSOP_BINDNAME)
@@ -4024,6 +3985,8 @@ MaybeIonCompileable(JSContext *cx, JSScript *script, bool *recompileCheckForIon)
 void
 mjit::Compiler::ionCompileHelper()
 {
+    JS_ASSERT(script_ == outerScript);
+
     JS_ASSERT(IsIonEnabled(cx));
     JS_ASSERT(!inlining());
 
@@ -4040,6 +4003,12 @@ mjit::Compiler::ionCompileHelper()
     uint32_t *useCountAddress = script_->addressOfUseCount();
     masm.add32(Imm32(1), AbsoluteAddress(useCountAddress));
 
+    // We cannot inline a JM -> Ion constructing call.
+    // Compiling this function is pointless and would disable the JM -> JM fastpath.
+    // This function will start running in Ion, when caller runs in Ion/Interpreter.
+    if (isConstructing && outerScript->code == PC)
+        return;
+
     // If we don't want to do a recompileCheck for Ion, then this just needs to
     // increment the useCount so that we know when to recompile this function
     // from an Ion call.  No need to call out to recompiler stub.
@@ -4048,47 +4017,63 @@ mjit::Compiler::ionCompileHelper()
 
     void *ionScriptAddress = &script_->ion;
 
+#ifdef JS_CPU_X64
+    // Allocate a temp register. Note that we have to do this before calling
+    // syncExitAndJump below.
+    RegisterID reg = frame.allocReg();
+#endif
+
+    InternalCompileTrigger trigger;
+    trigger.pc = PC;
+    trigger.stubLabel = stubcc.syncExitAndJump(Uses(0));
+
     // Trigger ion compilation if (a) the script has been used enough times for
     // this opcode, and (b) the script does not already have ion information
     // (whether successful, failed, or in progress off thread compilation)
     // *OR* off thread compilation is not being used.
     //
-    // (b) prevents repetitive stub calls while off thread compilation is in
-    // progress, but is otherwise unnecessary and negatively affects tuning
-    // on some benchmarks (see bug 774253).
-    Jump last;
+    // If off thread compilation is in use, we retain the CompileTrigger so
+    // that (b) can be short circuited to force a call to TriggerIonCompile
+    // (see DisableScriptAtPC).
+    //
+    // If off thread compilation is not in use, (b) is unnecessary and
+    // negatively affects tuning on some benchmarks (see bug 774253). Thus,
+    // we immediately short circuit the check for (b).
+
+    Label secondTest = stubcc.masm.label();
 
 #if defined(JS_CPU_X86) || defined(JS_CPU_ARM)
-    if (ion::js_IonOptions.parallelCompilation) {
-        Jump first = masm.branch32(Assembler::LessThan, AbsoluteAddress(useCountAddress),
-                                   Imm32(minUses));
-        last = masm.branch32(Assembler::Equal, AbsoluteAddress(ionScriptAddress),
-                             Imm32(0));
-        first.linkTo(masm.label(), &masm);
-    } else {
-        last = masm.branch32(Assembler::GreaterThanOrEqual, AbsoluteAddress(useCountAddress),
-                             Imm32(minUses));
-    }
-#else
+    trigger.inlineJump = masm.branch32(Assembler::GreaterThanOrEqual,
+                                       AbsoluteAddress(useCountAddress),
+                                       Imm32(minUses));
+    Jump scriptJump = stubcc.masm.branch32(Assembler::Equal, AbsoluteAddress(ionScriptAddress),
+                                           Imm32(0));
+#elif defined(JS_CPU_X64)
     /* Handle processors that can't load from absolute addresses. */
-    RegisterID reg = frame.allocReg();
     masm.move(ImmPtr(useCountAddress), reg);
-    if (ion::js_IonOptions.parallelCompilation) {
-        Jump first = masm.branch32(Assembler::LessThan, Address(reg), Imm32(minUses));
-        masm.move(ImmPtr(ionScriptAddress), reg);
-        last = masm.branchPtr(Assembler::Equal, Address(reg), ImmPtr(NULL));
-        first.linkTo(masm.label(), &masm);
-    } else {
-        last = masm.branch32(Assembler::GreaterThanOrEqual, Address(reg), Imm32(minUses));
-    }
+    trigger.inlineJump = masm.branch32(Assembler::GreaterThanOrEqual,
+                                       Address(reg),
+                                       Imm32(minUses));
+    stubcc.masm.move(ImmPtr(ionScriptAddress), reg);
+    Jump scriptJump = stubcc.masm.branchPtr(Assembler::Equal, Address(reg), ImmPtr(NULL));
     frame.freeReg(reg);
+#else
+#error "Unknown platform"
 #endif
 
-    stubcc.linkExit(last, Uses(0));
-    stubcc.leave();
+    stubcc.linkExitDirect(trigger.inlineJump,
+                          ion::js_IonOptions.parallelCompilation
+                          ? secondTest
+                          : trigger.stubLabel);
 
+    scriptJump.linkTo(trigger.stubLabel, &stubcc.masm);
+    stubcc.crossJump(stubcc.masm.jump(), masm.label());
+
+    stubcc.leave();
     OOL_STUBCALL(stubs::TriggerIonCompile, REJOIN_RESUME);
     stubcc.rejoin(Changes(0));
+
+    compileTriggers.append(trigger);
 #endif /* JS_ION */
 }
 
@@ -4491,7 +4476,7 @@ mjit::Compiler::inlineCallHelper(uint32_t argc, bool callingNew, FrameSize &call
         /* Test if the function is scripted. */
         stubcc.masm.load16(Address(icCalleeData, offsetof(JSFunction, flags)), tmp);
         Jump isNative = stubcc.masm.branchTest32(Assembler::Zero, tmp,
-                                                 Imm32(JSFUN_INTERPRETED));
+                                                 Imm32(JSFunction::INTERPRETED));
         tempRegs.putReg(tmp);
 
         /*
@@ -5100,7 +5085,7 @@ mjit::Compiler::jsop_getprop(PropertyName *name, JSValueType knownType,
         /*
          * Check if we are accessing the 'length' property of a known dense array.
          * Note that if the types are known to indicate dense arrays, their lengths
-         * must fit in an int32.
+         * must fit in an int32_t.
          */
         if (!types->hasObjectFlags(cx, types::OBJECT_FLAG_NON_DENSE_ARRAY)) {
             bool isObject = top->isTypeKnown();
@@ -5128,7 +5113,7 @@ mjit::Compiler::jsop_getprop(PropertyName *name, JSValueType knownType,
 
         /*
          * Check if we're accessing the 'length' property of a typed array.
-         * The typed array length always fits in an int32.
+         * The typed array length always fits in an int32_t.
          */
         if (!types->hasObjectFlags(cx, types::OBJECT_FLAG_NON_TYPED_ARRAY)) {
             if (top->isConstant()) {
@@ -6273,10 +6258,21 @@ mjit::Compiler::iter(unsigned flags)
     masm.store32(T1, flagsAddr);
 
     /* Chain onto the active iterator stack. */
-    masm.loadPtr(FrameAddress(offsetof(VMFrame, cx)), T1);
-    masm.loadPtr(Address(T1, offsetof(JSContext, enumerators)), T2);
-    masm.storePtr(T2, Address(nireg, offsetof(NativeIterator, next)));
-    masm.storePtr(ioreg, Address(T1, offsetof(JSContext, enumerators)));
+    masm.move(ImmPtr(cx->compartment), T1);
+    masm.loadPtr(Address(T1, offsetof(JSCompartment, enumerators)), T1);
+
+    /* ni->next = list */
+    masm.storePtr(T1, Address(nireg, NativeIterator::offsetOfNext()));
+
+    /* ni->prev = list->prev */
+    masm.loadPtr(Address(T1, NativeIterator::offsetOfPrev()), T2);
+    masm.storePtr(T2, Address(nireg, NativeIterator::offsetOfPrev()));
+
+    /* list->prev->next = ni */
+    masm.storePtr(nireg, Address(T2, NativeIterator::offsetOfNext()));
+
+    /* list->prev = ni */
+    masm.storePtr(nireg, Address(T1, NativeIterator::offsetOfPrev()));
 
     frame.freeReg(nireg);
     frame.freeReg(T1);
@@ -6427,13 +6423,22 @@ mjit::Compiler::iterEnd()
     masm.loadPtr(Address(T1, offsetof(NativeIterator, props_array)), T2);
     masm.storePtr(T2, Address(T1, offsetof(NativeIterator, props_cursor)));
 
-    /* Advance enumerators list. */
-    masm.loadPtr(FrameAddress(offsetof(VMFrame, cx)), T2);
-    masm.loadPtr(Address(T1, offsetof(NativeIterator, next)), T1);
-    masm.storePtr(T1, Address(T2, offsetof(JSContext, enumerators)));
+    /* Unlink from the iterator list. */
+    RegisterID prev = T2;
+    RegisterID next = frame.allocReg();
+
+    masm.loadPtr(Address(T1, NativeIterator::offsetOfNext()), next);
+    masm.loadPtr(Address(T1, NativeIterator::offsetOfPrev()), prev);
+    masm.storePtr(prev, Address(next, NativeIterator::offsetOfPrev()));
+    masm.storePtr(next, Address(prev, NativeIterator::offsetOfNext()));
+#ifdef DEBUG
+    masm.storePtr(ImmPtr(NULL), Address(T1, NativeIterator::offsetOfNext()));
+    masm.storePtr(ImmPtr(NULL), Address(T1, NativeIterator::offsetOfPrev()));
+#endif
 
     frame.freeReg(T1);
     frame.freeReg(T2);
+    frame.freeReg(next);
 
     stubcc.leave();
     OOL_STUBCALL(stubs::EndIter, REJOIN_FALLTHROUGH);

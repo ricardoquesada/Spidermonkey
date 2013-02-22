@@ -16,11 +16,6 @@ user_pref("dom.max_chrome_script_run_time", 0);
 user_pref("javascript.allow.mailnews", true);
 user_pref("javascript.options.showInConsole", true);
 user_pref("layout.css.report_errors", true);
-user_pref("security.warn_entering_secure", false);
-user_pref("security.warn_entering_weak", false);
-user_pref("security.warn_leaving_secure", false);
-user_pref("security.warn_submit_insecure", false);
-user_pref("security.warn_viewing_mixed", false);
 user_pref("signed.applets.codebase_principal_support", true);
 user_pref("browser.warnOnQuit", false);
 user_pref("browser.cache.check_doc_frequency", 1);
@@ -34,4 +29,5 @@ user_pref("javascript.options.methodjit_always", false);
 user_pref("javascript.options.strict", false);
 user_pref("javascript.options.werror", false);
 user_pref("toolkit.startup.max_resumed_crashes", -1);
-user_pref("security.enablePrivilege.enable_for_tests", true);
+user_pref("security.turn_off_all_security_so_that_viruses_can_take_over_this_computer", true);
+

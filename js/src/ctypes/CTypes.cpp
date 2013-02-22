@@ -39,6 +39,114 @@ using namespace std;
 namespace js {
 namespace ctypes {
 
+size_t
+GetDeflatedUTF8StringLength(JSContext *maybecx, const jschar *chars,
+                            size_t nchars)
+{
+    size_t nbytes;
+    const jschar *end;
+    unsigned c, c2;
+    char buffer[10];
+
+    nbytes = nchars;
+    for (end = chars + nchars; chars != end; chars++) {
+        c = *chars;
+        if (c < 0x80)
+            continue;
+        if (0xD800 <= c && c <= 0xDFFF) {
+            /* Surrogate pair. */
+            chars++;
+
+            /* nbytes sets 1 length since this is surrogate pair. */
+            nbytes--;
+            if (c >= 0xDC00 || chars == end)
+                goto bad_surrogate;
+            c2 = *chars;
+            if (c2 < 0xDC00 || c2 > 0xDFFF)
+                goto bad_surrogate;
+            c = ((c - 0xD800) << 10) + (c2 - 0xDC00) + 0x10000;
+        }
+        c >>= 11;
+        nbytes++;
+        while (c) {
+            c >>= 5;
+            nbytes++;
+        }
+    }
+    return nbytes;
+
+  bad_surrogate:
+    if (maybecx) {
+        JS_snprintf(buffer, 10, "0x%x", c);
+        JS_ReportErrorFlagsAndNumber(maybecx, JSREPORT_ERROR, js_GetErrorMessage,
+                                     NULL, JSMSG_BAD_SURROGATE_CHAR, buffer);
+    }
+    return (size_t) -1;
+}
+
+bool
+DeflateStringToUTF8Buffer(JSContext *maybecx, const jschar *src, size_t srclen,
+                              char *dst, size_t *dstlenp)
+{
+    size_t i, utf8Len;
+    jschar c, c2;
+    uint32_t v;
+    uint8_t utf8buf[6];
+
+    size_t dstlen = *dstlenp;
+    size_t origDstlen = dstlen;
+
+    while (srclen) {
+        c = *src++;
+        srclen--;
+        if (c >= 0xDC00 && c <= 0xDFFF)
+            goto badSurrogate;
+        if (c < 0xD800 || c > 0xDBFF) {
+            v = c;
+        } else {
+            if (srclen < 1)
+                goto badSurrogate;
+            c2 = *src;
+            if ((c2 < 0xDC00) || (c2 > 0xDFFF))
+                goto badSurrogate;
+            src++;
+            srclen--;
+            v = ((c - 0xD800) << 10) + (c2 - 0xDC00) + 0x10000;
+        }
+        if (v < 0x0080) {
+            /* no encoding necessary - performance hack */
+            if (dstlen == 0)
+                goto bufferTooSmall;
+            *dst++ = (char) v;
+            utf8Len = 1;
+        } else {
+            utf8Len = js_OneUcs4ToUtf8Char(utf8buf, v);
+            if (utf8Len > dstlen)
+                goto bufferTooSmall;
+            for (i = 0; i < utf8Len; i++)
+                *dst++ = (char) utf8buf[i];
+        }
+        dstlen -= utf8Len;
+    }
+    *dstlenp = (origDstlen - dstlen);
+    return JS_TRUE;
+
+badSurrogate:
+    *dstlenp = (origDstlen - dstlen);
+    /* Delegate error reporting to the measurement function. */
+    if (maybecx)
+        GetDeflatedUTF8StringLength(maybecx, src - 1, srclen + 1);
+    return JS_FALSE;
+
+bufferTooSmall:
+    *dstlenp = (origDstlen - dstlen);
+    if (maybecx) {
+        JS_ReportErrorNumber(maybecx, js_GetErrorMessage, NULL,
+                             JSMSG_BUFFER_TOO_SMALL);
+    }
+    return JS_FALSE;
+}
+
 /*******************************************************************************
 ** JSAPI function prototypes
 *******************************************************************************/
@@ -1156,7 +1264,11 @@ bool GetObjectProperty(JSContext *cx, HandleObject obj,
   return true;
 }
 
-JS_BEGIN_EXTERN_C
+} /* namespace ctypes */
+} /* namespace js */
+
+using namespace js;
+using namespace js::ctypes;
 
 JS_PUBLIC_API(JSBool)
 JS_InitCTypesClass(JSContext* cx, JSObject *globalArg)
@@ -1217,7 +1329,8 @@ JS_SetCTypesCallbacks(JSRawObject ctypesObj, JSCTypesCallbacks* callbacks)
   JS_SetReservedSlot(ctypesObj, SLOT_CALLBACKS, PRIVATE_TO_JSVAL(callbacks));
 }
 
-JS_END_EXTERN_C
+namespace js {
+namespace ctypes {
 
 /*******************************************************************************
 ** Type conversion functions
@@ -2003,7 +2116,7 @@ bool CanConvertTypedArrayItemTo(JSObject *baseType, JSObject *valObj, JSContext 
     return true;
   }
   TypeCode elementTypeCode;
-  switch (JS_GetTypedArrayType(valObj, cx)) {
+  switch (JS_GetArrayBufferViewType(valObj)) {
   case TypedArray::TYPE_INT8:
     elementTypeCode = TYPE_int8_t;
     break;
@@ -2228,13 +2341,13 @@ ImplicitConvert(JSContext* cx,
         return TypeError(cx, "string pointer", val);
       }
       break;
-    } else if (!JSVAL_IS_PRIMITIVE(val) && JS_IsArrayBufferObject(valObj, cx)) {
+    } else if (!JSVAL_IS_PRIMITIVE(val) && JS_IsArrayBufferObject(valObj)) {
       // Convert ArrayBuffer to pointer without any copy.
       // Just as with C arrays, we make no effort to
       // keep the ArrayBuffer alive.
-      *static_cast<void**>(buffer) = JS_GetArrayBufferData(valObj, cx);
+      *static_cast<void**>(buffer) = JS_GetArrayBufferData(valObj);
       break;
-    } if (!JSVAL_IS_PRIMITIVE(val) && JS_IsTypedArrayObject(valObj, cx)) {
+    } if (!JSVAL_IS_PRIMITIVE(val) && JS_IsTypedArrayObject(valObj)) {
       if(!CanConvertTypedArrayItemTo(baseType, valObj, cx)) {
         return TypeError(cx, "typed array with the appropriate type", val);
       }
@@ -2242,7 +2355,7 @@ ImplicitConvert(JSContext* cx,
       // Convert TypedArray to pointer without any copy.
       // Just as with C arrays, we make no effort to
       // keep the TypedArray alive.
-      *static_cast<void**>(buffer) = JS_GetArrayBufferViewData(valObj, cx);
+      *static_cast<void**>(buffer) = JS_GetArrayBufferViewData(valObj);
       break;
     }
     return TypeError(cx, "pointer", val);
@@ -2331,34 +2444,34 @@ ImplicitConvert(JSContext* cx,
       memcpy(buffer, intermediate.get(), arraySize);
 
     } else if (!JSVAL_IS_PRIMITIVE(val) &&
-               JS_IsArrayBufferObject(valObj, cx)) {
+               JS_IsArrayBufferObject(valObj)) {
       // Check that array is consistent with type, then
       // copy the array.
-      uint32_t sourceLength = JS_GetArrayBufferByteLength(valObj, cx);
+      uint32_t sourceLength = JS_GetArrayBufferByteLength(valObj);
       size_t elementSize = CType::GetSize(baseType);
       size_t arraySize = elementSize * targetLength;
       if (arraySize != size_t(sourceLength)) {
         JS_ReportError(cx, "ArrayType length does not match source ArrayBuffer length");
         return false;
       }
-      memcpy(buffer, JS_GetArrayBufferData(valObj, cx), sourceLength);
+      memcpy(buffer, JS_GetArrayBufferData(valObj), sourceLength);
       break;
     }  else if (!JSVAL_IS_PRIMITIVE(val) &&
-               JS_IsTypedArrayObject(valObj, cx)) {
+               JS_IsTypedArrayObject(valObj)) {
       // Check that array is consistent with type, then
       // copy the array.
       if(!CanConvertTypedArrayItemTo(baseType, valObj, cx)) {
         return TypeError(cx, "typed array with the appropriate type", val);
       }
 
-      uint32_t sourceLength = JS_GetTypedArrayByteLength(valObj, cx);
+      uint32_t sourceLength = JS_GetTypedArrayByteLength(valObj);
       size_t elementSize = CType::GetSize(baseType);
       size_t arraySize = elementSize * targetLength;
       if (arraySize != size_t(sourceLength)) {
         JS_ReportError(cx, "typed array length does not match source TypedArray length");
         return false;
       }
-      memcpy(buffer, JS_GetArrayBufferViewData(valObj, cx), sourceLength);
+      memcpy(buffer, JS_GetArrayBufferViewData(valObj), sourceLength);
       break;
     } else {
       // Don't implicitly convert to string. Users can implicitly convert
@@ -4663,7 +4776,7 @@ StructType::DefineInternal(JSContext* cx, JSObject* typeObj_, JSObject* fieldsOb
 
       // Add the field to the StructType's 'prototype' property.
       if (!JS_DefineUCProperty(cx, prototype,
-             name->chars(), name->length(), JSVAL_VOID,
+             name->chars().get(), name->length(), JSVAL_VOID,
              StructType::FieldGetter, StructType::FieldSetter,
              JSPROP_SHARED | JSPROP_ENUMERATE | JSPROP_PERMANENT))
         return JS_FALSE;

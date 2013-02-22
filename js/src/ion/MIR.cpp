@@ -41,7 +41,7 @@ MDefinition::earlyAbortCheck()
 {
     if (isPhi())
         return false;
-    for (int i = 0; i < numOperands(); i++) {
+    for (size_t i = 0; i < numOperands(); i++) {
         if (getOperand(i)->block()->earlyAbort()) {
             block()->setEarlyAbort();
             IonSpew(IonSpew_Range, "Ignoring value from block %d because instruction %d is in a block that aborts", block()->id(), getOperand(i)->id());
@@ -921,7 +921,7 @@ MMul::foldsTo(bool useValueNumbers)
     if (specialization() != MIRType_Int32)
         return this;
 
-    if (lhs()->congruentTo(rhs()))
+    if (EqualValues(useValueNumbers, lhs(), rhs()))
         canBeNegativeZero_ = false;
 
     return this;
@@ -958,9 +958,20 @@ MMul::analyzeEdgeCasesBackward()
         canBeNegativeZero_ = NeedNegativeZeroCheck(this);
 }
 
-bool
-MMul::updateForReplacement(MDefinition *ins)
+void
+MMul::analyzeTruncateBackward()
 {
+    if (!isPossibleTruncated())
+        setPossibleTruncated(js::ion::EdgeCaseAnalysis::AllUsesTruncate(this));
+}
+
+bool
+MMul::updateForReplacement(MDefinition *ins_)
+{
+    JS_ASSERT(ins_->isMul());
+    MMul *ins = ins_->toMul();
+    if (isPossibleTruncated())
+        setPossibleTruncated(ins->isPossibleTruncated());
     return true;
 }
 

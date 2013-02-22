@@ -150,7 +150,7 @@ mjit::Compiler::jsop_binary_slow(JSOp op, VoidStub stub, JSValueType type,
     JS_ASSERT_IF(isStringResult && type != JSVAL_TYPE_UNKNOWN, type == JSVAL_TYPE_STRING);
 
     prepareStubCall(Uses(2));
-    INLINE_STUBCALL(stub, REJOIN_BINARY);
+    INLINE_STUBCALL(stub, REJOIN_FALLTHROUGH);
     frame.popn(2);
     frame.pushSynced(isStringResult ? JSVAL_TYPE_STRING : type);
     return true;
@@ -353,7 +353,7 @@ mjit::Compiler::jsop_binary_double(FrameEntry *lhs, FrameEntry *rhs, JSOp op,
     types::TypeSet *resultTypes = pushedTypeSet(0);
     if (resultTypes && !resultTypes->hasType(types::Type::DoubleType())) {
         /*
-         * Call a stub and try harder to convert to int32, failing that trigger
+         * Call a stub and try harder to convert to int32_t, failing that trigger
          * recompilation of this script.
          */
         stubcc.linkExit(masm.jump(), Uses(2));
@@ -367,7 +367,7 @@ mjit::Compiler::jsop_binary_double(FrameEntry *lhs, FrameEntry *rhs, JSOp op,
         done.getJump().linkTo(masm.label(), &masm);
 
     stubcc.leave();
-    OOL_STUBCALL(stub, REJOIN_BINARY);
+    OOL_STUBCALL(stub, REJOIN_FALLTHROUGH);
 
     if (allocateRight)
         frame.freeReg(fpRight);
@@ -465,7 +465,7 @@ mjit::Compiler::jsop_binary_full_simple(FrameEntry *fe, JSOp op, VoidStub stub, 
     /* Slow call - use frame.sync to avoid erroneous jump repatching in stubcc. */
     frame.sync(stubcc.masm, Uses(2));
     stubcc.leave();
-    OOL_STUBCALL(stub, REJOIN_BINARY);
+    OOL_STUBCALL(stub, REJOIN_FALLTHROUGH);
 
     /* Finish up stack operations. */
     frame.popn(2);
@@ -732,7 +732,7 @@ mjit::Compiler::jsop_binary_full(FrameEntry *lhs, FrameEntry *rhs, JSOp op,
     /* Slow call - use frame.sync to avoid erroneous jump repatching in stubcc. */
     frame.sync(stubcc.masm, Uses(2));
     stubcc.leave();
-    OOL_STUBCALL(stub, REJOIN_BINARY);
+    OOL_STUBCALL(stub, REJOIN_FALLTHROUGH);
 
     /* Finish up stack operations. */
     frame.popn(2);

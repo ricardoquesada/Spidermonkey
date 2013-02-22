@@ -208,6 +208,7 @@ extern Class DateClass;
 extern Class ErrorClass;
 extern Class ElementIteratorClass;
 extern Class GeneratorClass;
+extern Class IntlClass;
 extern Class JSONClass;
 extern Class MapIteratorClass;
 extern Class MathClass;
@@ -1295,7 +1296,7 @@ js_NativeGet(JSContext *cx, js::Handle<JSObject*> obj, js::Handle<JSObject*> pob
 
 extern JSBool
 js_NativeSet(JSContext *cx, js::Handle<JSObject*> obj, js::Handle<JSObject*> receiver,
-             js::Shape *shape, bool added, bool strict, js::Value *vp);
+             js::Handle<js::Shape*> shape, bool added, bool strict, js::Value *vp);
 
 namespace js {
 
@@ -1391,6 +1392,9 @@ ToObjectFromStack(JSContext *cx, HandleValue vp)
         return &vp.toObject();
     return ToObjectSlow(cx, vp, true);
 }
+
+extern JSObject *
+CloneObjectLiteral(JSContext *cx, HandleObject parent, HandleObject srcObj);
 
 } /* namespace js */
 

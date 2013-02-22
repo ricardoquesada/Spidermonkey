@@ -26,20 +26,20 @@ using namespace js::ion;
 
 class DeferredJumpTable : public DeferredData
 {
-    LTableSwitch *lswitch;
+    MTableSwitch *mswitch;
     BufferOffset off;
     MacroAssembler *masm;
   public:
-    DeferredJumpTable(LTableSwitch *lswitch, BufferOffset off_, MacroAssembler *masm_)
-      : lswitch(lswitch), off(off_), masm(masm_)
+    DeferredJumpTable(MTableSwitch *mswitch, BufferOffset off_, MacroAssembler *masm_)
+      : mswitch(mswitch), off(off_), masm(masm_)
     { }
 
     void copy(IonCode *code, uint8 *ignore__) const {
         void **jumpData = (void **)(((char*)code->raw()) + masm->actualOffset(off).getOffset());
-        int numCases =  lswitch->mir()->numCases();
+        int numCases =  mswitch->numCases();
         // For every case write the pointer to the start in the table
         for (int j = 0; j < numCases; j++) {
-            LBlock *caseblock = lswitch->mir()->getCase(numCases - 1 - j)->lir();
+            LBlock *caseblock = mswitch->getCase(numCases - 1 - j)->lir();
             Label *caseheader = caseblock->label();
 
             uint32 offset = caseheader->offset();
@@ -51,7 +51,7 @@ class DeferredJumpTable : public DeferredData
 
 
 // shared
-CodeGeneratorARM::CodeGeneratorARM(MIRGenerator *gen, LIRGraph &graph)
+CodeGeneratorARM::CodeGeneratorARM(MIRGenerator *gen, LIRGraph *graph)
   : CodeGeneratorShared(gen, graph),
     deoptLabel_(NULL)
 {
@@ -176,11 +176,9 @@ CodeGeneratorARM::generateOutOfLineCode()
         // Push the frame size, so the handler can recover the IonScript.
         masm.ma_mov(Imm32(frameSize()), lr);
 
-        JSContext *cx = GetIonContext()->cx;
-        IonCompartment *ion = cx->compartment->ionCompartment();
-        IonCode *handler = ion->getGenericBailoutHandler(cx);
-        if (!handler)
-            return false;
+        IonCompartment *ion = GetIonContext()->compartment->ionCompartment();
+        IonCode *handler = ion->getGenericBailoutHandler();
+
         masm.branch(handler);
     }
 
@@ -321,11 +319,20 @@ CodeGeneratorARM::visitMinMaxD(LMinMaxD *ins)
 }
 
 bool
+CodeGeneratorARM::visitNegD(LNegD *ins)
+{
+    FloatRegister input = ToFloatRegister(ins->input());
+    JS_ASSERT(input == ToFloatRegister(ins->output()));
+    masm.ma_vneg(input, input);
+    return true;
+}
+
+bool
 CodeGeneratorARM::visitAbsD(LAbsD *ins)
 {
     FloatRegister input = ToFloatRegister(ins->input());
     JS_ASSERT(input == ToFloatRegister(ins->output()));
-    masm.as_vabs(input, input);
+    masm.ma_vabs(input, input);
     return true;
 }
 
@@ -334,7 +341,7 @@ CodeGeneratorARM::visitSqrtD(LSqrtD *ins)
 {
     FloatRegister input = ToFloatRegister(ins->input());
     JS_ASSERT(input == ToFloatRegister(ins->output()));
-    masm.as_vsqrt(input, input);
+    masm.ma_vsqrt(input, input);
     return true;
 }
 
@@ -345,11 +352,10 @@ CodeGeneratorARM::visitAddI(LAddI *ins)
     const LAllocation *rhs = ins->getOperand(1);
     const LDefinition *dest = ins->getDef(0);
 
-    if (rhs->isConstant()) {
+    if (rhs->isConstant())
         masm.ma_add(ToRegister(lhs), Imm32(ToInt32(rhs)), ToRegister(dest), SetCond);
-    } else {
+    else
         masm.ma_add(ToRegister(lhs), ToOperand(rhs), ToRegister(dest), SetCond);
-    }
 
     if (ins->snapshot() && !bailoutIf(Assembler::Overflow, ins->snapshot()))
         return false;
@@ -363,11 +369,11 @@ CodeGeneratorARM::visitSubI(LSubI *ins)
     const LAllocation *lhs = ins->getOperand(0);
     const LAllocation *rhs = ins->getOperand(1);
     const LDefinition *dest = ins->getDef(0);
-    if (rhs->isConstant()) {
+
+    if (rhs->isConstant())
         masm.ma_sub(ToRegister(lhs), Imm32(ToInt32(rhs)), ToRegister(dest), SetCond);
-    } else {
+    else
         masm.ma_sub(ToRegister(lhs), ToOperand(rhs), ToRegister(dest), SetCond);
-    }
 
     if (ins->snapshot() && !bailoutIf(Assembler::Overflow, ins->snapshot()))
         return false;
@@ -391,7 +397,7 @@ CodeGeneratorARM::visitMulI(LMulI *ins)
             Assembler::Condition bailoutCond = (constant == 0) ? Assembler::LessThan : Assembler::Equal;
             masm.ma_cmp(ToRegister(lhs), Imm32(0));
             if (!bailoutIf(bailoutCond, ins->snapshot()))
-                    return false;
+                return false;
         }
         // TODO: move these to ma_mul.
         switch (constant) {
@@ -452,13 +458,12 @@ CodeGeneratorARM::visitMulI(LMulI *ins)
             }
 
             if (!handled) {
-                if (mul->canOverflow()) {
+                if (mul->canOverflow())
                     c = masm.ma_check_mul(ToRegister(lhs), Imm32(ToInt32(rhs)), ToRegister(dest), c);
-                } else {
+                else
                     masm.ma_mul(ToRegister(lhs), Imm32(ToInt32(rhs)), ToRegister(dest));
-                }
             }
-        }
+          }
         }
         // Bailout on overflow
         if (mul->canOverflow() && !bailoutIf(c, ins->snapshot()))
@@ -606,9 +611,8 @@ CodeGeneratorARM::visitModPowTwoI(LModPowTwoI *ins)
     masm.ma_rsb(Imm32(0), out, NoSetCond, Assembler::Signed);
     masm.ma_and(Imm32((1<<ins->shift())-1), out);
     masm.ma_rsb(Imm32(0), out, SetCond, Assembler::Signed);
-    if (!bailoutIf(Assembler::Zero, ins->snapshot())) {
+    if (!bailoutIf(Assembler::Zero, ins->snapshot()))
         return false;
-    }
     masm.bind(&fin);
     return true;
 }
@@ -620,9 +624,8 @@ CodeGeneratorARM::visitModMaskI(LModMaskI *ins)
     Register dest = ToRegister(ins->getDef(0));
     Register tmp = ToRegister(ins->getTemp(0));
     masm.ma_mod_mask(src, dest, tmp, ins->shift());
-    if (!bailoutIf(Assembler::Zero, ins->snapshot())) {
+    if (!bailoutIf(Assembler::Zero, ins->snapshot()))
         return false;
-    }
     return true;
 }
 bool
@@ -648,25 +651,22 @@ CodeGeneratorARM::visitBitOpI(LBitOpI *ins)
     // all of these bitops should be either imm32's, or integer registers.
     switch (ins->bitop()) {
       case JSOP_BITOR:
-        if (rhs->isConstant()) {
+        if (rhs->isConstant())
             masm.ma_orr(Imm32(ToInt32(rhs)), ToRegister(lhs), ToRegister(dest));
-        } else {
+        else
             masm.ma_orr(ToRegister(rhs), ToRegister(lhs), ToRegister(dest));
-        }
         break;
       case JSOP_BITXOR:
-        if (rhs->isConstant()) {
+        if (rhs->isConstant())
             masm.ma_eor(Imm32(ToInt32(rhs)), ToRegister(lhs), ToRegister(dest));
-        } else {
+        else
             masm.ma_eor(ToRegister(rhs), ToRegister(lhs), ToRegister(dest));
-        }
         break;
       case JSOP_BITAND:
-        if (rhs->isConstant()) {
+        if (rhs->isConstant())
             masm.ma_and(Imm32(ToInt32(rhs)), ToRegister(lhs), ToRegister(dest));
-        } else {
+        else
             masm.ma_and(ToRegister(rhs), ToRegister(lhs), ToRegister(dest));
-        }
         break;
       default:
         JS_NOT_REACHED("unexpected binary opcode");
@@ -778,13 +778,13 @@ CodeGeneratorARM::visitPowHalfD(LPowHalfD *ins)
     // Masm.pow(-Infinity, 0.5) == Infinity.
     masm.ma_vimm(js_NegativeInfinity, ScratchFloatReg);
     masm.compareDouble(input, ScratchFloatReg);
-    masm.as_vneg(ScratchFloatReg, output, Assembler::Equal);
+    masm.ma_vneg(ScratchFloatReg, output, Assembler::Equal);
     masm.ma_b(&done, Assembler::Equal);
 
     // Math.pow(-0, 0.5) == 0 == Math.pow(0, 0.5). Adding 0 converts any -0 to 0.
     masm.ma_vimm(0.0, ScratchFloatReg);
     masm.ma_vadd(ScratchFloatReg, input, output);
-    masm.as_vsqrt(output, output);
+    masm.ma_vsqrt(output, output);
 
     masm.bind(&done);
     return true;
@@ -825,9 +825,8 @@ CodeGeneratorARM::visitMoveGroup(LMoveGroup *group)
                                         ? MoveResolver::Move::DOUBLE
                                         : MoveResolver::Move::GENERAL;
 
-        if (!resolver.addMove(toMoveOperand(from), toMoveOperand(to), kind)) {
+        if (!resolver.addMove(toMoveOperand(from), toMoveOperand(to), kind))
             return false;
-        }
     }
 
     if (!resolver.resolve())
@@ -841,7 +840,8 @@ CodeGeneratorARM::visitMoveGroup(LMoveGroup *group)
 }
 
 bool
-CodeGeneratorARM::visitTableSwitch(LTableSwitch *ins)
+CodeGeneratorARM::emitTableSwitchDispatch(MTableSwitch *mir, const Register &index,
+                                          const Register &base)
 {
     // the code generated by this is utter hax.
     // the end result looks something like:
@@ -869,34 +869,20 @@ CodeGeneratorARM::visitTableSwitch(LTableSwitch *ins)
     // unhandled case is the default case (both out of range high and out of range low)
     // I then insert a branch to default case into the extra slot, which ensures
     // we don't attempt to execute the address table.
-    MTableSwitch *mir = ins->mir();
-        Label *defaultcase = mir->getDefault()->lir()->label();
-    const LAllocation *temp;
-
-    if (ins->index()->isDouble()) {
-        temp = ins->tempInt();
-
-        // The input is a double, so try and convert it to an integer.
-        // If it does not fit in an integer, take the default case.
-        emitDoubleToInt32(ToFloatRegister(ins->index()), ToRegister(temp), defaultcase, false);
-    } else {
-        temp = ins->index();
-    }
+    Label *defaultcase = mir->getDefault()->lir()->label();
 
     int32 cases = mir->numCases();
-    Register tempReg = ToRegister(temp);
     // Lower value with low value
-    masm.ma_sub(tempReg, Imm32(mir->low()), tempReg, SetCond);
-    masm.ma_rsb(tempReg, Imm32(cases - 1), tempReg, SetCond, Assembler::Unsigned);
+    masm.ma_sub(index, Imm32(mir->low()), index, SetCond);
+    masm.ma_rsb(index, Imm32(cases - 1), index, SetCond, Assembler::Unsigned);
     AutoForbidPools afp(&masm);
-    masm.ma_ldr(DTRAddr(pc, DtrRegImmShift(tempReg, LSL, 2)), pc, Offset, Assembler::Unsigned);
+    masm.ma_ldr(DTRAddr(pc, DtrRegImmShift(index, LSL, 2)), pc, Offset, Assembler::Unsigned);
     masm.ma_b(defaultcase);
-    DeferredJumpTable *d = new DeferredJumpTable(ins, masm.nextOffset(), &masm);
+    DeferredJumpTable *d = new DeferredJumpTable(mir, masm.nextOffset(), &masm);
     masm.as_jumpPool(cases);
 
     if (!masm.addDeferredData(d, 0))
         return false;
-
     return true;
 }
 
@@ -909,17 +895,17 @@ CodeGeneratorARM::visitMathD(LMathD *math)
     
     switch (math->jsop()) {
       case JSOP_ADD:
-          masm.ma_vadd(ToFloatRegister(src1), ToFloatRegister(src2), ToFloatRegister(output));
-          break;
+        masm.ma_vadd(ToFloatRegister(src1), ToFloatRegister(src2), ToFloatRegister(output));
+        break;
       case JSOP_SUB:
-          masm.ma_vsub(ToFloatRegister(src1), ToFloatRegister(src2), ToFloatRegister(output));
-          break;
+        masm.ma_vsub(ToFloatRegister(src1), ToFloatRegister(src2), ToFloatRegister(output));
+        break;
       case JSOP_MUL:
-          masm.ma_vmul(ToFloatRegister(src1), ToFloatRegister(src2), ToFloatRegister(output));
-          break;
+        masm.ma_vmul(ToFloatRegister(src1), ToFloatRegister(src2), ToFloatRegister(output));
+        break;
       case JSOP_DIV:
-          masm.ma_vdiv(ToFloatRegister(src1), ToFloatRegister(src2), ToFloatRegister(output));
-          break;
+        masm.ma_vdiv(ToFloatRegister(src1), ToFloatRegister(src2), ToFloatRegister(output));
+        break;
       default:
         JS_NOT_REACHED("unexpected opcode");
         return false;
@@ -994,11 +980,7 @@ CodeGeneratorARM::visitTruncateDToInt32(LTruncateDToInt32 *ins)
     return emitTruncateDouble(ToFloatRegister(ins->input()), ToRegister(ins->output()));
 }
 
-// The first two size classes are 128 and 256 bytes respectively. After that we
-// increment by 512.
-static const uint32 LAST_FRAME_SIZE = 512;
-static const uint32 LAST_FRAME_INCREMENT = 512;
-static const uint32 FrameSizes[] = { 128, 256, LAST_FRAME_SIZE };
+static const uint32 FrameSizes[] = { 128, 256, 512, 1024 };
 
 FrameSizeClass
 FrameSizeClass::FromDepth(uint32 frameDepth)
@@ -1008,21 +990,22 @@ FrameSizeClass::FromDepth(uint32 frameDepth)
             return FrameSizeClass(i);
     }
 
-    uint32 newFrameSize = frameDepth - LAST_FRAME_SIZE;
-    uint32 sizeClass = (newFrameSize / LAST_FRAME_INCREMENT) + 1;
-
-    return FrameSizeClass(JS_ARRAY_LENGTH(FrameSizes) + sizeClass);
+    return FrameSizeClass::None();
 }
+
+FrameSizeClass
+FrameSizeClass::ClassLimit()
+{
+    return FrameSizeClass(JS_ARRAY_LENGTH(FrameSizes));
+}
+
 uint32
 FrameSizeClass::frameSize() const
 {
     JS_ASSERT(class_ != NO_FRAME_SIZE_CLASS_ID);
+    JS_ASSERT(class_ < JS_ARRAY_LENGTH(FrameSizes));
 
-    if (class_ < JS_ARRAY_LENGTH(FrameSizes))
-        return FrameSizes[class_];
-
-    uint32 step = class_ - JS_ARRAY_LENGTH(FrameSizes);
-    return LAST_FRAME_SIZE + step * LAST_FRAME_INCREMENT;
+    return FrameSizes[class_];
 }
 
 ValueOperand
@@ -1091,8 +1074,9 @@ CodeGeneratorARM::visitBoxDouble(LBoxDouble *box)
     const LDefinition *type = box->getDef(TYPE_INDEX);
     const LAllocation *in = box->getOperand(0);
 
-    masm.as_vxfer(ToRegister(payload), ToRegister(type),
-                  VFPRegister(ToFloatRegister(in)), Assembler::FloatToCore);
+    //masm.as_vxfer(ToRegister(payload), ToRegister(type),
+    //              VFPRegister(ToFloatRegister(in)), Assembler::FloatToCore);
+    masm.ma_vxfer(VFPRegister(ToFloatRegister(in)), ToRegister(payload), ToRegister(type));
     return true;
 }
 
@@ -1162,7 +1146,7 @@ bool
 CodeGeneratorARM::visitTestDAndBranch(LTestDAndBranch *test)
 {
     const LAllocation *opd = test->input();
-    masm.as_vcmpz(VFPRegister(ToFloatRegister(opd)));
+    masm.ma_vcmpz(ToFloatRegister(opd));
     masm.as_vmrs(pc);
 
     LBlock *ifTrue = test->ifTrue()->lir();
@@ -1223,6 +1207,7 @@ CodeGeneratorARM::visitCompareB(LCompareB *lir)
         emitSet(JSOpToCondition(mir->jsop()), output);
         masm.jump(&done);
     }
+
     masm.bind(&notBoolean);
     {
         masm.move32(Imm32(mir->jsop() == JSOP_STRICTNE), output);
@@ -1360,13 +1345,15 @@ CodeGeneratorARM::visitLoadElementT(LLoadElementT *load)
     Register base = ToRegister(load->elements());
     if (load->mir()->type() == MIRType_Double) {
         if (load->index()->isConstant()) {
-            masm.loadInt32OrDouble(Address(base,ToInt32(load->index()) * sizeof(Value)), ToFloatRegister(load->output()));
+            Address source(base, ToInt32(load->index()) * sizeof(Value));
+            masm.loadInt32OrDouble(source, ToFloatRegister(load->output()));
         } else {
             masm.loadInt32OrDouble(base, ToRegister(load->index()), ToFloatRegister(load->output()));
         }
     } else {
         if (load->index()->isConstant()) {
-            masm.load32(Address(base, ToInt32(load->index()) * sizeof(Value)), ToRegister(load->output()));
+            Address source(base, ToInt32(load->index()) * sizeof(Value));
+            masm.load32(source, ToRegister(load->output()));
         } else {
             masm.ma_ldr(DTRAddr(base, DtrRegImmShift(ToRegister(load->index()), LSL, 3)),
                         ToRegister(load->output()));
@@ -1480,13 +1467,13 @@ CodeGeneratorARM::visitRecompileCheck(LRecompileCheck *lir)
     return true;
 }
 
+typedef bool (*InterruptCheckFn)(JSContext *);
+static const VMFunction InterruptCheckInfo = FunctionInfo<InterruptCheckFn>(InterruptCheck);
+
 bool
 CodeGeneratorARM::visitInterruptCheck(LInterruptCheck *lir)
 {
-    typedef bool (*pf)(JSContext *);
-    static const VMFunction interruptCheckInfo = FunctionInfo<pf>(InterruptCheck);
-
-    OutOfLineCode *ool = oolCallVM(interruptCheckInfo, lir, (ArgList()), StoreNothing());
+    OutOfLineCode *ool = oolCallVM(InterruptCheckInfo, lir, (ArgList()), StoreNothing());
     if (!ool)
         return false;
 
@@ -1512,13 +1499,9 @@ CodeGeneratorARM::generateInvalidateEpilogue()
     // Push the return address of the point that we bailed out at onto the stack
     masm.Push(lr);
 
-    JSContext *cx = GetIonContext()->cx;
-
     // Push the Ion script onto the stack (when we determine what that pointer is).
     invalidateEpilogueData_ = masm.pushWithPatch(ImmWord(uintptr_t(-1)));
-    IonCode *thunk = cx->compartment->ionCompartment()->getOrCreateInvalidationThunk(cx);
-    if (!thunk)
-        return false;
+    IonCode *thunk = GetIonContext()->compartment->ionCompartment()->getInvalidationThunk();
 
     masm.branch(thunk);
 

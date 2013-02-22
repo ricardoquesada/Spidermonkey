@@ -68,6 +68,44 @@ LIRGenerator::visitGoto(MGoto *ins)
 }
 
 bool
+LIRGenerator::visitTableSwitch(MTableSwitch *tableswitch)
+{
+    MDefinition *opd = tableswitch->getOperand(0);
+
+    // There should be at least 1 successor. The default case!
+    JS_ASSERT(tableswitch->numSuccessors() > 0);
+
+    // If there are no cases, the default case is always taken.
+    if (tableswitch->numSuccessors() == 1)
+        return add(new LGoto(tableswitch->getDefault()));
+
+    // If we don't know the type.
+    if (opd->type() == MIRType_Value) {
+        LTableSwitchV *lir = newLTableSwitchV(tableswitch);
+        if (!useBox(lir, LTableSwitchV::InputValue, opd))
+            return false;
+        return add(lir);
+    }
+
+    // Case indices are numeric, so other types will always go to the default case.
+    if (opd->type() != MIRType_Int32 && opd->type() != MIRType_Double)
+        return add(new LGoto(tableswitch->getDefault()));
+
+    // Return an LTableSwitch, capable of handling either an integer or
+    // floating-point index.
+    LAllocation index;
+    LDefinition tempInt;
+    if (opd->type() == MIRType_Int32) {
+        index = useRegisterAtStart(opd);
+        tempInt = tempCopy(opd, 0);
+    } else {
+        index = useRegister(opd);
+        tempInt = temp(LDefinition::GENERAL);
+    }
+    return add(newLTableSwitch(index, tempInt, tableswitch));
+}
+
+bool
 LIRGenerator::visitCheckOverRecursed(MCheckOverRecursed *ins)
 {
     LCheckOverRecursed *lir = new LCheckOverRecursed(temp());
@@ -817,6 +855,15 @@ LIRGenerator::visitMul(MMul *ins)
     }
     if (ins->specialization() == MIRType_Double) {
         JS_ASSERT(lhs->type() == MIRType_Double);
+
+        // If our LHS is a constant -1.0, we can optimize to an LNegD.
+        if (lhs->isConstant() && lhs->toConstant()->value() == DoubleValue(-1.0))
+            return defineReuseInput(new LNegD(useRegisterAtStart(rhs)), ins, 0);
+
+        // We can do the same for the RHS, if we just swap the operands.
+        if (rhs->isConstant() && rhs->toConstant()->value() == DoubleValue(-1.0))
+            return defineReuseInput(new LNegD(useRegisterAtStart(lhs)), ins, 0);
+
         return lowerForFPU(new LMathD(JSOP_MUL), ins, lhs, rhs);
     }
 
@@ -1351,6 +1398,20 @@ LIRGenerator::visitBoundsCheckLower(MBoundsCheckLower *ins)
 }
 
 bool
+LIRGenerator::visitInArray(MInArray *ins)
+{
+    JS_ASSERT(ins->elements()->type() == MIRType_Elements);
+    JS_ASSERT(ins->index()->type() == MIRType_Int32);
+    JS_ASSERT(ins->initLength()->type() == MIRType_Int32);
+    JS_ASSERT(ins->type() == MIRType_Boolean);
+
+    LInArray *lir = new LInArray(useRegister(ins->elements()),
+                                 useRegisterOrConstant(ins->index()),
+                                 useRegister(ins->initLength()));
+    return define(lir, ins) && assignSafepoint(lir, ins);
+}
+
+bool
 LIRGenerator::visitLoadElement(MLoadElement *ins)
 {
     JS_ASSERT(ins->elements()->type() == MIRType_Elements);
@@ -1622,6 +1683,15 @@ LIRGenerator::visitGetNameCache(MGetNameCache *ins)
 }
 
 bool
+LIRGenerator::visitCallGetIntrinsicValue(MCallGetIntrinsicValue *ins)
+{
+    LCallGetIntrinsicValue *lir = new LCallGetIntrinsicValue();
+    if (!defineVMReturn(lir, ins))
+        return false;
+    return assignSafepoint(lir, ins);
+}
+
+bool
 LIRGenerator::visitGetPropertyCache(MGetPropertyCache *ins)
 {
     JS_ASSERT(ins->object()->type() == MIRType_Object);
@@ -1677,6 +1747,15 @@ LIRGenerator::visitGuardObject(MGuardObject *ins)
     // The type policy does all the work, so at this point the input
     // is guaranteed to be an object.
     JS_ASSERT(ins->input()->type() == MIRType_Object);
+    return redefine(ins, ins->input());
+}
+
+bool
+LIRGenerator::visitGuardString(MGuardString *ins)
+{
+    // The type policy does all the work, so at this point the input
+    // is guaranteed to be a string.
+    JS_ASSERT(ins->input()->type() == MIRType_String);
     return redefine(ins, ins->input());
 }
 
@@ -1793,7 +1872,7 @@ LIRGenerator::visitIteratorMore(MIteratorMore *ins)
 bool
 LIRGenerator::visitIteratorEnd(MIteratorEnd *ins)
 {
-    LIteratorEnd *lir = new LIteratorEnd(useRegister(ins->iterator()), temp(), temp());
+    LIteratorEnd *lir = new LIteratorEnd(useRegister(ins->iterator()), temp(), temp(), temp());
     return add(lir, ins) && assignSafepoint(lir, ins);
 }
 
@@ -2089,6 +2168,9 @@ LIRGenerator::generate()
 {
     // Create all blocks and prep all phis beforehand.
     for (ReversePostorderIterator block(graph.rpoBegin()); block != graph.rpoEnd(); block++) {
+        if (gen->shouldCancel("Lowering (preparation loop)"))
+            return false;
+
         current = LBlock::New(*block);
         if (!current)
             return false;
@@ -2109,6 +2191,9 @@ LIRGenerator::generate()
     }
 
     for (ReversePostorderIterator block(graph.rpoBegin()); block != graph.rpoEnd(); block++) {
+        if (gen->shouldCancel("Lowering (main loop)"))
+            return false;
+
         if (!visitBlock(*block))
             return false;
     }

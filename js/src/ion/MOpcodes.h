@@ -63,6 +63,7 @@ namespace ion {
     _(Box)                                                                  \
     _(Unbox)                                                                \
     _(GuardObject)                                                          \
+    _(GuardString)                                                          \
     _(ToDouble)                                                             \
     _(ToInt32)                                                              \
     _(TruncateToInt32)                                                      \
@@ -100,6 +101,7 @@ namespace ion {
     _(Not)                                                                  \
     _(BoundsCheck)                                                          \
     _(BoundsCheckLower)                                                     \
+    _(InArray)                                                              \
     _(LoadElement)                                                          \
     _(LoadElementHole)                                                      \
     _(StoreElement)                                                         \
@@ -115,6 +117,7 @@ namespace ion {
     _(StoreFixedSlot)                                                       \
     _(CallGetProperty)                                                      \
     _(GetNameCache)                                                         \
+    _(CallGetIntrinsicValue)                                                \
     _(CallGetElement)                                                       \
     _(CallSetElement)                                                       \
     _(CallSetProperty)                                                      \

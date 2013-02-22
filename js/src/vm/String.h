@@ -348,6 +348,8 @@ class JSString : public js::gc::Cell
         return *(JSInlineString *)this;
     }
 
+    bool isShort() const;
+
     JS_ALWAYS_INLINE
     JSStableString &asStable() const {
         JS_ASSERT(!isInline());
@@ -416,7 +418,6 @@ class JSString : public js::gc::Cell
     static inline js::ThingRootKind rootKind() { return js::THING_ROOT_STRING; }
 
 #ifdef DEBUG
-    bool isShort() const;
     void dump();
     static void dumpChars(const jschar *s, size_t len);
     bool equals(const char *s);
@@ -546,6 +547,12 @@ class JSStableString : public JSFlatString
 
   public:
     static inline JSStableString *new_(JSContext *cx, const jschar *chars, size_t length);
+
+    JS_ALWAYS_INLINE
+    JS::StableCharPtr chars() const {
+        JS_ASSERT(!JSString::isInline());
+        return JS::StableCharPtr(d.u1.chars, length());
+    }
 };
 
 JS_STATIC_ASSERT(sizeof(JSStableString) == sizeof(JSString));

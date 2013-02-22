@@ -14,18 +14,20 @@
 
 #include "jsobjinlines.h"
 
-using namespace mozilla;
 using namespace js;
 
-#ifdef DEBUG
+using mozilla::RangedPtr;
+
 bool
 JSString::isShort() const
 {
-    bool is_short = (getAllocKind() == gc::FINALIZE_SHORT_STRING);
+    // It's possible for short strings to be converted to flat strings;  as a
+    // result, checking just for the arena isn't enough to determine if a
+    // string is short.  Hence the isInline() check.
+    bool is_short = (getAllocKind() == gc::FINALIZE_SHORT_STRING) && isInline();
     JS_ASSERT_IF(is_short, isFlat());
     return is_short;
 }
-#endif
 
 bool
 JSString::isExternal() const

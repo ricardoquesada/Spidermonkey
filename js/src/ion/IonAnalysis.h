@@ -19,16 +19,16 @@ class MIRGenerator;
 class MIRGraph;
 
 bool
-SplitCriticalEdges(MIRGenerator *gen, MIRGraph &graph);
+SplitCriticalEdges(MIRGraph &graph);
 
 bool
-EliminatePhis(MIRGraph &graph);
+EliminatePhis(MIRGenerator *mir, MIRGraph &graph);
 
 bool
-EliminateDeadCode(MIRGraph &graph);
+EliminateDeadCode(MIRGenerator *mir, MIRGraph &graph);
 
 bool
-ApplyTypeInformation(MIRGraph &graph);
+ApplyTypeInformation(MIRGenerator *mir, MIRGraph &graph);
 
 bool
 RenumberBlocks(MIRGraph &graph);

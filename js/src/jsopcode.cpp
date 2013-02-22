@@ -52,12 +52,13 @@
 
 #include "vm/RegExpObject-inl.h"
 
-using namespace mozilla;
 using namespace js;
 using namespace js::gc;
+
 using js::frontend::IsIdentifier;
 using js::frontend::LetDataToGroupAssign;
 using js::frontend::LetDataToOffset;
+using mozilla::ArrayLength;
 
 /*
  * Index limit must stay within 32 bits.
@@ -317,6 +318,21 @@ js_DumpPCCounts(JSContext *cx, HandleScript script, js::Sprinter *sp)
 
         pc = next;
     }
+
+    ion::IonScriptCounts *ionCounts = script->getIonCounts();
+
+    while (ionCounts) {
+        Sprint(sp, "IonScript [%lu blocks]:\n", ionCounts->numBlocks());
+        for (size_t i = 0; i < ionCounts->numBlocks(); i++) {
+            const ion::IonBlockCounts &block = ionCounts->block(i);
+            Sprint(sp, "BB #%lu [%05u]", block.id(), block.offset());
+            for (size_t j = 0; j < block.numSuccessors(); j++)
+                Sprint(sp, " -> #%lu", block.successor(j));
+            Sprint(sp, " :: %llu hits\n", block.hitCount());
+            Sprint(sp, "%s\n", block.code());
+        }
+        ionCounts = ionCounts->previous();
+    }
 }
 
 /*
@@ -324,9 +340,10 @@ js_DumpPCCounts(JSContext *cx, HandleScript script, js::Sprinter *sp)
  * If counts != NULL, include a counter of the number of times each op was executed.
  */
 JS_FRIEND_API(JSBool)
-js_DisassembleAtPC(JSContext *cx, JSScript *script_, JSBool lines, jsbytecode *pc, Sprinter *sp)
+js_DisassembleAtPC(JSContext *cx, JSScript *scriptArg, JSBool lines, jsbytecode *pc, Sprinter *sp)
 {
-    Rooted<JSScript*> script(cx, script_);
+    AssertCanGC();
+    RootedScript script(cx, scriptArg);
 
     jsbytecode *next, *end;
     unsigned len;
@@ -368,10 +385,12 @@ js_Disassemble(JSContext *cx, HandleScript script, JSBool lines, Sprinter *sp)
 JS_FRIEND_API(JSBool)
 js_DumpPC(JSContext *cx)
 {
+    AssertCanGC();
     Sprinter sprinter(cx);
     if (!sprinter.init())
         return JS_FALSE;
-    JSBool ok = js_DisassembleAtPC(cx, cx->fp()->script(), true, cx->regs().pc, &sprinter);
+    RootedScript script(cx, cx->fp()->script());
+    JSBool ok = js_DisassembleAtPC(cx, script, true, cx->regs().pc, &sprinter);
     fprintf(stdout, "%s", sprinter.string());
     return ok;
 }
@@ -394,6 +413,7 @@ QuoteString(Sprinter *sp, JSString *str, uint32_t quote);
 static bool
 ToDisassemblySource(JSContext *cx, jsval v, JSAutoByteString *bytes)
 {
+    AssertCanGC();
     if (JSVAL_IS_STRING(v)) {
         Sprinter sprinter(cx);
         if (!sprinter.init())
@@ -474,6 +494,7 @@ unsigned
 js_Disassemble1(JSContext *cx, HandleScript script, jsbytecode *pc,
                 unsigned loc, JSBool lines, Sprinter *sp)
 {
+    AssertCanGC();
     JSOp op = (JSOp)*pc;
     if (op >= JSOP_LIMIT) {
         char numBuf1[12], numBuf2[12];
@@ -1121,7 +1142,7 @@ js_NewPrinter(JSContext *cx, const char *name, JSFunction *fun,
     jp->localNames = NULL;
     jp->decompiledOpcodes = NULL;
     if (fun && fun->isInterpreted()) {
-        if (!SetPrinterLocalNames(cx, fun->script(), jp)) {
+        if (!SetPrinterLocalNames(cx, fun->script().unsafeGet(), jp)) {
             js_DestroyPrinter(jp);
             return NULL;
         }
@@ -1780,7 +1801,7 @@ GetArgOrVarAtom(JSPrinter *jp, unsigned slot)
 {
     LOCAL_ASSERT_RV(jp->fun, NULL);
     LOCAL_ASSERT_RV(slot < jp->script->bindings.count(), NULL);
-    LOCAL_ASSERT_RV(jp->script == jp->fun->script(), NULL);
+    LOCAL_ASSERT_RV(jp->script == jp->fun->script().unsafeGet(), NULL);
     JSAtom *name = (*jp->localNames)[slot].name();
 #if !JS_HAS_DESTRUCTURING
     LOCAL_ASSERT_RV(name, NULL);
@@ -3615,18 +3636,32 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
 
               case JSOP_INCALIASEDVAR:
               case JSOP_DECALIASEDVAR:
+                if (IsVarSlot(jp, pc, &atom, &i))
+                    goto do_incatom;
+                lval = GetLocal(ss, i);
+                goto do_inclval;
+
               case JSOP_INCLOCAL:
               case JSOP_DECLOCAL:
-                if (IsVarSlot(jp, pc, &atom, &i))
+                /* INCLOCAL/DECLOCAL are followed by GETLOCAL containing the slot. */
+                JS_ASSERT(pc[JSOP_INCLOCAL_LENGTH] == JSOP_GETLOCAL);
+                if (IsVarSlot(jp, pc + JSOP_INCLOCAL_LENGTH, &atom, &i))
                     goto do_incatom;
                 lval = GetLocal(ss, i);
                 goto do_inclval;
 
               case JSOP_ALIASEDVARINC:
               case JSOP_ALIASEDVARDEC:
+                if (IsVarSlot(jp, pc, &atom, &i))
+                    goto do_atominc;
+                lval = GetLocal(ss, i);
+                goto do_lvalinc;
+
               case JSOP_LOCALINC:
               case JSOP_LOCALDEC:
-                if (IsVarSlot(jp, pc, &atom, &i))
+                /* LOCALINC/LOCALDEC are followed by GETLOCAL containing the slot. */
+                JS_ASSERT(pc[JSOP_LOCALINC_LENGTH] == JSOP_GETLOCAL);
+                if (IsVarSlot(jp, pc + JSOP_LOCALINC_LENGTH, &atom, &i))
                     goto do_atominc;
                 lval = GetLocal(ss, i);
                 goto do_lvalinc;
@@ -3638,7 +3673,7 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
               case JSOP_RETURN:
                 LOCAL_ASSERT(jp->fun);
                 fun = jp->fun;
-                if (fun->flags & JSFUN_EXPR_CLOSURE) {
+                if (fun->isExprClosure()) {
                     /* Turn on parens around comma-expression here. */
                     op = JSOP_SETNAME;
                     rval = PopStr(ss, op, &rvalpc);
@@ -3647,7 +3682,7 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
                         js_printf(jp, "(");
                     SprintOpcodePermanent(jp, rval, rvalpc);
                     js_printf(jp, parens ? ")%s" : "%s",
-                              ((fun->flags & JSFUN_LAMBDA) || !fun->atom())
+                              (fun->isLambda() || !fun->atom())
                               ? ""
                               : ";");
                     todo = -2;
@@ -4429,7 +4464,9 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
 
               case JSOP_INCARG:
               case JSOP_DECARG:
-                atom = GetArgOrVarAtom(jp, GET_ARGNO(pc));
+                /* INCARG/DECARG are followed by GETARG containing the slot. */
+                JS_ASSERT(pc[JSOP_INCARG_LENGTH] == JSOP_GETARG);
+                atom = GetArgOrVarAtom(jp, GET_ARGNO(pc + JSOP_INCARG_LENGTH));
                 LOCAL_ASSERT(atom);
                 goto do_incatom;
 
@@ -4489,7 +4526,9 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
 
               case JSOP_ARGINC:
               case JSOP_ARGDEC:
-                atom = GetArgOrVarAtom(jp, GET_ARGNO(pc));
+                /* ARGINC/ARGDEC are followed by GETARG containing the slot. */
+                JS_ASSERT(pc[JSOP_ARGINC_LENGTH] == JSOP_GETARG);
+                atom = GetArgOrVarAtom(jp, GET_ARGNO(pc + JSOP_ARGINC_LENGTH));
                 LOCAL_ASSERT(atom);
                 goto do_atominc;
 
@@ -4721,10 +4760,10 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
                      */
                     LifoAllocScope las(&cx->tempLifoAlloc());
                     outerLocalNames = jp->localNames;
-                    if (!SetPrinterLocalNames(cx, fun->script(), jp))
+                    if (!SetPrinterLocalNames(cx, fun->script().unsafeGet(), jp))
                         return NULL;
 
-                    inner = fun->script();
+                    inner = fun->script().unsafeGet();
                     if (!InitSprintStack(cx, &ss2, jp, StackDepth(inner))) {
                         js_delete(jp->localNames);
                         jp->localNames = outerLocalNames;
@@ -4860,7 +4899,7 @@ Decompile(SprintStack *ss, jsbytecode *pc, int nb)
                      * parenthesization without confusing getter/setter code
                      * that checks for JSOP_LAMBDA.
                      */
-                    bool grouped = !(fun->flags & JSFUN_EXPR_CLOSURE);
+                    bool grouped = !fun->isExprClosure();
                     bool strict = jp->script->strictModeCode;
                     str = js_DecompileToString(cx, "lambda", fun, 0,
                                                false, grouped, strict,
@@ -5540,7 +5579,7 @@ DecompileBody(JSPrinter *jp, JSScript *script, jsbytecode *pc)
 {
     /* Print a strict mode code directive, if needed. */
     if (script->strictModeCode && !jp->strict) {
-        if (jp->fun && (jp->fun->flags & JSFUN_EXPR_CLOSURE)) {
+        if (jp->fun && jp->fun->isExprClosure()) {
             /*
              * We have no syntax for strict function expressions;
              * at least give a hint.
@@ -5595,7 +5634,7 @@ js_DecompileFunctionBody(JSPrinter *jp)
         return JS_TRUE;
     }
 
-    script = jp->fun->script();
+    script = jp->fun->script().unsafeGet();
     return DecompileBody(jp, script, script->code);
 }
 
@@ -5616,7 +5655,7 @@ js_DecompileFunction(JSPrinter *jp)
     if (jp->pretty) {
         js_printf(jp, "\t");
     } else {
-        if (!jp->grouped && (fun->flags & JSFUN_LAMBDA))
+        if (!jp->grouped && fun->isLambda())
             js_puts(jp, "(");
     }
 
@@ -5632,7 +5671,7 @@ js_DecompileFunction(JSPrinter *jp)
         jp->indent -= 4;
         js_printf(jp, "\t}");
     } else {
-        JSScript *script = fun->script();
+        RootedScript script(cx, fun->script());
 #if JS_HAS_DESTRUCTURING
         SprintStack ss(cx);
 #endif
@@ -5724,7 +5763,7 @@ js_DecompileFunction(JSPrinter *jp)
         if (!ok)
             return JS_FALSE;
         js_printf(jp, ") ");
-        if (!(fun->flags & JSFUN_EXPR_CLOSURE)) {
+        if (!fun->isExprClosure()) {
             js_printf(jp, "{\n");
             jp->indent += 4;
         }
@@ -5733,13 +5772,13 @@ js_DecompileFunction(JSPrinter *jp)
         if (!ok)
             return JS_FALSE;
 
-        if (!(fun->flags & JSFUN_EXPR_CLOSURE)) {
+        if (!fun->isExprClosure()) {
             jp->indent -= 4;
             js_printf(jp, "\t}");
         }
     }
 
-    if (!jp->pretty && !jp->grouped && (fun->flags & JSFUN_LAMBDA))
+    if (!jp->pretty && !jp->grouped && fun->isLambda())
         js_puts(jp, ")");
 
     return JS_TRUE;
@@ -6149,7 +6188,7 @@ FindStartPC(JSContext *cx, ScriptFrameIter &iter, int spindex, int skipStackHits
     *valuepc = NULL;
 
     PCStack pcstack;
-    if (!pcstack.init(cx, iter.script(), current))
+    if (!pcstack.init(cx, iter.script().unsafeGet(), current))
         return false;
 
     if (spindex == JSDVG_SEARCH_STACK) {
@@ -6176,6 +6215,7 @@ FindStartPC(JSContext *cx, ScriptFrameIter &iter, int spindex, int skipStackHits
 static bool
 DecompileExpressionFromStack(JSContext *cx, int spindex, int skipStackHits, Value v, char **res)
 {
+    AssertCanGC();
     JS_ASSERT(spindex < 0 ||
               spindex == JSDVG_IGNORE_STACK ||
               spindex == JSDVG_SEARCH_STACK);
@@ -6196,11 +6236,11 @@ DecompileExpressionFromStack(JSContext *cx, int spindex, int skipStackHits, Valu
     if (frameIter.done())
         return true;
 
-    JSScript *script = frameIter.script();
+    RootedScript script(cx, frameIter.script());
     jsbytecode *valuepc = frameIter.pc();
-    JSFunction *fun = frameIter.isFunctionFrame()
-                      ? frameIter.callee()
-                      : NULL;
+    RootedFunction fun(cx, frameIter.isFunctionFrame()
+                           ? frameIter.callee()
+                           : NULL);
 
     JS_ASSERT(script->code <= valuepc && valuepc < script->code + script->length);
 
@@ -6226,6 +6266,7 @@ char *
 js::DecompileValueGenerator(JSContext *cx, int spindex, HandleValue v,
                             HandleString fallbackArg, int skipStackHits)
 {
+    AssertCanGC();
     RootedString fallback(cx, fallbackArg);
     {
         char *result;
@@ -6692,6 +6733,18 @@ GetPCCountScriptSummary(JSContext *cx, size_t index)
     AppendArrayJSONProperties(cx, buf, arithTotals, countArithNames,
                               JS_ARRAY_LENGTH(arithTotals), comma);
 
+    uint64_t ionActivity = 0;
+    ion::IonScriptCounts *ionCounts = sac.getIonCounts();
+    while (ionCounts) {
+        for (size_t i = 0; i < ionCounts->numBlocks(); i++)
+            ionActivity += ionCounts->block(i).hitCount();
+        ionCounts = ionCounts->previous();
+    }
+    if (ionActivity) {
+        AppendJSONProperty(buf, "ion", comma);
+        NumberValueToStringBuffer(cx, DoubleValue(ionActivity), buf);
+    }
+
     buf.append('}');
     buf.append('}');
 
@@ -6828,6 +6881,54 @@ GetPCCountJSON(JSContext *cx, const ScriptAndCounts &sac, StringBuffer &buf)
     }
 
     buf.append(']');
+
+    ion::IonScriptCounts *ionCounts = sac.getIonCounts();
+    if (ionCounts) {
+        AppendJSONProperty(buf, "ion");
+        buf.append('[');
+        bool comma = false;
+        while (ionCounts) {
+            if (comma)
+                buf.append(',');
+            comma = true;
+
+            buf.append('[');
+            for (size_t i = 0; i < ionCounts->numBlocks(); i++) {
+                if (i)
+                    buf.append(',');
+                const ion::IonBlockCounts &block = ionCounts->block(i);
+
+                buf.append('{');
+                AppendJSONProperty(buf, "id", NO_COMMA);
+                NumberValueToStringBuffer(cx, Int32Value(block.id()), buf);
+                AppendJSONProperty(buf, "offset");
+                NumberValueToStringBuffer(cx, Int32Value(block.offset()), buf);
+                AppendJSONProperty(buf, "successors");
+                buf.append('[');
+                for (size_t j = 0; j < block.numSuccessors(); j++) {
+                    if (j)
+                        buf.append(',');
+                    NumberValueToStringBuffer(cx, Int32Value(block.successor(j)), buf);
+                }
+                buf.append(']');
+                AppendJSONProperty(buf, "hits");
+                NumberValueToStringBuffer(cx, DoubleValue(block.hitCount()), buf);
+
+                AppendJSONProperty(buf, "code");
+                JSString *str = JS_NewStringCopyZ(cx, block.code());
+                if (!str || !(str = JS_ValueToSource(cx, StringValue(str))))
+                    return false;
+                buf.append(str);
+
+                buf.append('}');
+            }
+            buf.append(']');
+
+            ionCounts = ionCounts->previous();
+        }
+        buf.append(']');
+    }
+
     buf.append('}');
 
     return !cx->isExceptionPending();

@@ -15,6 +15,7 @@
 
 #include "jsscriptinlines.h"
 #include "jstypedarrayinlines.h"
+#include "ExecutionModeInlines.h"
 
 #ifdef JS_THREADSAFE
 # include "prthread.h"
@@ -23,11 +24,13 @@
 using namespace js;
 using namespace js::ion;
 
+using mozilla::DebugOnly;
+
 IonBuilder::IonBuilder(JSContext *cx, TempAllocator *temp, MIRGraph *graph,
                        TypeOracle *oracle, CompileInfo *info, size_t inliningDepth, uint32 loopDepth)
   : MIRGenerator(cx->compartment, temp, graph, info),
     recompileInfo(cx->compartment->types.compiledInfo),
-    lir(NULL),
+    backgroundCodegen_(NULL),
     cx(cx),
     loopDepth_(loopDepth),
     callerResumePoint_(NULL),
@@ -35,6 +38,7 @@ IonBuilder::IonBuilder(JSContext *cx, TempAllocator *temp, MIRGraph *graph,
     oracle(oracle),
     inliningDepth(inliningDepth),
     failedBoundsCheck_(info->script()->failedBoundsCheck),
+    failedShapeGuard_(info->script()->failedShapeGuard),
     lazyArguments_(NULL)
 {
     script_.init(info->script());
@@ -146,11 +150,13 @@ IonBuilder::CFGState::LookupSwitch(jsbytecode *exitpc)
 JSFunction *
 IonBuilder::getSingleCallTarget(uint32 argc, jsbytecode *pc)
 {
-    types::StackTypeSet *calleeTypes = oracle->getCallTarget(script(), argc, pc);
+    AutoAssertNoGC nogc;
+
+    types::StackTypeSet *calleeTypes = oracle->getCallTarget(script().get(nogc), argc, pc);
     if (!calleeTypes)
         return NULL;
 
-    JSObject *obj = calleeTypes->getSingleton();
+    RawObject obj = calleeTypes->getSingleton();
     if (!obj || !obj->isFunction())
         return NULL;
 
@@ -186,6 +192,8 @@ IonBuilder::getPolyCallTargets(uint32 argc, jsbytecode *pc,
 bool
 IonBuilder::canInlineTarget(JSFunction *target)
 {
+    AssertCanGC();
+
     if (!target->isInterpreted()) {
         IonSpew(IonSpew_Inlining, "Cannot inline due to non-interpreted");
         return false;
@@ -196,9 +204,9 @@ IonBuilder::canInlineTarget(JSFunction *target)
         return false;
     }
 
-    JSScript *inlineScript = target->script();
-
-    if (!inlineScript->canIonCompile()) {
+    RootedScript inlineScript(cx, target->script());
+    ExecutionMode executionMode = info().executionMode();
+    if (!CanIonCompile(inlineScript, executionMode)) {
         IonSpew(IonSpew_Inlining, "Cannot inline due to disable Ion compilation");
         return false;
     }
@@ -401,6 +409,9 @@ IonBuilder::buildInline(IonBuilder *callerBuilder, MResumePoint *callerResumePoi
 
     if (callerBuilder->failedBoundsCheck_)
         failedBoundsCheck_ = true;
+
+    if (callerBuilder->failedShapeGuard_)
+        failedShapeGuard_ = true;
 
     // Generate single entrance block.
     current = newBlock(pc);
@@ -756,6 +767,8 @@ IonBuilder::markPhiBytecodeUses(jsbytecode *pc)
 bool
 IonBuilder::inspectOpcode(JSOp op)
 {
+    AssertCanGC();
+
     // Don't compile fat opcodes, run the decomposed version instead.
     if (js_CodeSpec[op].format & JOF_DECOMPOSE)
         return true;
@@ -809,12 +822,6 @@ IonBuilder::inspectOpcode(JSOp op)
       case JSOP_DEFCONST:
         return jsop_defvar(GET_UINT32_INDEX(pc));
 
-      case JSOP_LOCALINC:
-      case JSOP_INCLOCAL:
-      case JSOP_LOCALDEC:
-      case JSOP_DECLOCAL:
-        return jsop_localinc(op);
-
       case JSOP_EQ:
       case JSOP_NE:
       case JSOP_STRICTEQ:
@@ -824,12 +831,6 @@ IonBuilder::inspectOpcode(JSOp op)
       case JSOP_GT:
       case JSOP_GE:
         return jsop_compare(op);
-
-      case JSOP_ARGINC:
-      case JSOP_INCARG:
-      case JSOP_ARGDEC:
-      case JSOP_DECARG:
-        return jsop_arginc(op);
 
       case JSOP_DOUBLE:
         return pushConstant(info().getConst(pc));
@@ -960,6 +961,13 @@ IonBuilder::inspectOpcode(JSOp op)
       {
         RootedPropertyName name(cx, info().getAtom(pc)->asPropertyName());
         return jsop_getname(name);
+      }
+
+      case JSOP_INTRINSICNAME:
+      case JSOP_CALLINTRINSIC:
+      {
+        RootedPropertyName name(cx, info().getAtom(pc)->asPropertyName());
+        return jsop_intrinsicname(name);
       }
 
       case JSOP_BINDNAME:
@@ -1570,10 +1578,10 @@ IonBuilder::processNextTableSwitchCase(CFGState &state)
     if (current) {
         current->end(MGoto::New(successor));
         successor->addPredecessor(current);
-
-        // Insert successor after the current block, to maintain RPO.
-        graph().moveBlockToEnd(successor);
     }
+
+    // Insert successor after the current block, to maintain RPO.
+    graph().moveBlockToEnd(successor);
 
     // If this is the last successor the block should stop at the end of the tableswitch
     // Else it should stop at the start of the next successor
@@ -2800,6 +2808,8 @@ IonBuilder::jsop_call_inline(HandleFunction callee, uint32 argc, bool constructi
                              MConstant *constFun, MBasicBlock *bottom,
                              Vector<MDefinition *, 8, IonAllocPolicy> &retvalDefns)
 {
+    AssertCanGC();
+
     // Rewrite the stack position containing the function with the constant
     // function definition, before we take the inlineResumePoint
     current->rewriteAtDepth(-((int) argc + 2), constFun);
@@ -2825,8 +2835,10 @@ IonBuilder::jsop_call_inline(HandleFunction callee, uint32 argc, bool constructi
 
     // Compilation information is allocated for the duration of the current tempLifoAlloc
     // lifetime.
-    CompileInfo *info = cx->tempLifoAlloc().new_<CompileInfo>(callee->script(), callee,
-                                                              (jsbytecode *)NULL, constructing);
+    RootedScript calleeScript(cx, callee->script());
+    CompileInfo *info = cx->tempLifoAlloc().new_<CompileInfo>(calleeScript.get(), callee,
+                                                              (jsbytecode *)NULL, constructing,
+                                                              SequentialExecution);
     if (!info)
         return false;
 
@@ -2834,7 +2846,7 @@ IonBuilder::jsop_call_inline(HandleFunction callee, uint32 argc, bool constructi
     AutoAccumulateExits aae(graph(), saveExits);
 
     TypeInferenceOracle oracle;
-    if (!oracle.init(cx, callee->script()))
+    if (!oracle.init(cx, calleeScript))
         return false;
 
     IonBuilder inlineBuilder(cx, &temp(), &graph(), &oracle,
@@ -2890,6 +2902,8 @@ IonBuilder::jsop_call_inline(HandleFunction callee, uint32 argc, bool constructi
 bool
 IonBuilder::makeInliningDecision(AutoObjectVector &targets, uint32 argc)
 {
+    AssertCanGC();
+
     if (inliningDepth >= js_IonOptions.maxInlineDepth)
         return false;
 
@@ -2909,12 +2923,14 @@ IonBuilder::makeInliningDecision(AutoObjectVector &targets, uint32 argc)
     uint32_t totalSize = 0;
     uint32_t checkUses = js_IonOptions.usesBeforeInlining;
     bool allFunctionsAreSmall = true;
+    RootedFunction target(cx);
+    RootedScript script(cx);
     for (size_t i = 0; i < targets.length(); i++) {
-        JSFunction *target = targets[i]->toFunction();
+        target = targets[i]->toFunction();
         if (!target->isInterpreted())
             return false;
 
-        JSScript *script = target->script();
+        script = target->script();
         uint32_t calleeUses = script->getUseCount();
 
         if (target->nargs < argc) {
@@ -3533,7 +3549,7 @@ IonBuilder::createThisScriptedSingleton(HandleFunction target, HandleObject prot
     types::TypeObject *type = proto->getNewType(cx, target);
     if (!type)
         return NULL;
-    if (!types::TypeScript::ThisTypes(target->script())->hasType(types::Type::ObjectType(type)))
+    if (!types::TypeScript::ThisTypes(target->script().unsafeGet())->hasType(types::Type::ObjectType(type)))
         return NULL;
 
     RootedObject templateObject(cx, js_CreateThisForFunctionWithProto(cx, target, proto));
@@ -3698,6 +3714,8 @@ IonBuilder::jsop_funapply(uint32 argc)
 bool
 IonBuilder::jsop_call(uint32 argc, bool constructing)
 {
+    AssertCanGC();
+
     // Acquire known call target if existent.
     AutoObjectVector targets(cx);
     uint32_t numTargets = getPolyCallTargets(argc, pc, targets, 4);
@@ -3823,62 +3841,6 @@ IonBuilder::makeCall(HandleFunction target, uint32 argc, bool constructing)
     types::StackTypeSet *barrier;
     types::StackTypeSet *types = oracle->returnTypeSet(script_, pc, &barrier);
     return makeCallBarrier(target, argc, constructing, types, barrier);
-}
-
-bool
-IonBuilder::jsop_incslot(JSOp op, uint32 slot)
-{
-    int32 amt = (js_CodeSpec[op].format & JOF_INC) ? 1 : -1;
-    bool post = !!(js_CodeSpec[op].format & JOF_POST);
-    TypeOracle::BinaryTypes types = oracle->incslot(script_, pc);
-
-    // Grab the value at the local slot, and convert it to a number. Currently,
-    // we use ToInt32 or ToNumber which are fallible but idempotent. This whole
-    // operation must be idempotent because we cannot resume in the middle of
-    // an INC op.
-    current->pushSlot(slot);
-    MDefinition *value = current->pop();
-    MInstruction *lhs;
-
-    JSValueType knownType = types.lhsTypes->getKnownTypeTag();
-    if (knownType == JSVAL_TYPE_INT32) {
-        lhs = MToInt32::New(value);
-    } else if (knownType == JSVAL_TYPE_DOUBLE) {
-        lhs = MToDouble::New(value);
-    } else {
-        // Don't compile effectful incslot ops.
-        return abort("INCSLOT non-int/double lhs");
-    }
-    current->add(lhs);
-
-    // If this is a post operation, save the original value.
-    if (post)
-        current->push(lhs);
-
-    MConstant *rhs = MConstant::New(Int32Value(amt));
-    current->add(rhs);
-
-    MAdd *result = MAdd::New(lhs, rhs);
-    current->add(result);
-    result->infer(cx, types);
-    current->push(result);
-    current->setSlot(slot);
-
-    if (post)
-        current->pop();
-    return true;
-}
-
-bool
-IonBuilder::jsop_localinc(JSOp op)
-{
-    return jsop_incslot(op, info().localSlot(GET_SLOTNO(pc)));
-}
-
-bool
-IonBuilder::jsop_arginc(JSOp op)
-{
-    return jsop_incslot(op, info().argSlot(GET_SLOTNO(pc)));
 }
 
 bool
@@ -4403,7 +4365,8 @@ TestSingletonProperty(JSContext *cx, HandleObject obj, HandleId id, bool *isKnow
 static inline bool
 TestSingletonPropertyTypes(JSContext *cx, types::StackTypeSet *types,
                            HandleObject globalObj, HandleId id,
-                           bool *isKnownConstant, bool *testObject)
+                           bool *isKnownConstant, bool *testObject,
+                           bool *testString)
 {
     // As for TestSingletonProperty, but the input is any value in a type set
     // rather than a specific object. If testObject is set then the constant
@@ -4411,6 +4374,7 @@ TestSingletonPropertyTypes(JSContext *cx, types::StackTypeSet *types,
 
     *isKnownConstant = false;
     *testObject = false;
+    *testString = false;
 
     if (!types || types->unknownObject())
         return true;
@@ -4440,6 +4404,15 @@ TestSingletonPropertyTypes(JSContext *cx, types::StackTypeSet *types,
 
       case JSVAL_TYPE_OBJECT:
       case JSVAL_TYPE_UNKNOWN: {
+        if (types->hasType(types::Type::StringType())) {
+            // Do not optimize if the object is either a String or an Object.
+            if (types->maybeObject())
+                return true;
+            key = JSProto_String;
+            *testString = true;
+            break;
+        }
+
         // For property accesses which may be on many objects, we just need to
         // find a prototype common to all the objects; if that prototype
         // has the singleton property, the access will not be on a missing property.
@@ -4659,10 +4632,8 @@ IonBuilder::jsop_getgname(HandlePropertyName name)
 
     // If we have a property typeset, the isOwnProperty call will trigger recompilation if
     // the property is deleted or reconfigured.
-    if (!propertyTypes && shape->configurable()) {
-        MGuardShape *guard = MGuardShape::New(global, globalObj->lastProperty(), Bailout_Invalidate);
-        current->add(guard);
-    }
+    if (!propertyTypes && shape->configurable())
+        global = addShapeGuard(global, globalObj->lastProperty(), Bailout_ShapeGuard);
 
     JS_ASSERT(shape->slot() >= globalObj->numFixedSlots());
 
@@ -4712,10 +4683,8 @@ IonBuilder::jsop_setgname(HandlePropertyName name)
     // If we have a property type set, the isOwnProperty call will trigger recompilation
     // if the property is deleted or reconfigured. Without TI, we always need a shape guard
     // to guard against the property being reconfigured as non-writable.
-    if (!propertyTypes) {
-        MGuardShape *guard = MGuardShape::New(global, globalObj->lastProperty(), Bailout_Invalidate);
-        current->add(guard);
-    }
+    if (!propertyTypes)
+        global = addShapeGuard(global, globalObj->lastProperty(), Bailout_ShapeGuard);
 
     JS_ASSERT(shape->slot() >= globalObj->numFixedSlots());
 
@@ -4780,6 +4749,42 @@ IonBuilder::jsop_getname(HandlePropertyName name)
 
     monitorResult(ins, barrier, types);
     return pushTypeBarrier(ins, types, barrier);
+}
+
+bool
+IonBuilder::jsop_intrinsicname(HandlePropertyName name)
+{
+    types::StackTypeSet *types = oracle->propertyRead(script_, pc);
+    JSValueType type = types->getKnownTypeTag();
+
+    // If we haven't executed this opcode yet, we need to get the intrinsic
+    // value and monitor the result.
+    if (type == JSVAL_TYPE_UNKNOWN) {
+        MCallGetIntrinsicValue *ins = MCallGetIntrinsicValue::New(name);
+
+        current->add(ins);
+        current->push(ins);
+
+        if (!resumeAfter(ins))
+            return false;
+
+        types::StackTypeSet *barrier = oracle->propertyReadBarrier(script_, pc);
+        monitorResult(ins, barrier, types);
+        return pushTypeBarrier(ins, types, barrier);
+    }
+
+    // Bake in the intrinsic. Make sure that TI agrees with us on the type.
+    RootedValue vp(cx, UndefinedValue());
+    if (!cx->global()->getIntrinsicValue(cx, name, &vp))
+        return false;
+
+    JS_ASSERT(types->hasType(types::GetValueType(cx, vp)));
+
+    MConstant *ins = MConstant::New(vp);
+    current->add(ins);
+    current->push(ins);
+
+    return true;
 }
 
 bool
@@ -5039,6 +5044,9 @@ IonBuilder::jsop_getelem_string()
     MStringLength *length = MStringLength::New(str);
     current->add(length);
 
+    // This will cause an invalidation of this script once the 'undefined' type
+    // is monitored by the interpreter.
+    JS_ASSERT(oracle->propertyRead(script_, pc)->getKnownTypeTag() == JSVAL_TYPE_STRING);
     id = addBoundsCheck(id, length);
 
     MCharCodeAt *charCode = MCharCodeAt::New(str, id);
@@ -5475,8 +5483,7 @@ IonBuilder::TestCommonPropFunc(JSContext *cx, types::StackTypeSet *types, Handle
     // are no lookup hooks for this property.
     MInstruction *wrapper = MConstant::New(ObjectValue(*foundProto));
     current->add(wrapper);
-    MGuardShape *guard = MGuardShape::New(wrapper, foundProto->lastProperty(), Bailout_Invalidate);
-    current->add(guard);
+    wrapper = addShapeGuard(wrapper, foundProto->lastProperty(), Bailout_ShapeGuard);
 
     // Now we have to freeze all the property typesets to ensure there isn't a
     // lower shadowing getter or setter installed in the future.
@@ -5736,176 +5743,276 @@ IonBuilder::storeSlot(MDefinition *obj, Shape *shape, MDefinition *value, bool n
 bool
 IonBuilder::jsop_getprop(HandlePropertyName name)
 {
-    LazyArgumentsType isArguments = oracle->propertyReadMagicArguments(script_, pc);
-    if (isArguments == MaybeArguments)
-        return abort("Type is not definitely lazy arguments.");
-    if (isArguments == DefinitelyArguments) {
-        if (JSOp(*pc) == JSOP_LENGTH)
-            return jsop_arguments_length();
-        // Can also be a callee.
-    }
-
-    MDefinition *obj = current->pop();
-    MInstruction *ins;
+    RootedId id(cx, NameToId(name));
 
     types::StackTypeSet *barrier = oracle->propertyReadBarrier(script_, pc);
     types::StackTypeSet *types = oracle->propertyRead(script_, pc);
-
     TypeOracle::Unary unary = oracle->unaryOp(script_, pc);
-    TypeOracle::UnaryTypes unaryTypes = oracle->unaryTypes(script_, pc);
+    TypeOracle::UnaryTypes uTypes = oracle->unaryTypes(script_, pc);
 
-    RootedId id(cx, NameToId(name));
+    bool emitted = false;
 
+    // Try to optimize arguments.length.
+    if (!getPropTryArgumentsLength(&emitted) || emitted)
+        return emitted;
+
+    // Try to hardcode known constants.
+    if (!getPropTryConstant(&emitted, id, barrier, types, uTypes) || emitted)
+        return emitted;
+
+    // Try to emit loads from definite slots.
+    if (!getPropTryDefiniteSlot(&emitted, name, barrier, types, unary, uTypes) || emitted)
+        return emitted;
+
+    // Try to inline a common property getter, or make a call.
+    if (!getPropTryCommonGetter(&emitted, id, barrier, types, uTypes) || emitted)
+        return emitted;
+
+    // Try to emit a monomorphic cache based on data in JM caches.
+    if (!getPropTryMonomorphic(&emitted, id, barrier, unary, uTypes) || emitted)
+        return emitted;
+
+    // Try to emit a polymorphic cache.
+    if (!getPropTryPolymorphic(&emitted, name, id, barrier, types, unary, uTypes) || emitted)
+        return emitted;
+
+    // Emit a call.
+    MDefinition *obj = current->pop();
+    MCallGetProperty *call = MCallGetProperty::New(obj, name);
+    current->add(call);
+    current->push(call);
+    if (!resumeAfter(call))
+        return false;
+
+    monitorResult(call, barrier, types);
+    return pushTypeBarrier(call, types, barrier);
+}
+
+bool
+IonBuilder::getPropTryArgumentsLength(bool *emitted)
+{
+    JS_ASSERT(*emitted == false);
+    LazyArgumentsType isArguments = oracle->propertyReadMagicArguments(script_, pc);
+
+    if (isArguments == MaybeArguments)
+        return abort("Type is not definitely lazy arguments.");
+    if (isArguments != DefinitelyArguments)
+        return true;
+    if (JSOp(*pc) != JSOP_LENGTH)
+        return true;
+
+    *emitted = true;
+    return jsop_arguments_length();
+}
+
+bool
+IonBuilder::getPropTryConstant(bool *emitted, HandleId id, types::StackTypeSet *barrier,
+                               types::StackTypeSet *types, TypeOracle::UnaryTypes unaryTypes)
+{
+    JS_ASSERT(*emitted == false);
     JSObject *singleton = types ? types->getSingleton() : NULL;
-    if (singleton && !barrier) {
-        bool isKnownConstant, testObject;
-        RootedObject global(cx, &script_->global());
-        if (!TestSingletonPropertyTypes(cx, unaryTypes.inTypes,
-                                        global, id,
-                                        &isKnownConstant, &testObject))
-        {
-            return false;
-        }
+    if (!singleton || barrier)
+        return true;
 
-        if (isKnownConstant) {
-            if (testObject) {
-                MGuardObject *guard = MGuardObject::New(obj);
-                current->add(guard);
-            }
-            MConstant *known = MConstant::New(ObjectValue(*singleton));
-            current->add(known);
-            current->push(known);
-            return true;
-        }
+    RootedObject global(cx, &script_->global());
+
+    bool isConstant, testObject, testString;
+    if (!TestSingletonPropertyTypes(cx, unaryTypes.inTypes, global, id,
+                                    &isConstant, &testObject, &testString))
+        return false;
+
+    if (!isConstant)
+        return true;
+
+    MDefinition *obj = current->pop();
+
+    // Property access is a known constant -- safe to emit.
+	JS_ASSERT(!testString || !testObject);
+    if (testObject)
+        current->add(MGuardObject::New(obj));
+	else if (testString)
+        current->add(MGuardString::New(obj));
+
+    MConstant *known = MConstant::New(ObjectValue(*singleton));
+
+    current->add(known);
+    current->push(known);
+
+    *emitted = true;
+    return true;
+}
+
+bool
+IonBuilder::getPropTryDefiniteSlot(bool *emitted, HandlePropertyName name,
+                                   types::StackTypeSet *barrier, types::StackTypeSet *types,
+                                   TypeOracle::Unary unary, TypeOracle::UnaryTypes unaryTypes)
+{
+    JS_ASSERT(*emitted == false);
+    types::TypeSet *propTypes = GetDefiniteSlot(cx, unaryTypes.inTypes, name);
+    if (!propTypes)
+        return true;
+
+    MDefinition *obj = current->pop();
+    MDefinition *useObj = obj;
+    if (unaryTypes.inTypes && unaryTypes.inTypes->baseFlags()) {
+        MGuardObject *guard = MGuardObject::New(obj);
+        current->add(guard);
+        useObj = guard;
     }
 
-    if (types::TypeSet *propTypes = GetDefiniteSlot(cx, unaryTypes.inTypes, name)) {
-        MDefinition *useObj = obj;
-        if (unaryTypes.inTypes && unaryTypes.inTypes->baseFlags()) {
-            MGuardObject *guard = MGuardObject::New(obj);
-            current->add(guard);
-            useObj = guard;
-        }
-        MLoadFixedSlot *fixed = MLoadFixedSlot::New(useObj, propTypes->definiteSlot());
-        if (!barrier)
-            fixed->setResultType(unary.rval);
+    MLoadFixedSlot *fixed = MLoadFixedSlot::New(useObj, propTypes->definiteSlot());
+    if (!barrier)
+        fixed->setResultType(unary.rval);
 
-        current->add(fixed);
-        current->push(fixed);
+    current->add(fixed);
+    current->push(fixed);
 
-        return pushTypeBarrier(fixed, types, barrier);
-    }
+    if (!pushTypeBarrier(fixed, types, barrier))
+        return false;
 
-    // Attempt to inline common property getter. At least patch to call instead.
+    *emitted = true;
+    return true;
+}
+
+bool
+IonBuilder::getPropTryCommonGetter(bool *emitted, HandleId id, types::StackTypeSet *barrier,
+                                   types::StackTypeSet *types, TypeOracle::UnaryTypes unaryTypes)
+{
+    JS_ASSERT(*emitted == false);
     JSFunction *commonGetter;
     bool isDOM;
+
     if (!TestCommonPropFunc(cx, unaryTypes.inTypes, id, &commonGetter, true, &isDOM))
-         return false;
-     if (commonGetter) {
-        RootedFunction getter(cx, commonGetter);
-        if (isDOM && TestShouldDOMCall(cx, unaryTypes.inTypes, getter, JSJitInfo::Getter)) {
-            const JSJitInfo *jitinfo = getter->jitInfo();
-            MGetDOMProperty *get = MGetDOMProperty::New(jitinfo->op, obj, jitinfo->isInfallible);
+        return false;
+    if (!commonGetter)
+        return true;
 
-            current->add(get);
-            current->push(get);
+    MDefinition *obj = current->pop();
+    RootedFunction getter(cx, commonGetter);
 
-            if (!resumeAfter(get))
-                return false;
+    if (isDOM && TestShouldDOMCall(cx, unaryTypes.inTypes, getter, JSJitInfo::Getter)) {
+        const JSJitInfo *jitinfo = getter->jitInfo();
+        MGetDOMProperty *get = MGetDOMProperty::New(jitinfo->op, obj, jitinfo->isInfallible);
+        current->add(get);
+        current->push(get);
 
-            return pushTypeBarrier(get, types, barrier);
-        }
-        // Spoof stack to expected state for call.
-        pushConstant(ObjectValue(*commonGetter));
+        if (!resumeAfter(get))
+            return false;
+        if (!pushTypeBarrier(get, types, barrier))
+            return false;
 
-        MPassArg *wrapper = MPassArg::New(obj);
-        current->push(wrapper);
-        current->add(wrapper);
-
-        return makeCallBarrier(getter, 0, false, types, barrier);
+        *emitted = true;
+        return true;
     }
 
-    // If the input is guaranteed to be an object, then we want
-    // to specialize it via a slot load or an IC.
+    // Spoof stack to expected state for call.
+    pushConstant(ObjectValue(*commonGetter));
 
+    MPassArg *wrapper = MPassArg::New(obj);
+    current->add(wrapper);
+    current->push(wrapper);
+
+    if (!makeCallBarrier(getter, 0, false, types, barrier))
+        return false;
+
+    *emitted = true;
+    return true;
+}
+
+bool
+IonBuilder::getPropTryMonomorphic(bool *emitted, HandleId id, types::StackTypeSet *barrier,
+                                  TypeOracle::Unary unary, TypeOracle::UnaryTypes unaryTypes)
+{
+    JS_ASSERT(*emitted == false);
     bool accessGetter = oracle->propertyReadAccessGetter(script_, pc);
+
+    if (unary.ival != MIRType_Object)
+        return true;
+
+    Shape *objShape = mjit::GetPICSingleShape(cx, script_, pc, info().constructing());
+    if (!objShape || objShape->inDictionary()) {
+        spew("GETPROP not monomorphic");
+        return true;
+    }
+
+    MDefinition *obj = current->pop();
+
+    // The JM IC was monomorphic, so we inline the property access as long as
+    // the shape is not in dictionary made. We cannot be sure that the shape is
+    // still a lastProperty, and calling Shape::search() on dictionary mode
+    // shapes that aren't lastProperty is invalid.
+    obj = addShapeGuard(obj, objShape, Bailout_CachedShapeGuard);
+
+    spew("Inlining monomorphic GETPROP");
+    Shape *shape = objShape->search(cx, id);
+    JS_ASSERT(shape);
+
     MIRType rvalType = unary.rval;
     if (barrier || IsNullOrUndefined(unary.rval) || accessGetter)
         rvalType = MIRType_Value;
 
-    if (unary.ival == MIRType_Object) {
-        Shape *objShape;
-        if ((objShape = mjit::GetPICSingleShape(cx, script_, pc, info().constructing())) &&
-            !objShape->inDictionary())
-        {
-            // The JM IC was monomorphic, so we inline the property access as
-            // long as the shape is not in dictionary mode. We cannot be sure
-            // that the shape is still a lastProperty, and calling
-            // Shape::search() on dictionary mode shapes that aren't
-            // lastProperty is invalid.
-            MGuardShape *guard = MGuardShape::New(obj, objShape, Bailout_CachedShapeGuard);
-            current->add(guard);
-
-            spew("Inlining monomorphic GETPROP");
-
-            Shape *shape = objShape->search(cx, NameToId(name));
-            JS_ASSERT(shape);
-
-            return loadSlot(obj, shape, rvalType);
-        }
-
-        spew("GETPROP not monomorphic");
-
-        MGetPropertyCache *load = MGetPropertyCache::New(obj, name);
-        load->setResultType(rvalType);
-
-        // Try to mark the cache as idempotent. We only do this if JM is enabled
-        // (its ICs are used to mark property reads as likely non-idempotent) or
-        // if we are compiling eagerly (to improve test coverage).
-        if ((cx->methodJitEnabled || js_IonOptions.eagerCompilation) &&
-            !invalidatedIdempotentCache())
-        {
-            if (oracle->propertyReadIdempotent(script_, pc, id))
-                load->setIdempotent();
-        }
-
-        if (JSOp(*pc) == JSOP_CALLPROP) {
-            if (!annotateGetPropertyCache(cx, obj, load, unaryTypes.inTypes, types))
-                return false;
-        }
-
-        // If the cache is known to access getters, then enable generation of
-        // getter stubs and set its result type to value.
-        if (accessGetter)
-            load->setAllowGetters();
-
-        ins = load;
-    } else if (obj->type() == MIRType_Value && unaryTypes.inTypes->objectOrSentinel()) {
-        // Fallibly unwrap the object and IC the result.
-        MUnbox *unbox = MUnbox::New(obj, MIRType_Object, MUnbox::Fallible);
-        current->add(unbox);
-
-        spew("GETPROP is object-or-sentinel");
-
-        MGetPropertyCache *load = MGetPropertyCache::New(unbox, name);
-        load->setResultType(rvalType);
-        if (accessGetter)
-            load->setAllowGetters();
-
-        ins = load;
-    } else {
-        ins = MCallGetProperty::New(obj, name);
-    }
-
-    current->add(ins);
-    current->push(ins);
-
-    if (ins->isEffectful() && !resumeAfter(ins))
+    if (!loadSlot(obj, shape, rvalType))
         return false;
 
-    if (ins->isCallGetProperty() || accessGetter)
-        monitorResult(ins, barrier, types);
-    return pushTypeBarrier(ins, types, barrier);
+    *emitted = true;
+    return true;
+}
+
+bool
+IonBuilder::getPropTryPolymorphic(bool *emitted, HandlePropertyName name, HandleId id,
+                                  types::StackTypeSet *barrier, types::StackTypeSet *types,
+                                  TypeOracle::Unary unary, TypeOracle::UnaryTypes unaryTypes)
+{
+    JS_ASSERT(*emitted == false);
+    bool accessGetter = oracle->propertyReadAccessGetter(script_, pc);
+
+    // The input value must either be an object, or we should have strong suspicions
+    // that it can be safely unboxed to an object.
+    if (unary.ival != MIRType_Object && !unaryTypes.inTypes->objectOrSentinel())
+        return true;
+
+    MIRType rvalType = unary.rval;
+    if (barrier || IsNullOrUndefined(unary.rval) || accessGetter)
+        rvalType = MIRType_Value;
+
+    MDefinition *obj = current->pop();
+    MGetPropertyCache *load = MGetPropertyCache::New(obj, name);
+    load->setResultType(rvalType);
+
+    // Try to mark the cache as idempotent. We only do this if JM is enabled
+    // (its ICs are used to mark property reads as likely non-idempotent) or
+    // if we are compiling eagerly (to improve test coverage).
+    if (unary.ival == MIRType_Object &&
+        (cx->methodJitEnabled || js_IonOptions.eagerCompilation) &&
+        !invalidatedIdempotentCache())
+    {
+        if (oracle->propertyReadIdempotent(script_, pc, id))
+            load->setIdempotent();
+    }
+
+    if (JSOp(*pc) == JSOP_CALLPROP) {
+        if (!annotateGetPropertyCache(cx, obj, load, unaryTypes.inTypes, types))
+            return false;
+    }
+
+    // If the cache is known to access getters, then enable generation of getter stubs.
+    if (accessGetter)
+        load->setAllowGetters();
+
+    current->add(load);
+    current->push(load);
+
+    if (load->isEffectful() && !resumeAfter(load))
+        return false;
+
+    if (accessGetter)
+        monitorResult(load, barrier, types);
+
+    if (!pushTypeBarrier(load, types, barrier))
+        return false;
+
+    *emitted = true;
+    return true;
 }
 
 bool
@@ -5984,8 +6091,7 @@ IonBuilder::jsop_setprop(HandlePropertyName name)
             // long as the shape is not in dictionary mode. We cannot be sure
             // that the shape is still a lastProperty, and calling Shape::search
             // on dictionary mode shapes that aren't lastProperty is invalid.
-            MGuardShape *guard = MGuardShape::New(obj, objShape, Bailout_CachedShapeGuard);
-            current->add(guard);
+            obj = addShapeGuard(obj, objShape, Bailout_CachedShapeGuard);
 
             Shape *shape = objShape->search(cx, NameToId(name));
             JS_ASSERT(shape);
@@ -6278,6 +6384,9 @@ IonBuilder::jsop_setaliasedvar(ScopeCoordinate sc)
 bool
 IonBuilder::jsop_in()
 {
+    if (oracle->inObjectIsDenseArray(script_, pc))
+        return jsop_in_dense();
+
     MDefinition *obj = current->pop();
     MDefinition *id = current->pop();
     MIn *ins = new MIn(id, obj);
@@ -6286,6 +6395,38 @@ IonBuilder::jsop_in()
     current->push(ins);
 
     return resumeAfter(ins);
+}
+
+bool
+IonBuilder::jsop_in_dense()
+{
+    if (oracle->arrayPrototypeHasIndexedProperty())
+        return abort("JSOP_IN Array proto has indexed properties");
+
+    bool needsHoleCheck = !oracle->inArrayIsPacked(script_, pc);
+
+    MDefinition *obj = current->pop();
+    MDefinition *id = current->pop();
+
+    // Ensure id is an integer.
+    MInstruction *idInt32 = MToInt32::New(id);
+    current->add(idInt32);
+    id = idInt32;
+
+    // Get the elements vector.
+    MElements *elements = MElements::New(obj);
+    current->add(elements);
+
+    MInitializedLength *initLength = MInitializedLength::New(elements);
+    current->add(initLength);
+
+    // Check if id < initLength and elem[id] not a hole.
+    MInArray *ins = MInArray::New(elements, id, initLength, needsHoleCheck);
+
+    current->add(ins);
+    current->push(ins);
+
+    return true;
 }
 
 bool
@@ -6340,4 +6481,17 @@ IonBuilder::addBoundsCheck(MDefinition *index, MDefinition *length)
         check->setNotMovable();
 
     return check;
+}
+
+MInstruction *
+IonBuilder::addShapeGuard(MDefinition *obj, const Shape *shape, BailoutKind bailoutKind)
+{
+    MGuardShape *guard = MGuardShape::New(obj, shape, bailoutKind);
+    current->add(guard);
+
+    // If a shape guard failed in the past, don't optimize shape guard.
+    if (failedShapeGuard_)
+        guard->setNotMovable();
+
+    return guard;
 }

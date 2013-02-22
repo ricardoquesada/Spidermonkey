@@ -25,7 +25,7 @@
 
 namespace js {
 namespace ion {
- 
+
 // The public entrypoint for emitting assembly. Note that a MacroAssembler can
 // use cx->lifoAlloc, so take care not to interleave masm use with other
 // lifoAlloc use if one will be destroyed before the other.
@@ -51,9 +51,9 @@ class MacroAssembler : public MacroAssemblerSpecific
         }
     };
 
-    AutoRooter autoRooter_;
-    Maybe<IonContext> ionContext_;
-    Maybe<AutoIonContextAlloc> alloc_;
+    mozilla::Maybe<AutoRooter> autoRooter_;
+    mozilla::Maybe<IonContext> ionContext_;
+    mozilla::Maybe<AutoIonContextAlloc> alloc_;
     bool enoughMemory_;
 
   private:
@@ -69,12 +69,15 @@ class MacroAssembler : public MacroAssemblerSpecific
     // provided, but otherwise it can be safely omitted to prevent all
     // instrumentation from being emitted.
     MacroAssembler(IonInstrumentation *sps = NULL)
-      : autoRooter_(GetIonContext()->cx, thisFromCtor()),
-        enoughMemory_(true),
+      : enoughMemory_(true),
         sps_(sps)
     {
+        JSContext *cx = GetIonContext()->cx;
+        if (cx)
+            constructRoot(cx);
+
         if (!GetIonContext()->temp)
-            alloc_.construct(GetIonContext()->cx);
+            alloc_.construct(cx);
 #ifdef JS_CPU_ARM
         m_buffer.id = GetIonContext()->getNextAssemblerId();
 #endif
@@ -83,15 +86,19 @@ class MacroAssembler : public MacroAssemblerSpecific
     // This constructor should only be used when there is no IonContext active
     // (for example, Trampoline-$(ARCH).cpp).
     MacroAssembler(JSContext *cx)
-      : autoRooter_(cx, thisFromCtor()),
-        enoughMemory_(true),
+      : enoughMemory_(true),
         sps_(NULL) // no need for instrumentation in trampolines and such
     {
+        constructRoot(cx);
         ionContext_.construct(cx, cx->compartment, (js::ion::TempAllocator *)NULL);
         alloc_.construct(cx);
 #ifdef JS_CPU_ARM
         m_buffer.id = GetIonContext()->getNextAssemblerId();
 #endif
+    }
+
+    void constructRoot(JSContext *cx) {
+        autoRooter_.construct(cx, this);
     }
 
     MoveResolver &moveResolver() {
@@ -155,11 +162,11 @@ class MacroAssembler : public MacroAssemblerSpecific
     }
 
     void loadJSContext(const Register &dest) {
-        movePtr(ImmWord(GetIonContext()->cx->runtime), dest);
+        movePtr(ImmWord(GetIonContext()->compartment->rt), dest);
         loadPtr(Address(dest, offsetof(JSRuntime, ionJSContext)), dest);
     }
     void loadIonActivation(const Register &dest) {
-        movePtr(ImmWord(GetIonContext()->cx->runtime), dest);
+        movePtr(ImmWord(GetIonContext()->compartment->rt), dest);
         loadPtr(Address(dest, offsetof(JSRuntime, ionActivation)), dest);
     }
 
@@ -167,12 +174,8 @@ class MacroAssembler : public MacroAssemblerSpecific
     void loadTypedOrValue(const T &src, TypedOrValueRegister dest) {
         if (dest.hasValue())
             loadValue(src, dest.valueReg());
-        else if (dest.type() == MIRType_Int32)
-            unboxInt32(src, dest.typedReg().gpr());
-        else if (dest.type() == MIRType_Boolean)
-            unboxBoolean(src, dest.typedReg().gpr());
         else
-            loadUnboxedValue(src, dest.typedReg());
+            loadUnboxedValue(src, dest.type(), dest.typedReg());
     }
 
     template<typename T>
@@ -185,7 +188,7 @@ class MacroAssembler : public MacroAssemblerSpecific
         } else {
             if (holeCheck)
                 branchTestMagic(Assembler::Equal, src, hole);
-            loadUnboxedValue(src, dest.typedReg());
+            loadUnboxedValue(src, dest.type(), dest.typedReg());
         }
     }
 
@@ -262,12 +265,26 @@ class MacroAssembler : public MacroAssemblerSpecific
     void PushRegsInMask(GeneralRegisterSet set) {
         PushRegsInMask(RegisterSet(set, FloatRegisterSet()));
     }
-    void PopRegsInMask(RegisterSet set);
+    void PopRegsInMask(RegisterSet set) {
+        PopRegsInMaskIgnore(set, RegisterSet());
+    }
     void PopRegsInMask(GeneralRegisterSet set) {
         PopRegsInMask(RegisterSet(set, FloatRegisterSet()));
     }
+    void PopRegsInMaskIgnore(RegisterSet set, RegisterSet ignore);
 
     void branchTestValueTruthy(const ValueOperand &value, Label *ifTrue, FloatRegister fr);
+
+    void branchIfFunctionIsNative(Register fun, Label *label) {
+        // 16-bit loads are slow and unaligned 32-bit loads may be too so
+        // perform an aligned 32-bit load and adjust the bitmask accordingly.
+        JS_STATIC_ASSERT(offsetof(JSFunction, nargs) % sizeof(uint32_t) == 0);
+        JS_STATIC_ASSERT(offsetof(JSFunction, flags) == offsetof(JSFunction, nargs) + 2);
+        JS_STATIC_ASSERT(IS_LITTLE_ENDIAN);
+        Address address(fun, offsetof(JSFunction, nargs));
+        uint32_t bit = JSFunction::INTERPRETED << 16;
+        branchTest32(Assembler::Zero, address, Imm32(bit), label);
+    }
 
     using MacroAssemblerSpecific::Push;
 
@@ -360,7 +377,7 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     void branchTestNeedsBarrier(Condition cond, const Register &scratch, Label *label) {
         JS_ASSERT(cond == Zero || cond == NonZero);
-        JSCompartment *comp = GetIonContext()->cx->compartment;
+        JSCompartment *comp = GetIonContext()->compartment;
         movePtr(ImmWord(comp), scratch);
         Address needsBarrierAddr(scratch, JSCompartment::OffsetOfNeedsBarrier());
         branchTest32(cond, needsBarrierAddr, Imm32(0x1), label);
@@ -374,20 +391,17 @@ class MacroAssembler : public MacroAssemblerSpecific
                   type == MIRType_Shape);
         Label done;
 
-        JSContext *cx = GetIonContext()->cx;
-        IonCode *preBarrier = (type == MIRType_Shape)
-                              ? cx->compartment->ionCompartment()->shapePreBarrier(cx)
-                              : cx->compartment->ionCompartment()->valuePreBarrier(cx);
-        if (!preBarrier) {
-            enoughMemory_ = false;
-            return;
-        }
-
         if (type == MIRType_Value)
             branchTestGCThing(Assembler::NotEqual, address, &done);
 
         Push(PreBarrierReg);
         computeEffectiveAddress(address, PreBarrierReg);
+
+        JSCompartment *compartment = GetIonContext()->compartment;
+        IonCode *preBarrier = (type == MIRType_Shape)
+                              ? compartment->ionCompartment()->shapePreBarrier()
+                              : compartment->ionCompartment()->valuePreBarrier();
+
         call(preBarrier);
         Pop(PreBarrierReg);
 
@@ -634,7 +648,7 @@ class MacroAssembler : public MacroAssemblerSpecific
         store32(Imm32(ProfileEntry::NullPCIndex),
                 Address(temp, ProfileEntry::offsetOfPCIdx()));
 
-        /* Always increment the stack size, tempardless if we actually pushed */
+        /* Always increment the stack size, whether or not we actually pushed. */
         bind(&stackFull);
         movePtr(ImmWord(p->sizePointer()), temp);
         add32(Imm32(1), Address(temp, 0));

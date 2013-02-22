@@ -14,22 +14,28 @@
 #include "ion/MoveResolver.h"
 #include "jsopcode.h"
 
+using mozilla::DebugOnly;
+
 namespace js {
 namespace ion {
 
 static Register CallReg = ip;
 static const int defaultShift = 3;
 JS_STATIC_ASSERT(1 << defaultShift == sizeof(jsval));
+
 // MacroAssemblerARM is inheriting form Assembler defined in Assembler-arm.{h,cpp}
 class MacroAssemblerARM : public Assembler
 {
   public:
-    MacroAssemblerARM() {
-    }
+    MacroAssemblerARM()
+    { }
+
     void convertInt32ToDouble(const Register &src, const FloatRegister &dest);
     void convertUInt32ToDouble(const Register &src, const FloatRegister &dest);
     void convertDoubleToFloat(const FloatRegister &src, const FloatRegister &dest);
     void branchTruncateDouble(const FloatRegister &src, const Register &dest, Label *fail);
+
+    void inc64(AbsoluteAddress dest);
 
     // somewhat direct wrappers for the low-level assembler funcitons
     // bitops
@@ -48,7 +54,8 @@ class MacroAssemblerARM : public Assembler
     void ma_alu(Register src1, Operand op2, Register dest, ALUOp op,
                 SetCond_ sc = NoSetCond, Condition c = Always);
     void ma_nop();
-    void ma_movPatchable(Imm32 imm, Register dest, Assembler::Condition c, RelocStyle rs, Instruction *i = NULL);
+    void ma_movPatchable(Imm32 imm, Register dest, Assembler::Condition c,
+                         RelocStyle rs, Instruction *i = NULL);
     // These should likely be wrapped up as a set of macros
     // or something like that.  I cannot think of a good reason
     // to explicitly have all of this code.
@@ -260,38 +267,40 @@ class MacroAssemblerARM : public Assembler
     void ma_vmul(FloatRegister src1, FloatRegister src2, FloatRegister dst);
     void ma_vdiv(FloatRegister src1, FloatRegister src2, FloatRegister dst);
 
-    void ma_vneg(FloatRegister src, FloatRegister dest);
-    void ma_vmov(FloatRegister src, FloatRegister dest);
-    void ma_vabs(FloatRegister src, FloatRegister dest);
+    void ma_vneg(FloatRegister src, FloatRegister dest, Condition cc = Always);
+    void ma_vmov(FloatRegister src, FloatRegister dest, Condition cc = Always);
+    void ma_vabs(FloatRegister src, FloatRegister dest, Condition cc = Always);
 
-    void ma_vimm(double value, FloatRegister dest);
+    void ma_vsqrt(FloatRegister src, FloatRegister dest, Condition cc = Always);
 
-    void ma_vcmp(FloatRegister src1, FloatRegister src2);
-    void ma_vcmpz(FloatRegister src1);
+    void ma_vimm(double value, FloatRegister dest, Condition cc = Always);
+
+    void ma_vcmp(FloatRegister src1, FloatRegister src2, Condition cc = Always);
+    void ma_vcmpz(FloatRegister src1, Condition cc = Always);
 
     // source is F64, dest is I32
-    void ma_vcvt_F64_I32(FloatRegister src, FloatRegister dest);
-    void ma_vcvt_F64_U32(FloatRegister src, FloatRegister dest);
+    void ma_vcvt_F64_I32(FloatRegister src, FloatRegister dest, Condition cc = Always);
+    void ma_vcvt_F64_U32(FloatRegister src, FloatRegister dest, Condition cc = Always);
 
     // source is I32, dest is F64
-    void ma_vcvt_I32_F64(FloatRegister src, FloatRegister dest);
-    void ma_vcvt_U32_F64(FloatRegister src, FloatRegister dest);
+    void ma_vcvt_I32_F64(FloatRegister src, FloatRegister dest, Condition cc = Always);
+    void ma_vcvt_U32_F64(FloatRegister src, FloatRegister dest, Condition cc = Always);
 
-    void ma_vxfer(FloatRegister src, Register dest);
-    void ma_vxfer(FloatRegister src, Register dest1, Register dest2);
+    void ma_vxfer(FloatRegister src, Register dest, Condition cc = Always);
+    void ma_vxfer(FloatRegister src, Register dest1, Register dest2, Condition cc = Always);
 
-    void ma_vxfer(VFPRegister src, Register dest);
-    void ma_vxfer(VFPRegister src, Register dest1, Register dest2);
+    void ma_vxfer(VFPRegister src, Register dest, Condition cc = Always);
+    void ma_vxfer(VFPRegister src, Register dest1, Register dest2, Condition cc = Always);
 
     void ma_vdtr(LoadStore ls, const Operand &addr, VFPRegister dest, Condition cc = Always);
 
-    void ma_vldr(VFPAddr addr, VFPRegister dest);
-    void ma_vldr(const Operand &addr, VFPRegister dest);
+    void ma_vldr(VFPAddr addr, VFPRegister dest, Condition cc = Always);
+    void ma_vldr(const Operand &addr, VFPRegister dest, Condition cc = Always);
 
-    void ma_vstr(VFPRegister src, VFPAddr addr);
-    void ma_vstr(VFPRegister src, const Operand &addr);
+    void ma_vstr(VFPRegister src, VFPAddr addr, Condition cc = Always);
+    void ma_vstr(VFPRegister src, const Operand &addr, Condition cc = Always);
 
-    void ma_vstr(VFPRegister src, Register base, Register index, int32 shift = defaultShift);
+    void ma_vstr(VFPRegister src, Register base, Register index, int32 shift = defaultShift, Condition cc = Always);
     // calls an Ion function, assumes that the stack is untouched (8 byte alinged)
     void ma_callIon(const Register reg);
     // callso an Ion function, assuming that sp has already been decremented
@@ -593,11 +602,11 @@ class MacroAssemblerARMCompat : public MacroAssemblerARM
         ma_b(label, cond);
     }
     void branch32(Condition cond, const Address &lhs, Register rhs, Label *label) {
-        move32(lhs, ScratchRegister);
+        load32(lhs, ScratchRegister);
         branch32(cond, ScratchRegister, rhs, label);
     }
     void branch32(Condition cond, const Address &lhs, Imm32 rhs, Label *label) {
-        move32(lhs, ScratchRegister);
+        load32(lhs, ScratchRegister);
         branch32(cond, ScratchRegister, rhs, label);
     }
     void branchPtr(Condition cond, const Address &lhs, Register rhs, Label *label) {
@@ -727,14 +736,14 @@ class MacroAssemblerARMCompat : public MacroAssemblerARM
         ma_b(label, cond);
     }
 
-    void loadUnboxedValue(Address address, AnyRegister dest) {
+    void loadUnboxedValue(Address address, MIRType type, AnyRegister dest) {
         if (dest.isFloat())
             loadInt32OrDouble(Operand(address), dest.fpu());
         else
             ma_ldr(address, dest.gpr());
     }
 
-    void loadUnboxedValue(BaseIndex address, AnyRegister dest) {
+    void loadUnboxedValue(BaseIndex address, MIRType type, AnyRegister dest) {
         if (dest.isFloat())
             loadInt32OrDouble(address.base, address.index, dest.fpu(), address.scale);
         else
@@ -905,11 +914,9 @@ class MacroAssemblerARMCompat : public MacroAssemblerARM
 
     void move32(const Imm32 &imm, const Register &dest);
 
-    void move32(const Address &src, const Register &dest);
     void movePtr(const Register &src, const Register &dest);
     void movePtr(const ImmWord &imm, const Register &dest);
     void movePtr(const ImmGCPtr &imm, const Register &dest);
-    void movePtr(const Address &src, const Register &dest);
 
     void load8SignExtend(const Address &address, const Register &dest);
     void load8SignExtend(const BaseIndex &src, const Register &dest);
@@ -921,7 +928,6 @@ class MacroAssemblerARMCompat : public MacroAssemblerARM
     void load16SignExtend(const BaseIndex &src, const Register &dest);
 
     void load16ZeroExtend(const Address &address, const Register &dest);
-    void load16ZeroExtend_mask(const Address &address, Imm32 mask, const Register &dest);
     void load16ZeroExtend(const BaseIndex &src, const Register &dest);
 
     void load32(const Address &address, const Register &dest);

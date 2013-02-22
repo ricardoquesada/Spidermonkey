@@ -14,9 +14,9 @@
 
 #include "jsobjinlines.h"
 
-struct OuterWrapper : js::DirectWrapper
+struct OuterWrapper : js::Wrapper
 {
-    OuterWrapper() : DirectWrapper(0) {}
+    OuterWrapper() : Wrapper(0) {}
 
     virtual bool isOuterWindow() {
         return true;
@@ -56,7 +56,8 @@ PreWrap(JSContext *cx, JSObject *scopeArg, JSObject *objArg, unsigned flags)
 }
 
 static JSObject *
-Wrap(JSContext *cx, JSObject *objArg, JSObject *protoArg, JSObject *parentArg, unsigned flags)
+Wrap(JSContext *cx, JSObject *existing, JSObject *objArg,
+     JSObject *protoArg, JSObject *parentArg, unsigned flags)
 {
     js::RootedObject obj(cx, objArg);
     js::RootedObject proto(cx, protoArg);

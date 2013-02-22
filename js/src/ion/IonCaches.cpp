@@ -22,6 +22,8 @@
 using namespace js;
 using namespace js::ion;
 
+using mozilla::DebugOnly;
+
 void
 CodeLocationJump::repoint(IonCode *code, MacroAssembler *masm)
 {
@@ -118,16 +120,10 @@ GeneratePrototypeGuards(JSContext *cx, MacroAssembler &masm, JSObject *obj, JSOb
         return;
     while (pobj != holder) {
         if (pobj->hasUncacheableProto()) {
-            if (pobj->hasSingletonType()) {
-                types::TypeObject *type = pobj->getType(cx);
-                masm.movePtr(ImmGCPtr(type), scratchReg);
-                Address proto(scratchReg, offsetof(types::TypeObject, proto));
-                masm.branchPtr(Assembler::NotEqual, proto, ImmGCPtr(obj->getProto()), failures);
-            } else {
-                masm.movePtr(ImmGCPtr(pobj), scratchReg);
-                Address objType(scratchReg, JSObject::offsetOfType());
-                masm.branchPtr(Assembler::NotEqual, objType, ImmGCPtr(pobj->type()), failures);
-            }
+            JS_ASSERT(!pobj->hasSingletonType());
+            masm.movePtr(ImmGCPtr(pobj), scratchReg);
+            Address objType(scratchReg, JSObject::offsetOfType());
+            masm.branchPtr(Assembler::NotEqual, objType, ImmGCPtr(pobj->type()), failures);
         }
         pobj = pobj->getProto();
     }
@@ -475,7 +471,6 @@ struct GetNativePropertyStub
 
         // TODO: ensure stack is aligned?
         DebugOnly<uint32> initialStack = masm.framePushed();
-        masm.checkStackAlignment();
 
         Label success, exception;
 
@@ -745,10 +740,13 @@ TryAttachNativeGetPropStub(JSContext *cx, IonScript *ion,
     jsbytecode *pc;
     cache.getScriptedLocation(&script, &pc);
 
-    if (IsCacheableGetPropReadSlot(checkObj, holder, shape) ||
-        IsCacheableNoProperty(checkObj, holder, shape, pc, cache.output()))
+    if (IsCacheableGetPropReadSlot(obj, holder, shape) ||
+        IsCacheableNoProperty(obj, holder, shape, pc, cache.output()))
     {
-        readSlot = true;
+        // With Proxies, we cannot garantee any property access as the proxy can
+        // mask any property from the prototype chain.
+        if (!obj->isProxy())
+            readSlot = true;
     } else if (IsCacheableGetPropCallNative(checkObj, holder, shape) ||
                IsCacheableGetPropCallPropertyOp(checkObj, holder, shape))
     {
@@ -1286,6 +1284,9 @@ IsPropertySetterCallInlineable(JSContext *cx, HandleObject obj, HandleObject hol
     if (shape->hasDefaultSetter())
         return false;
 
+    if (!shape->writable())
+        return false;
+
     // We only handle propertyOps for now, so fail if we have SetterValue
     // (which implies JSNative setter).
     if (shape->hasSetterValue())
@@ -1359,12 +1360,14 @@ js::ion::SetPropertyCache(JSContext *cx, size_t cacheIndex, HandleObject obj, Ha
     RootedObject holder(cx);
 
     bool inlinable = IsPropertyInlineable(obj, cache);
+    bool addedSetterStub = false;
     if (inlinable) {
         RootedShape shape(cx);
         if (IsPropertySetInlineable(cx, obj, id, &shape)) {
             cache.incrementStubCount();
             if (!cache.attachNativeExisting(cx, ion, obj, shape))
                 return false;
+            addedSetterStub = true;
         } else {
             RootedObject holder(cx);
             if (!JSObject::lookupProperty(cx, obj, name, &holder, &shape))
@@ -1374,6 +1377,7 @@ js::ion::SetPropertyCache(JSContext *cx, size_t cacheIndex, HandleObject obj, Ha
                 cache.incrementStubCount();
                 if (!cache.attachSetterCall(cx, ion, obj, holder, shape, returnAddr))
                     return false;
+                addedSetterStub = true;
             }
         }
     }
@@ -1385,9 +1389,10 @@ js::ion::SetPropertyCache(JSContext *cx, size_t cacheIndex, HandleObject obj, Ha
     if (!SetProperty(cx, obj, name, value, cache.strict(), isSetName))
         return false;
 
-    // The property did not exists before, now we can try again to inline the
-    // procedure which is adding the property.
-    if (inlinable && IsPropertyAddInlineable(cx, obj, id, oldSlots, &shape)) {
+    // The property did not exist before, now we can try to inline the propery add.
+    if (inlinable && !addedSetterStub && obj->lastProperty() != oldShape &&
+        IsPropertyAddInlineable(cx, obj, id, oldSlots, &shape))
+    {
         const Shape *newShape = obj->lastProperty();
         cache.incrementStubCount();
         if (!cache.attachNativeAdding(cx, ion, obj, oldShape, newShape, shape))
@@ -1452,18 +1457,6 @@ IonCacheGetElement::attachGetProp(JSContext *cx, IonScript *ion, HandleObject ob
     return true;
 }
 
-// Get the common shape used by all dense arrays with a prototype at globalObj.
-static inline Shape *
-GetDenseArrayShape(JSContext *cx, JSObject *globalObj)
-{
-    JSObject *proto = globalObj->global().getOrCreateArrayPrototype(cx);
-    if (!proto)
-        return NULL;
-
-    return EmptyShape::getInitialShape(cx, &ArrayClass, proto,
-                                       proto->getParent(), gc::FINALIZE_OBJECT0);
-}
-
 bool
 IonCacheGetElement::attachDenseArray(JSContext *cx, IonScript *ion, JSObject *obj, const Value &idval)
 {
@@ -1474,7 +1467,8 @@ IonCacheGetElement::attachDenseArray(JSContext *cx, IonScript *ion, JSObject *ob
     MacroAssembler masm;
 
     // Guard object is a dense array.
-    RootedShape shape(cx, GetDenseArrayShape(cx, &script->global()));
+    RootedObject globalObj(cx, &script->global());
+    RootedShape shape(cx, GetDenseArrayShape(cx, globalObj));
     if (!shape)
         return false;
     masm.branchTestObjShape(Assembler::NotEqual, object(), shape, &failures);
@@ -1635,14 +1629,15 @@ static inline void
 GenerateScopeChainGuard(MacroAssembler &masm, JSObject *scopeObj,
                         Register scopeObjReg, Shape *shape, Label *failures)
 {
+    AutoAssertNoGC nogc;
     if (scopeObj->isCall()) {
         // We can skip a guard on the call object if the script's bindings are
         // guaranteed to be immutable (and thus cannot introduce shadowing
         // variables).
         CallObject *callObj = &scopeObj->asCall();
         if (!callObj->isForEval()) {
-            JSFunction *fun = &callObj->callee();
-            JSScript *script = fun->script();
+            RawFunction fun = &callObj->callee();
+            RawScript script = fun->script().get(nogc);
             if (!script->funHasExtensibleScope)
                 return;
         }

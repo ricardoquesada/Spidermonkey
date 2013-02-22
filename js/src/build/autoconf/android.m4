@@ -276,8 +276,17 @@ case "$target" in
         android_platform_tools="$android_sdk"/tools # SDK Tools < r8
     fi
     ANDROID_SDK="${android_sdk}"
+    if test -e "${android_sdk}/../../extras/android/compatibility/v4/android-support-v4.jar" ; then
+        ANDROID_COMPAT_LIB="${android_sdk}/../../extras/android/compatibility/v4/android-support-v4.jar"
+    else
+        ANDROID_COMPAT_LIB="${android_sdk}/../../extras/android/support/v4/android-support-v4.jar";
+    fi
     ANDROID_PLATFORM_TOOLS="${android_platform_tools}"
     AC_SUBST(ANDROID_SDK)
+    AC_SUBST(ANDROID_COMPAT_LIB)
+    if ! test -e $ANDROID_COMPAT_LIB ; then
+        AC_MSG_ERROR([You must download the Android support library when targeting Android.   Run the Android SDK tool and install Android Support Library under Extras.  See https://developer.android.com/tools/extras/support-library.html for more info. (looked for $ANDROID_COMPAT_LIB)])
+    fi
     AC_SUBST(ANDROID_PLATFORM_TOOLS)
     ;;
 esac
