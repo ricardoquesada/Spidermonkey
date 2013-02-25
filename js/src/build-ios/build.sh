@@ -12,11 +12,9 @@ STRIP="xcrun -sdk iphoneos strip"
 cpus=$(sysctl hw.ncpu | awk '{print $2}')
 
 # create ios version (armv7)
-../configure --with-ios-target=iPhoneOS --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION --with-ios-arch=armv7  \
+../configure --with-ios-target=iPhoneOS --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION --with-ios-arch=armv7 \
             --disable-shared-js --disable-tests --disable-ion --disable-jm --disable-tm --enable-llvm-hacks --disable-methodjit --disable-monoic --disable-polyic \
-            --disable-root-analysis --disable-exact-rooting --enable-gcincremental \
-            --enable-optimize=-O3 --with-thumb=yes --enable-strip --enable-install-strip \
-            --enable-debug
+            --enable-optimize=-O3 --with-thumb=yes --enable-strip --enable-install-strip
 make -j$cpus
 if (( $? )) ; then
     echo "error when compiling iOS version of the library"
@@ -26,11 +24,9 @@ mv libjs_static.a libjs_static.armv7.a
 
 # create ios version (armv7s)
 #../configure --with-ios-target=iPhoneOS --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION --with-ios-arch=armv7s  --disable-shared-js --disable-tests --disable-ion --disable-jm --disable-tm --enable-llvm-hacks --disable-methodjit --with-thumb=yes --enable-strip --enable-install-strip --disable-monoic --disable-polyic --disable-ion --enable-optimize=-O1
-../configure --with-ios-target=iPhoneOS --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION --with-ios-arch=armv7s  \
+../configure --with-ios-target=iPhoneOS --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION --with-ios-arch=armv7s \
             --disable-shared-js --disable-tests --disable-ion --disable-jm --disable-tm --enable-llvm-hacks --disable-methodjit --disable-monoic --disable-polyic \
-            --disable-root-analysis --disable-exact-rooting --enable-gcincremental \
-            --enable-optimize=-O3 --with-thumb=yes --enable-strip --enable-install-strip \
-            --enable-debug
+            --enable-optimize=-O3 --with-thumb=yes --enable-strip --enable-install-strip
 make -j$cpus
 if (( $? )) ; then
     echo "error when compiling iOS version of the library"
@@ -43,9 +39,8 @@ ls | grep -v libjs_static.armv7.a | grep -v libjs_static.armv7s.a | grep -v buil
 
 # create i386 version (simulator)
 #../configure --with-ios-target=iPhoneSimulator --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION --disable-shared-js --disable-tests --disable-ion --enable-llvm-hacks --enable-debug
-../configure --with-ios-target=iPhoneSimulator --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION  \
+../configure --with-ios-target=iPhoneSimulator --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION \
             --disable-shared-js --disable-tests --disable-ion --disable-jm --disable-tm --enable-llvm-hacks --disable-methodjit --disable-monoic --disable-polyic \
-            --disable-root-analysis --disable-exact-rooting --enable-gcincremental \
             --enable-optimize=-O3 --enable-strip --enable-install-strip \
             --enable-debug
 make -j$cpus
