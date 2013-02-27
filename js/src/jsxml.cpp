@@ -54,11 +54,12 @@ size_t sE4XObjectsCreated = 0;
 #include <string.h>     /* for #ifdef DEBUG memset calls */
 #endif
 
-using namespace mozilla;
 using namespace js;
 using namespace js::gc;
 using namespace js::types;
 using namespace js::frontend;
+
+using mozilla::ArrayLength;
 
 template<class T, class U>
 struct IdentityOp
@@ -1184,7 +1185,7 @@ ParseNodeToQName(Parser *parser, ParseNode *pn,
     JSStableString *str = atom->ensureStable(cx);
     if (!str)
         return NULL;
-    start = str->chars();
+    start = str->chars().get();
     length = str->length();
     JS_ASSERT(length != 0 && *start != '@');
     JS_ASSERT(length != 1 || *start != '*');
@@ -1753,7 +1754,8 @@ ParseXMLSource(JSContext *cx, HandleString src)
         op = (JSOp) *i.pc();
         if (op == JSOP_TOXML || op == JSOP_TOXMLLIST) {
             filename = i.script()->filename;
-            lineno = PCToLineNumber(i.script(), i.pc());
+            RootedScript script(cx, i.script());
+            lineno = PCToLineNumber(script, i.pc());
             for (endp = srcp + srclen; srcp < endp; srcp++) {
                 if (*srcp == '\n')
                     --lineno;

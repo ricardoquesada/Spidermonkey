@@ -58,9 +58,11 @@ xpcshell-tests-remote:
 	$(PYTHON) -u $(topsrcdir)/config/pythonpath.py \
 	  -I$(topsrcdir)/build \
 	  -I$(topsrcdir)/build/mobile \
+	  -I$(topsrcdir)/testing/mozbase/mozdevice/mozdevice \
 	  $(topsrcdir)/testing/xpcshell/remotexpcshelltests.py \
 	  --symbols-path=$(DIST)/crashreporter-symbols \
 	  --build-info-json=$(DEPTH)/mozinfo.json \
+	  --testing-modules-dir=$(DEPTH)/_tests/modules \
 	  $(EXTRA_TEST_ARGS) \
 	  --dm_trans=$(DM_TRANS) \
 	  --deviceIP=${TEST_DEVICE} \
@@ -106,10 +108,12 @@ check-one-remote:
 	$(PYTHON) -u $(topsrcdir)/config/pythonpath.py \
 	  -I$(topsrcdir)/build \
 	  -I$(topsrcdir)/build/mobile \
+	  -I$(topsrcdir)/testing/mozbase/mozdevice/mozdevice \
 	  $(testxpcsrcdir)/remotexpcshelltests.py \
 	  --symbols-path=$(DIST)/crashreporter-symbols \
 	  --build-info-json=$(DEPTH)/mozinfo.json \
 	  --test-path=$(SOLO_FILE) \
+	  --testing-modules-dir=$(DEPTH)/_tests/modules \
 	  --profile-name=$(MOZ_APP_NAME) \
 	  --verbose \
 	  $(EXTRA_TEST_ARGS) \

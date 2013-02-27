@@ -17,7 +17,7 @@ def replaceErrorMsgs(source_files, messages_file, output_file):
         if len(source_files) == 0:
             return
         for line in fileinput.input(source_files):
-            output.write(replaceMessages(line, messages))
+            output.write(replaceMessages(line if line[-1] == '\n' else line + '\n', messages))
 
 def buildMessagesTable(messages_file):
     table = {}
@@ -43,10 +43,9 @@ def main():
     messages_file = sys.argv[2]
     macros_file = sys.argv[3]
     source_files = sys.argv[4:]
-    combined_file = 'combined.js'
+    combined_file = 'selfhosted.js'
     replaceErrorMsgs(source_files, messages_file, combined_file)
     js2c.JS2C([combined_file, macros_file], [output_file], { 'TYPE': 'CORE', 'COMPRESSION': 'off', 'DEBUG':debug })
-    os.remove(combined_file)
 
 if __name__ == "__main__":
     main()

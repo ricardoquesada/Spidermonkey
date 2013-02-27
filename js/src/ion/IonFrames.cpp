@@ -26,19 +26,6 @@
 using namespace js;
 using namespace js::ion;
 
-JSScript *
-ion::MaybeScriptFromCalleeToken(CalleeToken token)
-{
-    switch (GetCalleeTokenTag(token)) {
-      case CalleeToken_Script:
-        return CalleeTokenToScript(token);
-      case CalleeToken_Function:
-        return CalleeTokenToFunction(token)->script();
-    }
-    JS_NOT_REACHED("invalid callee token tag");
-    return NULL;
-}
-
 IonFrameIterator::IonFrameIterator(const IonActivationIterator &activations)
     : current_(activations.top()),
       type_(IonFrame_Exit),
@@ -51,7 +38,7 @@ IonFrameIterator::IonFrameIterator(const IonActivationIterator &activations)
 
 IonFrameIterator::IonFrameIterator(IonJSFrameLayout *fp)
   : current_((uint8 *)fp),
-    type_(IonFrame_JS),
+    type_(IonFrame_OptimizedJS),
     returnAddressToFp_(fp->returnAddress()),
     frameSize_(fp->prevFrameLocalSize())
 {
@@ -67,8 +54,9 @@ IonFrameIterator::checkInvalidation() const
 bool
 IonFrameIterator::checkInvalidation(IonScript **ionScriptOut) const
 {
+    AutoAssertNoGC nogc;
     uint8 *returnAddr = returnAddressToFp();
-    JSScript *script = this->script();
+    RawScript script = this->script();
     // N.B. the current IonScript is not the same as the frame's
     // IonScript if the frame has since been invalidated.
     IonScript *currentIonScript = script->ion;
@@ -152,7 +140,7 @@ IonFrameIterator::isFunctionFrame() const
 bool
 IonFrameIterator::isEntryJSFrame() const
 {
-    if (prevType() == IonFrame_JS || prevType() == IonFrame_Bailed_JS)
+    if (prevType() == IonFrame_OptimizedJS || prevType() == IonFrame_Bailed_JS)
         return false;
 
     if (prevType() == IonFrame_Entry)
@@ -170,8 +158,9 @@ IonFrameIterator::isEntryJSFrame() const
 JSScript *
 IonFrameIterator::script() const
 {
+    AutoAssertNoGC nogc;
     JS_ASSERT(isScripted());
-    JSScript *script = MaybeScriptFromCalleeToken(calleeToken());
+    RawScript script = ScriptFromCalleeToken(calleeToken());
     JS_ASSERT(script);
     return script;
 }
@@ -198,7 +187,7 @@ IonFrameIterator::prevFp() const
     // a Rectifier frame should not change. (cf EnsureExitFrame function)
     if (prevType() == IonFrame_Bailed_Rectifier || prevType() == IonFrame_Bailed_JS) {
         JS_ASSERT(type_ == IonFrame_Exit);
-        currentSize = SizeOfFramePrefix(IonFrame_JS);
+        currentSize = SizeOfFramePrefix(IonFrame_OptimizedJS);
     }
     currentSize += current()->prevFrameLocalSize();
     return current_ + currentSize;
@@ -224,7 +213,7 @@ IonFrameIterator::operator++()
     uint8 *prev = prevFp();
     type_ = current()->prevType();
     if (type_ == IonFrame_Bailed_JS)
-        type_ = IonFrame_JS;
+        type_ = IonFrame_OptimizedJS;
     returnAddressToFp_ = current()->returnAddress();
     current_ = prev;
     return *this;
@@ -260,6 +249,7 @@ IonFrameIterator::machineState() const
 static void
 CloseLiveIterator(JSContext *cx, const InlineFrameIterator &frame, uint32 localSlot)
 {
+    AssertCanGC();
     SnapshotIterator si = frame.snapshotIterator();
 
     // Skip stack slots until we reach the iterator object.
@@ -281,7 +271,8 @@ CloseLiveIterator(JSContext *cx, const InlineFrameIterator &frame, uint32 localS
 static void
 CloseLiveIterators(JSContext *cx, const InlineFrameIterator &frame)
 {
-    JSScript *script = frame.script();
+    AssertCanGC();
+    RootedScript script(cx, frame.script());
     jsbytecode *pc = frame.pc();
 
     if (!script->hasTrynotes())
@@ -311,6 +302,7 @@ CloseLiveIterators(JSContext *cx, const InlineFrameIterator &frame)
 void
 ion::HandleException(ResumeFromException *rfe)
 {
+    AssertCanGC();
     JSContext *cx = GetIonContext()->cx;
 
     IonSpew(IonSpew_Invalidate, "handling exception");
@@ -331,7 +323,8 @@ ion::HandleException(ResumeFromException *rfe)
                 // When profiling, each frame popped needs a notification that
                 // the function has exited, so invoke the probe that a function
                 // is exiting.
-                JSScript *script = frames.script();
+                AutoAssertNoGC nogc;
+                RawScript script = frames.script();
                 Probes::exitScript(cx, script, script->function(), NULL);
                 if (!frames.more())
                     break;
@@ -638,18 +631,15 @@ MarkIonActivation(JSTracer *trc, const IonActivationIterator &activations)
           case IonFrame_Exit:
             MarkIonExitFrame(trc, frames);
             break;
-          case IonFrame_JS:
+          case IonFrame_OptimizedJS:
             MarkIonJSFrame(trc, frames);
             break;
           case IonFrame_Bailed_JS:
             JS_NOT_REACHED("invalid");
             break;
           case IonFrame_Rectifier:
-          case IonFrame_Bailed_Rectifier: {
-            IonCompartment *ionCompartment = activations.activation()->compartment()->ionCompartment();
-            MarkIonCodeRoot(trc, ionCompartment->getArgumentsRectifierAddr(), "Arguments Rectifier");
+          case IonFrame_Bailed_Rectifier:
             break;
-          }
           case IonFrame_Osr:
             // The callee token will be marked by the callee JS frame;
             // otherwise, it does not need to be marked, since the frame is
@@ -862,7 +852,7 @@ SnapshotIterator::slotValue(const Slot &slot)
 IonScript *
 IonFrameIterator::ionScript() const
 {
-    JS_ASSERT(type() == IonFrame_JS);
+    JS_ASSERT(type() == IonFrame_OptimizedJS);
 
     IonScript *ionScript;
     if (checkInvalidation(&ionScript))
@@ -900,6 +890,7 @@ InlineFrameIterator::InlineFrameIterator(const IonFrameIterator *iter)
 void
 InlineFrameIterator::findNextFrame()
 {
+    AutoAssertNoGC nogc;
     JS_ASSERT(more());
 
     si_ = start_;
@@ -935,7 +926,7 @@ InlineFrameIterator::findNextFrame()
         si_.nextFrame();
 
         callee_ = funval.toObject().toFunction();
-        script_ = callee_->script();
+        script_ = callee_->script().get(nogc);
         pc_ = script_->code + si_.pcOffset();
     }
 
@@ -1031,6 +1022,21 @@ IonFrameIterator::isConstructing() const
 }
 
 JSObject *
+InlineFrameIterator::scopeChain() const
+{
+    SnapshotIterator s(si_);
+
+    // scopeChain
+    Value v = s.read();
+    if (v.isObject()) {
+        JS_ASSERT_IF(script()->hasAnalysis(), script()->analysis()->usesScopeChain());
+        return &v.toObject();
+    }
+
+    return callee()->environment();
+}
+
+JSObject *
 InlineFrameIterator::thisObject() const
 {
     // JS_ASSERT(isConstructing(...));
@@ -1084,7 +1090,7 @@ IonFrameIterator::dump() const
         fprintf(stderr, " Entry frame\n");
         fprintf(stderr, "  Frame size: %u\n", unsigned(current()->prevFrameLocalSize()));
         break;
-      case IonFrame_JS:
+      case IonFrame_OptimizedJS:
       {
         InlineFrameIterator frames(this);
         for (;;) {
@@ -1130,6 +1136,7 @@ struct DumpOp {
 void
 InlineFrameIterator::dump() const
 {
+    AutoAssertNoGC nogc;
     if (more())
         fprintf(stderr, " JS frame (inlined)\n");
     else

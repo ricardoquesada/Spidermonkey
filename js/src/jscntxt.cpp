@@ -27,6 +27,7 @@
 #include "jsatom.h"
 #include "jscntxt.h"
 #include "jsversion.h"
+#include "jsdate.h"
 #include "jsdbgapi.h"
 #include "jsexn.h"
 #include "jsfun.h"
@@ -66,6 +67,8 @@
 
 using namespace js;
 using namespace js::gc;
+
+using mozilla::DebugOnly;
 
 bool
 js::AutoCycleDetector::init()
@@ -244,12 +247,92 @@ selfHosting_ErrorReporter(JSContext *cx, const char *message, JSErrorReport *rep
 {
     PrintError(cx, stderr, message, report, true);
 }
+
 static JSClass self_hosting_global_class = {
     "self-hosting-global", JSCLASS_GLOBAL_FLAGS,
     JS_PropertyStub,  JS_PropertyStub,
     JS_PropertyStub,  JS_StrictPropertyStub,
     JS_EnumerateStub, JS_ResolveStub,
     JS_ConvertStub,   NULL
+};
+
+static JSBool
+intrinsic_ToObject(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    RootedValue val(cx, args[0]);
+    RootedObject obj(cx, ToObject(cx, val));
+    if (!obj)
+        return false;
+    args.rval().set(OBJECT_TO_JSVAL(obj));
+    return true;
+}
+
+static JSBool
+intrinsic_ToInteger(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    double result;
+    if (!ToInteger(cx, args[0], &result))
+        return false;
+    args.rval().set(DOUBLE_TO_JSVAL(result));
+    return true;
+}
+
+static JSBool
+intrinsic_IsCallable(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    Value val = args[0];
+    bool isCallable = val.isObject() && val.toObject().isCallable();
+    args.rval().set(BOOLEAN_TO_JSVAL(isCallable));
+    return true;
+}
+
+static JSBool
+intrinsic_ThrowError(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    JS_ASSERT(args.length() >= 1);
+    uint32_t errorNumber = args[0].toInt32();
+
+    char *errorArgs[3] = {NULL, NULL, NULL};
+    for (unsigned i = 1; i < 4 && i < args.length(); i++) {
+        RootedValue val(cx, args[i]);
+        if (val.isInt32() || val.isString()) {
+            errorArgs[i - 1] = JS_EncodeString(cx, ToString(cx, val));
+        } else {
+            ptrdiff_t spIndex = cx->stack.spIndexOf(val.address());
+            errorArgs[i - 1] = DecompileValueGenerator(cx, spIndex, val, NullPtr(), 1);
+        }
+    }
+
+    JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, errorNumber,
+                         errorArgs[0], errorArgs[1], errorArgs[2]);
+    for (unsigned i = 0; i < 3; i++)
+        js_free(errorArgs[i]);
+    return false;
+}
+
+static JSBool
+intrinsic_MakeConstructible(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    JS_ASSERT(args.length() >= 1);
+    JS_ASSERT(args[0].isObject());
+    RootedObject obj(cx, &args[0].toObject());
+    JS_ASSERT(obj->isFunction());
+    obj->toFunction()->setIsSelfHostedConstructor();
+    return true;
+}
+
+JSFunctionSpec intrinsic_functions[] = {
+    JS_FN("ToObject",           intrinsic_ToObject,             1,0),
+    JS_FN("ToInteger",          intrinsic_ToInteger,            1,0),
+    JS_FN("IsCallable",         intrinsic_IsCallable,           1,0),
+    JS_FN("ThrowError",         intrinsic_ThrowError,           4,0),
+    JS_FN("_MakeConstructible", intrinsic_MakeConstructible,    1,0),
+    JS_FS_END
 };
 bool
 JSRuntime::initSelfHosting(JSContext *cx)
@@ -259,23 +342,35 @@ JSRuntime::initSelfHosting(JSContext *cx)
     if (!(selfHostedGlobal_ = JS_NewGlobalObject(cx, &self_hosting_global_class, NULL)))
         return false;
     JS_SetGlobalObject(cx, selfHostedGlobal_);
+    JSAutoCompartment ac(cx, cx->global());
+    RootedObject shg(cx, selfHostedGlobal_);
 
-    const char *src = selfhosted::raw_sources;
-    uint32_t srcLen = selfhosted::GetRawScriptsSize();
+    if (!JS_DefineFunctions(cx, shg, intrinsic_functions))
+        return false;
 
     CompileOptions options(cx);
     options.setFileAndLine("self-hosted", 1);
     options.setSelfHostingMode(true);
 
-    RootedObject shg(cx, selfHostedGlobal_);
-    Value rv;
     /*
      * Set a temporary error reporter printing to stderr because it is too
      * early in the startup process for any other reporter to be registered
      * and we don't want errors in self-hosted code to be silently swallowed.
      */
     JSErrorReporter oldReporter = JS_SetErrorReporter(cx, selfHosting_ErrorReporter);
-    bool ok = Evaluate(cx, shg, options, src, srcLen, &rv);
+    Value rv;
+    bool ok = false;
+
+    char *filename = getenv("MOZ_SELFHOSTEDJS");
+    if (filename) {
+        RootedScript script(cx, Compile(cx, shg, options, filename));
+        if (script)
+            ok = Execute(cx, script, *shg.get(), &rv);
+    } else {
+        const char *src = selfhosted::raw_sources;
+        uint32_t srcLen = selfhosted::GetRawScriptsSize();
+        ok = Evaluate(cx, shg, options, src, srcLen, &rv);
+    }
     JS_SetErrorReporter(cx, oldReporter);
     JS_SetGlobalObject(cx, savedGlobal);
     return ok;
@@ -288,13 +383,10 @@ JSRuntime::markSelfHostedGlobal(JSTracer *trc)
 }
 
 JSFunction *
-JSRuntime::getSelfHostedFunction(JSContext *cx, const char *name)
+JSRuntime::getSelfHostedFunction(JSContext *cx, Handle<PropertyName*> name)
 {
     RootedObject holder(cx, cx->global()->getIntrinsicsHolder());
-    JSAtom *atom = Atomize(cx, name, strlen(name));
-    if (!atom)
-        return NULL;
-    RootedId id(cx, AtomToId(atom));
+    RootedId id(cx, NameToId(name));
     RootedValue funVal(cx, NullValue());
     if (!cloneSelfHostedValueById(cx, id, holder, &funVal))
         return NULL;
@@ -350,8 +442,8 @@ js::NewContext(JSRuntime *rt, size_t stackChunkSize)
      * Here the GC lock is still held after js_InitContextThreadAndLockGC took it and
      * the GC is not running on another thread.
      */
-    bool first = JS_CLIST_IS_EMPTY(&rt->contextList);
-    JS_APPEND_LINK(&cx->link, &rt->contextList);
+    bool first = rt->contextList.isEmpty();
+    rt->contextList.insertBack(cx);
 
     js_InitRandom(cx);
 
@@ -397,8 +489,6 @@ js::DestroyContext(JSContext *cx, DestroyContextMode mode)
     JSRuntime *rt = cx->runtime;
     JS_AbortIfWrongThread(rt);
 
-    JS_ASSERT(!cx->enumerators);
-
 #ifdef JS_THREADSAFE
     JS_ASSERT(cx->outstandingRequests == 0);
 #endif
@@ -413,7 +503,7 @@ js::DestroyContext(JSContext *cx, DestroyContextMode mode)
         }
     }
 
-    JS_REMOVE_LINK(&cx->link);
+    cx->remove();
     bool last = !rt->hasContexts();
     if (last) {
         JS_ASSERT(!rt->isHeapBusy());
@@ -471,6 +561,8 @@ static void
 ReportError(JSContext *cx, const char *message, JSErrorReport *reportp,
             JSErrorCallback callback, void *userRef)
 {
+    AssertCanGC();
+
     /*
      * Check the error report, and set a JavaScript-catchable exception
      * if the error is defined to have an associated exception.  If an
@@ -515,6 +607,8 @@ ReportError(JSContext *cx, const char *message, JSErrorReport *reportp,
 static void
 PopulateReportBlame(JSContext *cx, JSErrorReport *report)
 {
+    AutoAssertNoGC nogc;
+
     /*
      * Walk stack until we find a frame that is associated with a non-builtin
      * rather than a builtin frame.
@@ -524,7 +618,7 @@ PopulateReportBlame(JSContext *cx, JSErrorReport *report)
         return;
 
     report->filename = iter.script()->filename;
-    report->lineno = PCToLineNumber(iter.script(), iter.pc(), &report->column);
+    report->lineno = PCToLineNumber(iter.script().get(nogc), iter.pc(), &report->column);
     report->originPrincipals = iter.script()->originPrincipals;
 }
 
@@ -538,6 +632,8 @@ PopulateReportBlame(JSContext *cx, JSErrorReport *report)
 void
 js_ReportOutOfMemory(JSContext *cx)
 {
+    AutoAssertNoGC nogc;
+
     cx->runtime->hadOutOfMemory = true;
 
     JSErrorReport report;
@@ -555,23 +651,14 @@ js_ReportOutOfMemory(JSContext *cx)
     PopulateReportBlame(cx, &report);
 
     /*
-     * If debugErrorHook is present then we give it a chance to veto sending
-     * the error on to the regular ErrorReporter. We also clear a pending
-     * exception if any now so the hooks can replace the out-of-memory error
-     * by a script-catchable exception.
+     * We clear a pending exception, if any, now so the hook can replace the
+     * out-of-memory error by a script-catchable exception.
      */
     cx->clearPendingException();
     if (onError) {
-        JSDebugErrorHook hook = cx->runtime->debugHooks.debugErrorHook;
-        if (hook &&
-            !hook(cx, msg, &report, cx->runtime->debugHooks.debugErrorHookData)) {
-            onError = NULL;
-        }
-    }
-
-    if (onError) {
-        AutoAtomicIncrement incr(&cx->runtime->inOOMReport);
+        ++cx->runtime->inOOMReport;
         onError(cx, msg, &report);
+        --cx->runtime->inOOMReport;
     }
 }
 
@@ -789,6 +876,7 @@ js_ExpandErrorArguments(JSContext *cx, JSErrorCallback callback,
     const JSErrorFormatString *efs;
     int i;
     int argCount;
+    bool messageArgsPassed = !!reportp->messageArgs;
 
     *messagep = NULL;
 
@@ -811,12 +899,19 @@ js_ExpandErrorArguments(JSContext *cx, JSErrorCallback callback,
              * null it out to act as the caboose when we free the
              * pointers later.
              */
-            reportp->messageArgs = cx->pod_malloc<const jschar*>(argCount + 1);
-            if (!reportp->messageArgs)
-                return JS_FALSE;
-            reportp->messageArgs[argCount] = NULL;
+            if (messageArgsPassed) {
+                JS_ASSERT(!reportp->messageArgs[argCount]);
+            } else {
+                reportp->messageArgs = cx->pod_malloc<const jschar*>(argCount + 1);
+                if (!reportp->messageArgs)
+                    return JS_FALSE;
+                /* NULL-terminate for easy copying. */
+                reportp->messageArgs[argCount] = NULL;
+            }
             for (i = 0; i < argCount; i++) {
-                if (charArgs) {
+                if (messageArgsPassed) {
+                    /* Do nothing. */
+                } else if (charArgs) {
                     char *charArg = va_arg(ap, char *);
                     size_t charArgLength = strlen(charArg);
                     reportp->messageArgs[i] = InflateString(cx, charArg, &charArgLength);
@@ -828,8 +923,6 @@ js_ExpandErrorArguments(JSContext *cx, JSErrorCallback callback,
                 argLengths[i] = js_strlen(reportp->messageArgs[i]);
                 totalArgsLength += argLengths[i];
             }
-            /* NULL-terminate for easy copying. */
-            reportp->messageArgs[i] = NULL;
         }
         /*
          * Parse the error format, substituting the argument X
@@ -882,6 +975,8 @@ js_ExpandErrorArguments(JSContext *cx, JSErrorCallback callback,
                     goto error;
             }
         } else {
+            /* Non-null messageArgs should have at least one non-null arg. */
+            JS_ASSERT(!reportp->messageArgs);
             /*
              * Zero arguments: the format string (if it exists) is the
              * entire message.
@@ -911,7 +1006,7 @@ js_ExpandErrorArguments(JSContext *cx, JSErrorCallback callback,
     return JS_TRUE;
 
 error:
-    if (reportp->messageArgs) {
+    if (!messageArgsPassed && reportp->messageArgs) {
         /* free the arguments only if we allocated them */
         if (charArgs) {
             i = 0;
@@ -971,6 +1066,39 @@ js_ReportErrorNumberVA(JSContext *cx, unsigned flags, JSErrorCallback callback,
         }
         js_free((void *)report.messageArgs);
     }
+    if (report.ucmessage)
+        js_free((void *)report.ucmessage);
+
+    return warning;
+}
+
+bool
+js_ReportErrorNumberUCArray(JSContext *cx, unsigned flags, JSErrorCallback callback,
+                            void *userRef, const unsigned errorNumber,
+                            const jschar **args)
+{
+    if (checkReportFlags(cx, &flags))
+        return true;
+    bool warning = JSREPORT_IS_WARNING(flags);
+
+    JSErrorReport report;
+    PodZero(&report);
+    report.flags = flags;
+    report.errorNumber = errorNumber;
+    PopulateReportBlame(cx, &report);
+    report.messageArgs = args;
+
+    char *message;
+    va_list dummy;
+    if (!js_ExpandErrorArguments(cx, callback, userRef, errorNumber,
+                                 &message, &report, JS_FALSE, dummy)) {
+        return false;
+    }
+
+    ReportError(cx, message, &report, callback, userRef);
+
+    if (message)
+        js_free(message);
     if (report.ucmessage)
         js_free((void *)report.ucmessage);
 
@@ -1162,8 +1290,8 @@ DSTOffsetCache::purge()
     rangeStartSeconds = rangeEndSeconds = INT64_MIN;
     oldOffsetMilliseconds = 0;
     oldRangeStartSeconds = oldRangeEndSeconds = INT64_MIN;
+    localTZA = LocalTZA;
 
-    sanityCheck();
 }
 
 /*
@@ -1175,6 +1303,14 @@ DSTOffsetCache::purge()
 DSTOffsetCache::DSTOffsetCache()
 {
     purge();
+    sanityCheck();
+}
+
+void
+DSTOffsetCache::purgeIfTZAIsStale()
+{
+    if (localTZA != LocalTZA)
+        purge();
 }
 
 JSContext::JSContext(JSRuntime *rt)
@@ -1211,14 +1347,12 @@ JSContext::JSContext(JSRuntime *rt)
 #ifdef MOZ_TRACE_JSCALLS
     functionCallback(NULL),
 #endif
-    enumerators(NULL),
     innermostGenerator_(NULL),
 #ifdef DEBUG
     stackIterAssertionEnabled(true),
 #endif
     activeCompilations(0)
 {
-    PodZero(&link);
 #ifdef JSGC_ROOT_ANALYSIS
     PodArrayZero(thingGCRooters);
 #if defined(JS_GC_ZEAL) && defined(DEBUG) && !defined(JS_THREADSAFE)

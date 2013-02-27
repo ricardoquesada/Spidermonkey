@@ -88,7 +88,7 @@ namespace types {
 inline
 CompilerOutput::CompilerOutput()
   : script(NULL),
-    isIonFlag(false),
+    kindInt(MethodJIT),
     constructing(false),
     barriers(false),
     chunkIndex(false)
@@ -99,7 +99,7 @@ inline mjit::JITScript *
 CompilerOutput::mjit() const
 {
 #ifdef JS_METHODJIT
-    JS_ASSERT(isJM() && isValid());
+    JS_ASSERT(kind() == MethodJIT && isValid());
     return script->getJIT(constructing, barriers);
 #else
     return NULL;
@@ -110,11 +110,15 @@ inline ion::IonScript *
 CompilerOutput::ion() const
 {
 #ifdef JS_ION
-    JS_ASSERT(isIon() && isValid());
-    return script->ionScript();
-#else
-    return NULL;
+    JS_ASSERT(kind() != MethodJIT && isValid());
+    switch (kind()) {
+      case MethodJIT: break;
+      case Ion: return script->ionScript();
+      case ParallelIon: return script->parallelIonScript();
+    }
 #endif
+    JS_NOT_REACHED("Invalid kind of CompilerOutput");
+    return NULL;
 }
 
 inline bool
@@ -127,8 +131,9 @@ CompilerOutput::isValid() const
     TypeCompartment &types = script->compartment()->types;
 #endif
 
+    switch (kind()) {
+      case MethodJIT: {
 #ifdef JS_METHODJIT
-    if (isJM()) {
         mjit::JITScript *jit = script->getJIT(constructing, barriers);
         if (!jit)
             return false;
@@ -137,20 +142,31 @@ CompilerOutput::isValid() const
             return false;
         JS_ASSERT(this == chunk->recompileInfo.compilerOutput(types));
         return true;
-    }
 #endif
+      }
 
+      case Ion:
 #ifdef JS_ION
-    if (isIon()) {
         if (script->hasIonScript()) {
             JS_ASSERT(this == script->ion->recompileInfo().compilerOutput(types));
             return true;
         }
         if (script->isIonCompilingOffThread())
             return true;
+#endif
+        return false;
+
+      case ParallelIon:
+#ifdef JS_ION
+        if (script->hasParallelIonScript()) {
+            JS_ASSERT(this == script->parallelIonScript()->recompileInfo().compilerOutput(types));
+            return true;
+        }
+        if (script->isParallelIonCompilingOffThread())
+            return true;
+#endif
         return false;
     }
-#endif
     return false;
 }
 
@@ -387,17 +403,12 @@ struct AutoEnterCompilation
 {
     JSContext *cx;
     RecompileInfo &info;
+    CompilerOutput::Kind kind;
 
-    enum Compiler {
-        JM,
-        Ion
-    };
-    Compiler mode;
-
-    AutoEnterCompilation(JSContext *cx, Compiler mode)
+    AutoEnterCompilation(JSContext *cx, CompilerOutput::Kind kind)
       : cx(cx),
         info(cx->compartment->types.compiledInfo),
-        mode(mode)
+        kind(kind)
     {
         JS_ASSERT(cx->compartment->activeAnalysis);
         JS_ASSERT(info.outputIndex == RecompileInfo::NoCompilerRunning);
@@ -407,7 +418,7 @@ struct AutoEnterCompilation
     {
         CompilerOutput co;
         co.script = script;
-        co.isIonFlag = (mode == Ion);
+        co.setKind(kind);
         co.constructing = constructing;
         co.barriers = cx->compartment->compileBarriers();
         co.chunkIndex = chunkIndex;
@@ -429,13 +440,15 @@ struct AutoEnterCompilation
             }
         }
 
-        info.outputIndex = cx->compartment->types.constrainedOutputs->length();
+        info.outputIndex = types.constrainedOutputs->length();
         // I hope we GC before we reach 64k of compilation attempts.
         if (info.outputIndex >= RecompileInfo::NoCompilerRunning)
             return false;
 
-        if (!cx->compartment->types.constrainedOutputs->append(co))
+        if (!types.constrainedOutputs->append(co)) {
+            info.outputIndex = RecompileInfo::NoCompilerRunning;
             return false;
+        }
         return true;
     }
 
@@ -448,6 +461,11 @@ struct AutoEnterCompilation
 
     ~AutoEnterCompilation()
     {
+        // Handle failure cases of init.
+        if (info.outputIndex >= RecompileInfo::NoCompilerRunning)
+            return;
+
+        JS_ASSERT(info.outputIndex < cx->compartment->types.constrainedOutputs->length());
         CompilerOutput *co = info.compilerOutput(cx);
         co->pendingRecompilation = false;
         if (!co->isValid())
@@ -663,6 +681,8 @@ UseNewTypeAtEntry(JSContext *cx, StackFrame *fp)
 inline bool
 UseNewTypeForClone(JSFunction *fun)
 {
+    AutoAssertNoGC nogc;
+
     if (fun->hasSingletonType() || !fun->isInterpreted())
         return false;
 
@@ -690,7 +710,7 @@ UseNewTypeForClone(JSFunction *fun)
      * instance a singleton type and clone the underlying script.
      */
 
-    RawScript script = fun->script();
+    RawScript script = fun->script().get(nogc);
 
     if (script->length >= 50)
         return false;
@@ -885,13 +905,14 @@ TypeScript::MonitorUnknown(JSContext *cx, HandleScript script, jsbytecode *pc)
 /* static */ inline void
 TypeScript::GetPcScript(JSContext *cx, MutableHandleScript script, jsbytecode **pc)
 {
+    AutoAssertNoGC nogc;
 #ifdef JS_ION
     if (cx->fp()->beginsIonActivation()) {
         ion::GetPcScript(cx, script, pc);
         return;
     }
 #endif
-    script.set(cx->fp()->script());
+    script.set(cx->fp()->script().get(nogc));
     *pc = cx->regs().pc;
 }
 

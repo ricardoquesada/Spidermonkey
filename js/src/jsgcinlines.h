@@ -14,13 +14,41 @@
 #include "jsscope.h"
 #include "jsxml.h"
 
+#include "gc/Root.h"
+
 #include "js/TemplateLib.h"
 
-using namespace JS;
+using JS::AssertCanGC;
 
 namespace js {
 
 struct Shape;
+
+/*
+ * This auto class should be used around any code that might cause a mark bit to
+ * be set on an object in a dead compartment. See AutoMaybeTouchDeadCompartments
+ * for more details.
+ */
+struct AutoMarkInDeadCompartment
+{
+    AutoMarkInDeadCompartment(JSCompartment *comp)
+      : compartment(comp),
+        scheduled(comp->scheduledForDestruction)
+    {
+        if (comp->rt->gcManipulatingDeadCompartments && comp->scheduledForDestruction) {
+            comp->rt->gcObjectsMarkedInDeadCompartments++;
+            comp->scheduledForDestruction = false;
+        }
+    }
+
+    ~AutoMarkInDeadCompartment() {
+        compartment->scheduledForDestruction = scheduled;
+    }
+
+  private:
+    JSCompartment *compartment;
+    bool scheduled;
+};
 
 namespace gc {
 
@@ -437,7 +465,9 @@ NewGCThing(JSContext *cx, js::gc::AllocKind kind, size_t thingSize)
     AssertCanGC();
     JS_ASSERT(thingSize == js::gc::Arena::thingSize(kind));
     JS_ASSERT_IF(cx->compartment == cx->runtime->atomsCompartment,
-                 kind == js::gc::FINALIZE_STRING || kind == js::gc::FINALIZE_SHORT_STRING);
+                 kind == FINALIZE_STRING ||
+                 kind == FINALIZE_SHORT_STRING ||
+                 kind == FINALIZE_IONCODE);
     JS_ASSERT(!cx->runtime->isHeapBusy());
     JS_ASSERT(!cx->runtime->noGCOrAllocationCheck);
 

@@ -264,14 +264,16 @@ void Invalidate(types::TypeCompartment &types, FreeOp *fop,
 void Invalidate(JSContext *cx, const Vector<types::RecompileInfo> &invalid, bool resetUses = true);
 bool Invalidate(JSContext *cx, JSScript *script, bool resetUses = true);
 
-void MarkValueFromIon(JSCompartment *comp, Value *vp);
-void MarkShapeFromIon(JSCompartment *comp, Shape **shapep);
+void MarkValueFromIon(JSRuntime *rt, Value *vp);
+void MarkShapeFromIon(JSRuntime *rt, Shape **shapep);
 
 void ToggleBarriers(JSCompartment *comp, bool needs);
 
 class IonBuilder;
+class MIRGenerator;
+class CodeGenerator;
 
-bool CompileBackEnd(IonBuilder *builder);
+CodeGenerator *CompileBackEnd(MIRGenerator *mir);
 void AttachFinishedCompilations(JSContext *cx);
 void FinishOffThreadBuilder(IonBuilder *builder);
 bool TestIonCompile(JSContext *cx, JSScript *script, JSFunction *fun, jsbytecode *osrPc, bool constructing);
@@ -283,6 +285,11 @@ static inline bool IsEnabled(JSContext *cx)
 
 void ForbidCompilation(JSContext *cx, JSScript *script);
 uint32_t UsesBeforeIonRecompile(JSScript *script, jsbytecode *pc);
+
+void PurgeCaches(JSScript *script, JSCompartment *c);
+size_t MemoryUsed(JSScript *script, JSMallocSizeOfFun mallocSizeOf);
+void DestroyIonScripts(FreeOp *fop, JSScript *script);
+void TraceIonScripts(JSTracer* trc, JSScript *script);
 
 } // namespace ion
 } // namespace js

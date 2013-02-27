@@ -23,6 +23,7 @@ namespace js {
 
 namespace ion {
     struct IonScript;
+    struct IonScriptCounts;
 }
 
 # define ION_DISABLED_SCRIPT ((js::ion::IonScript *)0x1)
@@ -216,6 +217,7 @@ class ScriptCounts
 {
     friend struct ::JSScript;
     friend struct ScriptAndCounts;
+
     /*
      * This points to a single block that holds an array of PCCounts followed
      * by an array of doubles.  Each element in the PCCounts array has a
@@ -223,13 +225,17 @@ class ScriptCounts
      */
     PCCounts *pcCountsVector;
 
+    /* Information about any Ion compilations for the script. */
+    ion::IonScriptCounts *ionCounts;
+
  public:
-    ScriptCounts() : pcCountsVector(NULL) { }
+    ScriptCounts() : pcCountsVector(NULL), ionCounts(NULL) { }
 
     inline void destroy(FreeOp *fop);
 
     void set(js::ScriptCounts counts) {
         pcCountsVector = counts.pcCountsVector;
+        ionCounts = counts.ionCounts;
     }
 };
 
@@ -372,6 +378,8 @@ struct JSScript : public js::gc::Cell
     js::ScriptSource *scriptSource_; /* source code */
 #ifdef JS_METHODJIT
     JITScriptSet *mJITInfo;
+#else
+    void         *mJITInfoPad;
 #endif
     js::HeapPtrFunction function_;
     js::HeapPtrObject   enclosingScope_;
@@ -472,6 +480,14 @@ struct JSScript : public js::gc::Cell
 #ifdef JS_METHODJIT
     bool            debugMode:1;      /* script was compiled in debug mode */
     bool            failedBoundsCheck:1; /* script has had hoisted bounds checks fail */
+#else
+    bool            debugModePad:1;
+    bool            failedBoundsCheckPad:1;
+#endif
+#ifdef JS_ION
+    bool            failedShapeGuard:1; /* script has had hoisted shape guard fail */
+#else
+    bool            failedShapeGuardPad:1;
 #endif
     bool            invalidatedIdempotentCache:1; /* idempotent cache has triggered invalidation */
     bool            isGenerator:1;    /* is a generator */
@@ -546,24 +562,48 @@ struct JSScript : public js::gc::Cell
         return needsArgsObj() && !strictModeCode;
     }
 
-    js::ion::IonScript *ion;          /* Information attached by Ion */
+    bool hasAnyIonScript() const {
+        return hasIonScript() || hasParallelIonScript();
+    }
 
-#if defined(JS_METHODJIT) && JS_BITS_PER_WORD == 32
-    void *padding_;
-#endif
+    /* Information attached by Ion: script for sequential mode execution */
+    js::ion::IonScript *ion;
 
     bool hasIonScript() const {
         return ion && ion != ION_DISABLED_SCRIPT && ion != ION_COMPILING_SCRIPT;
     }
+
     bool canIonCompile() const {
         return ion != ION_DISABLED_SCRIPT;
     }
+
     bool isIonCompilingOffThread() const {
         return ion == ION_COMPILING_SCRIPT;
     }
+
     js::ion::IonScript *ionScript() const {
         JS_ASSERT(hasIonScript());
         return ion;
+    }
+
+    /* Information attached by Ion: script for parallel mode execution */
+    js::ion::IonScript *parallelIon;
+
+    bool hasParallelIonScript() const {
+        return parallelIon && parallelIon != ION_DISABLED_SCRIPT && parallelIon != ION_COMPILING_SCRIPT;
+    }
+
+    bool canParallelIonCompile() const {
+        return parallelIon != ION_DISABLED_SCRIPT;
+    }
+
+    bool isParallelIonCompilingOffThread() const {
+        return parallelIon == ION_COMPILING_SCRIPT;
+    }
+
+    js::ion::IonScript *parallelIonScript() const {
+        JS_ASSERT(hasParallelIonScript());
+        return parallelIon;
     }
 
     /*
@@ -575,7 +615,7 @@ struct JSScript : public js::gc::Cell
 
     JSFlatString *sourceData(JSContext *cx);
 
-    bool loadSource(JSContext *cx, bool *worked);
+    static bool loadSource(JSContext *cx, js::HandleScript scr, bool *worked);
 
     js::ScriptSource *scriptSource() {
         return scriptSource_;
@@ -707,6 +747,8 @@ struct JSScript : public js::gc::Cell
   public:
     bool initScriptCounts(JSContext *cx);
     js::PCCounts getPCCounts(jsbytecode *pc);
+    void addIonCounts(js::ion::IonScriptCounts *ionCounts);
+    js::ion::IonScriptCounts *getIonCounts();
     js::ScriptCounts releaseScriptCounts();
     void destroyScriptCounts(js::FreeOp *fop);
 
@@ -987,9 +1029,14 @@ struct ScriptSource
     friend class SourceCompressorThread;
   private:
     union {
-        // When the script source is ready, compressedLength_ != 0 implies
-        // compressed holds the compressed data; otherwise, source holds the
-        // uncompressed source.
+        // Before setSourceCopy or setSource are successfully called, this union
+        // has a NULL pointer. When the script source is ready,
+        // compressedLength_ != 0 implies compressed holds the compressed data;
+        // otherwise, source holds the uncompressed source. There is a special
+        // pointer |emptySource| for source code for length 0.
+        //
+        // The only function allowed to malloc, realloc, or free the pointers in
+        // this union is adjustDataSize(). Don't do it elsewhere.
         jschar *source;
         unsigned char *compressed;
     } data;
@@ -1061,7 +1108,11 @@ struct ScriptSource
 
   private:
     void destroy(JSRuntime *rt);
-    bool compressed() { return compressedLength_ != 0; }
+    bool compressed() const { return compressedLength_ != 0; }
+    size_t computedSizeOfData() const {
+        return compressed() ? compressedLength_ : sizeof(jschar) * length_;
+    }
+    bool adjustDataSize(size_t nbytes);
 };
 
 class ScriptSourceHolder
@@ -1089,8 +1140,10 @@ class ScriptSourceHolder
  *
  * To use it, you have to have a SourceCompressionToken, tok, with tok.ss and
  * tok.chars set to the proper values. When the SourceCompressionToken is
- * destroyed, it makes sure the compression is complete. At this point tok.ss is
- * ready to be attached to the runtime.
+ * destroyed, it makes sure the compression is complete. If you are about to
+ * successfully exit the scope of tok, you should call and check the return
+ * value of SourceCompressionToken::complete(). It returns false if allocation
+ * errors occurred in the thread.
  */
 class SourceCompressorThread
 {
@@ -1117,6 +1170,7 @@ class SourceCompressorThread
     // Flag which can be set by the main thread to ask compression to abort.
     volatile bool stop;
 
+    bool internalCompress();
     void threadLoop();
     static void compressorThread(void *arg);
 
@@ -1144,17 +1198,16 @@ struct SourceCompressionToken
     JSContext *cx;
     ScriptSource *ss;
     const jschar *chars;
+    bool oom;
   public:
-    SourceCompressionToken(JSContext *cx)
-      : cx(cx), ss(NULL), chars(NULL) {}
+    explicit SourceCompressionToken(JSContext *cx)
+       : cx(cx), ss(NULL), chars(NULL), oom(false) {}
     ~SourceCompressionToken()
     {
-        JS_ASSERT_IF(!ss, !chars);
-        if (ss)
-            ensureReady();
+        complete();
     }
 
-    void ensureReady();
+    bool complete();
     void abort();
     bool active() const { return !!ss; }
 };
@@ -1205,6 +1258,10 @@ struct ScriptAndCounts
     PCCounts &getPCCounts(jsbytecode *pc) const {
         JS_ASSERT(unsigned(pc - script->code) < script->length);
         return scriptCounts.pcCountsVector[pc - script->code];
+    }
+
+    ion::IonScriptCounts *getIonCounts() const {
+        return scriptCounts.ionCounts;
     }
 };
 

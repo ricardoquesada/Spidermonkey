@@ -40,10 +40,11 @@
 #include "vm/Stack-inl.h"
 #include "vm/String-inl.h"
 
-using namespace mozilla;
 using namespace js;
 using namespace js::gc;
 using namespace js::types;
+
+using mozilla::ArrayLength;
 
 /* Forward declarations for ErrorClass's initializer. */
 static JSBool
@@ -285,13 +286,14 @@ InitExnPrivate(JSContext *cx, HandleObject exnObject, HandleString message,
             } else {
                 frame.funName = NULL;
             }
-            const char *cfilename = i.script()->filename;
+            RootedScript script(cx, i.script());
+            const char *cfilename = script->filename;
             if (!cfilename)
                 cfilename = "";
             frame.filename = SaveScriptFilename(cx, cfilename);
             if (!frame.filename)
                 return false;
-            frame.ulineno = PCToLineNumber(i.script(), i.pc());
+            frame.ulineno = PCToLineNumber(script, i.pc());
         }
     }
 
@@ -569,10 +571,8 @@ Exception(JSContext *cx, unsigned argc, Value *vp)
     /* Find the scripted caller. */
     NonBuiltinScriptFrameIter iter(cx);
 
-    /* XXX StackIter should not point directly to scripts. */
-    SkipRoot skip(cx, &iter);
-
     /* Set the 'fileName' property. */
+    RootedScript script(cx, iter.script());
     RootedString filename(cx);
     if (args.length() > 1) {
         filename = ToString(cx, args[1]);
@@ -582,7 +582,7 @@ Exception(JSContext *cx, unsigned argc, Value *vp)
     } else {
         filename = cx->runtime->emptyString;
         if (!iter.done()) {
-            if (const char *cfilename = iter.script()->filename) {
+            if (const char *cfilename = script->filename) {
                 filename = FilenameToString(cx, cfilename);
                 if (!filename)
                     return false;
@@ -596,7 +596,7 @@ Exception(JSContext *cx, unsigned argc, Value *vp)
         if (!ToUint32(cx, args[2], &lineno))
             return false;
     } else {
-        lineno = iter.done() ? 0 : PCToLineNumber(iter.script(), iter.pc(), &column);
+        lineno = iter.done() ? 0 : PCToLineNumber(script, iter.pc(), &column);
     }
 
     int exnType = args.callee().toFunction()->getExtendedSlot(0).toInt32();
@@ -968,7 +968,8 @@ js_ErrorToException(JSContext *cx, const char *message, JSErrorReport *reportp,
         return false;
     tv[1] = OBJECT_TO_JSVAL(errObject);
 
-    RootedString messageStr(cx, JS_NewStringCopyZ(cx, message));
+    RootedString messageStr(cx, reportp->ucmessage ? JS_NewUCStringCopyZ(cx, reportp->ucmessage)
+                                                   : JS_NewStringCopyZ(cx, message));
     if (!messageStr)
         return false;
     tv[2] = STRING_TO_JSVAL(messageStr);
@@ -1114,7 +1115,7 @@ js_ReportUncaughtException(JSContext *cx)
         report.column = (unsigned) column;
         if (str) {
             if (JSStableString *stable = str->ensureStable(cx))
-                report.ucmessage = stable->chars();
+                report.ucmessage = stable->chars().get();
         }
     }
 

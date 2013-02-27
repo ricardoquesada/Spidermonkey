@@ -5,7 +5,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from codegen import *
 import sys, os.path, re, xpidl, itertools
 
 # --makedepend-output support.
@@ -18,6 +17,9 @@ def strip_end(text, suffix):
     return text[:-len(suffix)]
 
 # Copied from dombindingsgen.py
+def makeQuote(filename):
+    return filename.replace(' ', '\\ ')  # enjoy!
+
 def writeMakeDependOutput(filename):
     print "Creating makedepend file", filename
     f = open(filename, 'w')
@@ -289,11 +291,11 @@ def write_cpp(eventname, iface, fd):
     fd.write("NS_IMPL_CYCLE_COLLECTION_CLASS(%s)\n\n" % classname)
     fd.write("NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(%s, %s)\n" % (classname, basename))
     for c in ccattributes:
-        fd.write("  NS_IMPL_CYCLE_COLLECTION_UNLINK_NSCOMPTR(m%s)\n" % firstCap(c.name))
+        fd.write("  NS_IMPL_CYCLE_COLLECTION_UNLINK(m%s)\n" % firstCap(c.name))
     fd.write("NS_IMPL_CYCLE_COLLECTION_UNLINK_END\n\n");
     fd.write("NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(%s, %s)\n" % (classname, basename))
     for c in ccattributes:
-        fd.write("  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR(m%s)\n" % firstCap(c.name))
+        fd.write("  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(m%s)\n" % firstCap(c.name))
     fd.write("NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END\n\n");
 
     fd.write("NS_IMPL_ADDREF_INHERITED(%s, %s)\n" % (classname, basename))

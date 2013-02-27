@@ -35,11 +35,10 @@ JS_STATIC_ASSERT(sizeof(HashNumber) == 4);
 static JS_ALWAYS_INLINE js::HashNumber
 HashId(jsid id)
 {
-    return HashGeneric(JSID_BITS(id));
+    return mozilla::HashGeneric(JSID_BITS(id));
 }
 
-template<>
-struct DefaultHasher<jsid>
+struct JsidHasher
 {
     typedef jsid Lookup;
     static HashNumber hash(const Lookup &l) {
@@ -118,29 +117,6 @@ struct AtomHasher
 };
 
 typedef HashSet<AtomStateEntry, AtomHasher, SystemAllocPolicy> AtomSet;
-
-/*
- * On encodings:
- *
- * - Some string functions have an optional FlationCoding argument that allow
- *   the caller to force CESU-8 encoding handling.
- * - Functions that don't take a FlationCoding base their NormalEncoding
- *   behavior on the js_CStringsAreUTF8 value. NormalEncoding is either raw
- *   (simple zero-extension) or UTF-8 depending on js_CStringsAreUTF8.
- * - Functions that explicitly state their encoding do not use the
- *   js_CStringsAreUTF8 value.
- *
- * CESU-8 (Compatibility Encoding Scheme for UTF-16: 8-bit) is a variant of
- * UTF-8 that allows us to store any wide character string as a narrow
- * character string. For strings containing mostly ascii, it saves space.
- * http://www.unicode.org/reports/tr26/
- */
-
-enum FlationCoding
-{
-    NormalEncoding,
-    CESU8Encoding
-};
 
 class PropertyName;
 
@@ -246,8 +222,7 @@ enum InternBehavior
 
 extern JSAtom *
 Atomize(JSContext *cx, const char *bytes, size_t length,
-        js::InternBehavior ib = js::DoNotInternAtom,
-        js::FlationCoding fc = js::NormalEncoding);
+        js::InternBehavior ib = js::DoNotInternAtom);
 
 extern JSAtom *
 AtomizeChars(JSContext *cx, const jschar *chars, size_t length,

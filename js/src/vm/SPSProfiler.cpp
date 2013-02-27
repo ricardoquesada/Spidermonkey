@@ -16,6 +16,8 @@
 
 using namespace js;
 
+using mozilla::DebugOnly;
+
 SPSProfiler::SPSProfiler(JSRuntime *rt)
   : rt(rt),
     stack_(NULL),
@@ -222,7 +224,9 @@ JMChunkInfo::JMChunkInfo(mjit::JSActiveFrame *frame,
 jsbytecode*
 SPSProfiler::ipToPC(JSScript *script, size_t ip)
 {
-    JS_ASSERT(jminfo.initialized());
+    if (!jminfo.initialized())
+        return NULL;
+
     JITInfoMap::Ptr ptr = jminfo.lookup(script);
     if (!ptr)
         return NULL;
@@ -357,12 +361,13 @@ void
 SPSProfiler::discardMJITCode(mjit::JITScript *jscr,
                              mjit::JITChunk *chunk, void* address)
 {
+    AutoAssertNoGC nogc;
     if (!jminfo.initialized())
         return;
 
     unregisterScript(jscr->script, chunk);
     for (unsigned i = 0; i < chunk->nInlineFrames; i++)
-        unregisterScript(chunk->inlineFrames()[i].fun->script(), chunk);
+        unregisterScript(chunk->inlineFrames()[i].fun->script().get(nogc), chunk);
 }
 
 void

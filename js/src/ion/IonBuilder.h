@@ -17,7 +17,7 @@
 namespace js {
 namespace ion {
 
-class LIRGraph;
+class CodeGenerator;
 
 class IonBuilder : public MIRGenerator
 {
@@ -280,6 +280,7 @@ class IonBuilder : public MIRGenerator
     MDefinition *walkScopeChain(unsigned hops);
 
     MInstruction *addBoundsCheck(MDefinition *index, MDefinition *length);
+    MInstruction *addShapeGuard(MDefinition *obj, const Shape *shape, BailoutKind bailoutKind);
 
     JSObject *getNewArrayTemplateObject(uint32 count);
 
@@ -287,6 +288,21 @@ class IonBuilder : public MIRGenerator
 
     bool loadSlot(MDefinition *obj, Shape *shape, MIRType rvalType);
     bool storeSlot(MDefinition *obj, Shape *shape, MDefinition *value, bool needsBarrier);
+
+    // jsop_getprop() helpers.
+    bool getPropTryArgumentsLength(bool *emitted);
+    bool getPropTryConstant(bool *emitted, HandleId id, types::StackTypeSet *barrier,
+                            types::StackTypeSet *types, TypeOracle::UnaryTypes unaryTypes);
+    bool getPropTryDefiniteSlot(bool *emitted, HandlePropertyName name,
+                            types::StackTypeSet *barrier, types::StackTypeSet *types,
+                            TypeOracle::Unary unary, TypeOracle::UnaryTypes unaryTypes);
+    bool getPropTryCommonGetter(bool *emitted, HandleId id, types::StackTypeSet *barrier,
+                                types::StackTypeSet *types, TypeOracle::UnaryTypes unaryTypes);
+    bool getPropTryMonomorphic(bool *emitted, HandleId id, types::StackTypeSet *barrier,
+                               TypeOracle::Unary unary, TypeOracle::UnaryTypes unaryTypes);
+    bool getPropTryPolymorphic(bool *emitted, HandlePropertyName name, HandleId id,
+                               types::StackTypeSet *barrier, types::StackTypeSet *types,
+                               TypeOracle::Unary unary, TypeOracle::UnaryTypes unaryTypes);
 
     bool jsop_add(MDefinition *left, MDefinition *right);
     bool jsop_bitnot();
@@ -304,13 +320,11 @@ class IonBuilder : public MIRGenerator
     bool jsop_andor(JSOp op);
     bool jsop_dup2();
     bool jsop_loophead(jsbytecode *pc);
-    bool jsop_incslot(JSOp op, uint32 slot);
-    bool jsop_localinc(JSOp op);
-    bool jsop_arginc(JSOp op);
     bool jsop_compare(JSOp op);
     bool jsop_getgname(HandlePropertyName name);
     bool jsop_setgname(HandlePropertyName name);
     bool jsop_getname(HandlePropertyName name);
+    bool jsop_intrinsicname(HandlePropertyName name);
     bool jsop_bindname(PropertyName *name);
     bool jsop_getelem();
     bool jsop_getelem_dense();
@@ -346,6 +360,7 @@ class IonBuilder : public MIRGenerator
     bool jsop_itermore();
     bool jsop_iterend();
     bool jsop_in();
+    bool jsop_in_dense();
     bool jsop_instanceof();
     bool jsop_getaliasedvar(ScopeCoordinate sc);
     bool jsop_setaliasedvar(ScopeCoordinate sc);
@@ -425,16 +440,21 @@ class IonBuilder : public MIRGenerator
     // A builder is inextricably tied to a particular script.
     HeapPtrScript script_;
 
+    // If off thread compilation is successful, the final code generator is
+    // attached here. Code has been generated, but not linked (there is not yet
+    // an IonScript). This is heap allocated, and must be explicitly destroyed.
+    CodeGenerator *backgroundCodegen_;
+
   public:
     // Compilation index for this attempt.
     types::RecompileInfo const recompileInfo;
 
-    // If off thread compilation is successful, final LIR is attached here.
-    LIRGraph *lir;
-
     void clearForBackEnd();
 
-    JSScript *script() const { return script_; }
+    Return<JSScript*> script() const { return script_; }
+
+    CodeGenerator *backgroundCodegen() const { return backgroundCodegen_; }
+    void setBackgroundCodegen(CodeGenerator *codegen) { backgroundCodegen_ = codegen; }
 
   private:
     JSContext *cx;
@@ -460,6 +480,10 @@ class IonBuilder : public MIRGenerator
     // True if script->failedBoundsCheck is set for the current script or
     // an outer script.
     bool failedBoundsCheck_;
+
+    // True if script->failedShapeGuard is set for the current script or
+    // an outer script.
+    bool failedShapeGuard_;
 
     // If this script can use a lazy arguments object, it wil be pre-created
     // here.

@@ -68,11 +68,12 @@
 
 #include "jsautooplen.h"
 
-using namespace mozilla;
 using namespace js;
 using namespace js::gc;
 using namespace js::types;
+
 using js::frontend::IsIdentifier;
+using mozilla::ArrayLength;
 
 JS_STATIC_ASSERT(int32_t((JSObject::NELEMENTS_LIMIT - 1) * sizeof(Value)) == int64_t((JSObject::NELEMENTS_LIMIT - 1) * sizeof(Value)));
 
@@ -891,7 +892,7 @@ bool
 GetOwnPropertyDescriptor(JSContext *cx, HandleObject obj, HandleId id, PropertyDescriptor *desc)
 {
     // FIXME: Call TrapGetOwnProperty directly once ScriptedIndirectProxies is removed
-    if (obj->isProxy()) 
+    if (obj->isProxy())
         return Proxy::getOwnPropertyDescriptor(cx, obj, id, false, desc);
 
     RootedObject pobj(cx);
@@ -2652,6 +2653,14 @@ js::CloneObject(JSContext *cx, HandleObject obj, Handle<js::TaggedProto> proto, 
     return clone;
 }
 
+JSObject *
+js::CloneObjectLiteral(JSContext *cx, HandleObject parent, HandleObject srcObj)
+{
+    Rooted<TypeObject*> typeObj(cx, cx->global()->getOrCreateObjectPrototype(cx)->getNewType(cx));
+    RootedShape shape(cx, srcObj->lastProperty());
+    return NewReshapedObject(cx, typeObj, parent, srcObj->getAllocKind(), shape);
+}
+
 struct JSObject::TradeGutsReserved {
     Vector<Value> avals;
     Vector<Value> bvals;
@@ -2933,6 +2942,9 @@ JSObject::swap(JSContext *cx, JSObject *other_)
     RootedObject self(cx, this);
     RootedObject other(cx, other_);
 
+    AutoMarkInDeadCompartment adc1(self->compartment());
+    AutoMarkInDeadCompartment adc2(other->compartment());
+
     // Ensure swap doesn't cause a finalizer to not be run.
     JS_ASSERT(IsBackgroundFinalized(getAllocKind()) ==
               IsBackgroundFinalized(other->getAllocKind()));
@@ -3077,8 +3089,8 @@ DefineConstructorAndPrototype(JSContext *cx, HandleObject obj, JSProtoKey key, H
          * (FIXME: remove this dependency on the exact identity of the parent,
          * perhaps as part of bug 638316.)
          */
-        RootedFunction fun(cx, js_NewFunction(cx, NullPtr(), constructor, nargs, JSFUN_CONSTRUCTOR,
-                                              obj, atom, ctorKind));
+        RootedFunction fun(cx, js_NewFunction(cx, NullPtr(), constructor, nargs,
+                                              JSFunction::NATIVE_CTOR, obj, atom, ctorKind));
         if (!fun)
             goto bad;
 
@@ -3501,7 +3513,7 @@ js_InitNullClass(JSContext *cx, HandleObject obj)
 }
 
 #define DECLARE_PROTOTYPE_CLASS_INIT(name,code,init) \
-    extern JSObject *init(JSContext *cx, JSObject *obj);
+    extern JSObject *init(JSContext *cx, Handle<JSObject*> obj);
 JS_FOR_EACH_PROTOTYPE(DECLARE_PROTOTYPE_CLASS_INIT)
 #undef DECLARE_PROTOTYPE_CLASS_INIT
 
@@ -4245,7 +4257,7 @@ js_NativeGet(JSContext *cx, Handle<JSObject*> obj, Handle<JSObject*> pobj, Shape
 
 JSBool
 js_NativeSet(JSContext *cx, Handle<JSObject*> obj, Handle<JSObject*> receiver,
-             Shape *shape, bool added, bool strict, Value *vp)
+             HandleShape shape, bool added, bool strict, Value *vp)
 {
     JS_ASSERT(obj->isNative());
 
@@ -4269,22 +4281,21 @@ js_NativeSet(JSContext *cx, Handle<JSObject*> obj, Handle<JSObject*> receiver,
             return js_ReportGetterOnlyAssignment(cx);
     }
 
-    Rooted<Shape *> shapeRoot(cx, shape);
     RootedValue nvp(cx, *vp);
 
-    int32_t sample = cx->runtime->propertyRemovals;
-    if (!shapeRoot->set(cx, obj, receiver, strict, &nvp))
+    uint32_t sample = cx->runtime->propertyRemovals;
+    if (!shape->set(cx, obj, receiver, strict, &nvp))
         return false;
 
     /*
      * Update any slot for the shape with the value produced by the setter,
      * unless the setter deleted the shape.
      */
-    if (shapeRoot->hasSlot() &&
+    if (shape->hasSlot() &&
         (JS_LIKELY(cx->runtime->propertyRemovals == sample) ||
-         obj->nativeContains(cx, shapeRoot))) {
+         obj->nativeContains(cx, shape))) {
         AddTypePropertyId(cx, obj, shape->propid(), *vp);
-        obj->setSlot(shapeRoot->slot(), nvp);
+        obj->setSlot(shape->slot(), nvp);
     }
 
     *vp = nvp;
@@ -4449,12 +4460,12 @@ js::GetMethod(JSContext *cx, HandleObject obj, HandleId id, unsigned getHow, Mut
 JS_FRIEND_API(bool)
 js::CheckUndeclaredVarAssignment(JSContext *cx, JSString *propname)
 {
-    StackFrame *const fp = js_GetTopStackFrame(cx, FRAME_EXPAND_ALL);
-    if (!fp)
+    JSScript *script = cx->stack.currentScript(NULL, ContextStack::ALLOW_CROSS_COMPARTMENT);
+    if (!script)
         return true;
 
     /* If neither cx nor the code is strict, then no check is needed. */
-    if (!fp->script()->strictModeCode && !cx->hasStrictOption())
+    if (!script->strictModeCode && !cx->hasStrictOption())
         return true;
 
     JSAutoByteString bytes(cx, propname);
@@ -5253,6 +5264,7 @@ js_GetterOnlyPropertyStub(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBo
 void
 dumpValue(const Value &v)
 {
+    AutoAssertNoGC nogc;
     if (v.isNull())
         fprintf(stderr, "null");
     else if (v.isUndefined())
@@ -5272,7 +5284,7 @@ dumpValue(const Value &v)
             fputs("<unnamed function", stderr);
         }
         if (fun->isInterpreted()) {
-            JSScript *script = fun->script();
+            JSScript *script = fun->script().get(nogc);
             fprintf(stderr, " (%s:%u)",
                     script->filename ? script->filename : "", script->lineno);
         }
@@ -5468,7 +5480,7 @@ js_DumpStackFrame(JSContext *cx, StackFrame *start)
             return;
         }
     } else {
-        while (!i.done() && i.fp() != start)
+        while (!i.done() && !i.isIon() && i.interpFrame() != start)
             ++i;
 
         if (i.done()) {
@@ -5479,44 +5491,49 @@ js_DumpStackFrame(JSContext *cx, StackFrame *start)
     }
 
     for (; !i.done(); ++i) {
-        StackFrame *const fp = i.fp();
+        if (i.isIon())
+            fprintf(stderr, "IonFrame\n");
+        else
+            fprintf(stderr, "StackFrame at %p\n", (void *) i.interpFrame());
 
-        fprintf(stderr, "StackFrame at %p\n", (void *) fp);
-        if (fp->isFunctionFrame()) {
+        if (i.isFunctionFrame()) {
             fprintf(stderr, "callee fun: ");
-            dumpValue(ObjectValue(fp->callee()));
+            dumpValue(i.calleev());
         } else {
             fprintf(stderr, "global frame, no callee");
         }
         fputc('\n', stderr);
 
         fprintf(stderr, "file %s line %u\n",
-                fp->script()->filename, (unsigned) fp->script()->lineno);
+                i.script()->filename, (unsigned) i.script()->lineno);
 
         if (jsbytecode *pc = i.pc()) {
             fprintf(stderr, "  pc = %p\n", pc);
             fprintf(stderr, "  current op: %s\n", js_CodeName[*pc]);
         }
-        MaybeDumpObject("blockChain", fp->maybeBlockChain());
-        MaybeDumpValue("this", fp->thisValue());
-        fprintf(stderr, "  rval: ");
-        dumpValue(fp->returnValue());
-        fputc('\n', stderr);
+        if (!i.isIon())
+            MaybeDumpObject("blockChain", i.interpFrame()->maybeBlockChain());
+        MaybeDumpValue("this", i.thisv());
+        if (!i.isIon()) {
+            fprintf(stderr, "  rval: ");
+            dumpValue(i.interpFrame()->returnValue());
+            fputc('\n', stderr);
+        }
 
         fprintf(stderr, "  flags:");
-        if (fp->isConstructing())
+        if (i.isConstructing())
             fprintf(stderr, " constructing");
-        if (fp->isDebuggerFrame())
+        if (!i.isIon() && i.interpFrame()->isDebuggerFrame())
             fprintf(stderr, " debugger");
-        if (fp->isEvalFrame())
+        if (i.isEvalFrame())
             fprintf(stderr, " eval");
-        if (fp->isYielding())
+        if (!i.isIon() && i.interpFrame()->isYielding())
             fprintf(stderr, " yielding");
-        if (fp->isGeneratorFrame())
+        if (!i.isIon() && i.interpFrame()->isGeneratorFrame())
             fprintf(stderr, " generator");
         fputc('\n', stderr);
 
-        fprintf(stderr, "  scopeChain: (JSObject *) %p\n", (void *) fp->scopeChain());
+        fprintf(stderr, "  scopeChain: (JSObject *) %p\n", (void *) i.scopeChain());
 
         fputc('\n', stderr);
     }
@@ -5527,16 +5544,18 @@ js_DumpStackFrame(JSContext *cx, StackFrame *start)
 JS_FRIEND_API(void)
 js_DumpBacktrace(JSContext *cx)
 {
+    AutoAssertNoGC nogc;
     Sprinter sprinter(cx);
     sprinter.init();
     size_t depth = 0;
     for (StackIter i(cx); !i.done(); ++i, ++depth) {
         if (i.isScript()) {
-            const char *filename = JS_GetScriptFilename(cx, i.script());
-            unsigned line = JS_PCToLineNumber(cx, i.script(), i.pc());
+            const char *filename = JS_GetScriptFilename(cx, i.script().get(nogc));
+            unsigned line = JS_PCToLineNumber(cx, i.script().get(nogc), i.pc());
+            RawScript script = i.script().get(nogc);
             sprinter.printf("#%d %14p   %s:%d (%p @ %d)\n",
-                            depth, (i.isIon() ? 0 : i.fp()), filename, line,
-                            i.script(), i.pc() - i.script()->code);
+                            depth, (i.isIon() ? 0 : i.interpFrame()), filename, line,
+                            script, i.pc() - script->code);
         } else {
             sprinter.printf("#%d ???\n", depth);
         }

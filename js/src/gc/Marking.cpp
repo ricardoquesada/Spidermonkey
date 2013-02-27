@@ -19,6 +19,8 @@
 #include "ion/IonCode.h"
 #include "vm/String-inl.h"
 
+using mozilla::DebugOnly;
+
 void * const js::NullPtr::constNullValue = NULL;
 
 /*
@@ -87,6 +89,7 @@ CheckMarkedThing(JSTracer *trc, T *thing)
     JS_ASSERT(thing);
     JS_ASSERT(thing->compartment());
     JS_ASSERT(thing->compartment()->rt == trc->runtime);
+    JS_ASSERT_IF(IS_GC_MARKING_TRACER(trc), !thing->compartment()->scheduledForDestruction);
     JS_ASSERT(trc->debugPrinter || trc->debugPrintArg);
 
     DebugOnly<JSRuntime *> rt = trc->runtime;
@@ -114,8 +117,10 @@ MarkInternal(JSTracer *trc, T **thingp)
      * GC.
      */
     if (!trc->callback) {
-        if (thing->compartment()->isCollecting())
+        if (thing->compartment()->isCollecting()) {
             PushMarkStack(static_cast<GCMarker *>(trc), thing);
+            thing->compartment()->maybeAlive = true;
+        }
     } else {
         trc->callback(trc, (void **)thingp, GetGCThingTraceKind(thing));
         JS_UNSET_TRACING_LOCATION(trc);
@@ -129,7 +134,6 @@ MarkInternal(JSTracer *trc, T **thingp)
     JS_ASSERT_IF(IS_GC_MARKING_TRACER(trc),                             \
                  trc->runtime->gcIncrementalState == NO_INCREMENTAL ||  \
                  trc->runtime->gcIncrementalState == MARK_ROOTS);
-
 
 template <typename T>
 static void
@@ -1367,6 +1371,123 @@ CallTracer(JSTracer *trc, void *thing, JSGCTraceKind kind)
     void *tmp = thing;
     MarkKind(trc, &tmp, kind);
     JS_ASSERT(tmp == thing);
+}
+
+static void
+UnmarkGrayGCThing(void *thing)
+{
+    static_cast<js::gc::Cell *>(thing)->unmark(js::gc::GRAY);
+}
+
+struct UnmarkGrayTracer : public JSTracer
+{
+    UnmarkGrayTracer() : tracingShape(false), previousShape(NULL) {}
+    UnmarkGrayTracer(JSTracer *trc, bool tracingShape)
+        : tracingShape(tracingShape), previousShape(NULL)
+    {
+        JS_TracerInit(this, trc->runtime, trc->callback);
+    }
+
+    /* True iff we are tracing the immediate children of a shape. */
+    bool tracingShape;
+
+    /* If tracingShape, shape child or NULL. Otherwise, NULL. */
+    void *previousShape;
+};
+
+/*
+ * The GC and CC are run independently. Consequently, the following sequence of
+ * events can occur:
+ * 1. GC runs and marks an object gray.
+ * 2. Some JS code runs that creates a pointer from a JS root to the gray
+ *    object. If we re-ran a GC at this point, the object would now be black.
+ * 3. Now we run the CC. It may think it can collect the gray object, even
+ *    though it's reachable from the JS heap.
+ *
+ * To prevent this badness, we unmark the gray bit of an object when it is
+ * accessed by callers outside XPConnect. This would cause the object to go
+ * black in step 2 above. This must be done on everything reachable from the
+ * object being returned. The following code takes care of the recursive
+ * re-coloring.
+ *
+ * There is an additional complication for certain kinds of edges that are not
+ * contained explicitly in the source object itself, such as from a weakmap key
+ * to its value, and from an object being watched by a watchpoint to the
+ * watchpoint's closure. These "implicit edges" are represented in some other
+ * container object, such as the weakmap or the watchpoint itself. In these
+ * cases, calling unmark gray on an object won't find all of its children.
+ *
+ * Handling these implicit edges has two parts:
+ * - A special pass enumerating all of the containers that know about the
+ *   implicit edges to fix any black-gray edges that have been created. This
+ *   is implemented in nsXPConnect::FixWeakMappingGrayBits.
+ * - To prevent any incorrectly gray objects from escaping to live JS outside
+ *   of the containers, we must add unmark-graying read barriers to these
+ *   containers.
+ */
+static void
+UnmarkGrayChildren(JSTracer *trc, void **thingp, JSGCTraceKind kind)
+{
+    void *thing = *thingp;
+    int stackDummy;
+    if (!JS_CHECK_STACK_SIZE(js::GetNativeStackLimit(trc->runtime), &stackDummy)) {
+        /*
+         * If we run out of stack, we take a more drastic measure: require that
+         * we GC again before the next CC.
+         */
+        trc->runtime->gcGrayBitsValid = false;
+        return;
+    }
+
+    if (!GCThingIsMarkedGray(thing))
+        return;
+
+    UnmarkGrayGCThing(thing);
+
+    /*
+     * Trace children of |thing|. If |thing| and its parent are both shapes,
+     * |thing| will get saved to mPreviousShape without being traced. The parent
+     * will later trace |thing|. This is done to avoid increasing the stack
+     * depth during shape tracing. It is safe to do because a shape can only
+     * have one child that is a shape.
+     */
+    UnmarkGrayTracer *tracer = static_cast<UnmarkGrayTracer *>(trc);
+    UnmarkGrayTracer childTracer(tracer, kind == JSTRACE_SHAPE);
+
+    if (kind != JSTRACE_SHAPE) {
+        JS_TraceChildren(&childTracer, thing, kind);
+        JS_ASSERT(!childTracer.previousShape);
+        return;
+    }
+
+    if (tracer->tracingShape) {
+        JS_ASSERT(!tracer->previousShape);
+        tracer->previousShape = thing;
+        return;
+    }
+
+    do {
+        JS_ASSERT(!GCThingIsMarkedGray(thing));
+        JS_TraceChildren(&childTracer, thing, JSTRACE_SHAPE);
+        thing = childTracer.previousShape;
+        childTracer.previousShape = NULL;
+    } while (thing);
+}
+
+JS_FRIEND_API(void)
+UnmarkGrayGCThingRecursively(void *thing, JSGCTraceKind kind)
+{
+    JS_ASSERT(kind != JSTRACE_SHAPE);
+
+    if (!GCThingIsMarkedGray(thing))
+        return;
+
+    UnmarkGrayGCThing(thing);
+
+    JSRuntime *rt = static_cast<Cell *>(thing)->compartment()->rt;
+    UnmarkGrayTracer trc;
+    JS_TracerInit(&trc, rt, UnmarkGrayChildren);
+    JS_TraceChildren(&trc, thing, kind);
 }
 
 } /* namespace js */

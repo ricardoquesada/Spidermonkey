@@ -59,6 +59,7 @@ class WrapperFactory {
 
     // Rewrap an object that is about to cross compartment boundaries.
     static JSObject *Rewrap(JSContext *cx,
+                            JSObject *existing,
                             JSObject *obj,
                             JSObject *wrappedProto,
                             JSObject *parent,
@@ -93,7 +94,7 @@ class WrapperFactory {
     static bool XrayWrapperNotShadowing(JSObject *wrapper, jsid id);
 };
 
-extern js::DirectWrapper XrayWaiver;
+extern js::Wrapper XrayWaiver;
 
 }
 

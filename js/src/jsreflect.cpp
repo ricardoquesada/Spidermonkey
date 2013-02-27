@@ -31,9 +31,11 @@
 
 #include "jsscriptinlines.h"
 
-using namespace mozilla;
 using namespace js;
 using namespace js::frontend;
+
+using mozilla::DebugOnly;
+using mozilla::ArrayLength;
 
 namespace js {
 
@@ -3226,7 +3228,7 @@ ASTSerializer::function(ParseNode *pn, ASTType type, MutableHandleValue dst)
 
     bool isExpression =
 #if JS_HAS_EXPR_CLOSURES
-        func->flags & JSFUN_EXPR_CLOSURE;
+        func->isExprClosure();
 #else
         false;
 #endif
@@ -3484,11 +3486,11 @@ reflect_parse(JSContext *cx, uint32_t argc, jsval *vp)
     if (!stable)
         return JS_FALSE;
 
-    const jschar *chars = stable->chars();
+    const StableCharPtr chars = stable->chars();
     size_t length = stable->length();
     CompileOptions options(cx);
     options.setFileAndLine(filename, lineno);
-    Parser parser(cx, options, chars, length, /* foldConstants = */ false);
+    Parser parser(cx, options, chars.get(), length, /* foldConstants = */ false);
     if (!parser.init())
         return JS_FALSE;
 
@@ -3514,8 +3516,6 @@ static JSFunctionSpec static_methods[] = {
 };
 
 
-JS_BEGIN_EXTERN_C
-
 JS_PUBLIC_API(JSObject *)
 JS_InitReflect(JSContext *cx, JSObject *objArg)
 {
@@ -3534,5 +3534,3 @@ JS_InitReflect(JSContext *cx, JSObject *objArg)
 
     return Reflect;
 }
-
-JS_END_EXTERN_C

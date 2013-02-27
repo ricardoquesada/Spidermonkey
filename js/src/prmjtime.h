@@ -63,6 +63,9 @@ class DSTOffsetCache {
     inline void purge();
 
   private:
+    void purgeIfTZAIsStale();
+    double localTZA;
+
     int64_t computeDSTOffsetMilliseconds(int64_t localTimeSeconds);
 
     int64_t offsetMilliseconds;
@@ -82,8 +85,6 @@ class DSTOffsetCache {
   private:
     void sanityCheck();
 };
-
-JS_BEGIN_EXTERN_C
 
 typedef struct PRMJTime       PRMJTime;
 
@@ -126,8 +127,6 @@ PRMJ_LocalGMTDifference(void);
 /* Format a time value into a buffer. Same semantics as strftime() */
 extern size_t
 PRMJ_FormatTime(char *buf, int buflen, const char *fmt, PRMJTime *tm);
-
-JS_END_EXTERN_C
 
 #endif /* prmjtime_h___ */
 

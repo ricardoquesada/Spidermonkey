@@ -80,12 +80,15 @@ class CodeGeneratorX86Shared : public CodeGeneratorShared
                     NaNCond ifNaN = NaN_Unexpected);
     void emitBranch(Assembler::DoubleCondition cond, MBasicBlock *ifTrue, MBasicBlock *ifFalse);
 
+    bool emitTableSwitchDispatch(MTableSwitch *mir, const Register &index, const Register &base);
+
   public:
-    CodeGeneratorX86Shared(MIRGenerator *gen, LIRGraph &graph);
+    CodeGeneratorX86Shared(MIRGenerator *gen, LIRGraph *graph);
 
   public:
     // Instruction visitors.
     virtual bool visitMinMaxD(LMinMaxD *ins);
+    virtual bool visitNegD(LNegD *ins);
     virtual bool visitAbsD(LAbsD *ins);
     virtual bool visitSqrtD(LSqrtD *ins);
     virtual bool visitPowHalfD(LPowHalfD *ins);
@@ -111,7 +114,6 @@ class CodeGeneratorX86Shared : public CodeGeneratorShared
     virtual bool visitMathD(LMathD *math);
     virtual bool visitFloor(LFloor *lir);
     virtual bool visitRound(LRound *lir);
-    virtual bool visitTableSwitch(LTableSwitch *ins);
     virtual bool visitGuardShape(LGuardShape *guard);
     virtual bool visitGuardClass(LGuardClass *guard);
     virtual bool visitTruncateDToInt32(LTruncateDToInt32 *ins);

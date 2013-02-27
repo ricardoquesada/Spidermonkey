@@ -38,14 +38,16 @@
 #include "assembler/jit/ExecutableAllocator.h"
 #endif
 
-using namespace mozilla;
 using namespace js;
 using namespace js::gc;
+
+using mozilla::DebugOnly;
 
 JSCompartment::JSCompartment(JSRuntime *rt)
   : rt(rt),
     principals(NULL),
     global_(NULL),
+    enterCompartmentDepth(0),
 #ifdef JSGC_GENERATIONAL
     gcStoreBuffer(&gcNursery),
 #endif
@@ -65,6 +67,8 @@ JSCompartment::JSCompartment(JSRuntime *rt)
     typeLifoAlloc(LIFO_ALLOC_PRIMARY_CHUNK_SIZE),
     data(NULL),
     active(false),
+    scheduledForDestruction(false),
+    maybeAlive(true),
     lastAnimationTime(0),
     regExps(rt),
     propertyTree(thisForCtor()),
@@ -74,7 +78,8 @@ JSCompartment::JSCompartment(JSRuntime *rt)
     debugModeBits(rt->debugMode ? DebugFromC : 0),
     watchpointMap(NULL),
     scriptCountsMap(NULL),
-    debugScriptMap(NULL)
+    debugScriptMap(NULL),
+    enumerators(NULL)
 #ifdef JS_ION
     , ionCompartment_(NULL)
 #endif
@@ -91,6 +96,7 @@ JSCompartment::~JSCompartment()
     js_delete(watchpointMap);
     js_delete(scriptCountsMap);
     js_delete(debugScriptMap);
+    js_free(enumerators);
 }
 
 bool
@@ -130,6 +136,10 @@ JSCompartment::init(JSContext *cx)
     }
 #endif
 
+    enumerators = NativeIterator::allocateSentinel(cx);
+    if (!enumerators)
+        return false;
+
     return debuggees.init();
 }
 
@@ -154,6 +164,29 @@ JSCompartment::setNeedsBarrier(bool needs, ShouldUpdateIon updateIon)
 }
 
 #ifdef JS_ION
+ion::IonRuntime *
+JSRuntime::createIonRuntime(JSContext *cx)
+{
+    ionRuntime_ = cx->new_<ion::IonRuntime>();
+
+    if (!ionRuntime_)
+        return NULL;
+
+    if (!ionRuntime_->initialize(cx)) {
+        js_delete(ionRuntime_);
+        ionRuntime_ = NULL;
+
+        if (cx->runtime->atomsCompartment->ionCompartment_) {
+            js_delete(cx->runtime->atomsCompartment->ionCompartment_);
+            cx->runtime->atomsCompartment->ionCompartment_ = NULL;
+        }
+
+        return NULL;
+    }
+
+    return ionRuntime_;
+}
+
 bool
 JSCompartment::ensureIonCompartmentExists(JSContext *cx)
 {
@@ -161,15 +194,15 @@ JSCompartment::ensureIonCompartmentExists(JSContext *cx)
     if (ionCompartment_)
         return true;
 
-    /* Set the compartment early, so linking works. */
-    ionCompartment_ = cx->new_<IonCompartment>();
-
-    if (!ionCompartment_ || !ionCompartment_->initialize(cx)) {
-        if (ionCompartment_)
-            delete ionCompartment_;
-        ionCompartment_ = NULL;
+    IonRuntime *ionRuntime = cx->runtime->getIonRuntime(cx);
+    if (!ionRuntime)
         return false;
-    }
+
+    /* Set the compartment early, so linking works. */
+    ionCompartment_ = cx->new_<IonCompartment>(ionRuntime);
+
+    if (!ionCompartment_)
+        return false;
 
     return true;
 }
@@ -192,13 +225,16 @@ WrapForSameCompartment(JSContext *cx, HandleObject obj, Value *vp)
 }
 
 bool
-JSCompartment::wrap(JSContext *cx, Value *vp)
+JSCompartment::wrap(JSContext *cx, Value *vp, JSObject *existing)
 {
     JS_ASSERT(cx->compartment == this);
+    JS_ASSERT_IF(existing, existing->compartment() == cx->compartment);
+    JS_ASSERT_IF(existing, vp->isObject());
+    JS_ASSERT_IF(existing, IsDeadProxyObject(existing));
 
     unsigned flags = 0;
 
-    JS_CHECK_RECURSION(cx, return false);
+    JS_CHECK_CHROME_RECURSION(cx, return false);
 
 #ifdef DEBUG
     struct AutoDisableProxyCheck {
@@ -291,7 +327,7 @@ JSCompartment::wrap(JSContext *cx, Value *vp)
 
     if (vp->isString()) {
         RootedValue orig(cx, *vp);
-        JSStableString *str = vp->toString()->ensureStable(cx);
+        JSLinearString *str = vp->toString()->ensureLinear(cx);
         if (!str)
             return false;
         JSString *wrapped = js_NewStringCopyN(cx, str->chars(), str->length());
@@ -304,13 +340,24 @@ JSCompartment::wrap(JSContext *cx, Value *vp)
     RootedObject obj(cx, &vp->toObject());
 
     JSObject *proto = Proxy::LazyProto;
+    if (existing) {
+        /* Is it possible to reuse |existing|? */
+        if (!existing->getTaggedProto().isLazy() ||
+            existing->getClass() != &ObjectProxyClass ||
+            existing->getParent() != global ||
+            obj->isCallable())
+        {
+            existing = NULL;
+        }
+    }
 
     /*
      * We hand in the original wrapped object into the wrap hook to allow
      * the wrap hook to reason over what wrappers are currently applied
      * to the object.
      */
-    RootedObject wrapper(cx, cx->runtime->wrapObjectCallback(cx, obj, proto, global, flags));
+    RootedObject wrapper(cx);
+    wrapper = cx->runtime->wrapObjectCallback(cx, existing, obj, proto, global, flags);
     if (!wrapper)
         return false;
 
@@ -347,12 +394,12 @@ JSCompartment::wrap(JSContext *cx, HeapPtrString *strp)
 }
 
 bool
-JSCompartment::wrap(JSContext *cx, JSObject **objp)
+JSCompartment::wrap(JSContext *cx, JSObject **objp, JSObject *existing)
 {
     if (!*objp)
         return true;
     RootedValue value(cx, ObjectValue(**objp));
-    if (!wrap(cx, value.address()))
+    if (!wrap(cx, value.address(), existing))
         return false;
     *objp = &value.get().toObject();
     return true;
@@ -449,6 +496,13 @@ JSCompartment::mark(JSTracer *trc)
     if (ionCompartment_)
         ionCompartment_->mark(trc, this);
 #endif
+
+    /*
+     * If a compartment is on-stack, we mark its global so that
+     * JSContext::global() remains valid.
+     */
+    if (enterCompartmentDepth && global_)
+        MarkObjectRoot(trc, global_.unsafeGet(), "on-stack compartment global");
 }
 
 void
@@ -555,7 +609,7 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
 
         sweepBreakpoints(fop);
 
-        if (global_ && !IsObjectMarked(&global_))
+        if (global_ && !IsObjectMarked(global_.unsafeGet()))
             global_ = NULL;
 
 #ifdef JS_ION
@@ -563,7 +617,11 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
             ionCompartment_->sweep(fop);
 #endif
 
-        /* JIT code can hold references on RegExpShared, so sweep regexps after clearing code. */
+        /*
+         * JIT code increments activeUseCount for any RegExpShared used by jit
+         * code for the lifetime of the JIT script. Thus, we must perform
+         * sweeping after clearing jit code.
+         */
         regExps.sweep(rt);
     }
 
@@ -627,6 +685,15 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
         }
     }
 
+    NativeIterator *ni = enumerators->next();
+    while (ni != enumerators) {
+        JSObject *iterObj = ni->iterObj();
+        NativeIterator *next = ni->next();
+        if (JS_IsAboutToBeFinalized(iterObj))
+            ni->unlink();
+        ni = next;
+    }
+
     active = false;
 }
 
@@ -687,10 +754,21 @@ JSCompartment::onTooMuchMalloc()
 bool
 JSCompartment::hasScriptsOnStack()
 {
-    for (AllFramesIter i(rt->stackSpace); !i.done(); ++i) {
-        if (i.fp()->script()->compartment() == this)
+    for (AllFramesIter afi(rt->stackSpace); !afi.done(); ++afi) {
+#ifdef JS_ION
+        // If this is an Ion frame, check the IonActivation instead
+        if (afi.isIon())
+            continue;
+#endif
+        if (afi.interpFrame()->script()->compartment() == this)
             return true;
     }
+#ifdef JS_ION
+    for (ion::IonActivationIterator iai(rt); iai.more(); ++iai) {
+        if (iai.activation()->compartment() == this)
+            return true;
+    }
+#endif
     return false;
 }
 

@@ -157,7 +157,7 @@ GetLength(JSContext *cx, HandleObject obj, uint32_t *length)
     if (obj->isArray() || obj->isArguments())
         return GetLengthProperty(cx, obj, length);
 
-    // Otherwise check that we don't overflow uint32.
+    // Otherwise check that we don't overflow uint32_t.
     RootedValue value(cx);
     if (!JSObject::getProperty(cx, obj, obj, cx->names().length, &value))
         return false;
@@ -1008,9 +1008,9 @@ ParallelArrayObject::initClass(JSContext *cx, JSObject *obj)
     unsigned flags = JSPROP_PERMANENT | JSPROP_SHARED | JSPROP_GETTER;
 
     RootedObject scriptedLength(cx, js_NewFunction(cx, NullPtr(), NonGenericMethod<lengthGetter>,
-                                                   0, 0, global, NullPtr()));
+                                                   0, JSFunction::NATIVE_FUN, global, NullPtr()));
     RootedObject scriptedShape(cx, js_NewFunction(cx, NullPtr(), NonGenericMethod<dimensionsGetter>,
-                                                  0, 0, global, NullPtr()));
+                                                  0, JSFunction::NATIVE_FUN, global, NullPtr()));
 
     RootedValue value(cx, UndefinedValue());
     if (!scriptedLength || !scriptedShape ||

@@ -1327,6 +1327,16 @@ class LMinMaxD : public LInstructionHelper<1, 2, 0>
     }
 };
 
+// Negative of a double.
+class LNegD : public LInstructionHelper<1, 1, 0>
+{
+  public:
+    LIR_HEADER(NegD);
+    LNegD(const LAllocation &num) {
+        setOperand(0, num);
+    }
+};
+
 // Absolute value of an integer.
 class LAbsI : public LInstructionHelper<1, 1, 0>
 {
@@ -2020,6 +2030,31 @@ class LLoadElementV : public LInstructionHelper<BOX_PIECES, 2, 0>
     }
 };
 
+class LInArray : public LInstructionHelper<1, 3, 0>
+{
+  public:
+    LIR_HEADER(InArray);
+
+    LInArray(const LAllocation &elements, const LAllocation &index, const LAllocation &initLength) {
+        setOperand(0, elements);
+        setOperand(1, index);
+        setOperand(2, initLength);
+    }
+    const MInArray *mir() const {
+        return mir_->toInArray();
+    }
+    const LAllocation *elements() {
+        return getOperand(0);
+    }
+    const LAllocation *index() {
+        return getOperand(1);
+    }
+    const LAllocation *initLength() {
+        return getOperand(2);
+    }
+};
+
+
 // Load a value from a dense array's elements vector. Bail out if it's the hole value.
 class LLoadElementHole : public LInstructionHelper<BOX_PIECES, 3, 0>
 {
@@ -2509,6 +2544,17 @@ class LGetNameCache : public LInstructionHelper<BOX_PIECES, 1, 0>
     }
 };
 
+class LCallGetIntrinsicValue : public LCallInstructionHelper<BOX_PIECES, 0, 0>
+{
+  public:
+    LIR_HEADER(CallGetIntrinsicValue);
+    BOX_OUTPUT_ACCESSORS();
+
+    const MCallGetIntrinsicValue *mir() const {
+        return mir_->toCallGetIntrinsicValue();
+    }
+};
+
 // Patchable jump to stubs generated for a GetProperty cache, which loads a
 // boxed value.
 class LGetPropertyCacheV : public LInstructionHelper<BOX_PIECES, 1, 0>
@@ -2913,16 +2959,17 @@ class LIteratorMore : public LInstructionHelper<1, 1, 1>
     }
 };
 
-class LIteratorEnd : public LInstructionHelper<0, 1, 2>
+class LIteratorEnd : public LInstructionHelper<0, 1, 3>
 {
   public:
     LIR_HEADER(IteratorEnd);
 
     LIteratorEnd(const LAllocation &iterator, const LDefinition &temp1,
-                 const LDefinition &temp2) {
+                 const LDefinition &temp2, const LDefinition &temp3) {
         setOperand(0, iterator);
         setTemp(0, temp1);
         setTemp(1, temp2);
+        setTemp(2, temp3);
     }
     const LAllocation *object() {
         return getOperand(0);
@@ -2932,6 +2979,9 @@ class LIteratorEnd : public LInstructionHelper<0, 1, 2>
     }
     const LDefinition *temp2() {
         return getTemp(1);
+    }
+    const LDefinition *temp3() {
+        return getTemp(2);
     }
     MIteratorEnd *mir() const {
         return mir_->toIteratorEnd();

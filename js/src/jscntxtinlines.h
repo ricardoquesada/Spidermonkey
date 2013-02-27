@@ -34,7 +34,7 @@ inline bool
 NewObjectCache::lookup(Class *clasp, gc::Cell *key, gc::AllocKind kind, EntryIndex *pentry)
 {
     uintptr_t hash = (uintptr_t(clasp) ^ uintptr_t(key)) + kind;
-    *pentry = hash % js::ArrayLength(entries);
+    *pentry = hash % mozilla::ArrayLength(entries);
 
     Entry *entry = &entries[*pentry];
 
@@ -64,7 +64,7 @@ NewObjectCache::lookupType(Class *clasp, js::types::TypeObject *type, gc::AllocK
 inline void
 NewObjectCache::fill(EntryIndex entry_, Class *clasp, gc::Cell *key, gc::AllocKind kind, JSObject *obj)
 {
-    JS_ASSERT(unsigned(entry_) < ArrayLength(entries));
+    JS_ASSERT(unsigned(entry_) < mozilla::ArrayLength(entries));
     Entry *entry = &entries[entry_];
 
     JS_ASSERT(!obj->hasDynamicSlots() && !obj->hasDynamicElements());
@@ -102,7 +102,7 @@ NewObjectCache::fillType(EntryIndex entry, Class *clasp, js::types::TypeObject *
 inline JSObject *
 NewObjectCache::newObjectFromHit(JSContext *cx, EntryIndex entry_)
 {
-    JS_ASSERT(unsigned(entry_) < ArrayLength(entries));
+    JS_ASSERT(unsigned(entry_) < mozilla::ArrayLength(entries));
     Entry *entry = &entries[entry_];
 
     JSObject *obj = js_TryNewGCObject(cx, entry->kind);
@@ -585,16 +585,39 @@ JSContext::setDefaultCompartmentObjectIfUnset(JSObject *obj)
         setDefaultCompartmentObject(obj);
 }
 
-/* Get the current frame, first lazily instantiating stack frames if needed. */
-static inline js::StackFrame *
-js_GetTopStackFrame(JSContext *cx, FrameExpandKind expand)
+inline void
+JSContext::enterCompartment(JSCompartment *c)
 {
-#ifdef JS_METHODJIT
-    if (expand)
-        js::mjit::ExpandInlineFrames(cx->compartment);
-#endif
+    enterCompartmentDepth_++;
+    compartment = c;
+    c->enter();
+    if (throwing)
+        wrapPendingException();
+}
 
-    return cx->maybefp();
+inline void
+JSContext::leaveCompartment(JSCompartment *oldCompartment)
+{
+    JS_ASSERT(hasEnteredCompartment());
+    enterCompartmentDepth_--;
+
+    compartment->leave();
+
+    /*
+     * Before we entered the current compartment, 'compartment' was
+     * 'oldCompartment', so we might want to simply set it back. However, we
+     * currently have this terrible scheme whereby defaultCompartmentObject_ can
+     * be updated while enterCompartmentDepth_ > 0. In this case, oldCompartment
+     * != defaultCompartmentObject_->compartment and we must ignore
+     * oldCompartment.
+     */
+    if (hasEnteredCompartment() || !defaultCompartmentObject_)
+        compartment = oldCompartment;
+    else
+        compartment = defaultCompartmentObject_->compartment();
+
+    if (throwing)
+        wrapPendingException();
 }
 
 #endif /* jscntxtinlines_h___ */

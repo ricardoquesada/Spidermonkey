@@ -269,7 +269,7 @@ class LiveInterval
     const Range *getRange(size_t i) const {
         return &ranges_[i];
     }
-    void setLastProcessedRange(size_t range, DebugOnly<CodePosition> pos) {
+    void setLastProcessedRange(size_t range, mozilla::DebugOnly<CodePosition> pos) {
         // If the range starts after pos, we may not be able to use
         // it in the next lastProcessedRangeIfValid call.
         JS_ASSERT(ranges_[range].from <= pos);
@@ -591,6 +591,7 @@ class LinearScanAllocator
     };
 
     // Context
+    MIRGenerator *mir;
     LIRGenerator *lir;
     LIRGraph &graph;
 
@@ -685,8 +686,9 @@ class LinearScanAllocator
 #endif
 
   public:
-    LinearScanAllocator(LIRGenerator *lir, LIRGraph &graph)
-      : lir(lir),
+    LinearScanAllocator(MIRGenerator *mir, LIRGenerator *lir, LIRGraph &graph)
+      : mir(mir),
+        lir(lir),
         graph(graph),
         allRegisters_(RegisterSet::All())
     {

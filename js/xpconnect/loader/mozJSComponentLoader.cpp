@@ -43,7 +43,7 @@
 #include "nsIFileURL.h"
 #include "nsIJARURI.h"
 #include "nsNetUtil.h"
-#include "nsDOMFile.h"
+#include "nsDOMBlobBuilder.h"
 #include "jsprf.h"
 #include "nsJSPrincipals.h"
 // For reporting errors with the console service
@@ -51,7 +51,6 @@
 #include "nsIConsoleService.h"
 #include "nsIStorageStream.h"
 #include "nsIStringStream.h"
-#include "prmem.h"
 #if defined(XP_WIN)
 #include "nsILocalFileWin.h"
 #endif
@@ -246,7 +245,7 @@ File(JSContext *cx, unsigned argc, jsval *vp)
     }
 
     nsCOMPtr<nsISupports> native;
-    rv = nsDOMFileFile::NewFile(getter_AddRefs(native));
+    rv = nsDOMMultipartFile::NewFile(getter_AddRefs(native));
     if (NS_FAILED(rv)) {
         XPCThrower::Throw(rv, cx);
         return false;
@@ -874,8 +873,7 @@ mozJSComponentLoader::ObjectForLocation(nsIFile *aComponentFile,
                 return rv;
             }
 
-            int64_t maxSize;
-            LL_UI2L(maxSize, UINT32_MAX);
+            int64_t maxSize = UINT32_MAX;
             if (fileSize > maxSize) {
                 NS_ERROR("file too large");
                 JS_SetOptions(cx, oldopts);
@@ -903,8 +901,7 @@ mozJSComponentLoader::ObjectForLocation(nsIFile *aComponentFile,
             // Make sure the file map is closed, no matter how we return.
             FileMapAutoCloser mapCloser(map);
 
-            uint32_t fileSize32;
-            LL_L2UI(fileSize32, fileSize);
+            uint32_t fileSize32 = fileSize;
 
             char *buf = static_cast<char*>(PR_MemMap(map, 0, fileSize32));
             if (!buf) {
@@ -1152,7 +1149,7 @@ mozJSComponentLoader::Import(const nsACString& registryLocation,
     JS::Value targetVal = targetVal_;
     JSObject *targetObject = NULL;
 
-    MOZ_ASSERT(nsContentUtils::CallerHasUniversalXPConnect());
+    MOZ_ASSERT(nsContentUtils::IsCallerChrome());
     if (optionalArgc) {
         // The caller passed in the optional second argument. Get it.
         if (targetVal.isObject()) {
