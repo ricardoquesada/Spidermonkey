@@ -52,7 +52,7 @@ build_with_arch()
              --disable-tests \
              --enable-strip \
              --enable-install-strip \
-             --enable-debug \
+             --disable-debug \
              --disable-ion \
              --disable-jm \
              --disable-tm
