@@ -2,6 +2,8 @@
 develop=
 release=
 RELEASE_DIR="spidermonkey-android"
+ARCH=armv6
+ARCH_DIR=armeabi
 
 usage(){
 cat << EOF
@@ -36,18 +38,21 @@ set -x
 
 host_os=`uname -s | tr "[:upper:]" "[:lower:]"`
 
+build_with_arch()
+{
 ../configure --with-android-ndk=$HOME/bin/android-ndk \
              --with-android-sdk=$HOME/bin/android-sdk \
              --with-android-version=9 \
              --enable-application=mobile/android \
              --with-android-gnu-compiler-version=4.6 \
+             --with-arch=$ARCH \
              --enable-android-libstdcxx \
              --target=arm-linux-androideabi \
              --disable-shared-js \
              --disable-tests \
              --enable-strip \
              --enable-install-strip \
-             --enable-debug \
+             --disable-debug \
              --disable-ion \
              --disable-jm \
              --disable-tm
@@ -66,13 +71,24 @@ fi
 if [[ $release ]]; then
 # copy specific files from dist
     rm -r "$RELEASE_DIR/include"
-    rm -r "$RELEASE_DIR/lib"
+    rm -r "$RELEASE_DIR/lib/$ARCH_DIR"
     mkdir -p "$RELEASE_DIR/include"
     cp -RL dist/include/* "$RELEASE_DIR/include/"
-    mkdir -p "$RELEASE_DIR/lib"
-    cp -L dist/lib/libjs_static.a "$RELEASE_DIR/lib/libjs_static.a"
+    mkdir -p "$RELEASE_DIR/lib/$ARCH_DIR"
+    cp -L dist/lib/libjs_static.a "$RELEASE_DIR/lib/$ARCH_DIR/libjs_static.a"
 
 # strip unneeded symbols
     $HOME/bin/android-ndk/toolchains/arm-linux-androideabi-4.6/prebuilt/${host_os}-x86/bin/arm-linux-androideabi-strip \
-        --strip-unneeded "$RELEASE_DIR/lib/libjs_static.a"
+        --strip-unneeded "$RELEASE_DIR/lib/$ARCH_DIR/libjs_static.a"
 fi
+
+}
+
+# Build with armv6
+build_with_arch
+
+# Build with armv7
+ARCH=armv7-a
+ARCH_DIR=armeabi-v7a
+
+build_with_arch
