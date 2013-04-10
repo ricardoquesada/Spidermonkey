@@ -328,6 +328,24 @@ js_math_floor(JSContext *cx, unsigned argc, Value *vp)
     return JS_TRUE;
 }
 
+JSBool
+js::math_imul(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    uint32_t a = 0, b = 0;
+    if (args.hasDefined(0) && !ToUint32(cx, args[0], &a))
+        return false;
+    if (args.hasDefined(1) && !ToUint32(cx, args[1], &b))
+        return false;
+
+    uint32_t product = a * b;
+    args.rval().setInt32(product > INT32_MAX
+                         ? int32_t(INT32_MIN + (product - INT32_MAX - 1))
+                         : int32_t(product));
+    return true;
+}
+
 double
 js::math_log_impl(MathCache *cache, double x)
 {
@@ -360,61 +378,37 @@ js::math_log(JSContext *cx, unsigned argc, Value *vp)
 JSBool
 js_math_max(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z = js_NegativeInfinity;
-    Value *argv;
-    unsigned i;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NegativeInfinity);
-        return JS_TRUE;
+    double x;
+    double maxval = MOZ_DOUBLE_NEGATIVE_INFINITY();
+    for (unsigned i = 0; i < args.length(); i++) {
+        if (!ToNumber(cx, args[i], &x))
+            return false;
+        // Math.max(num, NaN) => NaN, Math.max(-0, +0) => +0
+        if (x > maxval || MOZ_DOUBLE_IS_NaN(x) || (x == maxval && MOZ_DOUBLE_IS_NEGATIVE(maxval)))
+            maxval = x;
     }
-    argv = vp + 2;
-    for (i = 0; i < argc; i++) {
-        if (!ToNumber(cx, argv[i], &x))
-            return JS_FALSE;
-        if (MOZ_DOUBLE_IS_NaN(x)) {
-            vp->setDouble(js_NaN);
-            return JS_TRUE;
-        }
-        if (x == 0 && x == z) {
-            if (js_copysign(1.0, z) == -1)
-                z = x;
-        } else {
-            z = (x > z) ? x : z;
-        }
-    }
-    vp->setNumber(z);
-    return JS_TRUE;
+    args.rval().setNumber(maxval);
+    return true;
 }
 
 JSBool
 js_math_min(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z = js_PositiveInfinity;
-    Value *argv;
-    unsigned i;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_PositiveInfinity);
-        return JS_TRUE;
+    double x;
+    double minval = MOZ_DOUBLE_POSITIVE_INFINITY();
+    for (unsigned i = 0; i < args.length(); i++) {
+        if (!ToNumber(cx, args[i], &x))
+            return false;
+        // Math.min(num, NaN) => NaN, Math.min(-0, +0) => -0
+        if (x < minval || MOZ_DOUBLE_IS_NaN(x) || (x == minval && MOZ_DOUBLE_IS_NEGATIVE_ZERO(x)))
+            minval = x;
     }
-    argv = vp + 2;
-    for (i = 0; i < argc; i++) {
-        if (!ToNumber(cx, argv[i], &x))
-            return JS_FALSE;
-        if (MOZ_DOUBLE_IS_NaN(x)) {
-            vp->setDouble(js_NaN);
-            return JS_TRUE;
-        }
-        if (x == 0 && x == z) {
-            if (js_copysign(1.0, x) == -1)
-                z = x;
-        } else {
-            z = (x < z) ? x : z;
-        }
-    }
-    vp->setNumber(z);
-    return JS_TRUE;
+    args.rval().setNumber(minval);
+    return true;
 }
 
 // Disable PGO for Math.pow() and related functions (see bug 791214).
@@ -702,6 +696,7 @@ static JSFunctionSpec math_static_methods[] = {
     JS_FN("cos",            math_cos,             1, 0),
     JS_FN("exp",            math_exp,             1, 0),
     JS_FN("floor",          js_math_floor,        1, 0),
+    JS_FN("imul",           math_imul,            2, 0),
     JS_FN("log",            math_log,             1, 0),
     JS_FN("max",            js_math_max,          2, 0),
     JS_FN("min",            js_math_min,          2, 0),

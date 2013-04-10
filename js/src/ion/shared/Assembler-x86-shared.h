@@ -17,11 +17,11 @@ class AssemblerX86Shared
 {
   protected:
     struct RelativePatch {
-        int32 offset;
+        int32_t offset;
         void *target;
         Relocation::Kind kind;
 
-        RelativePatch(int32 offset, void *target, Relocation::Kind kind)
+        RelativePatch(int32_t offset, void *target, Relocation::Kind kind)
           : offset(offset),
             target(target),
             kind(kind)
@@ -98,6 +98,36 @@ class AssemblerX86Shared
         DoubleLessThanOrEqualOrUnordered = BelowOrEqual
     };
 
+    enum NaNCond {
+        NaN_Unexpected,
+        NaN_IsTrue,
+        NaN_IsFalse
+    };
+
+    static inline NaNCond NaNCondFromDoubleCondition(DoubleCondition cond) {
+        switch (cond) {
+          case DoubleOrdered:
+          case DoubleEqual:
+          case DoubleNotEqual:
+          case DoubleGreaterThan:
+          case DoubleGreaterThanOrEqual:
+          case DoubleLessThan:
+          case DoubleLessThanOrEqual:
+            return NaN_IsFalse;
+          case DoubleUnordered:
+          case DoubleEqualOrUnordered:
+          case DoubleNotEqualOrUnordered:
+          case DoubleGreaterThanOrUnordered:
+          case DoubleGreaterThanOrEqualOrUnordered:
+          case DoubleLessThanOrUnordered:
+          case DoubleLessThanOrEqualOrUnordered:
+            return NaN_IsTrue;
+        }
+
+        JS_NOT_REACHED("Unknown double condition");
+        return NaN_Unexpected;
+    }
+
     static void staticAsserts() {
         // DoubleConditionBits should not interfere with x86 condition codes.
         JS_STATIC_ASSERT(!((Equal | NotEqual | Above | AboveOrEqual | Below |
@@ -128,11 +158,15 @@ class AssemblerX86Shared
                dataRelocations_.oom();
     }
 
+    void setPrinter(Sprinter *sp) {
+        masm.setPrinter(sp);
+    }
+
     void executableCopy(void *buffer);
-    void processDeferredData(IonCode *code, uint8 *data);
+    void processDeferredData(IonCode *code, uint8_t *data);
     void processCodeLabels(IonCode *code);
-    void copyJumpRelocationTable(uint8 *buffer);
-    void copyDataRelocationTable(uint8 *buffer);
+    void copyJumpRelocationTable(uint8_t *buffer);
+    void copyDataRelocationTable(uint8_t *buffer);
 
     bool addDeferredData(DeferredData *data, size_t bytes) {
         data->setOffset(dataBytesNeeded_);
@@ -523,7 +557,7 @@ class AssemblerX86Shared
         }
         label->bind(masm.label().offset());
     }
-    uint32 currentOffset() {
+    uint32_t currentOffset() {
         return masm.label().offset();
     }
 
@@ -553,7 +587,7 @@ class AssemblerX86Shared
     }
 
     static void Bind(IonCode *code, AbsoluteLabel *label, const void *address) {
-        uint8 *raw = code->raw();
+        uint8_t *raw = code->raw();
         if (label->used()) {
             intptr_t src = label->offset();
             do {
@@ -1143,11 +1177,11 @@ class AssemblerX86Shared
     }
 
     // Defined for compatibility with ARM's assembler
-    uint32 actualOffset(uint32 x) {
+    uint32_t actualOffset(uint32_t x) {
         return x;
     }
 
-    uint32 actualIndex(uint32 x) {
+    uint32_t actualIndex(uint32_t x) {
         return x;
     }
 
@@ -1162,22 +1196,22 @@ class AssemblerX86Shared
     static size_t patchWrite_NearCallSize() {
         return 5;
     }
-    static uintptr_t getPointer(uint8 *instPtr) {
+    static uintptr_t getPointer(uint8_t *instPtr) {
         uintptr_t *ptr = ((uintptr_t *) instPtr) - 1;
         return *ptr;
     }
     // Write a relative call at the start location |dataLabel|.
     // Note that this DOES NOT patch data that comes before |label|.
     static void patchWrite_NearCall(CodeLocationLabel startLabel, CodeLocationLabel target) {
-        uint8 *start = startLabel.raw();
+        uint8_t *start = startLabel.raw();
         *start = 0xE8;
         ptrdiff_t offset = target - startLabel - patchWrite_NearCallSize();
-        JS_ASSERT(int32(offset) == offset);
-        *((int32 *) (start + 1)) = offset;
+        JS_ASSERT(int32_t(offset) == offset);
+        *((int32_t *) (start + 1)) = offset;
     }
 
     static void patchWrite_Imm32(CodeLocationLabel dataLabel, Imm32 toWrite) {
-        *((int32 *) dataLabel.raw() - 1) = toWrite.value;
+        *((int32_t *) dataLabel.raw() - 1) = toWrite.value;
     }
 
     static void patchDataWithValueCheck(CodeLocationLabel data, ImmWord newData,
@@ -1187,10 +1221,10 @@ class AssemblerX86Shared
         JS_ASSERT(*ptr == expectedData.value);
         *ptr = newData.value;
     }
-    static uint32 nopSize() {
+    static uint32_t nopSize() {
         return 1;
     }
-    static uint8 *nextInstruction(uint8 *cur, uint32 *count) {
+    static uint8_t *nextInstruction(uint8_t *cur, uint32_t *count) {
         JS_NOT_REACHED("nextInstruction NYI on x86");
     }
 

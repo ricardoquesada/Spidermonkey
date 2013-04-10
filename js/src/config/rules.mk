@@ -108,9 +108,35 @@ LIBS += $(XPCOM_GLUE_LDOPTS) $(NSPR_LIBS) $(MOZ_JS_LIBS) $(if $(JS_SHARED_LIBRAR
 check::
 	@$(PYTHON) $(topsrcdir)/testing/runcppunittests.py --xre-path=$(DIST)/bin --symbols-path=$(DIST)/crashreporter-symbols $(subst .cpp,$(BIN_SUFFIX),$(CPP_UNIT_TESTS))
 
+cppunittests-remote: DM_TRANS?=adb
+cppunittests-remote:
+	@if [ "${TEST_DEVICE}" != "" -o "$(DM_TRANS)" = "adb" ]; then \
+		$(PYTHON) -u $(topsrcdir)/testing/remotecppunittests.py \
+			--xre-path=$(DEPTH)/dist/bin \
+			--localLib=$(DEPTH)/dist/$(MOZ_APP_NAME) \
+			--dm_trans=$(DM_TRANS) \
+			--deviceIP=${TEST_DEVICE} \
+ 			$(subst .cpp,$(BIN_SUFFIX),$(CPP_UNIT_TESTS)) $(EXTRA_TEST_ARGS); \
+	else \
+		echo "please prepare your host with environment variables for TEST_DEVICE"; \
+	fi
+
 endif # CPP_UNIT_TESTS
 
 .PHONY: check
+
+ifdef PYTHON_UNIT_TESTS
+
+RUN_PYTHON_UNIT_TESTS := $(addprefix run-,$(PYTHON_UNIT_TESTS))
+
+.PHONY: $(RUN_PYTHON_UNIT_TESTS)
+
+check:: $(RUN_PYTHON_UNIT_TESTS)
+
+$(RUN_PYTHON_UNIT_TESTS): run-%: %
+	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) $<
+
+endif # PYTHON_UNIT_TESTS
 
 endif # ENABLE_TESTS
 
@@ -1167,33 +1193,33 @@ $(foreach namespace,$(EXPORTS_NAMESPACES),$(eval $(EXPORT_NAMESPACE_RULE)))
 ################################################################################
 # Copy each element of PREF_JS_EXPORTS
 
-ifdef GRE_MODULE
-PREF_DIR = greprefs
-else
-ifneq (,$(XPI_NAME)$(LIBXUL_SDK)$(MOZ_PHOENIX))
-PREF_DIR = defaults/preferences
-else
+# The default location for PREF_JS_EXPORTS is the gre prefs directory.
 PREF_DIR = defaults/pref
-endif
+
+# If DIST_SUBDIR is defined it indicates that app and gre dirs are
+# different and that we are building app related resources. Hence,
+# PREF_DIR should point to the app prefs location.
+ifneq (,$(DIST_SUBDIR)$(XPI_NAME)$(LIBXUL_SDK))
+PREF_DIR = defaults/preferences
 endif
 
-ifneq ($(PREF_JS_EXPORTS),)
 # on win32, pref files need CRLF line endings... see bug 206029
 ifeq (WINNT,$(OS_ARCH))
-PREF_PPFLAGS = --line-endings=crlf
-endif
-
-ifndef NO_DIST_INSTALL
-PREF_JS_EXPORTS_PATH := $(FINAL_TARGET)/$(PREF_DIR)
-PREF_JS_EXPORTS_FLAGS := $(PREF_PPFLAGS)
-PP_TARGETS += PREF_JS_EXPORTS
-endif
+PREF_PPFLAGS += --line-endings=crlf
 endif
 
 # Set a flag that can be used in pref files to disable features if
 # we are not building for Aurora or Nightly.
 ifeq (,$(findstring a,$(GRE_MILESTONE)))
 PREF_PPFLAGS += -DRELEASE_BUILD
+endif
+
+ifneq ($(PREF_JS_EXPORTS),)
+ifndef NO_DIST_INSTALL
+PREF_JS_EXPORTS_PATH := $(FINAL_TARGET)/$(PREF_DIR)
+PREF_JS_EXPORTS_FLAGS := $(PREF_PPFLAGS)
+PP_TARGETS += PREF_JS_EXPORTS
+endif
 endif
 
 ################################################################################
@@ -1550,7 +1576,7 @@ define install_file_template
 $(or $(3),libs):: $(2)/$(notdir $(1))
 $(call install_cmd_override,$(2)/$(notdir $(1)))
 $(2)/$(notdir $(1)): $(1) $$(call mkdir_deps,$(2))
-	$$(call install_cmd,$(4) $$< $${@D})
+	$$(call install_cmd,$(4) "$$<" "$${@D}")
 endef
 $(foreach category,$(INSTALL_TARGETS),\
   $(if $($(category)_DEST),,$(error Missing $(category)_DEST))\
@@ -1566,29 +1592,50 @@ $(foreach category,$(INSTALL_TARGETS),\
 # Preprocessing rules
 #
 # The PP_TARGETS variable contains a list of all preprocessing target
-# categories. Each category defines a target path, and optional extra flags
-# like the following:
+# categories. Each category has associated variables listing input files, the
+# output directory, extra preprocessor flags, and so on. For example:
 #
-# FOO_PATH := target_path
-# FOO_FLAGS := -Dsome_flag
-# PP_TARGETS += FOO
+#   FOO := input-file
+#   FOO_PATH := target-directory
+#   FOO_FLAGS := -Dsome_flag
+#   PP_TARGETS += FOO
 #
-# Additionally, a FOO_TARGET variable may be added to indicate the target for
-# which the files and executables are installed. Default is "libs".
+# If PP_TARGETS lists a category name <C> (like FOO, above), then we consult the
+# following make variables to see what to do:
+#
+# - <C> lists input files to be preprocessed with config/Preprocessor.py. We
+#   search VPATH for the names given here. If an input file name ends in '.in',
+#   that suffix is omitted from the output file name.
+#
+# - <C>_PATH names the directory in which to place the preprocessed output
+#   files. We create this directory if it does not already exist. Setting
+#   this variable is optional; if unset, we install the files in $(CURDIR).
+#
+# - <C>_FLAGS lists flags to pass to Preprocessor.py, in addition to the usual
+#   bunch. Setting this variable is optional.
+#
+# - <C>_TARGET names the 'make' target that should depend on creating the output
+#   files. Setting this variable is optional; if unset, we preprocess the
+#   files for the 'libs' target.
 
 # preprocess_file_template defines preprocessing rules.
-# $(call preprocess_file_template, source_file, target_path, extra_flags)
+# $(call preprocess_file_template, source_file, output_file,
+#                                  makefile_target, extra_flags)
 define preprocess_file_template
-$(2)/$(notdir $(1)): $(1) $$(call mkdir_deps,$(2)) $$(GLOBAL_DEPS)
-	$$(RM) $$@
-	$$(PYTHON) $$(topsrcdir)/config/Preprocessor.py $(4) $$(DEFINES) $$(ACDEFINES) $$(XULPPFLAGS) $$< > $$@
-$(or $(3),libs):: $(2)/$(notdir $(1))
+$(2): $(1) $$(call mkdir_deps,$(dir $(2))) $$(GLOBAL_DEPS)
+	$$(RM) "$$@"
+	$$(PYTHON) $$(topsrcdir)/config/Preprocessor.py $(4) $$(DEFINES) $$(ACDEFINES) $$(XULPPFLAGS) "$$<" > "$$@"
+$(3):: $(2)
 endef
 
-$(foreach category,$(PP_TARGETS),\
-  $(foreach file,$($(category)),\
-    $(eval $(call preprocess_file_template,$(file),$($(category)_PATH),$($(category)_TARGET),$($(category)_FLAGS)))\
-   )\
+$(foreach category,$(PP_TARGETS),						\
+  $(foreach file,$($(category)),						\
+    $(eval $(call preprocess_file_template,					\
+                  $(file),							\
+                  $(or $($(category)_PATH),$(CURDIR))/$(notdir $(file:.in=)),	\
+                  $(or $($(category)_TARGET),libs),				\
+                  $($(category)_FLAGS)))					\
+   )										\
  )
 
 ################################################################################

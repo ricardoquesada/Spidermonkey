@@ -136,9 +136,15 @@ nsScriptError::InitWithWindowID(const nsAString& message,
 
             nsIDocShell* docShell = window->GetDocShell();
             nsCOMPtr<nsILoadContext> loadContext = do_QueryInterface(docShell);
+
             if (loadContext) {
-              mIsFromPrivateWindow = loadContext->UsePrivateBrowsing();
+                // Never mark exceptions from chrome windows as having come from
+                // private windows, since we always want them to be reported.
+                nsIPrincipal* winPrincipal = window->GetPrincipal();
+                mIsFromPrivateWindow = loadContext->UsePrivateBrowsing() &&
+                                       !nsContentUtils::IsSystemPrincipal(winPrincipal);
             }
+
         }
     }
 

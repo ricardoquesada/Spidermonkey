@@ -112,8 +112,8 @@ xpc_FastGetCachedWrapper(nsWrapperCache *cache, JSObject *scope, jsval *vp)
                      "Should never have a slim wrapper when IsDOMBinding()");
         if (wrapper &&
             js::GetObjectCompartment(wrapper) == js::GetObjectCompartment(scope) &&
-            (IS_SLIM_WRAPPER(wrapper) || cache->IsDOMBinding() ||
-             xpc_OkToHandOutWrapper(cache))) {
+            (cache->IsDOMBinding() ? !cache->HasSystemOnlyWrapper() :
+             (IS_SLIM_WRAPPER(wrapper) || xpc_OkToHandOutWrapper(cache)))) {
             *vp = OBJECT_TO_JSVAL(wrapper);
             return wrapper;
         }
@@ -128,7 +128,7 @@ xpc_FastGetCachedWrapper(nsWrapperCache *cache, JSObject *scope, jsval *vp)
 inline JSBool
 xpc_IsGrayGCThing(void *thing)
 {
-    return js::GCThingIsMarkedGray(thing);
+    return JS::GCThingIsMarkedGray(thing);
 }
 
 // The cycle collector only cares about some kinds of GCthings that are
@@ -136,29 +136,29 @@ xpc_IsGrayGCThing(void *thing)
 extern JSBool
 xpc_GCThingIsGrayCCThing(void *thing);
 
+// Unmark gray for known-nonnull cases
+MOZ_ALWAYS_INLINE void
+xpc_UnmarkNonNullGrayObject(JSObject *obj)
+{
+    JS::ExposeGCThingToActiveJS(obj, JSTRACE_OBJECT);
+}
+
 // Remove the gray color from the given JSObject and any other objects that can
 // be reached through it.
-inline JSObject *
+MOZ_ALWAYS_INLINE JSObject *
 xpc_UnmarkGrayObject(JSObject *obj)
 {
-    if (obj) {
-        if (xpc_IsGrayGCThing(obj))
-            js::UnmarkGrayGCThingRecursively(obj, JSTRACE_OBJECT);
-        else if (js::IsIncrementalBarrierNeededOnObject(obj))
-            js::IncrementalReferenceBarrier(obj);
-    }
+    if (obj)
+        xpc_UnmarkNonNullGrayObject(obj);
     return obj;
 }
 
 inline JSScript *
 xpc_UnmarkGrayScript(JSScript *script)
 {
-    if (script) {
-        if (xpc_IsGrayGCThing(script))
-            js::UnmarkGrayGCThingRecursively(script, JSTRACE_SCRIPT);
-        else if (js::IsIncrementalBarrierNeededOnScript(script))
-            js::IncrementalReferenceBarrier(script);
-    }
+    if (script)
+        JS::ExposeGCThingToActiveJS(script, JSTRACE_SCRIPT);
+
     return script;
 }
 

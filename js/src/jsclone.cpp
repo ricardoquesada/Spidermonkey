@@ -120,12 +120,10 @@ SwapBytes(uint64_t u)
 #endif
 }
 
-namespace js {
-
 bool
-WriteStructuredClone(JSContext *cx, const Value &v, uint64_t **bufp, size_t *nbytesp,
-                     const JSStructuredCloneCallbacks *cb, void *cbClosure,
-                     jsval transferable)
+js::WriteStructuredClone(JSContext *cx, const Value &v, uint64_t **bufp, size_t *nbytesp,
+                         const JSStructuredCloneCallbacks *cb, void *cbClosure,
+                         jsval transferable)
 {
     SCOutput out(cx);
     JSStructuredCloneWriter w(out, cb, cbClosure, transferable);
@@ -133,8 +131,8 @@ WriteStructuredClone(JSContext *cx, const Value &v, uint64_t **bufp, size_t *nby
 }
 
 bool
-ReadStructuredClone(JSContext *cx, uint64_t *data, size_t nbytes, Value *vp,
-                    const JSStructuredCloneCallbacks *cb, void *cbClosure)
+js::ReadStructuredClone(JSContext *cx, uint64_t *data, size_t nbytes, Value *vp,
+                        const JSStructuredCloneCallbacks *cb, void *cbClosure)
 {
     SCInput in(cx, data, nbytes);
 
@@ -146,7 +144,7 @@ ReadStructuredClone(JSContext *cx, uint64_t *data, size_t nbytes, Value *vp,
 }
 
 bool
-ClearStructuredClone(const uint64_t *data, size_t nbytes)
+js::ClearStructuredClone(const uint64_t *data, size_t nbytes)
 {
     const uint64_t *point = data;
     const uint64_t *end = data + nbytes / 8;
@@ -171,8 +169,7 @@ ClearStructuredClone(const uint64_t *data, size_t nbytes)
 }
 
 bool
-StructuredCloneHasTransferObjects(const uint64_t *data, size_t nbytes,
-                                  bool *hasTransferable)
+js::StructuredCloneHasTransferObjects(const uint64_t *data, size_t nbytes, bool *hasTransferable)
 {
     *hasTransferable = false;
 
@@ -186,8 +183,6 @@ StructuredCloneHasTransferObjects(const uint64_t *data, size_t nbytes,
 
     return true;
 }
-
-} /* namespace js */
 
 static inline uint64_t
 PairToUInt64(uint32_t tag, uint32_t data)
@@ -212,8 +207,10 @@ SCInput::SCInput(JSContext *cx, uint64_t *data, size_t nbytes)
 bool
 SCInput::read(uint64_t *p)
 {
-    if (point == end)
+    if (point == end) {
+        *p = 0;  /* initialize to shut GCC up */
         return eof();
+    }
     *p = SwapBytes(*point++);
     return true;
 }
@@ -221,7 +218,7 @@ SCInput::read(uint64_t *p)
 bool
 SCInput::readPair(uint32_t *tagp, uint32_t *datap)
 {
-    uint64_t u = 0;     /* initialize to shut GCC up */
+    uint64_t u;
     bool ok = read(&u);
     if (ok) {
         *tagp = uint32_t(u >> 32);
@@ -491,7 +488,11 @@ JSStructuredCloneWriter::parseTransferable()
             return false;
         }
 
-        JSObject* tObj = &v.toObject();
+        JSObject* tObj = UnwrapObjectChecked(&v.toObject());
+        if (!tObj) {
+            JS_ReportError(context(), "Permission denied to access object");
+            return false;
+        }
         if (!tObj->isArrayBuffer()) {
             reportErrorTransferable();
             return false;

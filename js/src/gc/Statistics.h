@@ -10,6 +10,9 @@
 
 #include <string.h>
 
+#include "mozilla/DebugOnly.h"
+#include "mozilla/GuardObjects.h"
+
 #include "jsfriendapi.h"
 #include "jspubtd.h"
 #include "jsutil.h"
@@ -22,31 +25,42 @@ namespace gcstats {
 enum Phase {
     PHASE_GC_BEGIN,
     PHASE_WAIT_BACKGROUND_THREAD,
+    PHASE_MARK_DISCARD_CODE,
     PHASE_PURGE,
     PHASE_MARK,
-    PHASE_MARK_DISCARD_CODE,
     PHASE_MARK_ROOTS,
     PHASE_MARK_TYPES,
     PHASE_MARK_DELAYED,
-    PHASE_MARK_WEAK,
-    PHASE_MARK_GRAY,
-    PHASE_MARK_GRAY_WEAK,
-    PHASE_FINALIZE_START,
     PHASE_SWEEP,
+    PHASE_SWEEP_MARK,
+    PHASE_SWEEP_MARK_TYPES,
+    PHASE_SWEEP_MARK_DELAYED,
+    PHASE_SWEEP_MARK_INCOMING_BLACK,
+    PHASE_SWEEP_MARK_WEAK,
+    PHASE_SWEEP_MARK_INCOMING_GRAY,
+    PHASE_SWEEP_MARK_GRAY,
+    PHASE_SWEEP_MARK_GRAY_WEAK,
+    PHASE_FINALIZE_START,
     PHASE_SWEEP_ATOMS,
     PHASE_SWEEP_COMPARTMENTS,
-    PHASE_SWEEP_TABLES,
-    PHASE_SWEEP_OBJECT,
-    PHASE_SWEEP_STRING,
-    PHASE_SWEEP_SCRIPT,
-    PHASE_SWEEP_SHAPE,
-    PHASE_SWEEP_IONCODE,
     PHASE_SWEEP_DISCARD_CODE,
+    PHASE_SWEEP_TABLES,
+    PHASE_SWEEP_TABLES_WRAPPER,
+    PHASE_SWEEP_TABLES_BASE_SHAPE,
+    PHASE_SWEEP_TABLES_INITIAL_SHAPE,
+    PHASE_SWEEP_TABLES_TYPE_OBJECT,
+    PHASE_SWEEP_TABLES_BREAKPOINT,
+    PHASE_SWEEP_TABLES_REGEXP,
     PHASE_DISCARD_ANALYSIS,
     PHASE_DISCARD_TI,
     PHASE_FREE_TI_ARENA,
     PHASE_SWEEP_TYPES,
     PHASE_CLEAR_SCRIPT_ANALYSIS,
+    PHASE_SWEEP_OBJECT,
+    PHASE_SWEEP_STRING,
+    PHASE_SWEEP_SCRIPT,
+    PHASE_SWEEP_SHAPE,
+    PHASE_SWEEP_IONCODE,
     PHASE_FINALIZE_END,
     PHASE_DESTROY,
     PHASE_GC_END,
@@ -138,6 +152,13 @@ struct Statistics {
     /* Allocated space before the GC started. */
     size_t preBytes;
 
+#ifdef DEBUG
+    /* Phases that are currently on stack. */
+    static const size_t MAX_NESTING = 8;
+    Phase phaseNesting[MAX_NESTING];
+#endif
+    mozilla::DebugOnly<size_t> phaseNestingDepth;
+
     /* Sweep times for SCCs of compartments. */
     Vector<int64_t, 0, SystemAllocPolicy> sccTimes;
 
@@ -152,39 +173,56 @@ struct Statistics {
     double computeMMU(int64_t resolution);
 };
 
-struct AutoGCSlice {
+struct AutoGCSlice
+{
     AutoGCSlice(Statistics &stats, int collectedCount, int compartmentCount, gcreason::Reason reason
-                JS_GUARD_OBJECT_NOTIFIER_PARAM)
+                MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : stats(stats)
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
         stats.beginSlice(collectedCount, compartmentCount, reason);
     }
     ~AutoGCSlice() { stats.endSlice(); }
 
     Statistics &stats;
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
-struct AutoPhase {
-    AutoPhase(Statistics &stats, Phase phase JS_GUARD_OBJECT_NOTIFIER_PARAM)
-      : stats(stats), phase(phase) { JS_GUARD_OBJECT_NOTIFIER_INIT; stats.beginPhase(phase); }
-    ~AutoPhase() { stats.endPhase(phase); }
+struct AutoPhase
+{
+    AutoPhase(Statistics &stats, Phase phase
+              MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+      : stats(stats), phase(phase)
+    {
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+        stats.beginPhase(phase);
+    }
+    ~AutoPhase() {
+        stats.endPhase(phase);
+    }
 
     Statistics &stats;
     Phase phase;
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
-struct AutoSCC {
-    AutoSCC(Statistics &stats, unsigned scc JS_GUARD_OBJECT_NOTIFIER_PARAM)
-      : stats(stats), scc(scc) { JS_GUARD_OBJECT_NOTIFIER_INIT; start = stats.beginSCC(); }
-    ~AutoSCC() { stats.endSCC(scc, start); }
+struct AutoSCC
+{
+    AutoSCC(Statistics &stats, unsigned scc
+            MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+      : stats(stats), scc(scc)
+    {
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+        start = stats.beginSCC();
+    }
+    ~AutoSCC() {
+        stats.endSCC(scc, start);
+    }
 
     Statistics &stats;
     unsigned scc;
     int64_t start;
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 } /* namespace gcstats */

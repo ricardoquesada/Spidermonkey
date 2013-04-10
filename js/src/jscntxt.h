@@ -11,6 +11,7 @@
 #define jscntxt_h___
 
 #include "mozilla/Attributes.h"
+#include "mozilla/GuardObjects.h"
 #include "mozilla/LinkedList.h"
 
 #include <string.h>
@@ -31,8 +32,10 @@
 #include "gc/Statistics.h"
 #include "js/HashTable.h"
 #include "js/Vector.h"
-#include "vm/Stack.h"
+#include "vm/DateTime.h"
 #include "vm/SPSProfiler.h"
+#include "vm/Stack.h"
+#include "vm/ThreadPool.h"
 
 #include "ion/PcScriptCache.h"
 
@@ -63,14 +66,14 @@ class AutoCycleDetector
     bool cyclic;
     uint32_t hashsetGenerationAtInit;
     ObjectSet::AddPtr hashsetAddPointer;
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 
   public:
     AutoCycleDetector(JSContext *cx, JSObject *obj
-                      JS_GUARD_OBJECT_NOTIFIER_PARAM)
+                      MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : cx(cx), obj(obj), cyclic(true)
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
 
     ~AutoCycleDetector();
@@ -97,7 +100,6 @@ class IonActivation;
 
 class WeakMapBase;
 class InterpreterFrames;
-class DebugScopes;
 class WorkerThreadState;
 
 /*
@@ -203,10 +205,10 @@ struct EvalCacheHashPolicy
     typedef EvalCacheLookup Lookup;
 
     static HashNumber hash(const Lookup &l);
-    static bool match(JSScript *script, const EvalCacheLookup &l);
+    static bool match(UnrootedScript script, const EvalCacheLookup &l);
 };
 
-typedef HashSet<JSScript *, EvalCacheHashPolicy, SystemAllocPolicy> EvalCache;
+typedef HashSet<RawScript, EvalCacheHashPolicy, SystemAllocPolicy> EvalCache;
 
 class NativeIterCache
 {
@@ -316,7 +318,7 @@ class NewObjectCache
     inline void fillType(EntryIndex entry, Class *clasp, js::types::TypeObject *type, gc::AllocKind kind, JSObject *obj);
 
     /* Invalidate any entries which might produce an object with shape/proto. */
-    void invalidateEntriesForShape(JSContext *cx, Shape *shape, JSObject *proto);
+    void invalidateEntriesForShape(JSContext *cx, HandleShape shape, HandleObject proto);
 
   private:
     inline bool lookup(Class *clasp, gc::Cell *key, gc::AllocKind kind, EntryIndex *pentry);
@@ -434,10 +436,24 @@ class PerThreadData : public js::PerThreadDataFriendFields
     int                 gcAssertNoGCDepth;
 #endif
 
+    /*
+     * When this flag is non-zero, any attempt to GC will be skipped. It is used
+     * to suppress GC when reporting an OOM (see js_ReportOutOfMemory) and in
+     * debugging facilities that cannot tolerate a GC and would rather OOM
+     * immediately, such as utilities exposed to GDB. Setting this flag is
+     * extremely dangerous and should only be used when in an OOM situation or
+     * in non-exposed debugging facilities.
+     */
+    int32_t             suppressGC;
+
     PerThreadData(JSRuntime *runtime);
 
     bool associatedWith(const JSRuntime *rt) { return runtime_ == rt; }
 };
+
+namespace gc {
+class MarkingValidator;
+} // namespace gc
 
 } // namespace js
 
@@ -467,7 +483,11 @@ struct JSRuntime : js::RuntimeFriendFields
     void clearOwnerThread();
     void setOwnerThread();
     JS_FRIEND_API(void) abortIfWrongThread() const;
+#ifdef DEBUG
     JS_FRIEND_API(void) assertValidThread() const;
+#else
+    void assertValidThread() const {}
+#endif
   private:
     void                *ownerThread_;
   public:
@@ -502,7 +522,7 @@ struct JSRuntime : js::RuntimeFriendFields
 #endif
     js::ion::IonRuntime *ionRuntime_;
 
-    JSObject *selfHostedGlobal_;
+    JSObject *selfHostingGlobal_;
 
     JSC::ExecutableAllocator *createExecutableAllocator(JSContext *cx);
     WTF::BumpPointerAllocator *createBumpPointerAllocator(JSContext *cx);
@@ -540,13 +560,14 @@ struct JSRuntime : js::RuntimeFriendFields
     }
 
     bool initSelfHosting(JSContext *cx);
-    void markSelfHostedGlobal(JSTracer *trc);
-    bool isSelfHostedGlobal(js::HandleObject global) {
-        return global == selfHostedGlobal_;
+    void markSelfHostingGlobal(JSTracer *trc);
+    bool isSelfHostingGlobal(js::HandleObject global) {
+        return global == selfHostingGlobal_;
     }
-    JSFunction *getSelfHostedFunction(JSContext *cx, js::Handle<js::PropertyName*> name);
-    bool cloneSelfHostedValueById(JSContext *cx, js::HandleId id, js::HandleObject holder,
-                                  js::MutableHandleValue vp);
+    bool cloneSelfHostedFunctionScript(JSContext *cx, js::Handle<js::PropertyName*> name,
+                                       js::Handle<JSFunction*> targetFun);
+    bool cloneSelfHostedValue(JSContext *cx, js::Handle<js::PropertyName*> name,
+                              js::MutableHandleValue vp);
 
     /* Base address of the native stack for the current thread. */
     uintptr_t           nativeStackBase;
@@ -649,7 +670,6 @@ struct JSRuntime : js::RuntimeFriendFields
      */
     volatile uintptr_t  gcIsNeeded;
 
-    js::WeakMapBase     *gcWeakMapList;
     js::gcstats::Statistics gcStats;
 
     /* Incremented on every GC slice. */
@@ -693,20 +713,32 @@ struct JSRuntime : js::RuntimeFriendFields
     /* Whether any sweeping will take place in the separate GC helper thread. */
     bool                gcSweepOnBackgroundThread;
 
-    /* List head of compartments being swept. */
+    /* Whether any black->gray edges were found during marking. */
+    bool                gcFoundBlackGrayEdges;
+
+    /* List head of compartments to be swept in the background. */
     JSCompartment       *gcSweepingCompartments;
+
+    /* Index of current compartment group (for stats). */
+    unsigned            gcCompartmentGroupIndex;
 
     /*
      * Incremental sweep state.
      */
+    JSCompartment       *gcCompartmentGroups;
+    JSCompartment       *gcCurrentCompartmentGroup;
     int                 gcSweepPhase;
-    ptrdiff_t           gcSweepCompartmentIndex;
+    JSCompartment       *gcSweepCompartment;
     int                 gcSweepKindIndex;
 
     /*
      * List head of arenas allocated during the sweep phase.
      */
     js::gc::ArenaHeader *gcArenasAllocatedDuringSweep;
+
+#ifdef DEBUG
+    js::gc::MarkingValidator *gcMarkingValidator;
+#endif
 
     /*
      * Indicates that a GC slice has taken place in the middle of an animation
@@ -751,17 +783,11 @@ struct JSRuntime : js::RuntimeFriendFields
 
     bool                gcPoke;
 
-    enum HeapState {
-        Idle,       // doing nothing with the GC heap
-        Tracing,    // tracing the GC heap without collecting, e.g. IterateCompartments()
-        Collecting  // doing a GC of the heap
-    };
+    js::HeapState       heapState;
 
-    HeapState           heapState;
+    bool isHeapBusy() { return heapState != js::Idle; }
 
-    bool isHeapBusy() { return heapState != Idle; }
-
-    bool isHeapCollecting() { return heapState == Collecting; }
+    bool isHeapCollecting() { return heapState == js::Collecting; }
 
     /*
      * These options control the zealousness of the GC. The fundamental values
@@ -882,13 +908,10 @@ struct JSRuntime : js::RuntimeFriendFields
     bool                alwaysPreserveCode;
 
     /* Had an out-of-memory error which did not populate an exception. */
-    JSBool              hadOutOfMemory;
+    bool                hadOutOfMemory;
 
-    /*
-     * Linked list of all js::Debugger objects. This may be accessed by the GC
-     * thread, if any, or a thread that is in a request and holds gcLock.
-     */
-    JSCList             debuggerList;
+    /* Linked list of all Debugger objects in the runtime. */
+    mozilla::LinkedList<js::Debugger> debuggerList;
 
     /*
      * Head of circular list of all enabled Debuggers that have
@@ -896,16 +919,10 @@ struct JSRuntime : js::RuntimeFriendFields
      */
     JSCList             onNewGlobalObjectWatchers;
 
-    /* Bookkeeping information for debug scope objects. */
-    js::DebugScopes     *debugScopes;
-
-    /* Linked list of live array buffers with >1 view */
-    JSObject            *liveArrayBuffers;
-
     /* Client opaque pointers */
     void                *data;
 
-    /* These combine to interlock the GC and new requests. */
+    /* Synchronize GC heap access between main thread and GCHelperThread. */
     PRLock              *gcLock;
 
     js::GCHelperThread  gcHelperThread;
@@ -968,6 +985,8 @@ struct JSRuntime : js::RuntimeFriendFields
     /* State used by jsdtoa.cpp. */
     DtoaState           *dtoaState;
 
+    js::DateTimeInfo    dateTimeInfo;
+
     js::ConservativeGCData conservativeGC;
 
   private:
@@ -1003,13 +1022,6 @@ struct JSRuntime : js::RuntimeFriendFields
     size_t              noGCOrAllocationCheck;
 #endif
 
-    /*
-     * To ensure that cx->malloc does not cause a GC, we set this flag during
-     * OOM reporting (in js_ReportOutOfMemory). If a GC is requested while
-     * reporting the OOM, we ignore it.
-     */
-    int32_t             inOOMReport;
-
     bool                jitHardening;
 
     // If Ion code is on the stack, and has called into C++, this will be
@@ -1027,6 +1039,10 @@ struct JSRuntime : js::RuntimeFriendFields
 
     // Cache for ion::GetPcScript().
     js::ion::PcScriptCache *ionPcScriptCache;
+
+    js::ThreadPool threadPool;
+
+    js::CTypesActivityCallback  ctypesActivityCallback;
 
   private:
     // In certain cases, we want to optimize certain opcodes to typed instructions,
@@ -1176,13 +1192,32 @@ struct JSRuntime : js::RuntimeFriendFields
     size_t sizeOfExplicitNonHeap();
 
   private:
+
     JSUseHelperThreads useHelperThreads_;
+    int32_t requestedHelperThreadCount;
+
   public:
+
     bool useHelperThreads() const {
 #ifdef JS_THREADSAFE
         return useHelperThreads_ == JS_USE_HELPER_THREADS;
 #else
         return false;
+#endif
+    }
+
+    void requestHelperThreadCount(size_t count) {
+        requestedHelperThreadCount = count;
+    }
+
+    /* Number of helper threads which should be created for this runtime. */
+    size_t helperThreadCount() const {
+#ifdef JS_THREADSAFE
+        if (requestedHelperThreadCount < 0)
+            return js::GetCPUCount() - 1;
+        return requestedHelperThreadCount;
+#else
+        return 0;
 #endif
     }
 };
@@ -1324,14 +1359,32 @@ struct JSContext : js::ContextFriendFields,
     bool                hasVersionOverride;
 
     /* Exception state -- the exception member is a GC root by definition. */
-    JSBool              throwing;            /* is there a pending exception? */
+    bool                throwing;            /* is there a pending exception? */
     js::Value           exception;           /* most-recently-thrown exception */
 
     /* Per-context run options. */
     unsigned            runOptions;          /* see jsapi.h for JSOPTION_* */
 
+    /* Default locale for Internationalization API */
+    char                *defaultLocale;
+
   public:
     int32_t             reportGranularity;  /* see jsprobes.h */
+
+    /*
+     * Set the default locale for the ECMAScript Internationalization API
+     * (Intl.Collator, Intl.NumberFormat, Intl.DateTimeFormat).
+     * Note that the Internationalization API encourages clients to
+     * specify their own locales.
+     * The locale string remains owned by the caller.
+     */
+    bool setDefaultLocale(const char *locale);
+
+    /* Reset the default locale to OS defaults. */
+    void resetDefaultLocale();
+
+    /* Gets current default locale. String remains owned by context. */
+    const char *getDefaultLocale();
 
     /* Locale specific callbacks for string conversion. */
     JSLocaleCallbacks   *localeCallbacks;
@@ -1340,9 +1393,6 @@ struct JSContext : js::ContextFriendFields,
 
     /* True if generating an error, to prevent runaway recursion. */
     bool                generatingError;
-
-    /* The current compartment. */
-    JSCompartment       *compartment;
 
     inline void setCompartment(JSCompartment *c) { compartment = c; }
 
@@ -1547,7 +1597,6 @@ struct JSContext : js::ContextFriendFields,
 
     inline bool typeInferenceEnabled() const;
 
-    /* Caller must be holding runtime->gcLock. */
     void updateJITEnabled();
 
 #ifdef MOZ_TRACE_JSCALLS
@@ -1562,8 +1611,6 @@ struct JSContext : js::ContextFriendFields,
             functionCallback(fun, scr, this, entering);
     }
 #endif
-
-    DSTOffsetCache dstOffsetCache;
 
   private:
     /* Innermost-executing generator or null if no generator are executing. */
@@ -1673,10 +1720,10 @@ struct AutoResolving {
     };
 
     AutoResolving(JSContext *cx, HandleObject obj, HandleId id, Kind kind = LOOKUP
-                  JS_GUARD_OBJECT_NOTIFIER_PARAM)
+                  MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : context(cx), object(obj), id(id), kind(kind), link(cx->resolvingList)
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
         JS_ASSERT(obj);
         cx->resolvingList = this;
     }
@@ -1698,17 +1745,17 @@ struct AutoResolving {
     HandleId            id;
     Kind                const kind;
     AutoResolving       *const link;
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 #if JS_HAS_XML_SUPPORT
 class AutoXMLRooter : private AutoGCRooter {
   public:
     AutoXMLRooter(JSContext *cx, JSXML *xml
-                  JS_GUARD_OBJECT_NOTIFIER_PARAM)
+                  MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : AutoGCRooter(cx, XML), xml(xml)
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
         JS_ASSERT(xml);
     }
 
@@ -1716,7 +1763,7 @@ class AutoXMLRooter : private AutoGCRooter {
 
   private:
     JSXML * const xml;
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 #endif /* JS_HAS_XML_SUPPORT */
 
@@ -1763,82 +1810,41 @@ class AutoLockGC
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
-class AutoUnlockGC {
+class AutoUnlockGC
+{
   private:
 #ifdef JS_THREADSAFE
     JSRuntime *rt;
 #endif
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 
   public:
     explicit AutoUnlockGC(JSRuntime *rt
-                          JS_GUARD_OBJECT_NOTIFIER_PARAM)
+                          MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
 #ifdef JS_THREADSAFE
       : rt(rt)
 #endif
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
         JS_UNLOCK_GC(rt);
     }
     ~AutoUnlockGC() { JS_LOCK_GC(rt); }
 };
 
-class AutoKeepAtoms {
+class AutoKeepAtoms
+{
     JSRuntime *rt;
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 
   public:
     explicit AutoKeepAtoms(JSRuntime *rt
-                           JS_GUARD_OBJECT_NOTIFIER_PARAM)
+                           MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : rt(rt)
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
         JS_KEEP_ATOMS(rt);
     }
     ~AutoKeepAtoms() { JS_UNKEEP_ATOMS(rt); }
-};
-
-class AutoReleasePtr {
-    void        *ptr;
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
-
-    AutoReleasePtr(const AutoReleasePtr &other) MOZ_DELETE;
-    AutoReleasePtr operator=(const AutoReleasePtr &other) MOZ_DELETE;
-
-  public:
-    explicit AutoReleasePtr(void *ptr
-                            JS_GUARD_OBJECT_NOTIFIER_PARAM)
-      : ptr(ptr)
-    {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
-    }
-    void forget() { ptr = NULL; }
-    ~AutoReleasePtr() { js_free(ptr); }
-};
-
-/*
- * FIXME: bug 602774: cleaner API for AutoReleaseNullablePtr
- */
-class AutoReleaseNullablePtr {
-    void        *ptr;
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
-
-    AutoReleaseNullablePtr(const AutoReleaseNullablePtr &other) MOZ_DELETE;
-    AutoReleaseNullablePtr operator=(const AutoReleaseNullablePtr &other) MOZ_DELETE;
-
-  public:
-    explicit AutoReleaseNullablePtr(void *ptr
-                                    JS_GUARD_OBJECT_NOTIFIER_PARAM)
-      : ptr(ptr)
-    {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
-    }
-    void reset(void *ptr2) {
-        if (ptr)
-            js_free(ptr);
-        ptr = ptr2;
-    }
-    ~AutoReleaseNullablePtr() { if (ptr) js_free(ptr); }
 };
 
 } /* namespace js */
@@ -1847,10 +1853,10 @@ class JSAutoResolveFlags
 {
   public:
     JSAutoResolveFlags(JSContext *cx, unsigned flags
-                       JS_GUARD_OBJECT_NOTIFIER_PARAM)
+                       MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : mContext(cx), mSaved(cx->resolveFlags)
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
         cx->resolveFlags = flags;
     }
 
@@ -1859,7 +1865,7 @@ class JSAutoResolveFlags
   private:
     JSContext *mContext;
     unsigned mSaved;
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 namespace js {
@@ -1914,6 +1920,11 @@ enum DestroyContextMode {
 extern void
 DestroyContext(JSContext *cx, DestroyContextMode mode);
 
+enum ErrorArgumentsType {
+    ArgumentsAreUnicode,
+    ArgumentsAreASCII
+};
+
 } /* namespace js */
 
 #ifdef va_start
@@ -1923,7 +1934,7 @@ js_ReportErrorVA(JSContext *cx, unsigned flags, const char *format, va_list ap);
 extern JSBool
 js_ReportErrorNumberVA(JSContext *cx, unsigned flags, JSErrorCallback callback,
                        void *userRef, const unsigned errorNumber,
-                       JSBool charArgs, va_list ap);
+                       js::ErrorArgumentsType argumentsType, va_list ap);
 
 extern bool
 js_ReportErrorNumberUCArray(JSContext *cx, unsigned flags, JSErrorCallback callback,
@@ -1934,7 +1945,7 @@ extern JSBool
 js_ExpandErrorArguments(JSContext *cx, JSErrorCallback callback,
                         void *userRef, const unsigned errorNumber,
                         char **message, JSErrorReport *reportp,
-                        bool charArgs, va_list ap);
+                        js::ErrorArgumentsType argumentsType, va_list ap);
 #endif
 
 namespace js {
@@ -2106,63 +2117,76 @@ SetValueRangeToNull(Value *vec, size_t len)
     SetValueRangeToNull(vec, vec + len);
 }
 
-class AutoObjectVector : public AutoVectorRooter<JSObject *>
+class AutoObjectVector : public AutoVectorRooter<RawObject>
 {
   public:
     explicit AutoObjectVector(JSContext *cx
-                              JS_GUARD_OBJECT_NOTIFIER_PARAM)
-        : AutoVectorRooter<JSObject *>(cx, OBJVECTOR)
+                              MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+        : AutoVectorRooter<RawObject>(cx, OBJVECTOR)
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
 
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
-class AutoStringVector : public AutoVectorRooter<JSString *>
+class AutoStringVector : public AutoVectorRooter<RawString>
 {
   public:
     explicit AutoStringVector(JSContext *cx
-                              JS_GUARD_OBJECT_NOTIFIER_PARAM)
-        : AutoVectorRooter<JSString *>(cx, STRINGVECTOR)
+                              MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+        : AutoVectorRooter<RawString>(cx, STRINGVECTOR)
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
 
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
-class AutoShapeVector : public AutoVectorRooter<Shape *>
+class AutoShapeVector : public AutoVectorRooter<RawShape>
 {
   public:
     explicit AutoShapeVector(JSContext *cx
-                             JS_GUARD_OBJECT_NOTIFIER_PARAM)
-        : AutoVectorRooter<Shape *>(cx, SHAPEVECTOR)
+                             MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+        : AutoVectorRooter<RawShape>(cx, SHAPEVECTOR)
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
 
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 class AutoValueArray : public AutoGCRooter
 {
-    js::Value *start_;
+    RawValue *start_;
     unsigned length_;
     SkipRoot skip;
 
   public:
-    AutoValueArray(JSContext *cx, js::Value *start, unsigned length
-                   JS_GUARD_OBJECT_NOTIFIER_PARAM)
+    AutoValueArray(JSContext *cx, RawValue *start, unsigned length
+                   MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : AutoGCRooter(cx, VALARRAY), start_(start), length_(length), skip(cx, start, length)
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
 
-    Value *start() { return start_; }
+    RawValue *start() { return start_; }
     unsigned length() const { return length_; }
 
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
+};
+
+class AutoObjectObjectHashMap : public AutoHashMapRooter<RawObject, RawObject>
+{
+  public:
+    explicit AutoObjectObjectHashMap(JSContext *cx
+                                     MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+      : AutoHashMapRooter<RawObject, RawObject>(cx, OBJOBJHASHMAP)
+    {
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+    }
+
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 /*

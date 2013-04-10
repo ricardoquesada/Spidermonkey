@@ -9,6 +9,7 @@
 #define String_h_
 
 #include "mozilla/Attributes.h"
+#include "mozilla/GuardObjects.h"
 
 #include "jsapi.h"
 #include "jsatom.h"
@@ -653,11 +654,11 @@ JS_STATIC_ASSERT(sizeof(JSInlineString) == sizeof(JSString));
 
 class JSShortString : public JSInlineString
 {
-    /* This can be any value that is a multiple of Cell::CellSize. */
+    /* This can be any value that is a multiple of CellSize. */
     static const size_t INLINE_EXTENSION_CHARS = sizeof(JSString::Data) / sizeof(jschar);
 
     static void staticAsserts() {
-        JS_STATIC_ASSERT(INLINE_EXTENSION_CHARS % js::gc::Cell::CellSize == 0);
+        JS_STATIC_ASSERT(INLINE_EXTENSION_CHARS % js::gc::CellSize == 0);
         JS_STATIC_ASSERT(MAX_SHORT_LENGTH + 1 ==
                          (sizeof(JSShortString) -
                           offsetof(JSShortString, d.inlineStorage)) / sizeof(jschar));
@@ -835,17 +836,17 @@ class AutoNameVector : public AutoVectorRooter<PropertyName *>
     typedef AutoVectorRooter<PropertyName *> BaseType;
   public:
     explicit AutoNameVector(JSContext *cx
-                            JS_GUARD_OBJECT_NOTIFIER_PARAM)
+                            MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
         : AutoVectorRooter<PropertyName *>(cx, NAMEVECTOR)
     {
-        JS_GUARD_OBJECT_NOTIFIER_INIT;
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
 
     HandlePropertyName operator[](size_t i) const {
         return HandlePropertyName::fromMarkedLocation(&BaseType::operator[](i));
     }
 
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 } /* namespace js */
@@ -855,6 +856,7 @@ class AutoNameVector : public AutoVectorRooter<PropertyName *>
 JS_ALWAYS_INLINE const jschar *
 JSString::getChars(JSContext *cx)
 {
+    JS::AutoAssertNoGC nogc;
     if (JSLinearString *str = ensureLinear(cx))
         return str->chars();
     return NULL;
@@ -863,6 +865,7 @@ JSString::getChars(JSContext *cx)
 JS_ALWAYS_INLINE const jschar *
 JSString::getCharsZ(JSContext *cx)
 {
+    JS::AutoAssertNoGC nogc;
     if (JSFlatString *str = ensureFlat(cx))
         return str->chars();
     return NULL;
@@ -871,6 +874,7 @@ JSString::getCharsZ(JSContext *cx)
 JS_ALWAYS_INLINE JSLinearString *
 JSString::ensureLinear(JSContext *cx)
 {
+    JS::AutoAssertNoGC nogc;
     return isLinear()
            ? &asLinear()
            : asRope().flatten(cx);
@@ -879,6 +883,7 @@ JSString::ensureLinear(JSContext *cx)
 JS_ALWAYS_INLINE JSFlatString *
 JSString::ensureFlat(JSContext *cx)
 {
+    JS::AutoAssertNoGC nogc;
     return isFlat()
            ? &asFlat()
            : isDependent()
@@ -889,6 +894,7 @@ JSString::ensureFlat(JSContext *cx)
 JS_ALWAYS_INLINE JSStableString *
 JSString::ensureStable(JSContext *maybecx)
 {
+    JS::AutoAssertNoGC nogc;
     if (isRope()) {
         JSFlatString *flat = asRope().flatten(maybecx);
         if (!flat)

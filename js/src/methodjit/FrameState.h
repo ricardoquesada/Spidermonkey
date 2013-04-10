@@ -696,7 +696,6 @@ class FrameState
 
     /* Compiler-owned metadata about stack entries, reset on push/pop/copy. */
     struct StackEntryExtra {
-        bool initArray;
         JSObject *initObject;
         types::StackTypeSet *types;
         JSAtom *name;
@@ -826,7 +825,7 @@ class FrameState
 #ifdef DEBUG
     void assertValidRegisterState() const;
 #else
-    inline void assertValidRegisterState() const {};
+    inline void assertValidRegisterState() const {}
 #endif
 
     // Return an address, relative to the StackFrame, that represents where

@@ -12,8 +12,8 @@
 #include "IonCode.h"
 #include "SnapshotReader.h"
 
-struct JSFunction;
-struct JSScript;
+class JSFunction;
+class JSScript;
 
 namespace js {
 namespace ion {
@@ -61,9 +61,9 @@ class IonActivationIterator;
 class IonFrameIterator
 {
   protected:
-    uint8 *current_;
+    uint8_t *current_;
     FrameType type_;
-    uint8 *returnAddressToFp_;
+    uint8_t *returnAddressToFp_;
     size_t frameSize_;
 
   private:
@@ -71,7 +71,7 @@ class IonFrameIterator
     const IonActivation *activation_;
 
   public:
-    IonFrameIterator(uint8 *top)
+    IonFrameIterator(uint8_t *top)
       : current_(top),
         type_(IonFrame_Exit),
         returnAddressToFp_(NULL),
@@ -87,12 +87,12 @@ class IonFrameIterator
     FrameType type() const {
         return type_;
     }
-    uint8 *fp() const {
+    uint8_t *fp() const {
         return current_;
     }
 
     inline IonCommonFrameLayout *current() const;
-    inline uint8 *returnAddress() const;
+    inline uint8_t *returnAddress() const;
 
     IonJSFrameLayout *jsFrame() const {
         JS_ASSERT(type() == IonFrame_OptimizedJS);
@@ -129,20 +129,20 @@ class IonFrameIterator
     JSFunction *callee() const;
     JSFunction *maybeCallee() const;
     unsigned numActualArgs() const;
-    JSScript *script() const;
+    UnrootedScript script() const;
     Value *nativeVp() const;
     Value *actualArgs() const;
 
     // Returns the return address of the frame above this one (that is, the
     // return address that returns back to the current frame).
-    uint8 *returnAddressToFp() const {
+    uint8_t *returnAddressToFp() const {
         return returnAddressToFp_;
     }
 
     // Previous frame information extracted from the current frame.
     inline size_t prevFrameLocalSize() const;
     inline FrameType prevType() const;
-    uint8 *prevFp() const;
+    uint8_t *prevFp() const;
 
     // Returns the stack space used by the current frame, in bytes. This does
     // not include the size of its fixed header.
@@ -174,7 +174,7 @@ class IonFrameIterator
 
 class IonActivationIterator
 {
-    uint8 *top_;
+    uint8_t *top_;
     IonActivation *activation_;
 
   private:
@@ -189,7 +189,7 @@ class IonActivationIterator
     IonActivation *activation() const {
         return activation_;
     }
-    uint8 *top() const {
+    uint8_t *top() const {
         return top_;
     }
     bool more() const;
@@ -267,7 +267,7 @@ class InlineFrameIterator
     HeapPtr<JSFunction> callee_;
     HeapPtr<JSScript> script_;
     jsbytecode *pc_;
-    uint32 numActualArgs_;
+    uint32_t numActualArgs_;
 
   private:
     void findNextFrame();
@@ -275,6 +275,7 @@ class InlineFrameIterator
   public:
     InlineFrameIterator(const IonFrameIterator *iter);
     InlineFrameIterator(const IonBailoutIterator *iter);
+    InlineFrameIterator(const InlineFrameIterator *iter);
 
     bool more() const {
         return frame_ && framesRead_ < start_.frameCount();
@@ -291,8 +292,8 @@ class InlineFrameIterator
     template <class Op>
     inline void forEachCanonicalActualArg(Op op, unsigned start, unsigned count) const;
 
-    JSScript *script() const {
-        return script_;
+    UnrootedScript script() const {
+        return script_.get();
     }
     jsbytecode *pc() const {
         return pc_;
@@ -304,7 +305,7 @@ class InlineFrameIterator
     bool isConstructing() const;
     JSObject *scopeChain() const;
     JSObject *thisObject() const;
-    InlineFrameIterator operator++();
+    InlineFrameIterator &operator++();
 
     void dump() const;
 };

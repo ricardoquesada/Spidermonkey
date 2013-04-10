@@ -30,6 +30,8 @@
 #ifndef MacroAssemblerX86_64_h
 #define MacroAssemblerX86_64_h
 
+#include "mozilla/DebugOnly.h"
+
 #include "assembler/wtf/Platform.h"
 
 #if ENABLE_ASSEMBLER && WTF_CPU_X86_64
@@ -37,8 +39,6 @@
 #include "MacroAssemblerX86Common.h"
 
 #define REPTACH_OFFSET_CALL_R11 3
-
-#include "mozilla/Util.h"
 
 namespace JSC {
 
@@ -366,6 +366,12 @@ public:
     {
         m_assembler.movq_rm_disp32(src, address.offset, address.base);
         return DataLabel32(this);
+    }
+
+    void move32(RegisterID src, RegisterID dest)
+    {
+        // upper 32bit will be 0
+        m_assembler.movl_rr(src, dest);
     }
 
     void movePtrToDouble(RegisterID src, FPRegisterID dest)

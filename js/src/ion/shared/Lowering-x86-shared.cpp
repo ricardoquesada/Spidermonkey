@@ -80,15 +80,15 @@ bool
 LIRGeneratorX86Shared::lowerModI(MMod *mod)
 {
     if (mod->rhs()->isConstant()) {
-        int32 rhs = mod->rhs()->toConstant()->value().toInt32();
-        int32 shift;
+        int32_t rhs = mod->rhs()->toConstant()->value().toInt32();
+        int32_t shift;
         JS_FLOOR_LOG2(shift, rhs);
         if (1 << shift == rhs) {
             LModPowTwoI *lir = new LModPowTwoI(useRegisterAtStart(mod->lhs()), shift);
             return assignSnapshot(lir) && defineReuseInput(lir, mod, 0);
         }
     }
-    LModI *lir = new LModI(useFixed(mod->lhs(), eax), useRegister(mod->rhs()));
+    LModI *lir = new LModI(useRegister(mod->lhs()), useRegister(mod->rhs()), tempFixed(eax));
     return assignSnapshot(lir) && defineFixed(lir, mod, LAllocation(AnyRegister(edx)));
 }
 

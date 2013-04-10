@@ -15,7 +15,7 @@ using namespace js;
 using namespace js::ion;
 
 template <typename T> void
-MacroAssembler::guardTypeSet(const T &address, types::TypeSet *types,
+MacroAssembler::guardTypeSet(const T &address, const types::TypeSet *types,
                              Register scratch, Label *mismatched)
 {
     JS_ASSERT(!types->unknown());
@@ -64,9 +64,9 @@ MacroAssembler::guardTypeSet(const T &address, types::TypeSet *types,
     bind(&matched);
 }
 
-template void MacroAssembler::guardTypeSet(const Address &address, types::TypeSet *types,
+template void MacroAssembler::guardTypeSet(const Address &address, const types::TypeSet *types,
                                            Register scratch, Label *mismatched);
-template void MacroAssembler::guardTypeSet(const ValueOperand &value, types::TypeSet *types,
+template void MacroAssembler::guardTypeSet(const ValueOperand &value, const types::TypeSet *types,
                                            Register scratch, Label *mismatched);
 
 void
@@ -106,51 +106,6 @@ MacroAssembler::PopRegsInMaskIgnore(RegisterSet set, RegisterSet ignore)
     }
 
     freeStack(reserved);
-}
-
-void
-MacroAssembler::branchTestValueTruthy(const ValueOperand &value, Label *ifTrue, FloatRegister fr)
-{
-    Register tag = splitTagForTest(value);
-    Label ifFalse;
-    Assembler::Condition cond;
-
-    // Eventually we will want some sort of type filter here. For now, just
-    // emit all easy cases. For speed we use the cached tag for all comparison,
-    // except for doubles, which we test last (as the operation can clobber the
-    // tag, which may be in ScratchReg).
-    branchTestUndefined(Assembler::Equal, tag, &ifFalse);
-
-    branchTestNull(Assembler::Equal, tag, &ifFalse);
-    branchTestObject(Assembler::Equal, tag, ifTrue);
-
-    Label notBoolean;
-    branchTestBoolean(Assembler::NotEqual, tag, &notBoolean);
-    branchTestBooleanTruthy(false, value, &ifFalse);
-    jump(ifTrue);
-    bind(&notBoolean);
-
-    Label notInt32;
-    branchTestInt32(Assembler::NotEqual, tag, &notInt32);
-    cond = testInt32Truthy(false, value);
-    j(cond, &ifFalse);
-    jump(ifTrue);
-    bind(&notInt32);
-
-    // Test if a string is non-empty.
-    Label notString;
-    branchTestString(Assembler::NotEqual, tag, &notString);
-    cond = testStringTruthy(false, value);
-    j(cond, &ifFalse);
-    jump(ifTrue);
-    bind(&notString);
-
-    // If we reach here the value is a double.
-    unboxDouble(value, fr);
-    cond = testDoubleTruthy(false, fr);
-    j(cond, &ifFalse);
-    jump(ifTrue);
-    bind(&ifFalse);
 }
 
 template<typename T>
@@ -627,3 +582,47 @@ MacroAssembler::generateBailoutTail(Register scratch)
     }
 }
 
+void printf0_(const char *output) {
+    printf("%s", output);
+}
+
+void
+MacroAssembler::printf(const char *output)
+{
+    RegisterSet regs = RegisterSet::Volatile();
+    PushRegsInMask(regs);
+
+    Register temp = regs.takeGeneral();
+
+    setupUnalignedABICall(1, temp);
+    movePtr(ImmWord(output), temp);
+    passABIArg(temp);
+    callWithABI(JS_FUNC_TO_DATA_PTR(void *, printf0_));
+
+    PopRegsInMask(RegisterSet::Volatile());
+}
+
+void printf1_(const char *output, uintptr_t value) {
+    char *line = JS_sprintf_append(NULL, output, value);
+    printf("%s", line);
+    js_free(line);
+}
+
+void
+MacroAssembler::printf(const char *output, Register value)
+{
+    RegisterSet regs = RegisterSet::Volatile();
+    PushRegsInMask(regs);
+
+    regs.maybeTake(value);
+
+    Register temp = regs.takeGeneral();
+
+    setupUnalignedABICall(2, temp);
+    movePtr(ImmWord(output), temp);
+    passABIArg(temp);
+    passABIArg(value);
+    callWithABI(JS_FUNC_TO_DATA_PTR(void *, printf1_));
+
+    PopRegsInMask(RegisterSet::Volatile());
+}

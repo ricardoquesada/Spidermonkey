@@ -16,7 +16,7 @@
 #include "jsobj.h"
 
 /* Small arrays are dense, no matter what. */
-const unsigned MIN_SPARSE_INDEX = 256;
+const unsigned MIN_SPARSE_INDEX = 512;
 
 namespace js {
 /* 2^32-2, inclusive */
@@ -76,7 +76,7 @@ extern JSObject *
 NewSlowEmptyArray(JSContext *cx);
 
 /* Get the common shape used by all dense arrays with a prototype at globalObj. */
-extern Shape *
+extern UnrootedShape
 GetDenseArrayShape(JSContext *cx, HandleObject globalObj);
 
 extern JSBool

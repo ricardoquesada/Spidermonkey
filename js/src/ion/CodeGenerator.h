@@ -21,6 +21,7 @@
 namespace js {
 namespace ion {
 
+class OutOfLineTestObject;
 class OutOfLineNewArray;
 class OutOfLineNewObject;
 class CheckOverRecursedFailure;
@@ -53,6 +54,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitStart(LStart *lir);
     bool visitReturn(LReturn *ret);
     bool visitDefVar(LDefVar *lir);
+    bool visitDefFun(LDefFun *lir);
     bool visitOsrEntry(LOsrEntry *lir);
     bool visitOsrScopeChain(LOsrScopeChain *lir);
     bool visitStackArgT(LStackArgT *lir);
@@ -60,6 +62,8 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitValueToInt32(LValueToInt32 *lir);
     bool visitValueToDouble(LValueToDouble *lir);
     bool visitInt32ToDouble(LInt32ToDouble *lir);
+    void emitOOLTestObject(Register objreg, Label *ifTruthy, Label *ifFalsy, Register scratch);
+    bool visitTestOAndBranch(LTestOAndBranch *lir);
     bool visitTestVAndBranch(LTestVAndBranch *lir);
     bool visitPolyInlineDispatch(LPolyInlineDispatch *lir);
     bool visitIntToString(LIntToString *lir);
@@ -76,10 +80,9 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitMonitorTypes(LMonitorTypes *lir);
     bool visitCallNative(LCallNative *call);
     bool emitCallInvokeFunction(LInstruction *call, Register callereg,
-                                uint32 argc, uint32 unusedStack);
+                                uint32_t argc, uint32_t unusedStack);
     bool visitCallGeneric(LCallGeneric *call);
     bool visitCallKnown(LCallKnown *call);
-    bool visitCallConstructor(LCallConstructor *call);
     bool emitCallInvokeFunction(LApplyArgsGeneric *apply, Register extraStackSize);
     void emitPushArguments(LApplyArgsGeneric *apply, Register extraStackSpace);
     void emitPopArguments(LApplyArgsGeneric *apply, Register extraStackSize);
@@ -92,11 +95,13 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitNewObjectVMCall(LNewObject *lir);
     bool visitNewObject(LNewObject *lir);
     bool visitOutOfLineNewObject(OutOfLineNewObject *ool);
+    bool visitNewDeclEnvObject(LNewDeclEnvObject *lir);
     bool visitNewCallObject(LNewCallObject *lir);
     bool visitNewStringObject(LNewStringObject *lir);
     bool visitInitProp(LInitProp *lir);
     bool visitCreateThis(LCreateThis *lir);
-    bool visitCreateThisVM(LCreateThisVM *lir);
+    bool visitCreateThisWithProto(LCreateThisWithProto *lir);
+    bool visitCreateThisWithTemplate(LCreateThisWithTemplate *lir);
     bool visitReturnFromCtor(LReturnFromCtor *lir);
     bool visitArrayLength(LArrayLength *lir);
     bool visitTypedArrayLength(LTypedArrayLength *lir);
@@ -104,6 +109,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitStringLength(LStringLength *lir);
     bool visitInitializedLength(LInitializedLength *lir);
     bool visitSetInitializedLength(LSetInitializedLength *lir);
+    bool visitNotO(LNotO *ins);
     bool visitNotV(LNotV *ins);
     bool visitBoundsCheck(LBoundsCheck *lir);
     bool visitBoundsCheckRange(LBoundsCheckRange *lir);
@@ -115,15 +121,18 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitAbsI(LAbsI *lir);
     bool visitPowI(LPowI *lir);
     bool visitPowD(LPowD *lir);
+    bool visitNegD(LNegD *lir);
     bool visitRandom(LRandom *lir);
     bool visitMathFunctionD(LMathFunctionD *ins);
     bool visitModD(LModD *ins);
     bool visitMinMaxI(LMinMaxI *lir);
     bool visitBinaryV(LBinaryV *lir);
     bool visitCompareS(LCompareS *lir);
-    bool visitCompareV(LCompareV *lir);
-    bool visitIsNullOrUndefined(LIsNullOrUndefined *lir);
-    bool visitIsNullOrUndefinedAndBranch(LIsNullOrUndefinedAndBranch *lir);
+    bool visitCompareVM(LCompareVM *lir);
+    bool visitIsNullOrLikeUndefined(LIsNullOrLikeUndefined *lir);
+    bool visitIsNullOrLikeUndefinedAndBranch(LIsNullOrLikeUndefinedAndBranch *lir);
+    bool visitEmulatesUndefined(LEmulatesUndefined *lir);
+    bool visitEmulatesUndefinedAndBranch(LEmulatesUndefinedAndBranch *lir);
     bool visitConcat(LConcat *lir);
     bool visitCharCodeAt(LCharCodeAt *lir);
     bool visitFromCharCode(LFromCharCode *lir);
@@ -168,9 +177,9 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitCallDeleteProperty(LCallDeleteProperty *lir);
     bool visitBitNotV(LBitNotV *lir);
     bool visitBitOpV(LBitOpV *lir);
+    bool emitInstanceOf(LInstruction *ins, RawObject prototypeObject);
     bool visitIn(LIn *ins);
     bool visitInArray(LInArray *ins);
-    bool emitInstanceOf(LInstruction *ins, RawObject prototypeObject);
     bool visitInstanceOfO(LInstanceOfO *ins);
     bool visitInstanceOfV(LInstanceOfV *ins);
     bool visitCallInstanceOf(LCallInstanceOf *ins);
@@ -223,10 +232,26 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool generateBranchV(const ValueOperand &value, Label *ifTrue, Label *ifFalse, FloatRegister fr);
 
     IonScriptCounts *maybeCreateScriptCounts();
+
+    // Test whether value is truthy or not and jump to the corresponding label.
+    // If the value can be an object that emulates |undefined|, |ool| must be
+    // non-null; otherwise it may be null (and the scratch definitions should
+    // be bogus), in which case an object encountered here will always be
+    // truthy.
+    void testValueTruthy(const ValueOperand &value,
+                         const LDefinition *scratch1, const LDefinition *scratch2,
+                         FloatRegister fr,
+                         Label *ifTruthy, Label *ifFalsy,
+                         OutOfLineTestObject *ool);
+
+    // Like testValueTruthy but takes an object, and |ool| must be non-null.
+    // (If it's known that an object can never emulate |undefined| it shouldn't
+    // be tested in the first place.)
+    void testObjectTruthy(Register objreg, Label *ifTruthy, Label *ifFalsy, Register scratch,
+                          OutOfLineTestObject *ool);
 };
 
 } // namespace ion
 } // namespace js
 
 #endif // jsion_codegen_h__
-

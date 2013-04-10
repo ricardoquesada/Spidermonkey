@@ -19,16 +19,16 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
     class DeferredDouble : public TempObject
     {
         AbsoluteLabel label_;
-        uint32 index_;
+        uint32_t index_;
 
       public:
-        DeferredDouble(uint32 index) : index_(index)
+        DeferredDouble(uint32_t index) : index_(index)
         { }
 
         AbsoluteLabel *label() {
             return &label_;
         }
-        uint32 index() const {
+        uint32_t index() const {
             return index_;
         }
     };
@@ -70,6 +70,8 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
     bool visitInterruptCheck(LInterruptCheck *lir);
     bool visitCompareB(LCompareB *lir);
     bool visitCompareBAndBranch(LCompareBAndBranch *lir);
+    bool visitCompareV(LCompareV *lir);
+    bool visitCompareVAndBranch(LCompareVAndBranch *lir);
 };
 
 typedef CodeGeneratorX86 CodeGeneratorSpecific;

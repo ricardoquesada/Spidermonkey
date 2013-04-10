@@ -14,6 +14,7 @@
 #include "ion/IonCompartment.h"
 #include "assembler/jit/ExecutableAllocator.h"
 #include "ion/IonMacroAssembler.h"
+#include "jsgc.h"
 
 namespace js {
 namespace ion {
@@ -30,6 +31,7 @@ class Linker
 
     IonCode *newCode(JSContext *cx, IonCompartment *comp) {
         AssertCanGC();
+        gc::AutoSuppressGC suppressGC(cx);
 #ifndef JS_CPU_ARM
         masm.flush();
 #endif
@@ -41,16 +43,16 @@ class Linker
         if (bytesNeeded >= MAX_BUFFER_SIZE)
             return fail(cx);
 
-        uint8 *result = (uint8 *)comp->execAlloc()->alloc(bytesNeeded, &pool, JSC::ION_CODE);
+        uint8_t *result = (uint8_t *)comp->execAlloc()->alloc(bytesNeeded, &pool, JSC::ION_CODE);
         if (!result)
             return fail(cx);
 
         // The IonCode pointer will be stored right before the code buffer.
-        uint8 *codeStart = result + sizeof(IonCode *);
+        uint8_t *codeStart = result + sizeof(IonCode *);
 
         // Bump the code up to a nice alignment.
-        codeStart = (uint8 *)AlignBytes((uintptr_t)codeStart, CodeAlignment);
-        uint32 headerSize = codeStart - result;
+        codeStart = (uint8_t *)AlignBytes((uintptr_t)codeStart, CodeAlignment);
+        uint32_t headerSize = codeStart - result;
         IonCode *code = IonCode::New(cx, codeStart,
                                      bytesNeeded - headerSize, pool);
         if (!code)

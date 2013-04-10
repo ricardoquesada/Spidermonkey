@@ -5,6 +5,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/DebugOnly.h"
+
 #include "jscntxt.h"
 #include "jsdate.h"
 #include "jscompartment.h"
@@ -51,7 +53,6 @@ JSCompartment::JSCompartment(JSRuntime *rt)
 #ifdef JSGC_GENERATIONAL
     gcStoreBuffer(&gcNursery),
 #endif
-    needsBarrier_(false),
     ionUsingBarriers_(false),
     gcScheduled(false),
     gcState(NoGC),
@@ -59,7 +60,6 @@ JSCompartment::JSCompartment(JSRuntime *rt)
     gcBytes(0),
     gcTriggerBytes(0),
     gcHeapGrowthFactor(3.0),
-    gcNextCompartment(NULL),
     hold(false),
     isSystemCompartment(false),
     lastCodeRelease(0),
@@ -74,16 +74,25 @@ JSCompartment::JSCompartment(JSRuntime *rt)
     propertyTree(thisForCtor()),
     gcMallocAndFreeBytes(0),
     gcTriggerMallocAndFreeBytes(0),
+    gcIncomingGrayPointers(NULL),
+    gcLiveArrayBuffers(NULL),
+    gcWeakMapList(NULL),
+    gcGrayRoots(),
     gcMallocBytes(0),
     debugModeBits(rt->debugMode ? DebugFromC : 0),
     watchpointMap(NULL),
     scriptCountsMap(NULL),
     debugScriptMap(NULL),
+    debugScopes(NULL),
     enumerators(NULL)
 #ifdef JS_ION
     , ionCompartment_(NULL)
 #endif
 {
+    /* Ensure that there are no vtables to mess us up here. */
+    JS_ASSERT(reinterpret_cast<JS::shadow::Compartment *>(this) ==
+              static_cast<JS::shadow::Compartment *>(this));
+
     setGCMaxMallocBytes(rt->gcMaxMallocBytes * 0.9);
 }
 
@@ -96,6 +105,7 @@ JSCompartment::~JSCompartment()
     js_delete(watchpointMap);
     js_delete(scriptCountsMap);
     js_delete(debugScriptMap);
+    js_delete(debugScopes);
     js_free(enumerators);
 }
 
@@ -108,7 +118,8 @@ JSCompartment::init(JSContext *cx)
      * shouldn't interfere with benchmarks which create tons of date objects
      * (unless they also create tons of iframes, which seems unlikely).
      */
-    js_ClearDateCaches();
+    if (cx)
+        cx->runtime->dateTimeInfo.updateTimeZoneAdjustment();
 
     activeAnalysis = activeInference = false;
     types.init(cx);
@@ -204,6 +215,12 @@ JSCompartment::ensureIonCompartmentExists(JSContext *cx)
     if (!ionCompartment_)
         return false;
 
+    if (!ionCompartment_->initialize(cx)) {
+        js_delete(ionCompartment_);
+        ionCompartment_ = NULL;
+        return false;
+    }
+
     return true;
 }
 #endif
@@ -222,6 +239,17 @@ WrapForSameCompartment(JSContext *cx, HandleObject obj, Value *vp)
         return false;
     vp->setObject(*wrapped);
     return true;
+}
+
+bool
+JSCompartment::putWrapper(const CrossCompartmentKey &wrapped, const js::Value &wrapper)
+{
+    JS_ASSERT(wrapped.wrapped);
+    JS_ASSERT_IF(wrapped.kind == CrossCompartmentKey::StringWrapper, wrapper.isString());
+    JS_ASSERT_IF(wrapped.kind != CrossCompartmentKey::StringWrapper, wrapper.isObject());
+    // todo: uncomment when bug 815999 is fixed:
+    // JS_ASSERT(!wrapped.wrapped->isMarked(gc::GRAY));
+    return crossCompartmentWrappers.put(wrapped, wrapper);
 }
 
 bool
@@ -334,7 +362,22 @@ JSCompartment::wrap(JSContext *cx, Value *vp, JSObject *existing)
         if (!wrapped)
             return false;
         vp->setString(wrapped);
-        return crossCompartmentWrappers.put(orig, *vp);
+        if (!putWrapper(orig, *vp))
+            return false;
+
+        if (str->compartment()->isGCMarking()) {
+            /*
+             * All string wrappers are dropped when collection starts, but we
+             * just created a new one.  Mark the wrapped string to stop it being
+             * finalized, because if it was then the pointer in this
+             * compartment's wrapper map would be left dangling.
+             */
+            JSString *tmp = str;
+            MarkStringUnbarriered(&rt->gcMarker, &tmp, "wrapped string");
+            JS_ASSERT(tmp == str);
+        }
+
+        return true;
     }
 
     RootedObject obj(cx, &vp->toObject());
@@ -367,7 +410,7 @@ JSCompartment::wrap(JSContext *cx, Value *vp, JSObject *existing)
 
     vp->setObject(*wrapper);
 
-    if (!crossCompartmentWrappers.put(key, *vp))
+    if (!putWrapper(key, *vp))
         return false;
 
     return true;
@@ -532,6 +575,8 @@ JSCompartment::markTypes(JSTracer *trc)
         MarkTypeObjectRoot(trc, &type, "mark_types_scan");
         JS_ASSERT(type == i.get<types::TypeObject>());
     }
+
+    gcTypesMarked = true;
 }
 
 void
@@ -606,10 +651,9 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
         sweepInitialShapeTable();
         sweepNewTypeObjectTable(newTypeObjects);
         sweepNewTypeObjectTable(lazyTypeObjects);
-
         sweepBreakpoints(fop);
 
-        if (global_ && !IsObjectMarked(global_.unsafeGet()))
+        if (global_ && IsObjectAboutToBeFinalized(global_.unsafeGet()))
             global_ = NULL;
 
 #ifdef JS_ION
@@ -623,6 +667,12 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
          * sweeping after clearing jit code.
          */
         regExps.sweep(rt);
+
+        if (debugScopes)
+            debugScopes->sweep(rt);
+
+        /* Finalize unreachable (key,value) pairs in all weak maps. */
+        WeakMapBase::sweepCompartment(this);
     }
 
     if (!activeAnalysis && !gcPreserveCode) {
@@ -705,19 +755,21 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
 void
 JSCompartment::sweepCrossCompartmentWrappers()
 {
-    gcstats::AutoPhase ap(rt->gcStats, gcstats::PHASE_SWEEP_TABLES);
+    gcstats::AutoPhase ap1(rt->gcStats, gcstats::PHASE_SWEEP_TABLES);
+    gcstats::AutoPhase ap2(rt->gcStats, gcstats::PHASE_SWEEP_TABLES_WRAPPER);
 
     /* Remove dead wrappers from the table. */
     for (WrapperMap::Enum e(crossCompartmentWrappers); !e.empty(); e.popFront()) {
         CrossCompartmentKey key = e.front().key;
-        bool keyMarked = IsCellMarked(&key.wrapped);
-        bool valMarked = IsValueMarked(e.front().value.unsafeGet());
-        bool dbgMarked = !key.debugger || IsObjectMarked(&key.debugger);
-        JS_ASSERT_IF(!keyMarked && valMarked, key.kind == CrossCompartmentKey::StringWrapper);
-        if (!keyMarked || !valMarked || !dbgMarked)
+        bool keyDying = IsCellAboutToBeFinalized(&key.wrapped);
+        bool valDying = IsValueAboutToBeFinalized(e.front().value.unsafeGet());
+        bool dbgDying = key.debugger && IsObjectAboutToBeFinalized(&key.debugger);
+        if (keyDying || valDying || dbgDying) {
+            JS_ASSERT(key.kind != CrossCompartmentKey::StringWrapper);
             e.removeFront();
-        else if (key.wrapped != e.front().key.wrapped || key.debugger != e.front().key.debugger)
+        } else if (key.wrapped != e.front().key.wrapped || key.debugger != e.front().key.debugger) {
             e.rekeyFront(key);
+        }
     }
 }
 
@@ -802,7 +854,7 @@ JSCompartment::setDebugModeFromC(JSContext *cx, bool b, AutoDebugModeGC &dmgc)
     if (enabledBefore != enabledAfter) {
         updateForDebugMode(cx->runtime->defaultFreeOp(), dmgc);
         if (!enabledAfter)
-            cx->runtime->debugScopes->onCompartmentLeaveDebugMode(this);
+            DebugScopes::onCompartmentLeaveDebugMode(this);
     }
     return true;
 }
@@ -847,6 +899,15 @@ JSCompartment::updateForDebugMode(FreeOp *fop, AutoDebugModeGC &dmgc)
 bool
 JSCompartment::addDebuggee(JSContext *cx, js::GlobalObject *global)
 {
+    AutoDebugModeGC dmgc(cx->runtime);
+    return addDebuggee(cx, global, dmgc);
+}
+
+bool
+JSCompartment::addDebuggee(JSContext *cx,
+                           js::GlobalObject *global,
+                           AutoDebugModeGC &dmgc)
+{
     bool wasEnabled = debugMode();
     if (!debuggees.put(global)) {
         js_ReportOutOfMemory(cx);
@@ -854,7 +915,6 @@ JSCompartment::addDebuggee(JSContext *cx, js::GlobalObject *global)
     }
     debugModeBits |= DebugFromJS;
     if (!wasEnabled) {
-        AutoDebugModeGC dmgc(cx->runtime);
         updateForDebugMode(cx->runtime->defaultFreeOp(), dmgc);
     }
     return true;
@@ -863,6 +923,16 @@ JSCompartment::addDebuggee(JSContext *cx, js::GlobalObject *global)
 void
 JSCompartment::removeDebuggee(FreeOp *fop,
                               js::GlobalObject *global,
+                              js::GlobalObjectSet::Enum *debuggeesEnum)
+{
+    AutoDebugModeGC dmgc(rt);
+    return removeDebuggee(fop, global, dmgc, debuggeesEnum);
+}
+
+void
+JSCompartment::removeDebuggee(FreeOp *fop,
+                              js::GlobalObject *global,
+                              AutoDebugModeGC &dmgc,
                               js::GlobalObjectSet::Enum *debuggeesEnum)
 {
     bool wasEnabled = debugMode();
@@ -875,8 +945,7 @@ JSCompartment::removeDebuggee(FreeOp *fop,
     if (debuggees.empty()) {
         debugModeBits &= ~DebugFromJS;
         if (wasEnabled && !debugMode()) {
-            AutoDebugModeGC dmgc(rt);
-            fop->runtime()->debugScopes->onCompartmentLeaveDebugMode(this);
+            DebugScopes::onCompartmentLeaveDebugMode(this);
             updateForDebugMode(fop, dmgc);
         }
     }
@@ -905,14 +974,16 @@ JSCompartment::clearTraps(FreeOp *fop)
 void
 JSCompartment::sweepBreakpoints(FreeOp *fop)
 {
-    if (JS_CLIST_IS_EMPTY(&rt->debuggerList))
+    gcstats::AutoPhase ap(rt->gcStats, gcstats::PHASE_SWEEP_TABLES_BREAKPOINT);
+
+    if (rt->debuggerList.isEmpty())
         return;
 
     for (CellIterUnderGC i(this, FINALIZE_SCRIPT); !i.done(); i.next()) {
         JSScript *script = i.get<JSScript>();
         if (!script->hasAnyBreakpointsOrStepMode())
             continue;
-        bool scriptGone = !IsScriptMarked(&script);
+        bool scriptGone = IsScriptAboutToBeFinalized(&script);
         JS_ASSERT(script == i.get<JSScript>());
         for (unsigned i = 0; i < script->length; i++) {
             BreakpointSite *site = script->getBreakpointSite(script->code + i);
@@ -923,7 +994,7 @@ JSCompartment::sweepBreakpoints(FreeOp *fop)
             Breakpoint *nextbp;
             for (Breakpoint *bp = site->firstBreakpoint(); bp; bp = nextbp) {
                 nextbp = bp->nextInSite();
-                if (scriptGone || !IsObjectMarked(&bp->debugger->toJSObjectRef()))
+                if (scriptGone || IsObjectAboutToBeFinalized(&bp->debugger->toJSObjectRef()))
                     bp->destroy(fop);
             }
         }

@@ -74,7 +74,7 @@ IonBailoutIterator::dump() const
     }
 }
 
-static JSScript*
+static UnrootedScript
 GetBailedJSScript(JSContext *cx)
 {
     AutoAssertNoGC nogc;
@@ -85,7 +85,7 @@ GetBailedJSScript(JSContext *cx)
     switch (GetCalleeTokenTag(frame->calleeToken())) {
       case CalleeToken_Function: {
         JSFunction *fun = CalleeTokenToFunction(frame->calleeToken());
-        return fun->script().get(nogc);
+        return fun->nonLazyScript();
       }
       case CalleeToken_Script:
         return CalleeTokenToScript(frame->calleeToken());
@@ -99,7 +99,7 @@ void
 StackFrame::initFromBailout(JSContext *cx, SnapshotIterator &iter)
 {
     AutoAssertNoGC nogc;
-    uint32 exprStackSlots = iter.slots() - script()->nfixed;
+    uint32_t exprStackSlots = iter.slots() - script()->nfixed;
 
 #ifdef TRACK_SNAPSHOTS
     iter.spewBailingFrom();
@@ -144,21 +144,21 @@ StackFrame::initFromBailout(JSContext *cx, SnapshotIterator &iter)
         IonSpew(IonSpew_Bailouts, " frame slots %u, nargs %u, nfixed %u",
                 iter.slots(), fun()->nargs, script()->nfixed);
 
-        for (uint32 i = 0; i < fun()->nargs; i++) {
+        for (uint32_t i = 0; i < fun()->nargs; i++) {
             Value arg = iter.read();
             formals()[i] = arg;
         }
     }
     exprStackSlots -= CountArgSlots(maybeFun());
 
-    for (uint32 i = 0; i < script()->nfixed; i++) {
+    for (uint32_t i = 0; i < script()->nfixed; i++) {
         Value slot = iter.read();
         slots()[i] = slot;
     }
 
     IonSpew(IonSpew_Bailouts, " pushing %u expression stack slots", exprStackSlots);
     FrameRegs &regs = cx->regs();
-    for (uint32 i = 0; i < exprStackSlots; i++) {
+    for (uint32_t i = 0; i < exprStackSlots; i++) {
         Value v;
 
         // If coming from an invalidation bailout, and this is the topmost
@@ -178,14 +178,14 @@ StackFrame::initFromBailout(JSContext *cx, SnapshotIterator &iter)
         regs.pc = GetNextPc(regs.pc);
 
     IonSpew(IonSpew_Bailouts, " new PC is offset %u within script %p (line %d)",
-            pcOff, (void *)script().get(nogc), PCToLineNumber(script().get(nogc), regs.pc));
-    JS_ASSERT(exprStackSlots == js_ReconstructStackDepth(cx, script().get(nogc), regs.pc));
+            pcOff, (void *)script(), PCToLineNumber(script(), regs.pc));
+    JS_ASSERT(exprStackSlots == js_ReconstructStackDepth(cx, script(), regs.pc));
 }
 
 static StackFrame *
 PushInlinedFrame(JSContext *cx, StackFrame *callerFrame)
 {
-    AssertCanGC();
+    AutoAssertNoGC nogc;
 
     // Grab the callee object out of the caller's frame, which has already been restored.
     // N.B. we currently assume that the caller frame is at a JSOP_CALL pc for the caller frames,
@@ -197,7 +197,7 @@ PushInlinedFrame(JSContext *cx, StackFrame *callerFrame)
     const Value &calleeVal = regs.sp[-callerArgc - 2];
 
     RootedFunction fun(cx, calleeVal.toObject().toFunction());
-    RootedScript script(cx, fun->script());
+    RootedScript script(cx, fun->nonLazyScript());
     CallArgs inlineArgs = CallArgsFromSp(callerArgc, regs.sp);
 
     // Bump the stack pointer to make it look like the inline args have been pushed, but they will
@@ -220,10 +220,10 @@ PushInlinedFrame(JSContext *cx, StackFrame *callerFrame)
     return fp;
 }
 
-static uint32
+static uint32_t
 ConvertFrames(JSContext *cx, IonActivation *activation, IonBailoutIterator &it)
 {
-    AssertCanGC();
+    AutoAssertNoGC nogc;
     IonSpew(IonSpew_Bailouts, "Bailing out %s:%u, IonScript %p",
             it.script()->filename, it.script()->lineno, (void *) it.ionScript());
     IonSpew(IonSpew_Bailouts, " reading from snapshot offset %u size %u",
@@ -299,6 +299,8 @@ ConvertFrames(JSContext *cx, IonActivation *activation, IonBailoutIterator &it)
             return BAILOUT_RETURN_OVERRECURSED;
     }
 
+    fp->clearRunningInIon();
+
     jsbytecode *bailoutPc = fp->script()->code + iter.pcOffset();
     br->setBailoutPc(bailoutPc);
 
@@ -324,7 +326,7 @@ ConvertFrames(JSContext *cx, IonActivation *activation, IonBailoutIterator &it)
       // we flag it here manually that the entry has happened.
       case Bailout_ArgumentCheck:
         fp->unsetPushedSPSFrame();
-        Probes::enterScript(cx, fp->script().unsafeGet(), fp->script()->function(), fp);
+        Probes::enterScript(cx, fp->script(), fp->script()->function(), fp);
         return BAILOUT_RETURN_ARGUMENT_CHECK;
     }
 
@@ -354,10 +356,10 @@ EnsureExitFrame(IonCommonFrameLayout *frame)
     frame->changePrevType(IonFrame_Bailed_JS);
 }
 
-uint32
+uint32_t
 ion::Bailout(BailoutStack *sp)
 {
-    AssertCanGC();
+    AutoAssertNoGC nogc;
     JSContext *cx = GetIonContext()->cx;
     // We don't have an exit frame.
     cx->runtime->ionTop = NULL;
@@ -371,16 +373,16 @@ ion::Bailout(BailoutStack *sp)
 
     IonSpew(IonSpew_Bailouts, "Took bailout! Snapshot offset: %d", iter.snapshotOffset());
 
-    uint32 retval = ConvertFrames(cx, activation, iter);
+    uint32_t retval = ConvertFrames(cx, activation, iter);
 
     EnsureExitFrame(iter.jsFrame());
     return retval;
 }
 
-uint32
+uint32_t
 ion::InvalidationBailout(InvalidationBailoutStack *sp, size_t *frameSizeOut)
 {
-    AssertCanGC();
+    AutoAssertNoGC nogc;
     sp->checkInvariants();
 
     JSContext *cx = GetIonContext()->cx;
@@ -396,7 +398,7 @@ ion::InvalidationBailout(InvalidationBailoutStack *sp, size_t *frameSizeOut)
     // Note: the frame size must be computed before we return from this function.
     *frameSizeOut = iter.topFrameSize();
 
-    uint32 retval = ConvertFrames(cx, activation, iter);
+    uint32_t retval = ConvertFrames(cx, activation, iter);
 
     {
         IonJSFrameLayout *frame = iter.jsFrame();
@@ -464,8 +466,8 @@ ReflowArgTypes(JSContext *cx)
         types::TypeScript::SetArgument(cx, script, i, fp->unaliasedFormal(i, DONT_CHECK_ALIASING));
 }
 
-uint32
-ion::ReflowTypeInfo(uint32 bailoutResult)
+uint32_t
+ion::ReflowTypeInfo(uint32_t bailoutResult)
 {
     JSContext *cx = GetIonContext()->cx;
     IonActivation *activation = cx->runtime->ionActivation;
@@ -499,11 +501,12 @@ ion::ReflowTypeInfo(uint32 bailoutResult)
     return true;
 }
 
-uint32
+uint32_t
 ion::RecompileForInlining()
 {
+    AutoAssertNoGC nogc;
     JSContext *cx = GetIonContext()->cx;
-    RawScript script = cx->fp()->script().unsafeGet();
+    UnrootedScript script = cx->fp()->script();
 
     IonSpew(IonSpew_Inlining, "Recompiling script to inline calls %s:%d", script->filename,
             script->lineno);
@@ -518,23 +521,24 @@ ion::RecompileForInlining()
     return true;
 }
 
+// Initialize the decl env Object and the call object of the current frame.
 bool
-ion::EnsureHasCallObject(JSContext *cx, StackFrame *fp)
+ion::EnsureHasScopeObjects(JSContext *cx, StackFrame *fp)
 {
     if (fp->isFunctionFrame() &&
         fp->fun()->isHeavyweight() &&
         !fp->hasCallObj())
     {
-        return fp->initCallObject(cx);
+        return fp->initFunctionScopeObjects(cx);
     }
     return true;
 }
 
-uint32
+uint32_t
 ion::BoundsCheckFailure()
 {
     JSContext *cx = GetIonContext()->cx;
-    JSScript *script = GetBailedJSScript(cx);
+    UnrootedScript script = GetBailedJSScript(cx);
 
     IonSpew(IonSpew_Bailouts, "Bounds check failure %s:%d", script->filename,
             script->lineno);
@@ -551,11 +555,11 @@ ion::BoundsCheckFailure()
     return true;
 }
 
-uint32
+uint32_t
 ion::ShapeGuardFailure()
 {
     JSContext *cx = GetIonContext()->cx;
-    JSScript *script = GetBailedJSScript(cx);
+    UnrootedScript script = GetBailedJSScript(cx);
 
     JS_ASSERT(script->hasIonScript());
     JS_ASSERT(!script->ion->invalidated());
@@ -567,11 +571,11 @@ ion::ShapeGuardFailure()
     return Invalidate(cx, script);
 }
 
-uint32
+uint32_t
 ion::CachedShapeGuardFailure()
 {
     JSContext *cx = GetIonContext()->cx;
-    JSScript *script = GetBailedJSScript(cx);
+    UnrootedScript script = GetBailedJSScript(cx);
 
     JS_ASSERT(script->hasIonScript());
     JS_ASSERT(!script->ion->invalidated());
@@ -588,7 +592,7 @@ ion::CachedShapeGuardFailure()
     return Invalidate(cx, script);
 }
 
-uint32
+uint32_t
 ion::ThunkToInterpreter(Value *vp)
 {
     JSContext *cx = GetIonContext()->cx;
@@ -596,7 +600,7 @@ ion::ThunkToInterpreter(Value *vp)
     BailoutClosure *br = activation->takeBailout();
     InterpMode resumeMode = JSINTERP_BAILOUT;
 
-    if (!EnsureHasCallObject(cx, cx->fp()))
+    if (!EnsureHasScopeObjects(cx, cx->fp()))
         resumeMode = JSINTERP_RETHROW;
 
     // By default we set the forbidOsr flag on the ion script, but if a GC
@@ -617,10 +621,9 @@ ion::ThunkToInterpreter(Value *vp)
     // prologue), so we must create one now for each inlined frame which needs
     // one.
     {
-        br->entryfp()->clearRunningInIon();
         ScriptFrameIter iter(cx);
         StackFrame *fp = NULL;
-        Rooted<JSScript*> script(cx, NULL);
+        Rooted<JSScript*> script(cx);
         do {
             fp = iter.interpFrame();
             script = iter.script();
@@ -667,7 +670,7 @@ ion::ThunkToInterpreter(Value *vp)
 
         IonSpew(IonSpew_Bailouts, "Performing inline OSR %s:%d",
                 cx->fp()->script()->filename,
-                PCToLineNumber(cx->fp()->script().unsafeGet(), cx->regs().pc));
+                PCToLineNumber(cx->fp()->script(), cx->regs().pc));
 
         // We want to OSR again. We need to avoid the problem where frequent
         // bailouts cause recursive nestings of Interpret and EnterIon. The

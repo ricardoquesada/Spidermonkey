@@ -31,6 +31,7 @@
 #include "gc/Barrier.h"
 #include "gc/Marking.h"
 #include "gc/Root.h"
+#include "js/MemoryMetrics.h"
 #include "js/TemplateLib.h"
 #include "vm/BooleanObject.h"
 #include "vm/GlobalObject.h"
@@ -225,6 +226,9 @@ JSObject::finalize(js::FreeOp *fop)
     js::Probes::finalizeObject(this);
 
     if (!IsBackgroundFinalized(getAllocKind())) {
+        /* Assert we're on the main thread. */
+        fop->runtime()->assertValidThread();
+
         /*
          * Finalize obj first, in case it needs map and slots. Objects with
          * finalize hooks are not finalized in the background, as the class is
@@ -269,7 +273,7 @@ JSObject::dynamicSlotIndex(size_t slot)
 }
 
 inline void
-JSObject::setLastPropertyInfallible(js::Shape *shape)
+JSObject::setLastPropertyInfallible(js::UnrootedShape shape)
 {
     JS_ASSERT(!shape->inDictionary());
     JS_ASSERT(shape->compartment() == compartment());
@@ -285,7 +289,8 @@ JSObject::removeLastProperty(JSContext *cx)
 {
     JS_ASSERT(canRemoveLastProperty());
     js::RootedObject self(cx, this);
-    JS_ALWAYS_TRUE(setLastProperty(cx, self, lastProperty()->previous()));
+    js::RootedShape prev(cx, lastProperty()->previous());
+    JS_ALWAYS_TRUE(setLastProperty(cx, self, prev));
 }
 
 inline bool
@@ -299,7 +304,7 @@ JSObject::canRemoveLastProperty()
      * converted to dictionary mode instead. See BaseShape comment in jsscope.h
      */
     JS_ASSERT(!inDictionaryMode());
-    js::Shape *previous = lastProperty()->previous();
+    js::UnrootedShape previous = lastProperty()->previous().get();
     return previous->getObjectParent() == lastProperty()->getObjectParent()
         && previous->getObjectFlags() == lastProperty()->getObjectFlags();
 }
@@ -694,6 +699,8 @@ JSObject::setType(js::types::TypeObject *newType)
     JS_ASSERT(newType);
     JS_ASSERT_IF(hasSpecialEquality(),
                  newType->hasAnyFlags(js::types::OBJECT_FLAG_SPECIAL_EQUALITY));
+    JS_ASSERT_IF(getClass()->emulatesUndefined(),
+                 newType->hasAnyFlags(js::types::OBJECT_FLAG_EMULATES_UNDEFINED));
     JS_ASSERT(!hasSingletonType());
     JS_ASSERT(compartment() == newType->compartment());
     type_ = newType;
@@ -816,7 +823,7 @@ inline bool JSObject::isWith() const { return hasClass(&js::WithClass); }
 inline bool
 JSObject::isDebugScope() const
 {
-    extern bool js_IsDebugScopeSlow(JS::RawObject obj);
+    extern bool js_IsDebugScopeSlow(js::RawObject obj);
     return getClass() == &js::ObjectProxyClass && js_IsDebugScopeSlow(const_cast<JSObject*>(this));
 }
 
@@ -929,8 +936,10 @@ JSObject::hasProperty(JSContext *cx, js::HandleObject obj,
     js::RootedObject pobj(cx);
     js::RootedShape prop(cx);
     JSAutoResolveFlags rf(cx, flags);
-    if (!lookupGeneric(cx, obj, id, &pobj, &prop))
+    if (!lookupGeneric(cx, obj, id, &pobj, &prop)) {
+        *foundp = false;  /* initialize to shut GCC up */
         return false;
+    }
     *foundp = !!prop;
     return true;
 }
@@ -991,30 +1000,27 @@ JSObject::computedSizeOfThisSlotsElements() const
 }
 
 inline void
-JSObject::sizeOfExcludingThis(JSMallocSizeOfFun mallocSizeOf, size_t *slotsSize,
-                              size_t *elementsSize, size_t *argumentsDataSize,
-                              size_t *regExpStaticsSize, size_t *propertyIteratorDataSize) const
+JSObject::sizeOfExcludingThis(JSMallocSizeOfFun mallocSizeOf, JS::ObjectsExtraSizes *sizes)
 {
-    *slotsSize = 0;
-    if (hasDynamicSlots()) {
-        *slotsSize += mallocSizeOf(slots);
-    }
+    if (hasDynamicSlots())
+        sizes->slots = mallocSizeOf(slots);
 
-    *elementsSize = 0;
-    if (hasDynamicElements()) {
-        *elementsSize += mallocSizeOf(getElementsHeader());
-    }
+    if (hasDynamicElements())
+        sizes->elements = mallocSizeOf(getElementsHeader());
 
-    /* Other things may be measured in the future if DMD indicates it is worthwhile. */
-    *argumentsDataSize = 0;
-    *regExpStaticsSize = 0;
-    *propertyIteratorDataSize = 0;
+    // Other things may be measured in the future if DMD indicates it is worthwhile.
+    // Note that sizes->private_ is measured elsewhere.
     if (isArguments()) {
-        *argumentsDataSize += asArguments().sizeOfMisc(mallocSizeOf);
+        sizes->argumentsData = asArguments().sizeOfMisc(mallocSizeOf);
     } else if (isRegExpStatics()) {
-        *regExpStaticsSize += js::SizeOfRegExpStaticsData(this, mallocSizeOf);
+        sizes->regExpStatics = js::SizeOfRegExpStaticsData(this, mallocSizeOf);
     } else if (isPropertyIterator()) {
-        *propertyIteratorDataSize += asPropertyIterator().sizeOfMisc(mallocSizeOf);
+        sizes->propertyIteratorData = asPropertyIterator().sizeOfMisc(mallocSizeOf);
+#ifdef JS_HAS_CTYPES
+    } else {
+        // This must be the last case.
+        sizes->ctypesData = js::SizeOfDataIfCDataObject(mallocSizeOf, const_cast<JSObject *>(this));
+#endif
     }
 }
 
@@ -1502,6 +1508,10 @@ FindClassPrototype(JSContext *cx, HandleObject scope, JSProtoKey protoKey,
 JSObject *
 NewObjectWithType(JSContext *cx, HandleTypeObject type, JSObject *parent, gc::AllocKind kind);
 
+// Used to optimize calls to (new Object())
+bool
+NewObjectScriptedCall(JSContext *cx, MutableHandleObject obj);
+
 /* Make an object with pregenerated shape from a NEWOBJECT bytecode. */
 static inline JSObject *
 CopyInitializerObject(JSContext *cx, HandleObject baseobj)
@@ -1517,7 +1527,8 @@ CopyInitializerObject(JSContext *cx, HandleObject baseobj)
     if (!obj)
         return NULL;
 
-    if (!JSObject::setLastProperty(cx, obj, baseobj->lastProperty()))
+    RootedShape lastProp(cx, baseobj->lastProperty());
+    if (!JSObject::setLastProperty(cx, obj, lastProp))
         return NULL;
 
     return obj;
@@ -1553,7 +1564,7 @@ GuessArrayGCKind(size_t numSlots)
  * may or may not need dynamic slots.
  */
 inline bool
-PreallocateObjectDynamicSlots(JSContext *cx, Shape *shape, HeapSlot **slots)
+PreallocateObjectDynamicSlots(JSContext *cx, UnrootedShape shape, HeapSlot **slots)
 {
     if (size_t count = JSObject::dynamicSlotsCount(shape->numFixedSlots(), shape->slotSpan())) {
         *slots = cx->pod_malloc<HeapSlot>(count);
@@ -1668,10 +1679,10 @@ js_InitClass(JSContext *cx, js::HandleObject obj, JSObject *parent_proto,
  * (i.e., obj has ever been on a prototype or parent chain).
  */
 extern bool
-js_PurgeScopeChainHelper(JSContext *cx, JSObject *obj, jsid id);
+js_PurgeScopeChainHelper(JSContext *cx, JS::HandleObject obj, JS::HandleId id);
 
 inline bool
-js_PurgeScopeChain(JSContext *cx, JSObject *obj, jsid id)
+js_PurgeScopeChain(JSContext *cx, JS::HandleObject obj, JS::HandleId id)
 {
     if (obj->isDelegate())
         return js_PurgeScopeChainHelper(cx, obj, id);

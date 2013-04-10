@@ -15,7 +15,7 @@ $(error Must define relativesrcdir when defining XPCSHELL_TESTS.)
 endif
 
 define _INSTALL_TESTS
-$(call install_cmd, $(wildcard $(srcdir)/$(dir)/*) $(testxpcobjdir)/$(relativesrcdir)/$(dir))
+$(call install_cmd, $(filter-out %~,$(wildcard $(srcdir)/$(dir)/*)) $(testxpcobjdir)/$(relativesrcdir)/$(dir))
 
 endef # do not remove the blank line!
 
@@ -49,17 +49,14 @@ xpcshell-tests:
 	  --testing-modules-dir=$(DEPTH)/_tests/modules \
 	  --xunit-file=$(testxpcobjdir)/$(relativesrcdir)/results.xml \
 	  --xunit-suite-name=xpcshell \
+	  --test-plugin-path=$(DIST)/plugins \
 	  $(EXTRA_TEST_ARGS) \
 	  $(LIBXUL_DIST)/bin/xpcshell \
 	  $(foreach dir,$(XPCSHELL_TESTS),$(testxpcobjdir)/$(relativesrcdir)/$(dir))
 
 xpcshell-tests-remote: DM_TRANS?=adb
 xpcshell-tests-remote:
-	$(PYTHON) -u $(topsrcdir)/config/pythonpath.py \
-	  -I$(topsrcdir)/build \
-	  -I$(topsrcdir)/build/mobile \
-	  -I$(topsrcdir)/testing/mozbase/mozdevice/mozdevice \
-	  $(topsrcdir)/testing/xpcshell/remotexpcshelltests.py \
+	$(PYTHON) -u $(topsrcdir)/testing/xpcshell/remotexpcshelltests.py \
 	  --symbols-path=$(DIST)/crashreporter-symbols \
 	  --build-info-json=$(DEPTH)/mozinfo.json \
 	  --testing-modules-dir=$(DEPTH)/_tests/modules \
@@ -83,6 +80,7 @@ check-interactive:
 	  --test-path=$(SOLO_FILE) \
 	  --testing-modules-dir=$(DEPTH)/_tests/modules \
 	  --profile-name=$(MOZ_APP_NAME) \
+	  --test-plugin-path=$(DIST)/plugins \
 	  --interactive \
 	  $(LIBXUL_DIST)/bin/xpcshell \
 	  $(foreach dir,$(XPCSHELL_TESTS),$(testxpcobjdir)/$(relativesrcdir)/$(dir))
@@ -98,6 +96,7 @@ check-one:
 	  --test-path=$(SOLO_FILE) \
 	  --testing-modules-dir=$(DEPTH)/_tests/modules \
 	  --profile-name=$(MOZ_APP_NAME) \
+	  --test-plugin-path=$(DIST)/plugins \
 	  --verbose \
 	  $(EXTRA_TEST_ARGS) \
 	  $(LIBXUL_DIST)/bin/xpcshell \

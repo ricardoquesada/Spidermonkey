@@ -34,7 +34,7 @@ class DeferredJumpTable : public DeferredData
       : mswitch(mswitch), off(off_), masm(masm_)
     { }
 
-    void copy(IonCode *code, uint8 *ignore__) const {
+    void copy(IonCode *code, uint8_t *ignore__) const {
         void **jumpData = (void **)(((char*)code->raw()) + masm->actualOffset(off).getOffset());
         int numCases =  mswitch->numCases();
         // For every case write the pointer to the start in the table
@@ -42,7 +42,7 @@ class DeferredJumpTable : public DeferredData
             LBlock *caseblock = mswitch->getCase(numCases - 1 - j)->lir();
             Label *caseheader = caseblock->label();
 
-            uint32 offset = caseheader->offset();
+            uint32_t offset = caseheader->offset();
             *jumpData = (void *)(code->raw() + masm->actualOffset(offset));
             jumpData++;
         }
@@ -198,7 +198,7 @@ CodeGeneratorARM::bailoutIf(Assembler::Condition condition, LSnapshot *snapshot)
                  frameClass_.frameSize() == masm.framePushed());
 
     if (assignBailoutId(snapshot)) {
-        uint8 *code = deoptTable_->raw() + snapshot->bailoutId() * BAILOUT_TABLE_ENTRY_SIZE;
+        uint8_t *code = deoptTable_->raw() + snapshot->bailoutId() * BAILOUT_TABLE_ENTRY_SIZE;
         masm.ma_b(code, Relocation::HARDCODED, condition);
         return true;
     }
@@ -235,7 +235,7 @@ CodeGeneratorARM::bailoutFrom(Label *label, LSnapshot *snapshot)
     // before the branch
 #if 0
     if (assignBailoutId(snapshot)) {
-        uint8 *code = deoptTable_->raw() + snapshot->bailoutId() * BAILOUT_TABLE_ENTRY_SIZE;
+        uint8_t *code = deoptTable_->raw() + snapshot->bailoutId() * BAILOUT_TABLE_ENTRY_SIZE;
         masm.retarget(label, code, Relocation::HARDCODED);
         return true;
     }
@@ -319,15 +319,6 @@ CodeGeneratorARM::visitMinMaxD(LMinMaxD *ins)
 }
 
 bool
-CodeGeneratorARM::visitNegD(LNegD *ins)
-{
-    FloatRegister input = ToFloatRegister(ins->input());
-    JS_ASSERT(input == ToFloatRegister(ins->output()));
-    masm.ma_vneg(input, input);
-    return true;
-}
-
-bool
 CodeGeneratorARM::visitAbsD(LAbsD *ins)
 {
     FloatRegister input = ToFloatRegister(ins->input());
@@ -387,12 +378,13 @@ CodeGeneratorARM::visitMulI(LMulI *ins)
     const LAllocation *rhs = ins->getOperand(1);
     const LDefinition *dest = ins->getDef(0);
     MMul *mul = ins->mir();
+    JS_ASSERT_IF(mul->mode() == MMul::Integer, !mul->canBeNegativeZero() && !mul->canOverflow());
 
     if (rhs->isConstant()) {
         // Bailout when this condition is met.
         Assembler::Condition c = Assembler::Overflow;
         // Bailout on -0.0
-        int32 constant = ToInt32(rhs);
+        int32_t constant = ToInt32(rhs);
         if (mul->canBeNegativeZero() && constant <= 0) {
             Assembler::Condition bailoutCond = (constant == 0) ? Assembler::LessThan : Assembler::Equal;
             masm.ma_cmp(ToRegister(lhs), Imm32(0));
@@ -420,9 +412,9 @@ CodeGeneratorARM::visitMulI(LMulI *ins)
             if (!mul->canOverflow()) {
                 // If it cannot overflow, we can do lots of optimizations
                 Register src = ToRegister(lhs);
-                uint32 shift;
+                uint32_t shift;
                 JS_FLOOR_LOG2(shift, constant);
-                uint32 rest = constant - (1 << shift);
+                uint32_t rest = constant - (1 << shift);
                 // See if the constant has one bit set, meaning it can be encoded as a bitshift
                 if ((1 << shift) == constant) {
                     masm.ma_lsl(Imm32(shift), src, ToRegister(dest));
@@ -430,7 +422,7 @@ CodeGeneratorARM::visitMulI(LMulI *ins)
                 } else {
                     // If the constant cannot be encoded as (1<<C1), see if it can be encoded as
                     // (1<<C1) | (1<<C2), which can be computed using an add and a shift
-                    uint32 shift_rest;
+                    uint32_t shift_rest;
                     JS_FLOOR_LOG2(shift_rest, rest);
                     if ((1u << shift_rest) == rest) {
                         masm.as_add(ToRegister(dest), src, lsl(src, shift-shift_rest));
@@ -443,7 +435,7 @@ CodeGeneratorARM::visitMulI(LMulI *ins)
                 // To stay on the safe side, only optimize things that are a
                 // power of 2.
 
-                uint32 shift;
+                uint32_t shift;
                 JS_FLOOR_LOG2(shift, constant);
                 if ((1 << shift) == constant) {
                     // dest = lhs * pow(2,shift)
@@ -871,7 +863,7 @@ CodeGeneratorARM::emitTableSwitchDispatch(MTableSwitch *mir, const Register &ind
     // we don't attempt to execute the address table.
     Label *defaultcase = mir->getDefault()->lir()->label();
 
-    int32 cases = mir->numCases();
+    int32_t cases = mir->numCases();
     // Lower value with low value
     masm.ma_sub(index, Imm32(mir->low()), index, SetCond);
     masm.ma_rsb(index, Imm32(cases - 1), index, SetCond, Assembler::Unsigned);
@@ -980,12 +972,12 @@ CodeGeneratorARM::visitTruncateDToInt32(LTruncateDToInt32 *ins)
     return emitTruncateDouble(ToFloatRegister(ins->input()), ToRegister(ins->output()));
 }
 
-static const uint32 FrameSizes[] = { 128, 256, 512, 1024 };
+static const uint32_t FrameSizes[] = { 128, 256, 512, 1024 };
 
 FrameSizeClass
-FrameSizeClass::FromDepth(uint32 frameDepth)
+FrameSizeClass::FromDepth(uint32_t frameDepth)
 {
-    for (uint32 i = 0; i < JS_ARRAY_LENGTH(FrameSizes); i++) {
+    for (uint32_t i = 0; i < JS_ARRAY_LENGTH(FrameSizes); i++) {
         if (frameDepth < FrameSizes[i])
             return FrameSizeClass(i);
     }
@@ -999,7 +991,7 @@ FrameSizeClass::ClassLimit()
     return FrameSizeClass(JS_ARRAY_LENGTH(FrameSizes));
 }
 
-uint32
+uint32_t
 FrameSizeClass::frameSize() const
 {
     JS_ASSERT(class_ != NO_FRAME_SIZE_CLASS_ID);
@@ -1105,7 +1097,7 @@ CodeGeneratorARM::linkAbsoluteLabels()
     // On arm, everything should just go in a pool.
 # if 0
     JS_NOT_REACHED("Absolute Labels NYI");
-    JSScript *script = gen->info().script();
+    UnrootedScript script = gen->info().script();
     IonCode *method = script->ion->method();
 
     for (size_t i = 0; i < deferredDoubles_.length(); i++) {
@@ -1240,6 +1232,59 @@ CodeGeneratorARM::visitCompareBAndBranch(LCompareBAndBranch *lir)
 }
 
 bool
+CodeGeneratorARM::visitCompareV(LCompareV *lir)
+{
+    MCompare *mir = lir->mir();
+    Assembler::Condition cond = JSOpToCondition(mir->jsop());
+    const ValueOperand lhs = ToValue(lir, LCompareV::LhsInput);
+    const ValueOperand rhs = ToValue(lir, LCompareV::RhsInput);
+    const Register output = ToRegister(lir->output());
+
+    JS_ASSERT(mir->jsop() == JSOP_EQ || mir->jsop() == JSOP_STRICTEQ ||
+              mir->jsop() == JSOP_NE || mir->jsop() == JSOP_STRICTNE);
+
+    Label notEqual, done;
+    masm.cmp32(lhs.typeReg(), rhs.typeReg());
+    masm.j(Assembler::NotEqual, &notEqual);
+    {
+        masm.cmp32(lhs.payloadReg(), rhs.payloadReg());
+        emitSet(cond, output);
+        masm.jump(&done);
+    }
+    masm.bind(&notEqual);
+    {
+        masm.move32(Imm32(cond == Assembler::NotEqual), output);
+    }
+
+    masm.bind(&done);
+    return true;
+}
+
+bool
+CodeGeneratorARM::visitCompareVAndBranch(LCompareVAndBranch *lir)
+{
+    MCompare *mir = lir->mir();
+    Assembler::Condition cond = JSOpToCondition(mir->jsop());
+    const ValueOperand lhs = ToValue(lir, LCompareVAndBranch::LhsInput);
+    const ValueOperand rhs = ToValue(lir, LCompareVAndBranch::RhsInput);
+
+    JS_ASSERT(mir->jsop() == JSOP_EQ || mir->jsop() == JSOP_STRICTEQ ||
+              mir->jsop() == JSOP_NE || mir->jsop() == JSOP_STRICTNE);
+
+    Label *notEqual;
+    if (cond == Assembler::Equal)
+        notEqual = lir->ifFalse()->lir()->label();
+    else
+        notEqual = lir->ifTrue()->lir()->label();
+
+    masm.cmp32(lhs.typeReg(), rhs.typeReg());
+    masm.j(Assembler::NotEqual, notEqual);
+    masm.cmp32(lhs.payloadReg(), rhs.payloadReg());
+    emitBranch(cond, lir->ifTrue(), lir->ifFalse());
+
+    return true;
+}
+bool
 CodeGeneratorARM::visitNotI(LNotI *ins)
 {
     // It is hard to optimize !x, so just do it the basic way for now.
@@ -1289,7 +1334,7 @@ CodeGeneratorARM::visitLoadSlotV(LLoadSlotV *load)
 {
     const ValueOperand out = ToOutValue(load);
     Register base = ToRegister(load->input());
-    int32 offset = load->mir()->slot() * sizeof(js::Value);
+    int32_t offset = load->mir()->slot() * sizeof(js::Value);
 
     masm.loadValue(Address(base, offset), out);
     return true;
@@ -1299,7 +1344,7 @@ bool
 CodeGeneratorARM::visitLoadSlotT(LLoadSlotT *load)
 {
     Register base = ToRegister(load->input());
-    int32 offset = load->mir()->slot() * sizeof(js::Value);
+    int32_t offset = load->mir()->slot() * sizeof(js::Value);
 
     if (load->mir()->type() == MIRType_Double)
         masm.loadInt32OrDouble(Operand(base, offset), ToFloatRegister(load->output()));
@@ -1313,7 +1358,7 @@ CodeGeneratorARM::visitStoreSlotT(LStoreSlotT *store)
 {
 
     Register base = ToRegister(store->slots());
-    int32 offset = store->mir()->slot() * sizeof(js::Value);
+    int32_t offset = store->mir()->slot() * sizeof(js::Value);
 
     const LAllocation *value = store->value();
     MIRType valueType = store->mir()->value()->type();
@@ -1422,7 +1467,7 @@ CodeGeneratorARM::visitGuardClass(LGuardClass *guard)
     Register tmp = ToRegister(guard->tempInt());
 
     masm.loadObjClass(obj, tmp);
-    masm.ma_cmp(tmp, Imm32((uint32)guard->mir()->getClass()));
+    masm.ma_cmp(tmp, Imm32((uint32_t)guard->mir()->getClass()));
     if (!bailoutIf(Assembler::NotEqual, guard->snapshot()))
         return false;
     return true;

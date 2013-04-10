@@ -61,7 +61,7 @@ class IonRuntime
   private:
     IonCode *generateEnterJIT(JSContext *cx);
     IonCode *generateArgumentsRectifier(JSContext *cx);
-    IonCode *generateBailoutTable(JSContext *cx, uint32 frameClass);
+    IonCode *generateBailoutTable(JSContext *cx, uint32_t frameClass);
     IonCode *generateBailoutHandler(JSContext *cx);
     IonCode *generateInvalidator(JSContext *cx);
     IonCode *generatePreBarrier(JSContext *cx, MIRType type);
@@ -100,6 +100,8 @@ class IonCompartment
 
   public:
     IonCompartment(IonRuntime *rt);
+
+    bool initialize(JSContext *cx);
 
     void mark(JSTracer *trc, JSCompartment *compartment);
     void sweep(FreeOp *fop);
@@ -154,7 +156,7 @@ class IonActivation
     IonActivation *prev_;
     StackFrame *entryfp_;
     BailoutClosure *bailout_;
-    uint8 *prevIonTop_;
+    uint8_t *prevIonTop_;
     JSContext *prevIonJSContext_;
 
     // When creating an activation without a StackFrame, this field is used
@@ -171,7 +173,7 @@ class IonActivation
     IonActivation *prev() const {
         return prev_;
     }
-    uint8 *prevIonTop() const {
+    uint8_t *prevIonTop() const {
         return prevIonTop_;
     }
     jsbytecode *prevpc() const {
@@ -223,7 +225,7 @@ class IonActivation
 
 // Called from JSCompartment::discardJitCode().
 void InvalidateAll(FreeOp *fop, JSCompartment *comp);
-void FinishInvalidation(FreeOp *fop, JSScript *script);
+void FinishInvalidation(FreeOp *fop, UnrootedScript script);
 
 } // namespace ion
 } // namespace js

@@ -825,14 +825,13 @@ NoteGCThingXPCOMChildren(js::Class *clasp, JSObject *obj,
         NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "xpc_GetJSPrivate(obj)");
         cb.NoteXPCOMChild(static_cast<nsISupports*>(xpc_GetJSPrivate(obj)));
     } else {
-        const DOMClass* domClass;
-        DOMObjectSlot slot = GetDOMClass(obj, domClass);
-        if (slot != eNonDOMObject) {
+        const DOMClass* domClass = GetDOMClass(obj);
+        if (domClass) {
             NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "UnwrapDOMObject(obj)");
             if (domClass->mDOMObjectIsISupports) {
-                cb.NoteXPCOMChild(UnwrapDOMObject<nsISupports>(obj, slot));
+                cb.NoteXPCOMChild(UnwrapDOMObject<nsISupports>(obj));
             } else if (domClass->mParticipant) {
-                cb.NoteNativeChild(UnwrapDOMObject<void>(obj, slot),
+                cb.NoteNativeChild(UnwrapDOMObject<void>(obj),
                                    domClass->mParticipant);
             }
         }
@@ -888,10 +887,6 @@ public:
     }
     static NS_METHOD UnlinkImpl(void *n)
     {
-        JSContext *cx = static_cast<JSContext*>(n);
-        JSAutoRequest ar(cx);
-        NS_ASSERTION(JS_GetGlobalObject(cx), "global object NULL before unlinking");
-        JS_SetGlobalObject(cx, NULL);
         return NS_OK;
     }
     static NS_METHOD UnrootImpl(void *n)
@@ -1368,8 +1363,11 @@ nsXPConnect::GetNativeOfWrapper(JSContext * aJSContext,
     if (obj2)
         return (nsISupports*)xpc_GetJSPrivate(obj2);
 
+    JSObject* unsafeObj =
+        XPCWrapper::Unwrap(aJSContext, aJSObj, /* stopAtOuter = */ false);
+    JSObject* cur = unsafeObj ? unsafeObj : aJSObj;
     nsISupports* supports = nullptr;
-    mozilla::dom::UnwrapDOMObjectToISupports(aJSObj, supports);
+    mozilla::dom::UnwrapDOMObjectToISupports(cur, supports);
     nsCOMPtr<nsISupports> canonical = do_QueryInterface(supports);
     return canonical;
 }
@@ -1447,13 +1445,15 @@ nsXPConnect::GetWrappedNativeOfNativeObject(JSContext * aJSContext,
     return NS_OK;
 }
 
-/* nsIXPConnectJSObjectHolder reparentWrappedNativeIfFound (in JSContextPtr aJSContext, in JSObjectPtr aScope, in JSObjectPtr aNewParent, in nsISupports aCOMObj); */
+/* void reparentWrappedNativeIfFound (in JSContextPtr aJSContext,
+ *                                    in JSObjectPtr aScope,
+ *                                    in JSObjectPtr aNewParent,
+ *                                    in nsISupports aCOMObj); */
 NS_IMETHODIMP
 nsXPConnect::ReparentWrappedNativeIfFound(JSContext * aJSContext,
                                           JSObject * aScope,
                                           JSObject * aNewParent,
-                                          nsISupports *aCOMObj,
-                                          nsIXPConnectJSObjectHolder **_retval)
+                                          nsISupports *aCOMObj)
 {
     XPCCallContext ccx(NATIVE_CALLER, aJSContext);
     if (!ccx.IsValid())
@@ -1465,8 +1465,8 @@ nsXPConnect::ReparentWrappedNativeIfFound(JSContext * aJSContext,
         return UnexpectedFailure(NS_ERROR_FAILURE);
 
     return XPCWrappedNative::
-        ReparentWrapperIfFound(ccx, scope, scope2, aNewParent, aCOMObj,
-                               (XPCWrappedNative**) _retval);
+        ReparentWrapperIfFound(ccx, scope, scope2, aNewParent,
+                               aCOMObj);
 }
 
 static JSDHashOperator
@@ -2002,26 +2002,25 @@ nsXPConnect::OnDispatchedEvent(nsIThreadInternal* aThread)
     return NS_ERROR_UNEXPECTED;
 }
 
-NS_IMETHODIMP
+void
 nsXPConnect::AddJSHolder(void* aHolder, nsScriptObjectTracer* aTracer)
 {
-    return mRuntime->AddJSHolder(aHolder, aTracer);
+    mRuntime->AddJSHolder(aHolder, aTracer);
 }
 
-NS_IMETHODIMP
+void
 nsXPConnect::RemoveJSHolder(void* aHolder)
 {
-    return mRuntime->RemoveJSHolder(aHolder);
+    mRuntime->RemoveJSHolder(aHolder);
 }
 
-NS_IMETHODIMP
-nsXPConnect::TestJSHolder(void* aHolder, bool* aRetval)
+bool
+nsXPConnect::TestJSHolder(void* aHolder)
 {
 #ifdef DEBUG
-    return mRuntime->TestJSHolder(aHolder, aRetval);
+    return mRuntime->TestJSHolder(aHolder);
 #else
-    MOZ_ASSERT(false);
-    return NS_ERROR_FAILURE;
+    return false;
 #endif
 }
 
@@ -2692,6 +2691,22 @@ nsXPConnect::ReadFunction(nsIObjectInputStream *stream, JSContext *cx, JSObject 
 {
     return ReadScriptOrFunction(stream, cx, nullptr, functionObjp);
 }
+
+#ifdef DEBUG
+void
+nsXPConnect::SetObjectToUnlink(void* aObject)
+{
+    if (mRuntime)
+        mRuntime->SetObjectToUnlink(aObject);
+}
+
+void
+nsXPConnect::AssertNoObjectsToTrace(void* aPossibleJSHolder)
+{
+    if (mRuntime)
+        mRuntime->AssertNoObjectsToTrace(aPossibleJSHolder);
+}
+#endif
 
 /* These are here to be callable from a debugger */
 JS_BEGIN_EXTERN_C

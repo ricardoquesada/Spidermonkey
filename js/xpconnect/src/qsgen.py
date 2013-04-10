@@ -80,9 +80,6 @@
 #
 # - There are many features of IDL that XPConnect supports but qsgen does not,
 #   including dependent types, arrays, and out parameters.
-#
-# - Since quick stubs are JSPropertyOps, we have to do additional work to make
-#   __lookup[GS]etter__ work on them.
 
 
 import xpidl
@@ -234,6 +231,7 @@ class Configuration:
         self.customIncludes = config.get('customIncludes', [])
         self.customReturnInterfaces = config.get('customReturnInterfaces', [])
         self.customMethodCalls = config.get('customMethodCalls', {})
+        self.newBindingProperties = config.get('newBindingProperties', {})
 
 def readConfigFile(filename, includePath, cachedir):
     # Read the config file.
@@ -257,6 +255,7 @@ def readConfigFile(filename, includePath, cachedir):
                                 % (interfaceName, idlFile))
             iface = idl.getName(interfaceName, errorLoc)
             iface.stubMembers = []
+            iface.newBindingProperties = 'nullptr'
             interfaces.append(iface)
             interfacesByName[interfaceName] = iface
         return iface
@@ -275,8 +274,7 @@ def readConfigFile(filename, includePath, cachedir):
         iface = getInterface(interfaceName, errorLoc='looking for %r' % memberId)
 
         if not iface.attributes.scriptable:
-            raise UserError("Interface %s is not scriptable. "
-                            "IDL file: %r." % (interfaceName, idlFile))
+            raise UserError("Interface %s is not scriptable." % interfaceName)
 
         if memberName == '*':
             if not add:
@@ -285,8 +283,6 @@ def readConfigFile(filename, includePath, cachedir):
             # Stub all scriptable members of this interface.
             for member in iface.members:
                 if member.kind in ('method', 'attribute') and not member.noscript:
-                    cmc = conf.customMethodCalls.get(interfaceName + "_" + header.methodNativeName(member), None)
-
                     addStubMember(iface.name + '.' + member.name, member)
 
                     if member.iface not in stubbedInterfaces:
@@ -304,13 +300,17 @@ def readConfigFile(filename, includePath, cachedir):
                     raise UserError("Member %s is specified more than once."
                                     % memberId)
 
-                cmc = conf.customMethodCalls.get(interfaceName + "_" + header.methodNativeName(member), None)
-
                 addStubMember(memberId, member)
                 if member.iface not in stubbedInterfaces:
                     stubbedInterfaces.append(member.iface)
             else:
                 removeStubMember(memberId, member)
+
+    for (interfaceName, v) in conf.newBindingProperties.iteritems():
+        iface = getInterface(interfaceName, errorLoc='looking for %r' % interfaceName)
+        iface.newBindingProperties = v
+        if iface not in stubbedInterfaces:
+            stubbedInterfaces.append(iface)
 
     # Now go through and check all the interfaces' members
     for iface in stubbedInterfaces:
@@ -1126,7 +1126,7 @@ def writeDefiner(f, conf, stringtable, interfaces):
     for iface in interfaces:
         # This if-statement discards interfaces specified with
         # "nsInterfaceName.*" that don't have any stub-able members.
-        if iface.stubMembers:
+        if iface.stubMembers or iface.newBindingProperties:
             h = hashIID(iface.attributes.uuid)
             buckets[h % size].append(iface)
 
@@ -1143,7 +1143,7 @@ def writeDefiner(f, conf, stringtable, interfaces):
                 arraySize += 1
 
     entries = ["    {{0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}}, "
-               "0, 0, 0, 0, XPC_QS_NULL_INDEX, XPC_QS_NULL_INDEX}"
+               "0, 0, 0, 0, nullptr, XPC_QS_NULL_INDEX, XPC_QS_NULL_INDEX}"
                for i in range(arraySize)]
     for i, bucket in enumerate(buckets):
         for j, iface in enumerate(bucket):
@@ -1191,9 +1191,10 @@ def writeDefiner(f, conf, stringtable, interfaces):
                 chain = str(k)
 
             # add entry
-            entry = "    /* %s */ {%s, %d, %d, %d, %d, %s, %s}" % (
+            entry = "    /* %s */ {%s, %d, %d, %d, %d, %s, %s, %s}" % (
                 iface.name, iid, prop_index, prop_n_entries,
-                func_index, func_n_entries, parentInterface, chain)
+                func_index, func_n_entries, iface.newBindingProperties,
+                parentInterface, chain)
             entries[entryIndexes[iface.attributes.uuid]] = entry
 
     f.write("static const xpc_qsHashEntry tableData[] = {\n")
@@ -1279,7 +1280,6 @@ def writeStubFile(filename, headerFilename, conf, interfaces):
 
     try:
         f.write(stubTopTemplate % os.path.basename(headerFilename))
-        N = 256
         resulttypes = []
         for iface in interfaces:
             resulttypes.extend(writeIncludesForInterface(iface))

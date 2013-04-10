@@ -29,7 +29,10 @@ namespace ion {
     _(CheckOverRecursed)                                                    \
     _(RecompileCheck)                                                       \
     _(DefVar)                                                               \
+    _(DefFun)                                                               \
     _(CreateThis)                                                           \
+    _(CreateThisWithProto)                                                  \
+    _(CreateThisWithTemplate)                                               \
     _(PrepareCall)                                                          \
     _(PassArg)                                                              \
     _(Call)                                                                 \
@@ -71,11 +74,13 @@ namespace ion {
     _(NewSlots)                                                             \
     _(NewArray)                                                             \
     _(NewObject)                                                            \
+    _(NewDeclEnvObject)                                                     \
     _(NewCallObject)                                                        \
     _(NewStringObject)                                                      \
     _(InitProp)                                                             \
     _(Start)                                                                \
     _(OsrEntry)                                                             \
+    _(Nop)                                                                  \
     _(RegExp)                                                               \
     _(RegExpTest)                                                           \
     _(Lambda)                                                               \

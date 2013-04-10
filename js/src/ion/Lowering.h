@@ -34,9 +34,9 @@ class LIRGenerator : public LIRGeneratorSpecific
     void updateResumeState(MBasicBlock *block);
 
     // The active depth of the (perhaps nested) call argument vectors.
-    uint32 argslots_;
+    uint32_t argslots_;
     // The maximum depth, for framesizeclass determination.
-    uint32 maxargslots_;
+    uint32_t maxargslots_;
 
   public:
     LIRGenerator(MIRGenerator *gen, MIRGraph &graph, LIRGraph &lirGraph)
@@ -60,13 +60,13 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool definePhis();
 
     // Allocate argument slots for a future function call.
-    void allocateArguments(uint32 argc);
+    void allocateArguments(uint32_t argc);
     // Map an MPassArg's argument number to a slot in the frame arg vector.
     // Slots are indexed from 1. argnum is indexed from 0.
-    uint32 getArgumentSlot(uint32 argnum);
-    uint32 getArgumentSlotForCall() { return argslots_; }
+    uint32_t getArgumentSlot(uint32_t argnum);
+    uint32_t getArgumentSlotForCall() { return argslots_; }
     // Free argument slots following a function call.
-    void freeArguments(uint32 argc);
+    void freeArguments(uint32_t argc);
 
   public:
     bool visitInstruction(MInstruction *ins);
@@ -81,13 +81,17 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitNewSlots(MNewSlots *ins);
     bool visitNewArray(MNewArray *ins);
     bool visitNewObject(MNewObject *ins);
+    bool visitNewDeclEnvObject(MNewDeclEnvObject *ins);
     bool visitNewCallObject(MNewCallObject *ins);
     bool visitNewStringObject(MNewStringObject *ins);
     bool visitInitProp(MInitProp *ins);
     bool visitCheckOverRecursed(MCheckOverRecursed *ins);
     bool visitDefVar(MDefVar *ins);
+    bool visitDefFun(MDefFun *ins);
     bool visitPrepareCall(MPrepareCall *ins);
     bool visitPassArg(MPassArg *arg);
+    bool visitCreateThisWithTemplate(MCreateThisWithTemplate *ins);
+    bool visitCreateThisWithProto(MCreateThisWithProto *ins);
     bool visitCreateThis(MCreateThis *ins);
     bool visitReturnFromCtor(MReturnFromCtor *ins);
     bool visitCall(MCall *call);
@@ -122,6 +126,7 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitFromCharCode(MFromCharCode *ins);
     bool visitStart(MStart *start);
     bool visitOsrEntry(MOsrEntry *entry);
+    bool visitNop(MNop *nop);
     bool visitOsrValue(MOsrValue *value);
     bool visitOsrScopeChain(MOsrScopeChain *object);
     bool visitToDouble(MToDouble *convert);

@@ -4,6 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/DebugOnly.h"
+
 #include "jsworkers.h"
 
 #if JS_ION
@@ -20,7 +22,7 @@ using mozilla::DebugOnly;
 bool
 js::OffThreadCompilationAvailable(JSContext *cx)
 {
-    return cx->runtime->useHelperThreads();
+    return cx->runtime->useHelperThreads() && cx->runtime->helperThreadCount() > 0;
 }
 
 bool
@@ -92,7 +94,7 @@ js::CancelOffThreadIonCompile(JSCompartment *compartment, JSScript *script)
     /* Cancel any pending entries for which processing hasn't started. */
     for (size_t i = 0; i < state.ionWorklist.length(); i++) {
         ion::IonBuilder *builder = state.ionWorklist[i];
-        if (CompiledScriptMatches(compartment, script, builder->script().unsafeGet())) {
+        if (CompiledScriptMatches(compartment, script, builder->script())) {
             FinishOffThreadIonCompile(builder);
             state.ionWorklist[i--] = state.ionWorklist.back();
             state.ionWorklist.popBack();
@@ -103,7 +105,7 @@ js::CancelOffThreadIonCompile(JSCompartment *compartment, JSScript *script)
     for (size_t i = 0; i < state.numThreads; i++) {
         const WorkerThread &helper = state.threads[i];
         while (helper.ionBuilder &&
-               CompiledScriptMatches(compartment, script, helper.ionBuilder->script().unsafeGet()))
+               CompiledScriptMatches(compartment, script, helper.ionBuilder->script()))
         {
             helper.ionBuilder->cancel();
             state.wait(WorkerThreadState::MAIN);
@@ -115,7 +117,7 @@ js::CancelOffThreadIonCompile(JSCompartment *compartment, JSScript *script)
     /* Cancel code generation for any completed entries. */
     for (size_t i = 0; i < compilations.length(); i++) {
         ion::IonBuilder *builder = compilations[i];
-        if (CompiledScriptMatches(compartment, script, builder->script().unsafeGet())) {
+        if (CompiledScriptMatches(compartment, script, builder->script())) {
             ion::FinishOffThreadBuilder(builder);
             compilations[i--] = compilations.back();
             compilations.popBack();
@@ -143,7 +145,7 @@ WorkerThreadState::init(JSRuntime *rt)
     if (!helperWakeup)
         return false;
 
-    numThreads = GetCPUCount() - 1;
+    numThreads = rt->helperThreadCount();
 
     threads = (WorkerThread*) rt->calloc_(sizeof(WorkerThread) * numThreads);
     if (!threads) {
@@ -250,6 +252,22 @@ WorkerThreadState::notifyAll(CondVar which)
     PR_NotifyAllCondVar((which == MAIN) ? mainWakeup : helperWakeup);
 }
 
+bool
+WorkerThreadState::canStartIonCompile()
+{
+    // A worker thread can begin an Ion compilation if (a) there is some script
+    // which is waiting to be compiled, and (b) no other worker thread is
+    // currently compiling a script. The latter condition ensures that two
+    // compilations cannot simultaneously occur.
+    if (ionWorklist.empty())
+        return false;
+    for (size_t i = 0; i < numThreads; i++) {
+        if (threads[i].ionBuilder)
+            return false;
+    }
+    return true;
+}
+
 void
 WorkerThread::destroy()
 {
@@ -289,7 +307,7 @@ WorkerThread::threadLoop()
     while (true) {
         JS_ASSERT(!ionBuilder);
 
-        while (state.ionWorklist.empty()) {
+        while (!state.canStartIonCompile()) {
             if (terminate) {
                 state.unlock();
                 return;
@@ -299,8 +317,8 @@ WorkerThread::threadLoop()
 
         ionBuilder = state.ionWorklist.popCopy();
 
-        ion::ExecutionMode executionMode = ionBuilder->info().executionMode();
-        JS_ASSERT(GetIonScript(ionBuilder->script().unsafeGet(), executionMode) == ION_COMPILING_SCRIPT);
+        DebugOnly<ion::ExecutionMode> executionMode = ionBuilder->info().executionMode();
+        JS_ASSERT(GetIonScript(ionBuilder->script(), executionMode) == ION_COMPILING_SCRIPT);
 
         state.unlock();
 

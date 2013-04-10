@@ -67,6 +67,9 @@ ScriptDebugEpilogue(JSContext *cx, StackFrame *fp, bool ok);
 extern bool
 BoxNonStrictThis(JSContext *cx, const CallReceiver &call);
 
+extern bool
+BoxNonStrictThis(JSContext *cx, MutableHandleValue thisv, bool *modified);
+
 /*
  * Ensure that fp->thisValue() is the correct value of |this| for the scripted
  * call represented by |fp|. ComputeThis is necessary because fp->thisValue()
@@ -377,6 +380,12 @@ SetProperty(JSContext *cx, HandleObject obj, HandleId id, const Value &value);
 template <bool strict>
 bool
 DeleteProperty(JSContext *ctx, HandleValue val, HandlePropertyName name, JSBool *bv);
+
+bool
+DefFunOperation(JSContext *cx, HandleScript script, HandleObject scopeChain, HandleFunction funArg);
+
+bool
+GetAndClearException(JSContext *cx, MutableHandleValue res);
 
 }  /* namespace js */
 

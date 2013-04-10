@@ -7,6 +7,8 @@
 
 #ifdef JS_METHODJIT
 
+#include "mozilla/DebugOnly.h"
+
 #include "Retcon.h"
 #include "MethodJIT.h"
 #include "Compiler.h"
@@ -250,7 +252,7 @@ Recompiler::expandInlineFrames(JSCompartment *compartment,
     uint8_t* codeStart = (uint8_t *)chunk->code.m_code.executableAddress();
 
     InlineFrame *inner = &chunk->inlineFrames()[inlined->inlineIndex];
-    jsbytecode *innerpc = inner->fun->script()->code + inlined->pcOffset;
+    jsbytecode *innerpc = inner->fun->nonLazyScript()->code + inlined->pcOffset;
 
     StackFrame *innerfp = expandInlineFrameChain(fp, inner);
 
@@ -350,7 +352,7 @@ ClearAllFrames(JSCompartment *compartment)
         if (f->entryfp->compartment() != compartment)
             continue;
 
-        Recompiler::patchFrame(compartment, f, f->fp()->script().get(nogc));
+        Recompiler::patchFrame(compartment, f, f->fp()->script());
 
         // Clear ncode values from all frames associated with the VMFrame.
         // Patching the VMFrame's return address will cause all its frames to

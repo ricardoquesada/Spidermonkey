@@ -29,9 +29,7 @@
 using namespace js;
 using namespace js::gc;
 
-namespace js {
-int sWrapperFamily;
-}
+int js::sWrapperFamily;
 
 void *
 Wrapper::getWrapperFamily()
@@ -164,22 +162,20 @@ Wrapper::~Wrapper()
 
 bool
 Wrapper::getPropertyDescriptor(JSContext *cx, JSObject *wrapper,
-                               jsid id, bool set,
-                               PropertyDescriptor *desc)
+                               jsid id, PropertyDescriptor *desc, unsigned flags)
 {
     JS_ASSERT(!hasPrototype()); // Should never be called when there's a prototype.
     desc->obj = NULL; // default result if we refuse to perform this action
-    CHECKED(DirectProxyHandler::getPropertyDescriptor(cx, wrapper, id, set, desc),
-            set ? SET : GET);
+    CHECKED(DirectProxyHandler::getPropertyDescriptor(cx, wrapper, id, desc, flags),
+            (flags & JSRESOLVE_ASSIGNING) ? SET : GET);
 }
 
 bool
 Wrapper::getOwnPropertyDescriptor(JSContext *cx, JSObject *wrapper,
-                                  jsid id, bool set,
-                                  PropertyDescriptor *desc)
+                                  jsid id, PropertyDescriptor *desc, unsigned flags)
 {
     desc->obj = NULL; // default result if we refuse to perform this action
-    CHECKED(DirectProxyHandler::getOwnPropertyDescriptor(cx, wrapper, id, set, desc), GET);
+    CHECKED(DirectProxyHandler::getOwnPropertyDescriptor(cx, wrapper, id, desc, flags), GET);
 }
 
 bool
@@ -405,7 +401,7 @@ CrossCompartmentWrapper::~CrossCompartmentWrapper()
 {
 }
 
-#define PIERCE(cx, wrapper, mode, pre, op, post)                \
+#define PIERCE(cx, wrapper, pre, op, post)                      \
     JS_BEGIN_MACRO                                              \
         bool ok;                                                \
         {                                                       \
@@ -419,21 +415,21 @@ CrossCompartmentWrapper::~CrossCompartmentWrapper()
 
 bool
 CrossCompartmentWrapper::getPropertyDescriptor(JSContext *cx, JSObject *wrapper, jsid id,
-                                               bool set, PropertyDescriptor *desc)
+                                               PropertyDescriptor *desc, unsigned flags)
 {
-    PIERCE(cx, wrapper, set ? SET : GET,
+    PIERCE(cx, wrapper,
            cx->compartment->wrapId(cx, &id),
-           Wrapper::getPropertyDescriptor(cx, wrapper, id, set, desc),
+           Wrapper::getPropertyDescriptor(cx, wrapper, id, desc, flags),
            cx->compartment->wrap(cx, desc));
 }
 
 bool
 CrossCompartmentWrapper::getOwnPropertyDescriptor(JSContext *cx, JSObject *wrapper, jsid id,
-                                                  bool set, PropertyDescriptor *desc)
+                                                  PropertyDescriptor *desc, unsigned flags)
 {
-    PIERCE(cx, wrapper, set ? SET : GET,
+    PIERCE(cx, wrapper,
            cx->compartment->wrapId(cx, &id),
-           Wrapper::getOwnPropertyDescriptor(cx, wrapper, id, set, desc),
+           Wrapper::getOwnPropertyDescriptor(cx, wrapper, id, desc, flags),
            cx->compartment->wrap(cx, desc));
 }
 
@@ -441,7 +437,7 @@ bool
 CrossCompartmentWrapper::defineProperty(JSContext *cx, JSObject *wrapper, jsid id, PropertyDescriptor *desc)
 {
     AutoPropertyDescriptorRooter desc2(cx, desc);
-    PIERCE(cx, wrapper, SET,
+    PIERCE(cx, wrapper,
            cx->compartment->wrapId(cx, &id) && cx->compartment->wrap(cx, &desc2),
            Wrapper::defineProperty(cx, wrapper, id, &desc2),
            NOTHING);
@@ -450,7 +446,7 @@ CrossCompartmentWrapper::defineProperty(JSContext *cx, JSObject *wrapper, jsid i
 bool
 CrossCompartmentWrapper::getOwnPropertyNames(JSContext *cx, JSObject *wrapper, AutoIdVector &props)
 {
-    PIERCE(cx, wrapper, GET,
+    PIERCE(cx, wrapper,
            NOTHING,
            Wrapper::getOwnPropertyNames(cx, wrapper, props),
            cx->compartment->wrap(cx, props));
@@ -459,7 +455,7 @@ CrossCompartmentWrapper::getOwnPropertyNames(JSContext *cx, JSObject *wrapper, A
 bool
 CrossCompartmentWrapper::delete_(JSContext *cx, JSObject *wrapper, jsid id, bool *bp)
 {
-    PIERCE(cx, wrapper, SET,
+    PIERCE(cx, wrapper,
            cx->compartment->wrapId(cx, &id),
            Wrapper::delete_(cx, wrapper, id, bp),
            NOTHING);
@@ -468,7 +464,7 @@ CrossCompartmentWrapper::delete_(JSContext *cx, JSObject *wrapper, jsid id, bool
 bool
 CrossCompartmentWrapper::enumerate(JSContext *cx, JSObject *wrapper, AutoIdVector &props)
 {
-    PIERCE(cx, wrapper, GET,
+    PIERCE(cx, wrapper,
            NOTHING,
            Wrapper::enumerate(cx, wrapper, props),
            cx->compartment->wrap(cx, props));
@@ -477,7 +473,7 @@ CrossCompartmentWrapper::enumerate(JSContext *cx, JSObject *wrapper, AutoIdVecto
 bool
 CrossCompartmentWrapper::has(JSContext *cx, JSObject *wrapper, jsid id, bool *bp)
 {
-    PIERCE(cx, wrapper, GET,
+    PIERCE(cx, wrapper,
            cx->compartment->wrapId(cx, &id),
            Wrapper::has(cx, wrapper, id, bp),
            NOTHING);
@@ -486,7 +482,7 @@ CrossCompartmentWrapper::has(JSContext *cx, JSObject *wrapper, jsid id, bool *bp
 bool
 CrossCompartmentWrapper::hasOwn(JSContext *cx, JSObject *wrapper, jsid id, bool *bp)
 {
-    PIERCE(cx, wrapper, GET,
+    PIERCE(cx, wrapper,
            cx->compartment->wrapId(cx, &id),
            Wrapper::hasOwn(cx, wrapper, id, bp),
            NOTHING);
@@ -499,7 +495,7 @@ CrossCompartmentWrapper::get(JSContext *cx, JSObject *wrapperArg, JSObject *rece
     RootedObject wrapper(cx, wrapperArg);
     RootedObject receiver(cx, receiverArg);
     RootedId id(cx, idArg);
-    PIERCE(cx, wrapper, GET,
+    PIERCE(cx, wrapper,
            cx->compartment->wrap(cx, receiver.address()) && cx->compartment->wrapId(cx, id.address()),
            Wrapper::get(cx, wrapper, receiver, id, vp),
            cx->compartment->wrap(cx, vp));
@@ -512,7 +508,7 @@ CrossCompartmentWrapper::set(JSContext *cx, JSObject *wrapper_, JSObject *receiv
     RootedObject wrapper(cx, wrapper_), receiver(cx, receiver_);
     RootedId id(cx, id_);
     RootedValue value(cx, *vp);
-    PIERCE(cx, wrapper, SET,
+    PIERCE(cx, wrapper,
            cx->compartment->wrap(cx, receiver.address()) &&
            cx->compartment->wrapId(cx, id.address()) &&
            cx->compartment->wrap(cx, value.address()),
@@ -523,7 +519,7 @@ CrossCompartmentWrapper::set(JSContext *cx, JSObject *wrapper_, JSObject *receiv
 bool
 CrossCompartmentWrapper::keys(JSContext *cx, JSObject *wrapper, AutoIdVector &props)
 {
-    PIERCE(cx, wrapper, GET,
+    PIERCE(cx, wrapper,
            NOTHING,
            Wrapper::keys(cx, wrapper, props),
            cx->compartment->wrap(cx, props));
@@ -610,7 +606,7 @@ Reify(JSContext *cx, JSCompartment *origin, Value *vp)
 bool
 CrossCompartmentWrapper::iterate(JSContext *cx, JSObject *wrapper, unsigned flags, Value *vp)
 {
-    PIERCE(cx, wrapper, GET,
+    PIERCE(cx, wrapper,
            NOTHING,
            Wrapper::iterate(cx, wrapper, flags, vp),
            CanReify(vp) ? Reify(cx, cx->compartment, vp) : cx->compartment->wrap(cx, vp));
@@ -745,15 +741,6 @@ CrossCompartmentWrapper::defaultValue(JSContext *cx, JSObject *wrapper, JSType h
 }
 
 bool
-CrossCompartmentWrapper::iteratorNext(JSContext *cx, JSObject *wrapper, Value *vp)
-{
-    PIERCE(cx, wrapper, GET,
-           NOTHING,
-           DirectProxyHandler::iteratorNext(cx, wrapper, vp),
-           cx->compartment->wrap(cx, vp));
-}
-
-bool
 CrossCompartmentWrapper::getPrototypeOf(JSContext *cx, JSObject *proxy, JSObject **protop)
 {
     assertSameCompartment(cx, proxy);
@@ -828,26 +815,22 @@ SecurityWrapper<Base>::regexp_toShared(JSContext *cx, JSObject *obj, RegExpGuard
 template class js::SecurityWrapper<Wrapper>;
 template class js::SecurityWrapper<CrossCompartmentWrapper>;
 
-namespace js {
-
 DeadObjectProxy::DeadObjectProxy()
   : BaseProxyHandler(&sDeadObjectFamily)
 {
 }
 
 bool
-DeadObjectProxy::getPropertyDescriptor(JSContext *cx, JSObject *wrapper,
-                                       jsid id, bool set,
-                                       PropertyDescriptor *desc)
+DeadObjectProxy::getPropertyDescriptor(JSContext *cx, JSObject *wrapper, jsid id,
+                                       PropertyDescriptor *desc, unsigned flags)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
 }
 
 bool
-DeadObjectProxy::getOwnPropertyDescriptor(JSContext *cx, JSObject *wrapper,
-                                          jsid id, bool set,
-                                          PropertyDescriptor *desc)
+DeadObjectProxy::getOwnPropertyDescriptor(JSContext *cx, JSObject *wrapper, jsid id,
+                                          PropertyDescriptor *desc, unsigned flags)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
@@ -948,13 +931,6 @@ DeadObjectProxy::defaultValue(JSContext *cx, JSObject *obj, JSType hint, Value *
 }
 
 bool
-DeadObjectProxy::iteratorNext(JSContext *cx, JSObject *proxy, Value *vp)
-{
-    JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
-    return false;
-}
-
-bool
 DeadObjectProxy::getElementIfPresent(JSContext *cx, JSObject *obj, JSObject *receiver,
                                      uint32_t index, Value *vp, bool *present)
 {
@@ -971,8 +947,6 @@ DeadObjectProxy::getPrototypeOf(JSContext *cx, JSObject *proxy, JSObject **proto
 
 DeadObjectProxy DeadObjectProxy::singleton;
 int DeadObjectProxy::sDeadObjectFamily;
-
-} // namespace js
 
 JSObject *
 js::NewDeadProxyObject(JSContext *cx, JSObject *parent)
@@ -1005,6 +979,8 @@ js::NukeCrossCompartmentWrapper(JSContext *cx, JSObject *wrapper)
 {
     JS_ASSERT(IsCrossCompartmentWrapper(wrapper));
 
+    NotifyGCNukeWrapper(wrapper);
+
     NukeSlot(wrapper, JSSLOT_PROXY_PRIVATE, NullValue());
     SetProxyHandler(wrapper, &DeadObjectProxy::singleton);
 
@@ -1015,6 +991,8 @@ js::NukeCrossCompartmentWrapper(JSContext *cx, JSObject *wrapper)
 
     NukeSlot(wrapper, JSSLOT_PROXY_EXTRA + 0, NullValue());
     NukeSlot(wrapper, JSSLOT_PROXY_EXTRA + 1, NullValue());
+
+    JS_ASSERT(IsDeadProxyObject(wrapper));
 }
 
 /*
@@ -1026,7 +1004,7 @@ js::NukeCrossCompartmentWrapper(JSContext *cx, JSObject *wrapper)
  * option of how to handle the global object.
  */
 JS_FRIEND_API(JSBool)
-js::NukeCrossCompartmentWrappers(JSContext* cx, 
+js::NukeCrossCompartmentWrappers(JSContext* cx,
                                  const CompartmentFilter& sourceFilter,
                                  const CompartmentFilter& targetFilter,
                                  js::NukeReferencesToWindow nukeReferencesToWindow)
@@ -1042,8 +1020,7 @@ js::NukeCrossCompartmentWrappers(JSContext* cx,
             continue;
 
         // Iterate the wrappers looking for anything interesting.
-        WrapperMap &pmap = c->crossCompartmentWrappers;
-        for (WrapperMap::Enum e(pmap); !e.empty(); e.popFront()) {
+        for (JSCompartment::WrapperEnum e(c); !e.empty(); e.popFront()) {
             // Some cross-compartment wrappers are for strings.  We're not
             // interested in those.
             const CrossCompartmentKey &k = e.front().key;
@@ -1080,17 +1057,18 @@ js::RemapWrapper(JSContext *cx, JSObject *wobj, JSObject *newTarget)
     JS_ASSERT(origTarget);
     Value origv = ObjectValue(*origTarget);
     JSCompartment *wcompartment = wobj->compartment();
-    WrapperMap &pmap = wcompartment->crossCompartmentWrappers;
 
     // If we're mapping to a different target (as opposed to just recomputing
     // for the same target), we must not have an existing wrapper for the new
     // target, otherwise this will break.
-    JS_ASSERT_IF(origTarget != newTarget, !pmap.has(ObjectValue(*newTarget)));
+    JS_ASSERT_IF(origTarget != newTarget,
+                 !wcompartment->lookupWrapper(ObjectValue(*newTarget)));
 
     // The old value should still be in the cross-compartment wrapper map, and
     // the lookup should return wobj.
-    JS_ASSERT(&pmap.lookup(origv)->value.unsafeGet()->toObject() == wobj);
-    pmap.remove(origv);
+    WrapperMap::Ptr p = wcompartment->lookupWrapper(origv);
+    JS_ASSERT(&p->value.unsafeGet()->toObject() == wobj);
+    wcompartment->removeWrapper(p);
 
     // When we remove origv from the wrapper map, its wrapper, wobj, must
     // immediately cease to be a cross-compartment wrapper. Neuter it.
@@ -1122,7 +1100,7 @@ js::RemapWrapper(JSContext *cx, JSObject *wobj, JSObject *newTarget)
 
     // Update the entry in the compartment's wrapper map to point to the old
     // wrapper, which has now been updated (via reuse or swap).
-    pmap.put(ObjectValue(*newTarget), ObjectValue(*wobj));
+    wcompartment->putWrapper(ObjectValue(*newTarget), ObjectValue(*wobj));
     return true;
 }
 
@@ -1139,8 +1117,7 @@ js::RemapAllWrappersForObject(JSContext *cx, JSObject *oldTarget,
         return false;
 
     for (CompartmentsIter c(cx->runtime); !c.done(); c.next()) {
-        WrapperMap &pmap = c->crossCompartmentWrappers;
-        if (WrapperMap::Ptr wp = pmap.lookup(origv)) {
+        if (WrapperMap::Ptr wp = c->lookupWrapper(origv)) {
             // We found a wrapper. Remember and root it.
             toTransplant.infallibleAppend(WrapperValue(wp));
         }
@@ -1170,8 +1147,7 @@ js::RecomputeWrappers(JSContext *cx, const CompartmentFilter &sourceFilter,
             continue;
 
         // Iterate over the wrappers, filtering appropriately.
-        WrapperMap &pmap = c->crossCompartmentWrappers;
-        for (WrapperMap::Enum e(pmap); !e.empty(); e.popFront()) {
+        for (JSCompartment::WrapperEnum e(c); !e.empty(); e.popFront()) {
             // Filter out non-objects.
             const CrossCompartmentKey &k = e.front().key;
             if (k.kind != CrossCompartmentKey::ObjectWrapper)

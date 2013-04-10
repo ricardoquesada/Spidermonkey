@@ -5,6 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/DebugOnly.h"
 #include "mozilla/FloatingPoint.h"
 
 #include "jscntxt.h"
@@ -26,17 +27,18 @@
 #include "methodjit/StubCalls.h"
 #include "methodjit/Retcon.h"
 
+#include "jsatominlines.h"
+#include "jsboolinlines.h"
+#include "jscntxtinlines.h"
+#include "jsfuninlines.h"
 #include "jsinterpinlines.h"
-#include "jsscopeinlines.h"
-#include "jsscriptinlines.h"
 #include "jsnuminlines.h"
 #include "jsobjinlines.h"
-#include "jscntxtinlines.h"
-#include "jsatominlines.h"
-#include "StubCalls-inl.h"
-#include "jsfuninlines.h"
+#include "jsscopeinlines.h"
+#include "jsscriptinlines.h"
 #include "jstypedarray.h"
 
+#include "StubCalls-inl.h"
 #include "vm/RegExpObject-inl.h"
 #include "vm/String-inl.h"
 
@@ -93,6 +95,15 @@ stubs::Name(VMFrame &f)
 {
     RootedValue rval(f.cx);
     if (!NameOperation(f.cx, f.pc(), &rval))
+        THROW();
+    f.regs.sp[0] = rval;
+}
+
+void JS_FASTCALL
+stubs::IntrinsicName(VMFrame &f, PropertyName *name)
+{
+    RootedValue rval(f.cx);
+    if (!f.cx->global().get()->getIntrinsicValue(f.cx, name, &rval))
         THROW();
     f.regs.sp[0] = rval;
 }
@@ -519,9 +530,11 @@ StubEqualityOp(VMFrame &f)
         }
     } else {
         if (lval.isNullOrUndefined()) {
-            cond = rval.isNullOrUndefined() == EQ;
+            cond = (rval.isNullOrUndefined() ||
+                    (rval.isObject() && EmulatesUndefined(&rval.toObject()))) ==
+                    EQ;
         } else if (rval.isNullOrUndefined()) {
-            cond = !EQ;
+            cond = (lval.isObject() && EmulatesUndefined(&lval.toObject())) == EQ;
         } else {
             if (!ToPrimitive(cx, &lval))
                 return false;
@@ -825,7 +838,8 @@ stubs::TriggerIonCompile(VMFrame &f)
         if (*osrPC != JSOP_LOOPENTRY)
             osrPC = NULL;
 
-        if (!ion::TestIonCompile(f.cx, script, script->function(), osrPC, f.fp()->isConstructing())) {
+        RootedFunction scriptFunction(f.cx, script->function());
+        if (!ion::TestIonCompile(f.cx, script, scriptFunction, osrPC, f.fp()->isConstructing())) {
             if (f.cx->isExceptionPending())
                 THROW();
         }
@@ -857,7 +871,7 @@ stubs::RecompileForInline(VMFrame &f)
 {
     AutoAssertNoGC nogc;
     ExpandInlineFrames(f.cx->compartment);
-    Recompiler::clearStackReferences(f.cx->runtime->defaultFreeOp(), f.script().get(nogc));
+    Recompiler::clearStackReferences(f.cx->runtime->defaultFreeOp(), f.script());
     f.jit()->destroyChunk(f.cx->runtime->defaultFreeOp(), f.chunkIndex(), /* resetUses = */ false);
 }
 
@@ -989,7 +1003,7 @@ stubs::NewInitObject(VMFrame &f, JSObject *baseobj)
 }
 
 void JS_FASTCALL
-stubs::InitElem(VMFrame &f, uint32_t last)
+stubs::InitElem(VMFrame &f)
 {
     JSContext *cx = f.cx;
     FrameRegs &regs = f.regs;
@@ -997,33 +1011,15 @@ stubs::InitElem(VMFrame &f, uint32_t last)
     /* Pop the element's value into rval. */
     JS_ASSERT(regs.stackDepth() >= 3);
     HandleValue rref = HandleValue::fromMarkedLocation(&regs.sp[-1]);
+    MutableHandleValue idval = MutableHandleValue::fromMarkedLocation(&regs.sp[-2]);
 
     /* Find the object being initialized at top of stack. */
     const Value &lref = regs.sp[-3];
     JS_ASSERT(lref.isObject());
     RootedObject obj(cx, &lref.toObject());
 
-    /* Fetch id now that we have obj. */
-    RootedId id(cx);
-    MutableHandleValue idval = MutableHandleValue::fromMarkedLocation(&regs.sp[-2]);
-    if (!FetchElementId(f.cx, obj, idval, id.address(), idval))
+    if (!InitElemOperation(cx, obj, idval, rref))
         THROW();
-
-    /*
-     * If rref is a hole, do not call JSObject::defineProperty. In this case,
-     * obj must be an array, so if the current op is the last element
-     * initialiser, set the array length to one greater than id.
-     */
-    if (rref.isMagic(JS_ARRAY_HOLE)) {
-        JS_ASSERT(obj->isArray());
-        JS_ASSERT(JSID_IS_INT(id));
-        JS_ASSERT(uint32_t(JSID_TO_INT(id)) < StackSpace::ARGS_LENGTH_MAX);
-        if (last && !SetLengthProperty(cx, obj, (uint32_t) (JSID_TO_INT(id) + 1)))
-            THROW();
-    } else {
-        if (!JSObject::defineGeneric(cx, obj, id, rref, NULL, NULL, JSPROP_ENUMERATE))
-            THROW();
-    }
 }
 
 void JS_FASTCALL
@@ -1321,63 +1317,6 @@ FindNativeCode(VMFrame &f, jsbytecode *target)
 }
 
 void * JS_FASTCALL
-stubs::LookupSwitch(VMFrame &f, jsbytecode *pc)
-{
-    AutoAssertNoGC nogc;
-    jsbytecode *jpc = pc;
-    JSScript *script = f.fp()->script().get(nogc);
-
-    /* This is correct because the compiler adjusts the stack beforehand. */
-    Value lval = f.regs.sp[-1];
-
-    if (!lval.isPrimitive())
-        return FindNativeCode(f, pc + GET_JUMP_OFFSET(pc));
-
-    JS_ASSERT(pc[0] == JSOP_LOOKUPSWITCH);
-
-    pc += JUMP_OFFSET_LEN;
-    uint32_t npairs = GET_UINT16(pc);
-    pc += UINT16_LEN;
-
-    JS_ASSERT(npairs);
-
-    if (lval.isString()) {
-        JSLinearString *str = lval.toString()->ensureLinear(f.cx);
-        if (!str)
-            THROWV(NULL);
-        for (uint32_t i = 1; i <= npairs; i++) {
-            Value rval = script->getConst(GET_UINT32_INDEX(pc));
-            pc += UINT32_INDEX_LEN;
-            if (rval.isString()) {
-                JSLinearString *rhs = &rval.toString()->asLinear();
-                if (rhs == str || EqualStrings(str, rhs))
-                    return FindNativeCode(f, jpc + GET_JUMP_OFFSET(pc));
-            }
-            pc += JUMP_OFFSET_LEN;
-        }
-    } else if (lval.isNumber()) {
-        double d = lval.toNumber();
-        for (uint32_t i = 1; i <= npairs; i++) {
-            Value rval = script->getConst(GET_UINT32_INDEX(pc));
-            pc += UINT32_INDEX_LEN;
-            if (rval.isNumber() && d == rval.toNumber())
-                return FindNativeCode(f, jpc + GET_JUMP_OFFSET(pc));
-            pc += JUMP_OFFSET_LEN;
-        }
-    } else {
-        for (uint32_t i = 1; i <= npairs; i++) {
-            Value rval = script->getConst(GET_UINT32_INDEX(pc));
-            pc += UINT32_INDEX_LEN;
-            if (lval == rval)
-                return FindNativeCode(f, jpc + GET_JUMP_OFFSET(pc));
-            pc += JUMP_OFFSET_LEN;
-        }
-    }
-
-    return FindNativeCode(f, jpc + GET_JUMP_OFFSET(jpc));
-}
-
-void * JS_FASTCALL
 stubs::TableSwitch(VMFrame &f, jsbytecode *origPc)
 {
     jsbytecode * const originalPC = origPc;
@@ -1448,7 +1387,7 @@ stubs::DelName(VMFrame &f, PropertyName *name_)
         THROW();
 
     /* Strict mode code should never contain JSOP_DELNAME opcodes. */
-    JS_ASSERT(!f.script()->strictModeCode);
+    JS_ASSERT(!f.script()->strict);
 
     /* ECMA says to return true if name is undefined or inherited. */
     f.regs.sp++;
@@ -1623,7 +1562,7 @@ stubs::CheckArgumentTypes(VMFrame &f)
 {
     StackFrame *fp = f.fp();
     JSFunction *fun = fp->fun();
-    RootedScript fscript(f.cx, fun->script());
+    RootedScript fscript(f.cx, fun->nonLazyScript());
     RecompilationMonitor monitor(f.cx);
 
     {
@@ -1651,7 +1590,7 @@ stubs::AssertArgumentTypes(VMFrame &f)
     AutoAssertNoGC nogc;
     StackFrame *fp = f.fp();
     JSFunction *fun = fp->fun();
-    RawScript script = fun->script().get(nogc);
+    UnrootedScript script = fun->nonLazyScript();
 
     /*
      * Don't check the type of 'this' for constructor frames, the 'this' value
@@ -1696,7 +1635,7 @@ stubs::InvariantFailure(VMFrame &f, void *rval)
     *frameAddr = repatchCode;
 
     /* Recompile the outermost script, and don't hoist any bounds checks. */
-    RawScript script = f.fp()->script().get(nogc);
+    UnrootedScript script = f.fp()->script();
     JS_ASSERT(!script->failedBoundsCheck);
     script->failedBoundsCheck = true;
 

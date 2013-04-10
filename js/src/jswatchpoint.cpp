@@ -136,7 +136,7 @@ WatchpointMap::triggerWatchpoint(JSContext *cx, HandleObject obj, HandleId id, M
     Value old;
     old.setUndefined();
     if (obj->isNative()) {
-        if (Shape *shape = obj->nativeLookup(cx, id)) {
+        if (UnrootedShape shape = obj->nativeLookup(cx, id)) {
             if (shape->hasSlot())
                 old = obj->nativeGetSlot(shape->slot());
         }
@@ -151,15 +151,11 @@ WatchpointMap::triggerWatchpoint(JSContext *cx, HandleObject obj, HandleId id, M
 }
 
 bool
-WatchpointMap::markAllIteratively(JSTracer *trc)
+WatchpointMap::markCompartmentIteratively(JSCompartment *c, JSTracer *trc)
 {
-    JSRuntime *rt = trc->runtime;
-    bool mutated = false;
-    for (GCCompartmentsIter c(rt); !c.done(); c.next()) {
-        if (c->watchpointMap)
-            mutated |= c->watchpointMap->markIteratively(trc);
-    }
-    return mutated;
+    if (!c->watchpointMap)
+        return false;
+    return c->watchpointMap->markIteratively(trc);
 }
 
 bool
@@ -228,7 +224,7 @@ WatchpointMap::sweep()
     for (Map::Enum e(map); !e.empty(); e.popFront()) {
         Map::Entry &entry = e.front();
         RelocatablePtrObject obj(entry.key.object);
-        if (!IsObjectMarked(&obj)) {
+        if (IsObjectAboutToBeFinalized(&obj)) {
             JS_ASSERT(!entry.value.held);
             e.removeFront();
         } else if (obj != entry.key.object) {

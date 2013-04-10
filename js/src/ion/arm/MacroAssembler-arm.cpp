@@ -5,11 +5,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/DebugOnly.h"
+
 #include "ion/arm/MacroAssembler-arm.h"
 #include "ion/MoveEmitter.h"
 
 using namespace js;
 using namespace ion;
+
 bool
 isValueDTRDCandidate(ValueOperand &val)
 {
@@ -66,9 +69,28 @@ MacroAssemblerARM::branchTruncateDouble(const FloatRegister &src, const Register
 }
 
 void
+MacroAssemblerARM::negateDouble(FloatRegister reg)
+{
+    ma_vneg(reg, reg);
+}
+
+void
 MacroAssemblerARM::inc64(AbsoluteAddress dest)
 {
-    JS_NOT_REACHED("NYI");
+
+    ma_strd(r0, r1, EDtrAddr(sp, EDtrOffImm(-8)), PreIndex);
+
+    ma_mov(Imm32((int32_t)dest.addr), ScratchRegister);
+
+    ma_ldrd(EDtrAddr(ScratchRegister, EDtrOffImm(0)), r0, r1);
+
+    ma_add(Imm32(1), r0, SetCond);
+    ma_adc(Imm32(0), r1, NoSetCond);
+
+    ma_strd(r0, r1, EDtrAddr(ScratchRegister, EDtrOffImm(0)));
+
+    ma_ldrd(EDtrAddr(sp, EDtrOffImm(8)), r0, r1, PostIndex);
+
 }
 
 bool
@@ -142,7 +164,7 @@ MacroAssemblerARM::ma_alu(Register src1, Imm32 imm, Register dest,
             // it is unsuitable to move a constant that
             if (op == op_mov && ((imm.value & ~ 0xffff) == 0)) {
                 JS_ASSERT(src1 == InvalidReg);
-                as_movw(dest, (uint16)imm.value, c);
+                as_movw(dest, (uint16_t)imm.value, c);
                 return;
             }
 
@@ -150,7 +172,7 @@ MacroAssemblerARM::ma_alu(Register src1, Imm32 imm, Register dest,
             // then do it.
             if (op == op_mvn && (((~imm.value) & ~ 0xffff) == 0)) {
                 JS_ASSERT(src1 == InvalidReg);
-                as_movw(dest, (uint16)~imm.value, c);
+                as_movw(dest, (uint16_t)~imm.value, c);
                 return;
             }
 
@@ -248,7 +270,7 @@ void
 MacroAssemblerARM::ma_movPatchable(Imm32 imm_, Register dest,
                                    Assembler::Condition c, RelocStyle rs, Instruction *i)
 {
-    int32 imm = imm_.value;
+    int32_t imm = imm_.value;
     switch(rs) {
       case L_MOVWT:
         as_movw(dest, Imm16(imm & 0xffff), c, i);
@@ -717,7 +739,7 @@ MacroAssemblerARM::ma_check_mul(Register src1, Imm32 imm, Register dest, Conditi
 }
 
 void
-MacroAssemblerARM::ma_mod_mask(Register src, Register dest, Register hold, int32 shift)
+MacroAssemblerARM::ma_mod_mask(Register src, Register dest, Register hold, int32_t shift)
 {
     // MATH:
     // We wish to compute x % (1<<y) - 1 for a known constant, y.
@@ -731,7 +753,7 @@ MacroAssemblerARM::ma_mod_mask(Register src, Register dest, Register hold, int32
     // c_0 + c_1 + c_2 ... c_n % C
     // each c_n can easily be computed by a shift/bitextract, and the modulus can be maintained
     // by simply subtracting by C whenever the number gets over C.
-    int32 mask = (1 << shift) - 1;
+    int32_t mask = (1 << shift) - 1;
     Label head;
 
     // hold holds -1 if the value was negative, 1 otherwise.
@@ -753,13 +775,13 @@ MacroAssemblerARM::ma_mod_mask(Register src, Register dest, Register hold, int32
     bind(&head);
 
     // Extract the bottom bits into lr.
-    ma_and(Imm32(mask), ScratchRegister, lr);
+    ma_and(Imm32(mask), ScratchRegister, secondScratchReg_);
     // Add those bits to the accumulator.
-    ma_add(lr, dest, dest);
+    ma_add(secondScratchReg_, dest, dest);
     // Do a trial subtraction, this is the same operation as cmp, but we store the dest
-    ma_sub(dest, Imm32(mask), lr, SetCond);
+    ma_sub(dest, Imm32(mask), secondScratchReg_, SetCond);
     // If (sum - C) > 0, store sum - C back into sum, thus performing a modulus.
-    ma_mov(lr, dest, NoSetCond, Unsigned);
+    ma_mov(secondScratchReg_, dest, NoSetCond, Unsigned);
     // Get rid of the bits that we extracted before, and set the condition codes
     as_mov(ScratchRegister, lsr(ScratchRegister, shift), SetCond);
     // If the shift produced zero, finish, otherwise, continue in the loop.
@@ -1084,7 +1106,7 @@ MacroAssemblerARM::ma_b(void *target, Relocation::Kind reloc, Assembler::Conditi
     // location (with relocating GC, we *can't* know our final location)
     // for now, I'm going to be conservative, and load this with an
     // absolute address
-    uint32 trg = (uint32)target;
+    uint32_t trg = (uint32_t)target;
     switch (b_type()) {
       case Assembler::B_MOVWT:
         as_movw(ScratchRegister, Imm16(trg & 0xffff), c);
@@ -1325,29 +1347,29 @@ MacroAssemblerARM::ma_vstr(VFPRegister src, const Operand &addr, Condition cc)
     ma_vdtr(IsStore, addr, src, cc);
 }
 void
-MacroAssemblerARM::ma_vstr(VFPRegister src, Register base, Register index, int32 shift, Condition cc)
+MacroAssemblerARM::ma_vstr(VFPRegister src, Register base, Register index, int32_t shift, Condition cc)
 {
     as_add(ScratchRegister, base, lsl(index, shift), NoSetCond, cc);
     ma_vstr(src, Operand(ScratchRegister, 0), cc);
 }
 
 bool
-MacroAssemblerARMCompat::buildFakeExitFrame(const Register &scratch, uint32 *offset)
+MacroAssemblerARMCompat::buildFakeExitFrame(const Register &scratch, uint32_t *offset)
 {
-    DebugOnly<uint32> initialDepth = framePushed();
-    uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
+    DebugOnly<uint32_t> initialDepth = framePushed();
+    uint32_t descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
 
     Push(Imm32(descriptor)); // descriptor_
 
     enterNoPool();
-    DebugOnly<uint32> offsetBeforePush = currentOffset();
+    DebugOnly<uint32_t> offsetBeforePush = currentOffset();
     Push(pc); // actually pushes $pc + 8.
 
     // Consume an additional 4 bytes. The start of the next instruction will
     // then be 8 bytes after the instruction for Push(pc); this offset can
     // therefore be fed to the safepoint.
     ma_nop();
-    uint32 pseudoReturnOffset = currentOffset();
+    uint32_t pseudoReturnOffset = currentOffset();
     leaveNoPool();
 
     JS_ASSERT(framePushed() == initialDepth + IonExitFrameLayout::Size());
@@ -1360,13 +1382,13 @@ MacroAssemblerARMCompat::buildFakeExitFrame(const Register &scratch, uint32 *off
 bool
 MacroAssemblerARMCompat::buildOOLFakeExitFrame(void *fakeReturnAddr)
 {
-    DebugOnly<uint32> initialDepth = framePushed();
-    uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
+    DebugOnly<uint32_t> initialDepth = framePushed();
+    uint32_t descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
 
     Push(Imm32(descriptor)); // descriptor_
 
     enterNoPool();
-    Push(Imm32((uint32) fakeReturnAddr));
+    Push(Imm32((uint32_t) fakeReturnAddr));
     leaveNoPool();
 
     return true;
@@ -1375,7 +1397,7 @@ MacroAssemblerARMCompat::buildOOLFakeExitFrame(void *fakeReturnAddr)
 void
 MacroAssemblerARMCompat::callWithExitFrame(IonCode *target)
 {
-    uint32 descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
+    uint32_t descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
     Push(Imm32(descriptor)); // descriptor
 
     addPendingJump(m_buffer.nextOffset(), target->raw(), Relocation::IONCODE);
@@ -1408,14 +1430,14 @@ MacroAssemblerARMCompat::callIon(const Register &callee)
 }
 
 void
-MacroAssemblerARMCompat::reserveStack(uint32 amount)
+MacroAssemblerARMCompat::reserveStack(uint32_t amount)
 {
     if (amount)
         ma_sub(Imm32(amount), sp);
     adjustFrame(amount);
 }
 void
-MacroAssemblerARMCompat::freeStack(uint32 amount)
+MacroAssemblerARMCompat::freeStack(uint32_t amount)
 {
     JS_ASSERT(amount <= framePushed_);
     if (amount)
@@ -1512,7 +1534,7 @@ void
 MacroAssemblerARMCompat::load8ZeroExtend(const BaseIndex &src, const Register &dest)
 {
     Register base = src.base;
-    uint32 scale = Imm32::ShiftOf(src.scale).value;
+    uint32_t scale = Imm32::ShiftOf(src.scale).value;
 
     if (src.offset != 0) {
         ma_mov(base, ScratchRegister);
@@ -1631,7 +1653,7 @@ void
 MacroAssemblerARMCompat::loadPtr(const BaseIndex &src, const Register &dest)
 {
     Register base = src.base;
-    uint32 scale = Imm32::ShiftOf(src.scale).value;
+    uint32_t scale = Imm32::ShiftOf(src.scale).value;
 
     if (src.offset != 0) {
         ma_mov(base, ScratchRegister);
@@ -1673,8 +1695,8 @@ MacroAssemblerARMCompat::loadDouble(const BaseIndex &src, const FloatRegister &d
     // just add the index, then handle the offset like normal
     Register base = src.base;
     Register index = src.index;
-    uint32 scale = Imm32::ShiftOf(src.scale).value;
-    int32 offset = src.offset;
+    uint32_t scale = Imm32::ShiftOf(src.scale).value;
+    int32_t offset = src.offset;
     as_add(ScratchRegister, base, lsl(index, scale));
 
     ma_vldr(Operand(ScratchRegister, offset), dest);
@@ -1695,8 +1717,8 @@ MacroAssemblerARMCompat::loadFloatAsDouble(const BaseIndex &src, const FloatRegi
     // just add the index, then handle the offset like normal
     Register base = src.base;
     Register index = src.index;
-    uint32 scale = Imm32::ShiftOf(src.scale).value;
-    int32 offset = src.offset;
+    uint32_t scale = Imm32::ShiftOf(src.scale).value;
+    int32_t offset = src.offset;
     VFPRegister rt = dest;
     as_add(ScratchRegister, base, lsl(index, scale));
 
@@ -1707,8 +1729,8 @@ MacroAssemblerARMCompat::loadFloatAsDouble(const BaseIndex &src, const FloatRegi
 void
 MacroAssemblerARMCompat::store8(const Imm32 &imm, const Address &address)
 {
-    ma_mov(imm, lr);
-    store8(lr, address);
+    ma_mov(imm, secondScratchReg_);
+    store8(secondScratchReg_, address);
 }
 
 void
@@ -1720,15 +1742,15 @@ MacroAssemblerARMCompat::store8(const Register &src, const Address &address)
 void
 MacroAssemblerARMCompat::store8(const Imm32 &imm, const BaseIndex &dest)
 {
-    ma_mov(imm, lr);
-    store8(lr, dest);
+    ma_mov(imm, secondScratchReg_);
+    store8(secondScratchReg_, dest);
 }
 
 void
 MacroAssemblerARMCompat::store8(const Register &src, const BaseIndex &dest)
 {
     Register base = dest.base;
-    uint32 scale = Imm32::ShiftOf(dest.scale).value;
+    uint32_t scale = Imm32::ShiftOf(dest.scale).value;
 
     if (dest.offset != 0) {
         ma_add(base, Imm32(dest.offset), ScratchRegister);
@@ -1740,8 +1762,8 @@ MacroAssemblerARMCompat::store8(const Register &src, const BaseIndex &dest)
 void
 MacroAssemblerARMCompat::store16(const Imm32 &imm, const Address &address)
 {
-    ma_mov(imm, lr);
-    store16(lr, address);
+    ma_mov(imm, secondScratchReg_);
+    store16(secondScratchReg_, address);
 }
 
 void
@@ -1753,8 +1775,8 @@ MacroAssemblerARMCompat::store16(const Register &src, const Address &address)
 void
 MacroAssemblerARMCompat::store16(const Imm32 &imm, const BaseIndex &dest)
 {
-    ma_mov(imm, lr);
-    store16(lr, dest);
+    ma_mov(imm, secondScratchReg_);
+    store16(secondScratchReg_, dest);
 }
 void
 MacroAssemblerARMCompat::store16(const Register &src, const BaseIndex &address)
@@ -1795,15 +1817,15 @@ MacroAssemblerARMCompat::store32(const Imm32 &src, const Address &address)
 void
 MacroAssemblerARMCompat::store32(const Imm32 &imm, const BaseIndex &dest)
 {
-    ma_mov(imm, lr);
-    store32(lr, dest);
+    ma_mov(imm, secondScratchReg_);
+    store32(secondScratchReg_, dest);
 }
 
 void
 MacroAssemblerARMCompat::store32(const Register &src, const BaseIndex &dest)
 {
     Register base = dest.base;
-    uint32 scale = Imm32::ShiftOf(dest.scale).value;
+    uint32_t scale = Imm32::ShiftOf(dest.scale).value;
 
     if (dest.offset != 0) {
         ma_add(base, Imm32(dest.offset), ScratchRegister);
@@ -1894,12 +1916,12 @@ MacroAssemblerARMCompat::cmpPtr(const Address &lhs, const Register &rhs)
 void
 MacroAssemblerARMCompat::cmpPtr(const Address &lhs, const ImmWord &rhs)
 {
-    loadPtr(lhs, lr);
-    ma_cmp(lr, Imm32(rhs.value));
+    loadPtr(lhs, secondScratchReg_);
+    ma_cmp(secondScratchReg_, Imm32(rhs.value));
 }
 
 void
-MacroAssemblerARMCompat::setStackArg(const Register &reg, uint32 arg)
+MacroAssemblerARMCompat::setStackArg(const Register &reg, uint32_t arg)
 {
     ma_dataTransferN(IsStore, 32, true, sp, Imm32(arg * STACK_SLOT_SIZE), reg);
 
@@ -2276,7 +2298,7 @@ MacroAssemblerARMCompat::loadInt32OrDouble(const Operand &src, const FloatRegist
 }
 
 void
-MacroAssemblerARMCompat::loadInt32OrDouble(Register base, Register index, const FloatRegister &dest, int32 shift)
+MacroAssemblerARMCompat::loadInt32OrDouble(Register base, Register index, const FloatRegister &dest, int32_t shift)
 {
     Label notInt32, end;
 
@@ -2381,7 +2403,7 @@ MacroAssemblerARMCompat::storeValue(ValueOperand val, Operand dst) {
 }
 
 void
-MacroAssemblerARMCompat::storeValue(ValueOperand val, Register base, Register index, int32 shift)
+MacroAssemblerARMCompat::storeValue(ValueOperand val, Register base, Register index, int32_t shift)
 {
     if (isValueDTRDCandidate(val)) {
         Register tmpIdx;
@@ -2499,10 +2521,10 @@ MacroAssemblerARMCompat::storePayload(const Value &val, Operand dest)
 {
     jsval_layout jv = JSVAL_TO_IMPL(val);
     if (val.isMarkable())
-        ma_mov(ImmGCPtr((gc::Cell *)jv.s.payload.ptr), lr);
+        ma_mov(ImmGCPtr((gc::Cell *)jv.s.payload.ptr), secondScratchReg_);
     else
-        ma_mov(Imm32(jv.s.payload.i32), lr);
-    ma_str(lr, ToPayload(dest));
+        ma_mov(Imm32(jv.s.payload.i32), secondScratchReg_);
+    ma_str(secondScratchReg_, ToPayload(dest));
 }
 void
 MacroAssemblerARMCompat::storePayload(Register src, Operand dest)
@@ -2516,7 +2538,7 @@ MacroAssemblerARMCompat::storePayload(Register src, Operand dest)
 }
 
 void
-MacroAssemblerARMCompat::storePayload(const Value &val, Register base, Register index, int32 shift)
+MacroAssemblerARMCompat::storePayload(const Value &val, Register base, Register index, int32_t shift)
 {
     jsval_layout jv = JSVAL_TO_IMPL(val);
     if (val.isMarkable())
@@ -2529,7 +2551,7 @@ MacroAssemblerARMCompat::storePayload(const Value &val, Register base, Register 
     as_dtr(IsStore, 32, Offset, ScratchRegister, DTRAddr(base, DtrRegImmShift(index, LSL, shift)));
 }
 void
-MacroAssemblerARMCompat::storePayload(Register src, Register base, Register index, int32 shift)
+MacroAssemblerARMCompat::storePayload(Register src, Register base, Register index, int32_t shift)
 {
     JS_ASSERT((shift < 32) && (shift >= 0));
     // If NUNBOX32_PAYLOAD_OFFSET is not zero, the memory operand [base + index << shift + imm]
@@ -2543,8 +2565,8 @@ MacroAssemblerARMCompat::storePayload(Register src, Register base, Register inde
 void
 MacroAssemblerARMCompat::storeTypeTag(ImmTag tag, Operand dest) {
     if (dest.getTag() == Operand::MEM) {
-        ma_mov(tag, lr);
-        ma_str(lr, ToType(dest));
+        ma_mov(tag, secondScratchReg_);
+        ma_str(secondScratchReg_, ToType(dest));
         return;
     }
 
@@ -2553,7 +2575,7 @@ MacroAssemblerARMCompat::storeTypeTag(ImmTag tag, Operand dest) {
 }
 
 void
-MacroAssemblerARMCompat::storeTypeTag(ImmTag tag, Register base, Register index, int32 shift) {
+MacroAssemblerARMCompat::storeTypeTag(ImmTag tag, Register base, Register index, int32_t shift) {
     JS_ASSERT(base != ScratchRegister);
     JS_ASSERT(index != ScratchRegister);
     // A value needs to be store a value int base + index << shift + 4.
@@ -2570,7 +2592,7 @@ MacroAssemblerARMCompat::storeTypeTag(ImmTag tag, Register base, Register index,
 
 void
 MacroAssemblerARMCompat::linkExitFrame() {
-    uint8 *dest = ((uint8*)GetIonContext()->cx->runtime) + offsetof(JSRuntime, ionTop);
+    uint8_t *dest = ((uint8_t*)GetIonContext()->compartment->rt) + offsetof(JSRuntime, ionTop);
     movePtr(ImmWord(dest), ScratchRegister);
     ma_str(StackPointer, Operand(ScratchRegister, 0));
 }
@@ -2618,7 +2640,7 @@ MacroAssemblerARM::ma_callIonHalfPush(const Register r)
 void
 MacroAssemblerARM::ma_call(void *dest)
 {
-    ma_mov(Imm32((uint32)dest), CallReg);
+    ma_mov(Imm32((uint32_t)dest), CallReg);
     as_blx(CallReg);
 }
 
@@ -2629,19 +2651,31 @@ MacroAssemblerARMCompat::breakpoint()
 }
 
 void
-MacroAssemblerARMCompat::setupABICall(uint32 args)
+MacroAssemblerARMCompat::breakpoint(Condition cc)
+{
+    ma_ldr(DTRAddr(r12, DtrRegImmShift(r12, LSL, 0, IsDown)), r12, Offset, cc);
+}
+
+void
+MacroAssemblerARMCompat::setupABICall(uint32_t args)
 {
     JS_ASSERT(!inCall_);
     inCall_ = true;
     args_ = args;
     passedArgs_ = 0;
+#ifdef JS_CPU_ARM_HARDFP
+    usedIntSlots_ = 0;
+    usedFloatSlots_ = 0;
+    padding_ = 0;
+#else
     usedSlots_ = 0;
+#endif
     floatArgsInGPR[0] = VFPRegister();
     floatArgsInGPR[1] = VFPRegister();
 }
 
 void
-MacroAssemblerARMCompat::setupAlignedABICall(uint32 args)
+MacroAssemblerARMCompat::setupAlignedABICall(uint32_t args)
 {
     setupABICall(args);
 
@@ -2649,7 +2683,7 @@ MacroAssemblerARMCompat::setupAlignedABICall(uint32 args)
 }
 
 void
-MacroAssemblerARMCompat::setupUnalignedABICall(uint32 args, const Register &scratch)
+MacroAssemblerARMCompat::setupUnalignedABICall(uint32_t args, const Register &scratch)
 {
     setupABICall(args);
     dynamicAlignment_ = true;
@@ -2660,12 +2694,54 @@ MacroAssemblerARMCompat::setupUnalignedABICall(uint32 args, const Register &scra
     ma_and(Imm32(~(StackAlignment - 1)), sp, sp);
     ma_push(scratch);
 }
-
+#ifdef JS_CPU_ARM_HARDFP
 void
 MacroAssemblerARMCompat::passABIArg(const MoveOperand &from)
 {
     MoveOperand to;
-    uint32 increment = 1;
+    uint32_t increment = 1;
+    bool useResolver = true;
+    ++passedArgs_;
+    Move::Kind kind = Move::GENERAL;
+    if (!enoughMemory_)
+        return;
+    if (from.isDouble()) {
+        FloatRegister fr;
+        if (GetFloatArgReg(usedIntSlots_, usedFloatSlots_, &fr)) {
+            if (!from.isFloatReg() || from.floatReg() != fr) {
+                enoughMemory_ = moveResolver_.addMove(from, MoveOperand(fr), Move::DOUBLE);
+            }
+            // else nothing to do; the value is in the right register already
+        } else {
+            // If (and only if) the integer registers have started spilling, do we
+            // need to take the double register's alignment into account
+            uint32_t disp = GetFloatArgStackDisp(usedIntSlots_, usedFloatSlots_, &padding_);
+            enoughMemory_ = moveResolver_.addMove(from, MoveOperand(sp, disp), Move::DOUBLE);
+        }
+        usedFloatSlots_++;
+    } else {
+        Register r;
+        if (GetIntArgReg(usedIntSlots_, usedFloatSlots_, &r)) {
+            if (!from.isGeneralReg() || from.reg() != r) {
+                enoughMemory_ = moveResolver_.addMove(from, MoveOperand(r), Move::GENERAL);
+            }
+            // else nothing to do; the value is in the right register already
+        } else {
+            uint32_t disp = GetIntArgStackDisp(usedIntSlots_, usedFloatSlots_, &padding_);
+            fprintf(stderr, "Float on the stack! (%d)\n", disp);
+            enoughMemory_ = moveResolver_.addMove(from, MoveOperand(sp, disp), Move::GENERAL);
+        }
+        usedIntSlots_++;
+    }
+
+}
+
+#else
+void
+MacroAssemblerARMCompat::passABIArg(const MoveOperand &from)
+{
+    MoveOperand to;
+    uint32_t increment = 1;
     bool useResolver = true;
     ++passedArgs_;
     Move::Kind kind = Move::GENERAL;
@@ -2679,15 +2755,18 @@ MacroAssemblerARMCompat::passABIArg(const MoveOperand &from)
 
     Register destReg;
     MoveOperand dest;
-    if (GetArgReg(usedSlots_, &destReg)) {
+    if (GetIntArgReg(usedSlots_, 0, &destReg)) {
         if (from.isDouble()) {
             floatArgsInGPR[destReg.code() >> 1] = VFPRegister(from.floatReg());
+            useResolver = false;
+        } else if (from.isGeneralReg() && from.reg() == destReg) {
+            // No need to move anything
             useResolver = false;
         } else {
             dest = MoveOperand(destReg);
         }
     } else {
-        uint32 disp = GetArgStackDisp(usedSlots_);
+        uint32_t disp = GetArgStackDisp(usedSlots_);
         dest = MoveOperand(sp, disp);
     }
 
@@ -2695,6 +2774,7 @@ MacroAssemblerARMCompat::passABIArg(const MoveOperand &from)
         enoughMemory_ = enoughMemory_ && moveResolver_.addMove(from, dest, kind);
     usedSlots_ += increment;
 }
+#endif
 
 void
 MacroAssemblerARMCompat::passABIArg(const Register &reg)
@@ -2711,27 +2791,30 @@ MacroAssemblerARMCompat::passABIArg(const FloatRegister &freg)
 void MacroAssemblerARMCompat::checkStackAlignment()
 {
 #ifdef DEBUG
-    Label good;
     ma_tst(sp, Imm32(StackAlignment - 1));
-    ma_b(&good, Equal);
-    breakpoint();
-    bind(&good);
+    breakpoint(NonZero);
 #endif
 }
 
 void
-MacroAssemblerARMCompat::callWithABI(void *fun, Result result)
+MacroAssemblerARMCompat::callWithABIPre(uint32_t *stackAdjust)
 {
     JS_ASSERT(inCall_);
-    uint32 stackAdjust = ((usedSlots_ > NumArgRegs) ? usedSlots_ - NumArgRegs : 0) * STACK_SLOT_SIZE;
-    if (!dynamicAlignment_)
-        stackAdjust +=
-            ComputeByteAlignment(framePushed_ + stackAdjust, StackAlignment);
-    else
+#ifdef JS_CPU_ARM_HARDFP
+    *stackAdjust = ((usedIntSlots_ > NumIntArgRegs) ? usedIntSlots_ - NumIntArgRegs : 0) * STACK_SLOT_SIZE;
+    *stackAdjust += 2*((usedFloatSlots_ > NumFloatArgRegs) ? usedFloatSlots_ - NumFloatArgRegs : 0) * STACK_SLOT_SIZE;
+#else
+    *stackAdjust = ((usedSlots_ > NumIntArgRegs) ? usedSlots_ - NumIntArgRegs : 0) * STACK_SLOT_SIZE;
+#endif
+    if (!dynamicAlignment_) {
+        *stackAdjust += ComputeByteAlignment(framePushed_ + *stackAdjust, StackAlignment);
+    } else {
         // STACK_SLOT_SIZE account for the saved stack pointer pushed by setupUnalignedABICall
-        stackAdjust += ComputeByteAlignment(stackAdjust + STACK_SLOT_SIZE, StackAlignment);
+        *stackAdjust += ComputeByteAlignment(*stackAdjust + STACK_SLOT_SIZE, StackAlignment);
+    }
 
-    reserveStack(stackAdjust);
+    reserveStack(*stackAdjust);
+
     // Position all arguments.
     {
         enoughMemory_ = enoughMemory_ && moveResolver_.resolve();
@@ -2747,14 +2830,22 @@ MacroAssemblerARMCompat::callWithABI(void *fun, Result result)
             ma_vxfer(floatArgsInGPR[i], Register::FromCode(i*2), Register::FromCode(i*2+1));
     }
     checkStackAlignment();
-    ma_call(fun);
+}
 
+void
+MacroAssemblerARMCompat::callWithABIPost(uint32_t stackAdjust, Result result)
+{
     if (result == DOUBLE) {
+#ifdef JS_CPU_ARM_HARDFP
+        as_vmov(ReturnFloatReg, d0);
+#else
         // Move double from r0/r1 to ReturnFloatReg.
         as_vxfer(r0, r1, ReturnFloatReg, CoreToFloat);
+#endif
     }
 
     freeStack(stackAdjust);
+
     if (dynamicAlignment_) {
         // x86 supports pop esp.  on arm, that isn't well defined, so just
         // do it manually
@@ -2763,6 +2854,28 @@ MacroAssemblerARMCompat::callWithABI(void *fun, Result result)
 
     JS_ASSERT(inCall_);
     inCall_ = false;
+}
+
+void
+MacroAssemblerARMCompat::callWithABI(void *fun, Result result)
+{
+    uint32_t stackAdjust;
+    callWithABIPre(&stackAdjust);
+    ma_call(fun);
+    callWithABIPost(stackAdjust, result);
+}
+
+void
+MacroAssemblerARMCompat::callWithABI(const Address &fun, Result result)
+{
+    // Load the callee in r12, no instruction between the ldr and call
+    // should clobber it. Note that we can't use fun.base because it may
+    // be one of the IntArg registers clobbered before the call.
+    ma_ldr(fun, r12);
+    uint32_t stackAdjust;
+    callWithABIPre(&stackAdjust);
+    call(r12);
+    callWithABIPost(stackAdjust, result);
 }
 
 void

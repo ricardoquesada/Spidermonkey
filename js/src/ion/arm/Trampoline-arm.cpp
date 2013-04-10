@@ -1,3 +1,4 @@
+
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=4 sw=4 et tw=99:
  *
@@ -5,12 +6,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "ion/IonSpewer.h"
 #include "jscompartment.h"
 #include "assembler/assembler/MacroAssembler.h"
 #include "ion/IonCompartment.h"
 #include "ion/IonLinker.h"
 #include "ion/IonFrames.h"
+#include "ion/IonSpewer.h"
 #include "ion/Bailouts.h"
 #include "ion/VMFunctions.h"
 
@@ -202,7 +203,6 @@ IonCode *
 IonRuntime::generateInvalidator(JSContext *cx)
 {
     // See large comment in x86's IonRuntime::generateInvalidator.
-    AutoIonContextAlloc aica(cx);
     MacroAssembler masm(cx);
     //masm.as_bkpt();
     // At this point, one of two things has happened.
@@ -215,12 +215,12 @@ IonRuntime::generateInvalidator(JSContext *cx)
     masm.startDataTransferM(IsStore, sp, DB, WriteBack);
     // We don't have to push everything, but this is likely easier.
     // setting regs_
-    for (uint32 i = 0; i < Registers::Total; i++)
+    for (uint32_t i = 0; i < Registers::Total; i++)
         masm.transferReg(Register::FromCode(i));
     masm.finishDataTransfer();
 
     masm.startFloatTransferM(IsStore, sp, DB, WriteBack);
-    for (uint32 i = 0; i < FloatRegisters::Total; i++)
+    for (uint32_t i = 0; i < FloatRegisters::Total; i++)
         masm.transferFloatReg(FloatRegister::FromCode(i));
     masm.finishFloatTransfer();
 
@@ -343,7 +343,7 @@ IonRuntime::generateArgumentsRectifier(JSContext *cx)
 }
 
 static void
-GenerateBailoutThunk(MacroAssembler &masm, uint32 frameClass)
+GenerateBailoutThunk(MacroAssembler &masm, uint32_t frameClass)
 {
     // the stack should look like:
     // [IonFrame]
@@ -358,12 +358,12 @@ GenerateBailoutThunk(MacroAssembler &masm, uint32 frameClass)
     masm.startDataTransferM(IsStore, sp, DB, WriteBack);
     // We don't have to push everything, but this is likely easier.
     // setting regs_
-    for (uint32 i = 0; i < Registers::Total; i++)
+    for (uint32_t i = 0; i < Registers::Total; i++)
         masm.transferReg(Register::FromCode(i));
     masm.finishDataTransfer();
 
     masm.startFloatTransferM(IsStore, sp, DB, WriteBack);
-    for (uint32 i = 0; i < FloatRegisters::Total; i++)
+    for (uint32_t i = 0; i < FloatRegisters::Total; i++)
         masm.transferFloatReg(FloatRegister::FromCode(i));
     masm.finishFloatTransfer();
 
@@ -408,7 +408,7 @@ GenerateBailoutThunk(MacroAssembler &masm, uint32 frameClass)
     // Sp % 8 == 0
     masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, Bailout));
     // Common size of a bailout frame.
-    uint32 bailoutFrameSize = sizeof(void *) + // frameClass
+    uint32_t bailoutFrameSize = sizeof(void *) + // frameClass
                               sizeof(double) * FloatRegisters::Total +
                               sizeof(void *) * Registers::Total;
 
@@ -419,13 +419,13 @@ GenerateBailoutThunk(MacroAssembler &masm, uint32 frameClass)
         // used to be: offsetof(BailoutStack, frameSize_)
         // this structure is no longer available to us :(
         // We add 12 to the bailoutFrameSize because:
-        // sizeof(uint32) for the tableOffset that was pushed onto the stack
+        // sizeof(uint32_t) for the tableOffset that was pushed onto the stack
         // sizeof(uintptr_t) for the snapshotOffset;
         // alignment to round the uintptr_t up to a multiple of 8 bytes.
         masm.ma_add(sp, Imm32(bailoutFrameSize+12), sp);
         masm.as_add(sp, sp, O2Reg(r4));
     } else {
-        uint32 frameSize = FrameSizeClass::FromClass(frameClass).frameSize();
+        uint32_t frameSize = FrameSizeClass::FromClass(frameClass).frameSize();
         masm.ma_add(Imm32(frameSize // the frame that was added when we entered the most recent function
                           + sizeof(void*) // the size of the "return address" that was dumped on the stack
                           + bailoutFrameSize) // everything else that was pushed on the stack
@@ -435,9 +435,9 @@ GenerateBailoutThunk(MacroAssembler &masm, uint32 frameClass)
 }
 
 IonCode *
-IonRuntime::generateBailoutTable(JSContext *cx, uint32 frameClass)
+IonRuntime::generateBailoutTable(JSContext *cx, uint32_t frameClass)
 {
-    MacroAssembler masm;
+    MacroAssembler masm(cx);
 
     Label bailout;
     for (size_t i = 0; i < BAILOUT_TABLE_SIZE; i++)
@@ -453,7 +453,7 @@ IonRuntime::generateBailoutTable(JSContext *cx, uint32 frameClass)
 IonCode *
 IonRuntime::generateBailoutHandler(JSContext *cx)
 {
-    MacroAssembler masm;
+    MacroAssembler masm(cx);
     GenerateBailoutThunk(masm, NO_FRAME_SIZE_CLASS_ID);
 
     Linker linker(masm);
@@ -472,7 +472,7 @@ IonRuntime::generateVMWrapper(JSContext *cx, const VMFunction &f)
         return p->value;
 
     // Generate a separated code for the wrapper.
-    MacroAssembler masm;
+    MacroAssembler masm(cx);
     GeneralRegisterSet regs = GeneralRegisterSet(Register::Codes::WrapperMask);
 
     // Wrapper register set is a superset of Volatile register set.
@@ -514,7 +514,7 @@ IonRuntime::generateVMWrapper(JSContext *cx, const VMFunction &f)
       case Type_Int32:
         outReg = r4;
         regs.take(outReg);
-        masm.reserveStack(sizeof(int32));
+        masm.reserveStack(sizeof(int32_t));
         masm.ma_mov(sp, outReg);
         break;
 
@@ -535,7 +535,7 @@ IonRuntime::generateVMWrapper(JSContext *cx, const VMFunction &f)
     size_t argDisp = 0;
 
     // Copy any arguments.
-    for (uint32 explicitArg = 0; explicitArg < f.explicitArgs; explicitArg++) {
+    for (uint32_t explicitArg = 0; explicitArg < f.explicitArgs; explicitArg++) {
         MoveOperand from;
         switch (f.argProperties(explicitArg)) {
           case VMFunction::WordByValue:
@@ -582,7 +582,7 @@ IonRuntime::generateVMWrapper(JSContext *cx, const VMFunction &f)
 
       case Type_Int32:
         masm.load32(Address(sp, 0), ReturnReg);
-        masm.freeStack(sizeof(int32));
+        masm.freeStack(sizeof(int32_t));
         break;
 
       default:
@@ -611,7 +611,7 @@ IonRuntime::generateVMWrapper(JSContext *cx, const VMFunction &f)
 IonCode *
 IonRuntime::generatePreBarrier(JSContext *cx, MIRType type)
 {
-    MacroAssembler masm;
+    MacroAssembler masm(cx);
 
     RegisterSet save = RegisterSet(GeneralRegisterSet(Registers::VolatileMask),
                                    FloatRegisterSet(FloatRegisters::VolatileMask));

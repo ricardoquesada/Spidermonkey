@@ -663,7 +663,7 @@ private:
     bool jsop_setprop(PropertyName *name, bool popGuaranteed);
     void jsop_setprop_slow(PropertyName *name);
     bool jsop_instanceof();
-    void jsop_intrinsicname(PropertyName *name, JSValueType type);
+    bool jsop_intrinsic(PropertyName *name, JSValueType type);
     void jsop_name(PropertyName *name, JSValueType type);
     bool jsop_xname(PropertyName *name);
     void enterBlock(StaticBlockObject *block);
@@ -714,7 +714,7 @@ private:
     bool jsop_regexp();
     void jsop_initmethod();
     void jsop_initprop();
-    void jsop_initelem();
+    void jsop_initelem_array();
     void jsop_setelem_dense();
 #ifdef JS_METHODJIT_TYPED_ARRAY
     void jsop_setelem_typed(int atype);

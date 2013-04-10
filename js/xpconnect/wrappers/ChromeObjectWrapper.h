@@ -8,6 +8,8 @@
 #ifndef __ChromeObjectWrapper_h__
 #define __ChromeObjectWrapper_h__
 
+#include "mozilla/Attributes.h"
+
 #include "FilteringWrapper.h"
 #include "AccessCheck.h"
 
@@ -24,12 +26,12 @@ namespace xpc {
 class ChromeObjectWrapper : public ChromeObjectWrapperBase
 {
   public:
-    ChromeObjectWrapper() : ChromeObjectWrapperBase(0) {};
+    ChromeObjectWrapper() : ChromeObjectWrapperBase(0) {}
 
     /* Custom traps. */
     virtual bool getPropertyDescriptor(JSContext *cx, JSObject *wrapper,
-                                       jsid id, bool set,
-                                       js::PropertyDescriptor *desc) MOZ_OVERRIDE;
+                                       jsid id, js::PropertyDescriptor *desc,
+                                       unsigned flags) MOZ_OVERRIDE;
     virtual bool has(JSContext *cx, JSObject *wrapper, jsid id,
                      bool *bp) MOZ_OVERRIDE;
     virtual bool get(JSContext *cx, JSObject *wrapper, JSObject *receiver,

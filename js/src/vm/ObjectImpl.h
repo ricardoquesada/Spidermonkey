@@ -9,6 +9,7 @@
 #define ObjectImpl_h___
 
 #include "mozilla/Assertions.h"
+#include "mozilla/GuardObjects.h"
 #include "mozilla/StandardInteger.h"
 
 #include "jsfriendapi.h"
@@ -16,6 +17,7 @@
 #include "jsval.h"
 
 #include "gc/Barrier.h"
+#include "gc/Heap.h"
 #include "vm/NumericConversions.h"
 #include "vm/String.h"
 
@@ -23,6 +25,7 @@ namespace js {
 
 class Debugger;
 class ObjectImpl;
+ForwardDeclare(Shape);
 
 class AutoPropDescArrayRooter;
 
@@ -296,10 +299,10 @@ struct PropDesc {
     {
       public:
         explicit AutoRooter(JSContext *cx, PropDesc *pd_
-                            JS_GUARD_OBJECT_NOTIFIER_PARAM)
+                            MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
           : AutoGCRooter(cx, PROPDESC), pd(pd_), skip(cx, pd_)
         {
-            JS_GUARD_OBJECT_NOTIFIER_INIT;
+            MOZ_GUARD_OBJECT_NOTIFIER_INIT;
         }
 
         friend void AutoGCRooter::trace(JSTracer *trc);
@@ -307,7 +310,7 @@ struct PropDesc {
       private:
         PropDesc *pd;
         SkipRoot skip;
-        JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+        MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
      };
 };
 
@@ -357,7 +360,7 @@ class ElementsHeader
         } dense;
         class {
             friend class SparseElementsHeader;
-            Shape * shape;
+            RawShape shape;
         } sparse;
         class {
             friend class ArrayBufferElementsHeader;
@@ -448,7 +451,7 @@ class DenseElementsHeader : public ElementsHeader
 class SparseElementsHeader : public ElementsHeader
 {
   public:
-    Shape * shape() {
+    UnrootedShape shape() {
         MOZ_ASSERT(ElementsHeader::isSparseElements());
         return sparse.shape;
     }
@@ -914,7 +917,7 @@ extern HeapSlot *emptyObjectElements;
 struct Class;
 struct GCMarker;
 struct ObjectOps;
-struct Shape;
+class Shape;
 
 class NewObjectCache;
 
@@ -1058,7 +1061,7 @@ class ObjectImpl : public gc::Cell
 
   protected:
     friend struct GCMarker;
-    friend struct Shape;
+    friend class Shape;
     friend class NewObjectCache;
 
     inline void invalidateSlotRange(uint32_t start, uint32_t count);
@@ -1154,13 +1157,13 @@ class ObjectImpl : public gc::Cell
     /* Compute dynamicSlotsCount() for this object. */
     inline uint32_t numDynamicSlots() const;
 
-    Shape * nativeLookup(JSContext *cx, jsid id);
-    inline Shape * nativeLookup(JSContext *cx, PropertyId pid);
-    inline Shape * nativeLookup(JSContext *cx, PropertyName *name);
+    UnrootedShape nativeLookup(JSContext *cx, jsid id);
+    inline UnrootedShape nativeLookup(JSContext *cx, PropertyId pid);
+    inline UnrootedShape nativeLookup(JSContext *cx, PropertyName *name);
 
-    Shape * nativeLookupNoAllocation(jsid id);
-    inline Shape * nativeLookupNoAllocation(PropertyId pid);
-    inline Shape * nativeLookupNoAllocation(PropertyName *name);
+    UnrootedShape nativeLookupNoAllocation(jsid id);
+    inline UnrootedShape nativeLookupNoAllocation(PropertyId pid);
+    inline UnrootedShape nativeLookupNoAllocation(PropertyName *name);
 
     inline bool nativeContains(JSContext *cx, Handle<jsid> id);
     inline bool nativeContains(JSContext *cx, Handle<PropertyName*> name);

@@ -28,7 +28,7 @@ void JS_FASTCALL DebuggerStatement(VMFrame &f, jsbytecode *pc);
 void JS_FASTCALL Interrupt(VMFrame &f, jsbytecode *pc);
 void JS_FASTCALL TriggerIonCompile(VMFrame &f);
 void JS_FASTCALL RecompileForInline(VMFrame &f);
-void JS_FASTCALL InitElem(VMFrame &f, uint32_t last);
+void JS_FASTCALL InitElem(VMFrame &f);
 void JS_FASTCALL InitProp(VMFrame &f, PropertyName *name);
 
 void JS_FASTCALL HitStackQuota(VMFrame &f);
@@ -81,12 +81,12 @@ void UncachedNewHelper(VMFrame &f, uint32_t argc, UncachedCallResult &ucr);
 void JS_FASTCALL CreateThis(VMFrame &f, JSObject *proto);
 void JS_FASTCALL Throw(VMFrame &f);
 
-void * JS_FASTCALL LookupSwitch(VMFrame &f, jsbytecode *pc);
 void * JS_FASTCALL TableSwitch(VMFrame &f, jsbytecode *origPc);
 
 void JS_FASTCALL BindName(VMFrame &f, PropertyName *name);
 JSObject * JS_FASTCALL BindGlobalName(VMFrame &f);
 void JS_FASTCALL SetName(VMFrame &f, PropertyName *name);
+void JS_FASTCALL IntrinsicName(VMFrame &f, PropertyName *name);
 void JS_FASTCALL Name(VMFrame &f);
 void JS_FASTCALL GetProp(VMFrame &f, PropertyName *name);
 void JS_FASTCALL GetPropNoCache(VMFrame &f, PropertyName *name);

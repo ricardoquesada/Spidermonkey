@@ -20,6 +20,7 @@
 #include "FilteringWrapper.h"
 
 #include "jsfriendapi.h"
+#include "mozilla/dom/BindingUtils.h"
 
 using namespace mozilla;
 using namespace js;
@@ -83,32 +84,6 @@ AccessCheck::wrapperSubsumes(JSObject *wrapper)
     JSObject *wrapped = js::UnwrapObject(wrapper);
     return AccessCheck::subsumes(js::GetObjectCompartment(wrapper),
                                  js::GetObjectCompartment(wrapped));
-}
-
-bool
-AccessCheck::isLocationObjectSameOrigin(JSContext *cx, JSObject *wrapper)
-{
-    // The caller must ensure that the given wrapper wraps a Location object.
-    MOZ_ASSERT(WrapperFactory::IsLocationObject(js::UnwrapObject(wrapper)));
-
-    // Location objects are parented to the outer window for which they
-    // were created. This gives us an easy way to determine whether our
-    // object is same origin with the current inner window:
-
-    // Grab the outer window...
-    JSObject *obj = js::GetObjectParent(js::UnwrapObject(wrapper));
-    if (!js::GetObjectClass(obj)->ext.innerObject) {
-        // ...which might be wrapped in a security wrapper.
-        obj = js::UnwrapObject(obj);
-        MOZ_ASSERT(js::GetObjectClass(obj)->ext.innerObject);
-    }
-
-    // Now innerize it to find the *current* inner window for our outer.
-    obj = JS_ObjectToInnerObject(cx, obj);
-
-    // Which lets us compare the current compartment against the old one.
-    return obj && subsumes(js::GetObjectCompartment(wrapper),
-                           js::GetObjectCompartment(obj));
 }
 
 bool
@@ -254,15 +229,6 @@ AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapper, jsid
 }
 
 bool
-AccessCheck::callerIsXBL(JSContext *cx)
-{
-    JSScript *script;
-    if (!JS_DescribeScriptedCaller(cx, &script, nullptr) || !script)
-        return false;
-    return JS_GetScriptUserBit(script);
-}
-
-bool
 AccessCheck::isSystemOnlyAccessPermitted(JSContext *cx)
 {
     MOZ_ASSERT(cx == nsContentUtils::GetCurrentJSContext());
@@ -272,6 +238,10 @@ AccessCheck::isSystemOnlyAccessPermitted(JSContext *cx)
 bool
 AccessCheck::needsSystemOnlyWrapper(JSObject *obj)
 {
+    JSObject* wrapper = obj;
+    if (dom::GetSameCompartmentWrapperForDOMBinding(wrapper))
+        return wrapper != obj;
+
     if (!IS_WN_WRAPPER(obj))
         return false;
 
@@ -305,9 +275,7 @@ AccessCheck::isScriptAccessOnly(JSContext *cx, JSObject *wrapper)
             return true; // script-only
     }
 
-    // Allow non-script access to same-origin location objects and any other
-    // objects.
-    return WrapperFactory::IsLocationObject(obj) && !isLocationObjectSameOrigin(cx, wrapper);
+    return false;
 }
 
 void
@@ -424,7 +392,7 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
     Access access = NO_ACCESS;
 
     JSPropertyDescriptor desc;
-    if (!JS_GetPropertyDescriptorById(cx, hallpass, id, JSRESOLVE_QUALIFIED, &desc)) {
+    if (!JS_GetPropertyDescriptorById(cx, hallpass, id, 0, &desc)) {
         return false; // Error
     }
     if (!desc.obj || !(desc.attrs & JSPROP_ENUMERATE))

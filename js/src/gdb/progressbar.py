@@ -6,13 +6,14 @@
 
 import sys, datetime
 
-class ProgressBar:
+class ProgressBar(object):
     def __init__(self, label, limit, label_width=12):
         self.label = label
         self.limit = limit
         self.label_width = label_width
         self.cur = 0
         self.t0 = datetime.datetime.now()
+        self.fullwidth = None
 
         self.barlen = 64 - self.label_width
         self.fmt = '\r%-' + str(label_width) + 's %3d%% %-' + str(self.barlen) + 's| %6.1fs'
@@ -24,8 +25,16 @@ class ProgressBar:
         bar = '='*barlen + '>'
         dt = datetime.datetime.now() - self.t0
         dt = dt.seconds + dt.microseconds * 1e-6
-        sys.stdout.write(self.fmt%(self.label[:self.label_width], pct, bar, dt))
+        line = self.fmt%(self.label[:self.label_width], pct, bar, dt)
+        self.fullwidth = len(line)
+        sys.stdout.write(line)
         sys.stdout.flush()
+
+    # Clear the current bar and leave the cursor at the start of the line.
+    def clear(self):
+        if (self.fullwidth):
+            sys.stdout.write('\r' + ' ' * self.fullwidth + '\r')
+            self.fullwidth = None
 
     def finish(self):
         self.update(self.limit)

@@ -69,7 +69,6 @@ class CodeGeneratorARM : public CodeGeneratorShared
   public:
     // Instruction visitors.
     virtual bool visitMinMaxD(LMinMaxD *ins);
-    virtual bool visitNegD(LNegD *ins);
     virtual bool visitAbsD(LAbsD *ins);
     virtual bool visitSqrtD(LSqrtD *ins);
     virtual bool visitAddI(LAddI *ins);
@@ -96,6 +95,8 @@ class CodeGeneratorARM : public CodeGeneratorShared
     virtual bool visitCompareDAndBranch(LCompareDAndBranch *comp);
     virtual bool visitCompareB(LCompareB *lir);
     virtual bool visitCompareBAndBranch(LCompareBAndBranch *lir);
+    virtual bool visitCompareV(LCompareV *lir);
+    virtual bool visitCompareVAndBranch(LCompareVAndBranch *lir);
     virtual bool visitNotI(LNotI *ins);
     virtual bool visitNotD(LNotD *ins);
 
@@ -154,10 +155,10 @@ typedef CodeGeneratorARM CodeGeneratorSpecific;
 class OutOfLineBailout : public OutOfLineCodeBase<CodeGeneratorARM>
 {
     LSnapshot *snapshot_;
-    uint32 frameSize_;
+    uint32_t frameSize_;
 
   public:
-    OutOfLineBailout(LSnapshot *snapshot, uint32 frameSize)
+    OutOfLineBailout(LSnapshot *snapshot, uint32_t frameSize)
       : snapshot_(snapshot),
         frameSize_(frameSize)
     { }

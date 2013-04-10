@@ -15,7 +15,7 @@ using namespace js;
 using namespace js::ion;
 
 void
-MacroAssemblerX64::setupABICall(uint32 args)
+MacroAssemblerX64::setupABICall(uint32_t args)
 {
     JS_ASSERT(!inCall_);
     inCall_ = true;
@@ -27,14 +27,14 @@ MacroAssemblerX64::setupABICall(uint32 args)
 }
 
 void
-MacroAssemblerX64::setupAlignedABICall(uint32 args)
+MacroAssemblerX64::setupAlignedABICall(uint32_t args)
 {
     setupABICall(args);
     dynamicAlignment_ = false;
 }
 
 void
-MacroAssemblerX64::setupUnalignedABICall(uint32 args, const Register &scratch)
+MacroAssemblerX64::setupUnalignedABICall(uint32_t args, const Register &scratch)
 {
     setupABICall(args);
     dynamicAlignment_ = true;
@@ -51,6 +51,10 @@ MacroAssemblerX64::passABIArg(const MoveOperand &from)
     if (from.isDouble()) {
         FloatRegister dest;
         if (GetFloatArgReg(passedIntArgs_, passedFloatArgs_++, &dest)) {
+            if (from.isFloatReg() && from.floatReg() == dest) {
+                // Nothing to do; the value is in the right register already
+                return;
+            }
             to = MoveOperand(dest);
         } else {
             to = MoveOperand(StackPointer, stackForCall_);
@@ -60,6 +64,10 @@ MacroAssemblerX64::passABIArg(const MoveOperand &from)
     } else {
         Register dest;
         if (GetIntArgReg(passedIntArgs_++, passedFloatArgs_, &dest)) {
+            if (from.isGeneralReg() && from.reg() == dest) {
+                // Nothing to do; the value is in the right register already
+                return;
+            }
             to = MoveOperand(dest);
         } else {
             to = MoveOperand(StackPointer, stackForCall_);
@@ -82,23 +90,22 @@ MacroAssemblerX64::passABIArg(const FloatRegister &reg)
 }
 
 void
-MacroAssemblerX64::callWithABI(void *fun, Result result)
+MacroAssemblerX64::callWithABIPre(uint32_t *stackAdjust)
 {
     JS_ASSERT(inCall_);
     JS_ASSERT(args_ == passedIntArgs_ + passedFloatArgs_);
 
-    uint32 stackAdjust;
     if (dynamicAlignment_) {
-        stackAdjust = stackForCall_
-                    + ComputeByteAlignment(stackForCall_ + STACK_SLOT_SIZE,
-                                           StackAlignment);
+        *stackAdjust = stackForCall_
+                     + ComputeByteAlignment(stackForCall_ + STACK_SLOT_SIZE,
+                                            StackAlignment);
     } else {
-        stackAdjust = stackForCall_
-                    + ComputeByteAlignment(stackForCall_ + framePushed_,
-                                           StackAlignment);
+        *stackAdjust = stackForCall_
+                     + ComputeByteAlignment(stackForCall_ + framePushed_,
+                                            StackAlignment);
     }
 
-    reserveStack(stackAdjust);
+    reserveStack(*stackAdjust);
 
     // Position all arguments.
     {
@@ -121,15 +128,55 @@ MacroAssemblerX64::callWithABI(void *fun, Result result)
         bind(&good);
     }
 #endif
+}
 
-    call(ImmWord(fun));
-
+void
+MacroAssemblerX64::callWithABIPost(uint32_t stackAdjust, Result result)
+{
     freeStack(stackAdjust);
     if (dynamicAlignment_)
         pop(rsp);
 
     JS_ASSERT(inCall_);
     inCall_ = false;
+}
+
+void
+MacroAssemblerX64::callWithABI(void *fun, Result result)
+{
+    uint32_t stackAdjust;
+    callWithABIPre(&stackAdjust);
+    call(ImmWord(fun));
+    callWithABIPost(stackAdjust, result);
+}
+
+static bool
+IsIntArgReg(Register reg)
+{
+    for (uint32_t i = 0; i < NumIntArgRegs; i++) {
+        if (IntArgRegs[i] == reg)
+            return true;
+    }
+
+    return false;
+}
+
+void
+MacroAssemblerX64::callWithABI(Address fun, Result result)
+{
+    if (IsIntArgReg(fun.base)) {
+        // Callee register may be clobbered for an argument. Move the callee to
+        // r10, a volatile, non-argument register.
+        moveResolver_.addMove(MoveOperand(fun.base), MoveOperand(r10), Move::GENERAL);
+        fun.base = r10;
+    }
+
+    JS_ASSERT(!IsIntArgReg(fun.base));
+
+    uint32_t stackAdjust;
+    callWithABIPre(&stackAdjust);
+    call(Operand(fun));
+    callWithABIPost(stackAdjust, result);
 }
 
 void

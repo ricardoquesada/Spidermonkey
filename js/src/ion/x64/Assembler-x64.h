@@ -11,6 +11,7 @@
 #include "ion/shared/Assembler-shared.h"
 #include "ion/CompactBuffer.h"
 #include "ion/IonCode.h"
+#include "mozilla/Util.h"
 
 namespace js {
 namespace ion {
@@ -88,14 +89,18 @@ static const Register IntArgReg0 = rcx;
 static const Register IntArgReg1 = rdx;
 static const Register IntArgReg2 = r8;
 static const Register IntArgReg3 = r9;
-static const uint32 NumIntArgRegs = 4;
+static const uint32_t NumIntArgRegs = 4;
 static const Register IntArgRegs[NumIntArgRegs] = { rcx, rdx, r8, r9 };
+
+static const Register CallTempNonArgRegs[] = { rax, rdi, rbx, rsi };
+static const uint32_t NumCallTempNonArgRegs =
+    mozilla::ArrayLength(CallTempNonArgRegs);
 
 static const FloatRegister FloatArgReg0 = xmm0;
 static const FloatRegister FloatArgReg1 = xmm1;
 static const FloatRegister FloatArgReg2 = xmm2;
 static const FloatRegister FloatArgReg3 = xmm3;
-static const uint32 NumFloatArgRegs = 4;
+static const uint32_t NumFloatArgRegs = 4;
 static const FloatRegister FloatArgRegs[NumFloatArgRegs] = { xmm0, xmm1, xmm2, xmm3 };
 #else
 static const Register IntArgReg0 = rdi;
@@ -104,8 +109,12 @@ static const Register IntArgReg2 = rdx;
 static const Register IntArgReg3 = rcx;
 static const Register IntArgReg4 = r8;
 static const Register IntArgReg5 = r9;
-static const uint32 NumIntArgRegs = 6;
+static const uint32_t NumIntArgRegs = 6;
 static const Register IntArgRegs[NumIntArgRegs] = { rdi, rsi, rdx, rcx, r8, r9 };
+
+static const Register CallTempNonArgRegs[] = { rax, rbx };
+static const uint32_t NumCallTempNonArgRegs =
+    mozilla::ArrayLength(CallTempNonArgRegs);
 
 static const FloatRegister FloatArgReg0 = xmm0;
 static const FloatRegister FloatArgReg1 = xmm1;
@@ -115,7 +124,7 @@ static const FloatRegister FloatArgReg4 = xmm4;
 static const FloatRegister FloatArgReg5 = xmm5;
 static const FloatRegister FloatArgReg6 = xmm6;
 static const FloatRegister FloatArgReg7 = xmm7;
-static const uint32 NumFloatArgRegs = 8;
+static const uint32_t NumFloatArgRegs = 8;
 static const FloatRegister FloatArgRegs[NumFloatArgRegs] = { xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7 };
 #endif
 
@@ -125,7 +134,7 @@ static const Register PreBarrierReg = rdx;
 
 // GCC stack is aligned on 16 bytes, but we don't maintain the invariant in
 // jitted code.
-static const uint32 StackAlignment = 16;
+static const uint32_t StackAlignment = 16;
 static const bool StackKeptAligned = false;
 
 static const Scale ScalePointer = TimesEight;
@@ -141,10 +150,10 @@ class Operand
     };
 
     Kind kind_ : 3;
-    int32 base_ : 5;
+    int32_t base_ : 5;
     Scale scale_ : 3;
-    int32 disp_;
-    int32 index_ : 5;
+    int32_t disp_;
+    int32_t index_ : 5;
 
   public:
     explicit Operand(Register reg)
@@ -167,14 +176,14 @@ class Operand
         disp_(address.offset),
         index_(address.index.code())
     { }
-    Operand(Register base, Register index, Scale scale, int32 disp = 0)
+    Operand(Register base, Register index, Scale scale, int32_t disp = 0)
       : kind_(SCALE),
         base_(base.code()),
         scale_(scale),
         disp_(disp),
         index_(index.code())
     { }
-    Operand(Register reg, int32 disp)
+    Operand(Register reg, int32_t disp)
       : kind_(REG_DISP),
         base_(reg.code()),
         disp_(disp)
@@ -203,7 +212,7 @@ class Operand
         JS_ASSERT(kind() == FPREG);
         return (FloatRegisters::Code)base_;
     }
-    int32 disp() const {
+    int32_t disp() const {
         JS_ASSERT(kind() == REG_DISP || kind() == SCALE);
         return disp_;
     }
@@ -245,12 +254,12 @@ class Assembler : public AssemblerX86Shared
     //    +4 bytes for rip-relative offset (0)
     //    +8 bytes for 64-bit address
     //
-    static const uint32 SizeOfExtendedJump = 1 + 1 + 4 + 8;
-    static const uint32 SizeOfJumpTableEntry = 16;
+    static const uint32_t SizeOfExtendedJump = 1 + 1 + 4 + 8;
+    static const uint32_t SizeOfJumpTableEntry = 16;
 
-    uint32 extendedJumpTable_;
+    uint32_t extendedJumpTable_;
 
-    static IonCode *CodeFromJump(IonCode *code, uint8 *jump);
+    static IonCode *CodeFromJump(IonCode *code, uint8_t *jump);
 
   private:
     void writeRelocation(JmpSrc src, Relocation::Kind reloc);
@@ -264,8 +273,8 @@ class Assembler : public AssemblerX86Shared
     using AssemblerX86Shared::jmp;
     using AssemblerX86Shared::push;
 
-    static uint8 *PatchableJumpAddress(IonCode *code, size_t index);
-    static void PatchJumpEntry(uint8 *entry, uint8 *target);
+    static uint8_t *PatchableJumpAddress(IonCode *code, size_t index);
+    static void PatchJumpEntry(uint8_t *entry, uint8_t *target);
 
     Assembler()
       : extendedJumpTable_(0)
@@ -280,7 +289,7 @@ class Assembler : public AssemblerX86Shared
 
     // Copy the assembly code to the given buffer, and perform any pending
     // relocations relying on the target address.
-    void executableCopy(uint8 *buffer);
+    void executableCopy(uint8_t *buffer);
 
     // Actual assembly emitting functions.
 
@@ -289,8 +298,14 @@ class Assembler : public AssemblerX86Shared
         push(ScratchReg);
     }
     void push(const ImmWord ptr) {
-        movq(ptr, ScratchReg);
-        push(ScratchReg);
+        // We often end up with ImmWords that actually fit into int32.
+        // Be aware of the sign extension behavior.
+        if (ptr.value <= INT32_MAX) {
+            push(Imm32(ptr.value));
+        } else {
+            movq(ptr, ScratchReg);
+            push(ScratchReg);
+        }
     }
     void push(const FloatRegister &src) {
         subq(Imm32(sizeof(void*)), StackPointer);
@@ -542,12 +557,12 @@ PatchJump(CodeLocationJump jump, CodeLocationLabel label)
 }
 
 static inline bool
-GetIntArgReg(uint32 intArg, uint32 floatArg, Register *out)
+GetIntArgReg(uint32_t intArg, uint32_t floatArg, Register *out)
 {
 #if defined(_WIN64)
-    uint32 arg = intArg + floatArg;
+    uint32_t arg = intArg + floatArg;
 #else
-    uint32 arg = intArg;
+    uint32_t arg = intArg;
 #endif
     if (arg >= NumIntArgRegs)
         return false;
@@ -555,13 +570,38 @@ GetIntArgReg(uint32 intArg, uint32 floatArg, Register *out)
     return true;
 }
 
+// Get a register in which we plan to put a quantity that will be used as an
+// integer argument.  This differs from GetIntArgReg in that if we have no more
+// actual argument registers to use we will fall back on using whatever
+// CallTempReg* don't overlap the argument registers, and only fail once those
+// run out too.
 static inline bool
-GetFloatArgReg(uint32 intArg, uint32 floatArg, FloatRegister *out)
+GetTempRegForIntArg(uint32_t usedIntArgs, uint32_t usedFloatArgs, Register *out)
+{
+    if (GetIntArgReg(usedIntArgs, usedFloatArgs, out))
+        return true;
+    // Unfortunately, we have to assume things about the point at which
+    // GetIntArgReg returns false, because we need to know how many registers it
+    // can allocate.
+#if defined(_WIN64)
+    uint32_t arg = usedIntArgs + usedFloatArgs;
+#else
+    uint32_t arg = usedIntArgs;
+#endif
+    arg -= NumIntArgRegs;
+    if (arg >= NumCallTempNonArgRegs)
+        return false;
+    *out = CallTempNonArgRegs[arg];
+    return true;
+}
+
+static inline bool
+GetFloatArgReg(uint32_t intArg, uint32_t floatArg, FloatRegister *out)
 {
 #if defined(_WIN64)
-    uint32 arg = intArg + floatArg;
+    uint32_t arg = intArg + floatArg;
 #else
-    uint32 arg = floatArg;
+    uint32_t arg = floatArg;
 #endif
     if (floatArg >= NumFloatArgRegs)
         return false;

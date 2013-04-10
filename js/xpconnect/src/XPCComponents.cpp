@@ -2707,15 +2707,14 @@ nsXPCComponents_Utils::LookupMethod(const JS::Value& object,
     JSString *methodName = name.toString();
     jsid methodId = INTERNED_STRING_TO_JSID(cx, JS_InternJSString(cx, methodName));
 
-    // If |obj| is a cross-compartment wrapper, try to puncture it. If this fails,
-    // we don't have full access to the other compartment, in which case we throw.
-    // Otherwise, enter the compartment.
-    if (js::IsCrossCompartmentWrapper(obj)) {
-        obj = js::UnwrapOneChecked(obj);
-        if (!obj)
-            return NS_ERROR_XPC_BAD_CONVERT_JS;
+    // If |obj| is a security wrapper, try to unwrap it. If this fails, we
+    // don't have full acccess to the object, in which case we throw.
+    // Otherwise, enter a compartment, since we may have just unwrapped a CCW.
+    obj = js::UnwrapObjectChecked(obj);
+    if (!obj) {
+        JS_ReportError(cx, "Permission denied to unwrap object");
+        return NS_ERROR_XPC_BAD_CONVERT_JS;
     }
-
     {
         // Enter the target compartment.
         JSAutoCompartment ac(cx, obj);
@@ -3143,18 +3142,16 @@ XPC_WN_Helper_SetProperty(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBo
 
 bool
 xpc::SandboxProxyHandler::getPropertyDescriptor(JSContext *cx, JSObject *proxy,
-                                                jsid id_, bool set,
-                                                PropertyDescriptor *desc)
+                                                jsid id_,
+                                                PropertyDescriptor *desc,
+                                                unsigned flags)
 {
     js::RootedObject obj(cx, wrappedObject(proxy));
     js::RootedId id(cx, id_);
 
     MOZ_ASSERT(js::GetObjectCompartment(obj) == js::GetObjectCompartment(proxy));
-    // XXXbz Not sure about the JSRESOLVE_QUALIFIED here, but we have
-    // no way to tell for sure whether to use it.
     if (!JS_GetPropertyDescriptorById(cx, obj, id,
-                                      (set ? JSRESOLVE_ASSIGNING : 0) | JSRESOLVE_QUALIFIED,
-                                      desc))
+                                      flags, desc))
         return false;
 
     if (!desc->obj)
@@ -3194,10 +3191,11 @@ xpc::SandboxProxyHandler::getPropertyDescriptor(JSContext *cx, JSObject *proxy,
 bool
 xpc::SandboxProxyHandler::getOwnPropertyDescriptor(JSContext *cx,
                                                    JSObject *proxy,
-                                                   jsid id, bool set,
-                                                   PropertyDescriptor *desc)
+                                                   jsid id,
+                                                   PropertyDescriptor *desc,
+                                                   unsigned flags)
 {
-    if (!getPropertyDescriptor(cx, proxy, id, set, desc))
+    if (!getPropertyDescriptor(cx, proxy, id, desc, flags))
         return false;
 
     if (desc->obj != wrappedObject(proxy))
@@ -4049,7 +4047,7 @@ nsXPCComponents_Utils::ForceGC()
 NS_IMETHODIMP
 nsXPCComponents_Utils::ForceCC()
 {
-    nsJSContext::CycleCollectNow(nullptr, 0);
+    nsJSContext::CycleCollectNow();
     return NS_OK;
 }
 
@@ -4352,6 +4350,21 @@ nsXPCComponents_Utils::RecomputeWrappers(const jsval &vobj, JSContext *cx)
     return NS_OK;
 }
 
+/* jsval setWantXrays(jsval vscope); */
+NS_IMETHODIMP
+nsXPCComponents_Utils::SetWantXrays(const jsval &vscope, JSContext *cx)
+{
+    if (!vscope.isObject())
+        return NS_ERROR_INVALID_ARG;
+    JSObject *scopeObj = js::UnwrapObject(&vscope.toObject());
+    JSCompartment *compartment = js::GetObjectCompartment(scopeObj);
+    EnsureCompartmentPrivate(scopeObj)->wantXrays = true;
+    bool ok = js::RecomputeWrappers(cx, js::SingleCompartment(compartment),
+                                    js::AllCompartments());
+    NS_ENSURE_TRUE(ok, NS_ERROR_FAILURE);
+    return NS_OK;
+}
+
 /* jsval getComponentsForScope(jsval vscope); */
 NS_IMETHODIMP
 nsXPCComponents_Utils::GetComponentsForScope(const jsval &vscope, JSContext *cx,
@@ -4499,6 +4512,14 @@ nsXPCComponents_Utils::NukeSandbox(const JS::Value &obj, JSContext *cx)
     NukeCrossCompartmentWrappers(cx, AllCompartments(),
                                  SingleCompartment(GetObjectCompartment(sb)),
                                  NukeWindowReferences);
+    return NS_OK;
+}
+
+NS_IMETHODIMP
+nsXPCComponents_Utils::IsXrayWrapper(const JS::Value &obj, bool* aRetval)
+{
+    *aRetval =
+        obj.isObject() && xpc::WrapperFactory::IsXrayWrapper(&obj.toObject());
     return NS_OK;
 }
 
@@ -4805,7 +4826,7 @@ ContentComponentsGetterOp(JSContext *cx, JSHandleObject obj, JSHandleId id,
         return true;
 
     // If the caller is XBL, this is ok.
-    if (AccessCheck::callerIsXBL(cx))
+    if (nsContentUtils::IsCallerXBL())
         return true;
 
     // Do Telemetry on how often this happens.
@@ -4894,7 +4915,7 @@ nsXPCComponents::CanCallMethod(const nsIID * iid, const PRUnichar *methodName, c
     *_retval = xpc_CheckAccessList(methodName, allowed);
     if (*_retval &&
         methodName[0] == 'l' &&
-        !AccessCheck::callerIsXBL(nsContentUtils::GetCurrentJSContext()))
+        !nsContentUtils::IsCallerXBL())
     {
         Telemetry::Accumulate(Telemetry::COMPONENTS_LOOKUPMETHOD_ACCESSED_BY_CONTENT, true);
     }
@@ -4909,7 +4930,7 @@ nsXPCComponents::CanGetProperty(const nsIID * iid, const PRUnichar *propertyName
     *_retval = xpc_CheckAccessList(propertyName, allowed);
     if (*_retval &&
         propertyName[0] == 'i' &&
-        !AccessCheck::callerIsXBL(nsContentUtils::GetCurrentJSContext()))
+        !nsContentUtils::IsCallerXBL())
     {
         Telemetry::Accumulate(Telemetry::COMPONENTS_INTERFACES_ACCESSED_BY_CONTENT, true);
     }

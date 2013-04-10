@@ -67,7 +67,7 @@ interface nsIXPConnectJSObjectHolder : nsISupports
     readonly attribute JSObjectPtr      JSObject;
 };
 
-[uuid(f819a95a-6ab5-4a02-bda6-32861e859581)]
+[uuid(92e98688-0154-4b65-971b-0d4afe8fd7cb)]
 interface nsIXPConnectWrappedNative : nsIXPConnectJSObjectHolder
 {
     /* attribute 'JSObject' inherited from nsIXPConnectJSObjectHolder */
@@ -81,6 +81,7 @@ interface nsIXPConnectWrappedNative : nsIXPConnectJSObjectHolder
     readonly attribute nsIXPConnect XPConnect;
     nsIInterfaceInfo FindInterfaceWithMember(in jsid nameID);
     nsIInterfaceInfo FindInterfaceWithName(in jsid nameID);
+    [notxpcom] bool HasNativeMember(in jsid name);
 
     void debugDump(in short depth);
 
@@ -288,7 +289,7 @@ interface nsIXPCFunctionThisTranslator : nsISupports
     { 0xbd, 0xd6, 0x0, 0x0, 0x64, 0x65, 0x73, 0x74 } }
 %}
 
-[uuid(e28a33ce-dfe9-4816-ae20-0f1dc8077230)]
+[uuid(3e825850-3a5f-11e2-81c1-0800200c9a66)]
 interface nsIXPConnect : nsISupports
 {
 %{ C++
@@ -518,7 +519,7 @@ interface nsIXPConnect : nsISupports
     setFunctionThisTranslator(in nsIIDRef aIID,
                               in nsIXPCFunctionThisTranslator aTranslator);
 
-    nsIXPConnectJSObjectHolder
+    void
     reparentWrappedNativeIfFound(in JSContextPtr aJSContext,
                                  in JSObjectPtr  aScope,
                                  in JSObjectPtr  aNewParent,
@@ -576,21 +577,21 @@ interface nsIXPConnect : nsISupports
      * @param aHolder The object that hold the JS objects that should be rooted.
      * @param aTrace The tracer for aHolder.
      */
-    [noscript] void addJSHolder(in voidPtr aHolder,
-                                in nsScriptObjectTracerPtr aTracer);
+    [noscript,notxpcom] void addJSHolder(in voidPtr aHolder,
+                                         in nsScriptObjectTracerPtr aTracer);
 
     /**
      * Stop rooting the JS objects held by aHolder.
      * @param aHolder The object that hold the rooted JS objects.
      */
-    [noscript] void removeJSHolder(in voidPtr aHolder);
+    [noscript,notxpcom] void removeJSHolder(in voidPtr aHolder);
 
     /**
      * Test to see if a JS holder is in our hashtable.
      * Only available in debug builds.
      * @param aHolder The object to test for.
      */
-    [noscript] bool testJSHolder(in voidPtr aHolder);
+    [noscript,notxpcom] bool testJSHolder(in voidPtr aHolder);
 
     /**
      * Note aJSContext as a child to the cycle collector.

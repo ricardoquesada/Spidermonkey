@@ -31,7 +31,7 @@ ifneq ($(OS_ARCH),ANDROID)
 TEST_DIRS += jsapi-tests
 endif
 
-TEST_DIRS += tests
+TEST_DIRS += tests gdb
 
 MODULE		    = js
 LIBRARY_NAME	    = mozjs
@@ -54,7 +54,14 @@ endif
 FORCE_STATIC_LIB = 1
 DIST_INSTALL = 1
 
-VPATH		= \
+###############################################
+# BEGIN include sources for low-level code shared with mfbt
+#
+MFBT_ROOT = $(srcdir)/../../mfbt
+VPATH += $(MFBT_ROOT)
+include $(MFBT_ROOT)/exported_headers.mk
+
+VPATH		+= \
 		$(srcdir) \
 		$(srcdir)/builtin \
 		$(srcdir)/devtools \
@@ -109,15 +116,20 @@ CPPSRCS		= \
 		jswatchpoint.cpp \
 		jsweakmap.cpp \
 		jsworkers.cpp \
+		ThreadPool.cpp \
+		Monitor.cpp \
+		ForkJoin.cpp \
 		jswrapper.cpp \
 		jsxml.cpp \
 		prmjtime.cpp \
 		sharkctl.cpp \
 		ArgumentsObject.cpp \
-		ScopeObject.cpp \
+		DateTime.cpp \
 		Debugger.cpp \
 		GlobalObject.cpp \
+		Object.cpp \
 		ObjectImpl.cpp \
+		ScopeObject.cpp \
 		Stack.cpp \
 		String.cpp \
 		BytecodeCompiler.cpp \
@@ -130,6 +142,7 @@ CPPSRCS		= \
 		ParseNode.cpp \
 		Parser.cpp \
 		SPSProfiler.cpp \
+		SelfHosting.cpp \
 		TokenStream.cpp \
 		TestingFunctions.cpp \
 		Profilers.cpp \
@@ -139,10 +152,13 @@ CPPSRCS		= \
 		RegExpObject.cpp \
 		RegExpStatics.cpp \
 		RegExp.cpp \
+		RootMarking.cpp \
 		Marking.cpp \
 		Memory.cpp \
 		Statistics.cpp \
 		StoreBuffer.cpp \
+		Iteration.cpp \
+		Verifier.cpp \
 		StringBuffer.cpp \
 		Unicode.cpp \
 		Xdr.cpp \
@@ -217,13 +233,6 @@ EXPORTS_js = \
 		$(NULL)
 
 ###############################################
-# BEGIN include sources for low-level code shared with mfbt
-#
-MFBT_ROOT = $(srcdir)/../../mfbt
-VPATH += $(MFBT_ROOT)
-include $(MFBT_ROOT)/exported_headers.mk
-
-###############################################
 # BEGIN enable non-releasable features
 #
 ifeq (,$(filter beta release esr,$(MOZ_UPDATE_CHANNEL)))
@@ -269,6 +278,7 @@ VPATH +=	$(srcdir)/ion
 VPATH +=	$(srcdir)/ion/shared
 
 CPPSRCS +=	MIR.cpp \
+		BacktrackingAllocator.cpp \
 		Bailouts.cpp \
 		BitSet.cpp \
 		C1Spewer.cpp \
@@ -285,20 +295,24 @@ CPPSRCS +=	MIR.cpp \
 		LICM.cpp \
 		LinearScan.cpp \
 		LIR.cpp \
+		LiveRangeAllocator.cpp \
 		Lowering.cpp \
 		Lowering-shared.cpp \
 		MCallOptimize.cpp \
 		MIRGraph.cpp \
 		MoveResolver.cpp \
 		EdgeCaseAnalysis.cpp \
+		RegisterAllocator.cpp \
 		Snapshots.cpp \
 		Safepoints.cpp \
+		StupidAllocator.cpp \
 		TypeOracle.cpp \
 		TypePolicy.cpp \
 		ValueNumbering.cpp \
 		RangeAnalysis.cpp \
 		VMFunctions.cpp \
 		AliasAnalysis.cpp \
+		UnreachableCodeElimination.cpp \
 		$(NULL)
 endif #ENABLE_ION
 ifeq (86, $(findstring 86,$(TARGET_CPU)))
@@ -891,7 +905,9 @@ export:: selfhosting
 selfhosting:: selfhosted.out.h
 
 selfhosting_srcs := \
-  $(srcdir)/builtin/array.js \
+  $(srcdir)/builtin/Utilities.js \
+  $(srcdir)/builtin/Array.js \
+  $(srcdir)/builtin/Intl.js \
   $(NULL)
 
 selfhosted_out_h_deps := \

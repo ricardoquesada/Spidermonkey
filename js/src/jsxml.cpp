@@ -83,7 +83,6 @@ pointer_match(const T *a, const T *b)
  * - XXXbe patrol
  * - Fuse objects and their JSXML* private data into single GC-things
  * - fix function::foo vs. x.(foo == 42) collision using proper namespacing
- * - JSCLASS_DOCUMENT_OBSERVER support -- live two-way binding to Gecko's DOM!
  */
 
 /*
@@ -1856,10 +1855,6 @@ ToXML(JSContext *cx, jsval v)
         }
 
         clasp = obj->getClass();
-        if (clasp->flags & JSCLASS_DOCUMENT_OBSERVER) {
-            JS_ASSERT(0);
-        }
-
         if (clasp != &StringClass &&
             clasp != &NumberClass &&
             clasp != &BooleanClass) {
@@ -1938,10 +1933,6 @@ ToXMLList(JSContext *cx, jsval v)
         }
 
         clasp = obj->getClass();
-        if (clasp->flags & JSCLASS_DOCUMENT_OBSERVER) {
-            JS_ASSERT(0);
-        }
-
         if (clasp != &StringClass &&
             clasp != &NumberClass &&
             clasp != &BooleanClass) {
@@ -2833,10 +2824,8 @@ ReportBadXMLName(JSContext *cx, const Value &idval)
     js_ReportValueError(cx, JSMSG_BAD_XML_NAME, JSDVG_IGNORE_STACK, val, NullPtr());
 }
 
-namespace js {
-
 bool
-GetLocalNameFromFunctionQName(JSObject *qn, JSAtom **namep, JSContext *cx)
+js::GetLocalNameFromFunctionQName(JSObject *qn, JSAtom **namep, JSContext *cx)
 {
     JSAtom *atom = cx->names().functionNamespaceURI;
     JSLinearString *uri = qn->getNameURI();
@@ -2846,8 +2835,6 @@ GetLocalNameFromFunctionQName(JSObject *qn, JSAtom **namep, JSContext *cx)
     }
     return false;
 }
-
-} /* namespace js */
 
 bool
 js_GetLocalNameFromFunctionQName(JSObject *obj, jsid *funidp, JSContext *cx)
@@ -4728,10 +4715,9 @@ xml_lookupGeneric(JSContext *cx, HandleObject obj, HandleId id,
         objp.set(NULL);
         propp.set(NULL);
     } else {
-        Shape *shape =
-            js_AddNativeProperty(cx, obj, id, GetProperty, PutProperty,
-                                 SHAPE_INVALID_SLOT, JSPROP_ENUMERATE,
-                                 0, 0);
+        RootedShape shape(cx, js_AddNativeProperty(cx, obj, id, GetProperty, PutProperty,
+                                                   SHAPE_INVALID_SLOT, JSPROP_ENUMERATE,
+                                                   0, 0));
         if (!shape)
             return JS_FALSE;
 
@@ -4760,13 +4746,12 @@ xml_lookupElement(JSContext *cx, HandleObject obj, uint32_t index, MutableHandle
         return true;
     }
 
-    jsid id;
-    if (!IndexToId(cx, index, &id))
+    RootedId id(cx);
+    if (!IndexToId(cx, index, id.address()))
         return false;
 
-    Shape *shape =
-        js_AddNativeProperty(cx, obj, id, GetProperty, PutProperty, SHAPE_INVALID_SLOT,
-                             JSPROP_ENUMERATE, 0, 0);
+    RootedShape shape(cx, js_AddNativeProperty(cx, obj, id, GetProperty, PutProperty,
+                                               SHAPE_INVALID_SLOT, JSPROP_ENUMERATE, 0, 0));
     if (!shape)
         return false;
 
@@ -5902,7 +5887,13 @@ xml_hasOwnProperty(JSContext *cx, unsigned argc, jsval *vp)
     RootedId id(cx);
     if (!ValueToId(cx, name, id.address()))
         return false;
-    return js_HasOwnPropertyHelper(cx, baseops::LookupProperty, obj, id, args.rval());
+
+    RootedObject obj2(cx);
+    RootedShape prop(cx);
+    if (!js_HasOwnProperty(cx, baseops::LookupProperty, obj, id, &obj2, &prop))
+        return false;
+    args.rval().setBoolean(!!prop);
+    return true;
 }
 
 /* XML and XMLList */
@@ -7137,8 +7128,7 @@ XML(JSContext *cx, unsigned argc, Value *vp)
     if (IsConstructing(vp) && !JSVAL_IS_PRIMITIVE(v)) {
         vobj = JSVAL_TO_OBJECT(v);
         clasp = vobj->getClass();
-        if (clasp == &XMLClass ||
-            (clasp->flags & JSCLASS_DOCUMENT_OBSERVER)) {
+        if (clasp == &XMLClass) {
             copy = DeepCopy(cx, xml, NULL, 0);
             if (!copy)
                 return JS_FALSE;
@@ -7467,8 +7457,6 @@ js_InitXMLClasses(JSContext *cx, HandleObject obj)
     return js_InitXMLClass(cx, obj);
 }
 
-namespace js {
-
 bool
 GlobalObject::getFunctionNamespace(JSContext *cx, Value *vp)
 {
@@ -7497,8 +7485,6 @@ GlobalObject::getFunctionNamespace(JSContext *cx, Value *vp)
     *vp = v;
     return true;
 }
-
-} // namespace js
 
 /*
  * Note the asymmetry between js_GetDefaultXMLNamespace and js_SetDefaultXML-

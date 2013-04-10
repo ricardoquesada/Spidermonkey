@@ -118,7 +118,7 @@ interface ScheduledGCCallback : nsISupports
 /**
 * interface of Components.utils
 */
-[scriptable, uuid(f9c8e351-8608-42b1-a9a7-df211b1a0a91)]
+[scriptable, uuid(0d0fd2f7-3250-4092-9340-ca9bcb7be470)]
 interface nsIXPCComponents_Utils : nsISupports
 {
 
@@ -331,11 +331,21 @@ interface nsIXPCComponents_Utils : nsISupports
      * disappear at any moment.
      *
      * Forces a recomputation of all wrappers in and out of the compartment
-     * containing |obj|. If |obj| is not an object, all wrappers system-wide
+     * containing |vobj|. If |vobj| is not an object, all wrappers system-wide
      * are recomputed.
      */
     [implicit_jscontext]
     void recomputeWrappers([optional] in jsval vobj);
+
+    /*
+     * To be called from JS only. This is for Gecko internal use only, and may
+     * disappear at any moment.
+     *
+     * Enables Xray vision for same-compartment access for the compartment
+     * indicated by |vscope|. All outgoing wrappers are recomputed.
+     */
+    [implicit_jscontext]
+    void setWantXrays(in jsval vscope);
 
     /*
      * This seemingly-paradoxical API allows privileged code to explicitly give
@@ -385,7 +395,7 @@ interface nsIXPCComponents_Utils : nsISupports
 
     [implicit_jscontext]
     attribute boolean strict_mode;
-    
+
     [implicit_jscontext]
     attribute boolean ion;
 
@@ -394,6 +404,8 @@ interface nsIXPCComponents_Utils : nsISupports
 
     [implicit_jscontext]
     void nukeSandbox(in jsval obj);
+
+    bool isXrayWrapper(in jsval obj);
 };
 
 /**

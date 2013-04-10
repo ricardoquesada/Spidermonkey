@@ -205,12 +205,12 @@ js::SweepAtoms(JSRuntime *rt)
     for (AtomSet::Enum e(rt->atoms); !e.empty(); e.popFront()) {
         AtomStateEntry entry = e.front();
         JSAtom *atom = entry.asPtr();
-        bool isMarked = IsStringMarked(&atom);
+        bool isDying = IsStringAboutToBeFinalized(&atom);
 
         /* Pinned or interned key cannot be finalized. */
-        JS_ASSERT_IF(entry.isTagged(), isMarked);
+        JS_ASSERT_IF(entry.isTagged(), !isDying);
 
-        if (!isMarked)
+        if (isDying)
             e.removeFront();
     }
 }
@@ -371,10 +371,8 @@ js::AtomizeChars(JSContext *cx, const jschar *chars, size_t length, InternBehavi
     return AtomizeInline(cx, &chars, length, ib);
 }
 
-namespace js {
-
 bool
-IndexToIdSlow(JSContext *cx, uint32_t index, jsid *idp)
+js::IndexToIdSlow(JSContext *cx, uint32_t index, jsid *idp)
 {
     JS_ASSERT(index > JSID_INT_MAX);
 
@@ -389,8 +387,6 @@ IndexToIdSlow(JSContext *cx, uint32_t index, jsid *idp)
     *idp = JSID_FROM_BITS((size_t)atom);
     return true;
 }
-
-} /* namespace js */
 
 bool
 js::InternNonIntElementId(JSContext *cx, JSObject *obj, const Value &idval,
@@ -432,6 +428,7 @@ template<XDRMode mode>
 bool
 js::XDRAtom(XDRState<mode> *xdr, MutableHandleAtom atomp)
 {
+    AssertCanGC();
     if (mode == XDR_ENCODE) {
         uint32_t nchars = atomp->length();
         if (!xdr->codeUint32(&nchars))

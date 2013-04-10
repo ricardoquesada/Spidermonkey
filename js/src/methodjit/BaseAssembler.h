@@ -8,6 +8,8 @@
 #if !defined jsjaeger_baseassembler_h__ && defined JS_METHODJIT
 #define jsjaeger_baseassembler_h__
 
+#include "mozilla/DebugOnly.h"
+
 #include "jscntxt.h"
 #include "assembler/assembler/MacroAssemblerCodeRef.h"
 #include "assembler/assembler/MacroAssembler.h"
@@ -148,7 +150,7 @@ class Assembler : public ValueAssembler
         AutoAssertNoGC nogc;
         startLabel = label();
         if (vmframe)
-            sps->setPushed(vmframe->script().get(nogc));
+            sps->setPushed(vmframe->script());
     }
 
     Assembler(MJITInstrumentation *sps, jsbytecode **pc)
@@ -197,7 +199,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
         loadPtr(Address(obj, JSObject::offsetOfShape()), shape);
     }
 
-    Jump guardShape(RegisterID objReg, Shape *shape) {
+    Jump guardShape(RegisterID objReg, UnrootedShape shape) {
         return branchPtr(NotEqual, Address(objReg, JSObject::offsetOfShape()), ImmPtr(shape));
     }
 
@@ -721,14 +723,16 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
                               DataLabelPtr *pinlined, int32_t frameDepth) {
         setupInfallibleVMFrame(frameDepth);
 
-        /* regs->fp = fp */
+        // regs->fp = fp
         storePtr(JSFrameReg, FrameAddress(VMFrame::offsetOfFp));
 
-        /* PC -> regs->pc :( */
-        storePtr(ImmPtr(pc), FrameAddress(VMFrame::offsetOfRegsPc()));
+        // PC -> regs->pc :(  Note: If pc is null, we are emitting a trampoline,
+        // so regs->pc is already correct.
+        if (pc)
+            storePtr(ImmPtr(pc), FrameAddress(VMFrame::offsetOfRegsPc()));
 
         if (inlining) {
-            /* inlined -> regs->inlined :( */
+            // inlined -> regs->inlined :(
             DataLabelPtr ptr = storePtrWithPatch(ImmPtr(NULL),
                                                  FrameAddress(VMFrame::offsetOfInlined));
             if (pinlined)
@@ -775,6 +779,10 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
     // A fallible VM call is a stub call (taking a VMFrame & and one optional
     // parameter) that needs the entire VMFrame to be coherent, meaning that
     // |pc|, |inlined| and |fp| are guaranteed to be up-to-date.
+    //
+    // If |pc| is null, the caller guarantees that the current regs->pc may be
+    // trusted. This is the case for a single debug-only path; see
+    // generateForceReturn.
     Call fallibleVMCall(bool inlining, void *ptr, jsbytecode *pc,
                         DataLabelPtr *pinlined, int32_t frameDepth) {
         setupFallibleVMFrame(inlining, pc, pinlined, frameDepth);
@@ -975,7 +983,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
     }
 
     void loadObjProp(JSObject *obj, RegisterID objReg,
-                     js::Shape *shape,
+                     js::UnrootedShape shape,
                      RegisterID typeReg, RegisterID dataReg)
     {
         if (obj->isFixedSlot(shape->slot()))
@@ -1336,6 +1344,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
      */
     Jump getNewObject(JSContext *cx, RegisterID result, JSObject *templateObject)
     {
+        AutoAssertNoGC nogc;
         gc::AllocKind allocKind = templateObject->getAllocKind();
 
         JS_ASSERT(allocKind >= gc::FINALIZE_OBJECT0 && allocKind <= gc::FINALIZE_OBJECT_LAST);
@@ -1497,7 +1506,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
 
 /* Return f<true> if the script is strict mode code, f<false> otherwise. */
 #define STRICT_VARIANT(script, f)                                             \
-    (FunctionTemplateConditional(script->strictModeCode,                      \
+    (FunctionTemplateConditional(script->strict,                              \
                                  f<true>, f<false>))
 
 /* Save some typing. */

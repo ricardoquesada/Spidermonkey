@@ -9,6 +9,7 @@
 #define GlobalObject_h___
 
 #include "mozilla/Attributes.h"
+#include "mozilla/DebugOnly.h"
 
 #include "jsarray.h"
 #include "jsbool.h"
@@ -333,11 +334,6 @@ class GlobalObject : public JSObject
         return &getPrototype(JSProto_Iterator).toObject();
     }
 
-    JSObject *getIntrinsicsHolder() {
-        JS_ASSERT(!getSlotRef(INTRINSICS).isUndefined());
-        return &getSlotRef(INTRINSICS).toObject();
-    }
-
   private:
     typedef bool (*ObjectInitOp)(JSContext *cx, Handle<GlobalObject*> global);
 
@@ -381,25 +377,33 @@ class GlobalObject : public JSObject
         return &self->getPrototype(JSProto_DataView).toObject();
     }
 
-    bool hasIntrinsicFunction(JSContext *cx, PropertyName *name) {
-        Rooted<GlobalObject *> self(cx, this);
-        Value fun = NullValue();
-        return HasDataProperty(cx, self, NameToId(name), &fun);
+    JSObject *intrinsicsHolder() {
+        JS_ASSERT(!getSlotRef(INTRINSICS).isUndefined());
+        return &getSlotRef(INTRINSICS).toObject();
     }
 
     bool getIntrinsicValue(JSContext *cx, PropertyName *name, MutableHandleValue value) {
-        RootedObject holder(cx, &getSlotRef(INTRINSICS).toObject());
+        RootedObject holder(cx, intrinsicsHolder());
         RootedId id(cx, NameToId(name));
         if (HasDataProperty(cx, holder, id, value.address()))
             return true;
-        bool ok = cx->runtime->cloneSelfHostedValueById(cx, id, holder, value);
-        if (!ok)
+        Rooted<PropertyName*> rootedName(cx, name);
+        if (!cx->runtime->cloneSelfHostedValue(cx, rootedName, value))
             return false;
-
-        ok = JS_DefinePropertyById(cx, holder, id, value, NULL, NULL, 0);
+        mozilla::DebugOnly<bool> ok = JS_DefinePropertyById(cx, holder, id, value, NULL, NULL, 0);
         JS_ASSERT(ok);
         return true;
     }
+
+    bool setIntrinsicValue(JSContext *cx, PropertyName *name, HandleValue value) {
+#ifdef DEBUG
+        RootedObject self(cx, this);
+        JS_ASSERT(cx->runtime->isSelfHostingGlobal(self));
+#endif
+        RootedObject holder(cx, intrinsicsHolder());
+        RootedValue valCopy(cx, value);
+        return JSObject::setProperty(cx, holder, holder, name, &valCopy, false);
+     }
 
     inline RegExpStatics *getRegExpStatics() const;
 

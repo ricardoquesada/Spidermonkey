@@ -14,6 +14,7 @@
 #include "jsprf.h"
 #include "jswrapper.h"
 
+#include "builtin/TestingFunctions.h"
 #include "methodjit/MethodJIT.h"
 
 #include "vm/Stack-inl.h"
@@ -447,6 +448,35 @@ GCSlice(JSContext *cx, unsigned argc, jsval *vp)
 }
 
 static JSBool
+GCState(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (argc != 0) {
+        RootedObject callee(cx, &args.callee());
+        ReportUsageError(cx, callee, "Too many arguments");
+        return false;
+    }
+
+    const char *state;
+    gc::State globalState = cx->runtime->gcIncrementalState;
+    if (globalState == gc::NO_INCREMENTAL)
+        state = "none";
+    else if (globalState == gc::MARK)
+        state = "mark";
+    else if (globalState == gc::SWEEP)
+        state = "sweep";
+    else
+        JS_NOT_REACHED("Unobserveable global GC state");
+
+    JSString *str = JS_NewStringCopyZ(cx, state);
+    if (!str)
+        return false;
+    *vp = StringValue(str);
+    return true;
+}
+
+static JSBool
 GCPreserveCode(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -494,6 +524,35 @@ ValidateGC(JSContext *cx, unsigned argc, jsval *vp)
     gc::SetValidateGC(cx, ToBoolean(vp[2]));
     *vp = JSVAL_VOID;
     return JS_TRUE;
+}
+
+static JSBool
+NondeterminsticGetWeakMapKeys(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (argc != 1) {
+        RootedObject callee(cx, &args.callee());
+        ReportUsageError(cx, callee, "Wrong number of arguments");
+        return false;
+    }
+    if (!args[0].isObject()) {
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_NOT_EXPECTED_TYPE,
+                             "nondeterministicGetWeakMapKeys", "WeakMap",
+                             InformalValueTypeName(args[0]));
+        return false;
+    }
+    JSObject *arr;
+    if (!JS_NondeterministicGetWeakMapKeys(cx, &args[0].toObject(), &arr))
+        return false;
+    if (!arr) {
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_NOT_EXPECTED_TYPE,
+                             "nondeterministicGetWeakMapKeys", "WeakMap",
+                             args[0].toObject().getClass()->name);
+        return false;
+    }
+    args.rval().setObject(*arr);
+    return true;
 }
 
 struct JSCountHeapNode {
@@ -739,6 +798,13 @@ MJitChunkLimit(JSContext *cx, unsigned argc, jsval *vp)
         return JS_FALSE;
     }
 
+    for (CompartmentsIter c(cx->runtime); !c.done(); c.next()) {
+        if (c->lastAnimationTime != 0) {
+            JS_ReportError(cx, "Can't change chunk limit if code may be preserved");
+            return JS_FALSE;
+        }
+    }
+
     double t;
     if (!JS_ValueToNumber(cx, args[0], &t))
         return JS_FALSE;
@@ -874,6 +940,10 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
 "gcslice(n)",
 "  Run an incremental GC slice that marks about n objects."),
 
+    JS_FN_HELP("gcstate", GCState, 0, 0,
+"gcstate()",
+"  Report the global GC state."),
+
     JS_FN_HELP("gcPreserveCode", GCPreserveCode, 0, 0,
 "gcPreserveCode()",
 "  Preserve JIT code during garbage collections."),
@@ -886,6 +956,10 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
     JS_FN_HELP("validategc", ValidateGC, 1, 0,
 "validategc(true|false)",
 "  If true, a separate validation step is performed after an incremental GC."),
+
+    JS_FN_HELP("nondeterministicGetWeakMapKeys", NondeterminsticGetWeakMapKeys, 1, 0,
+"nondeterministicGetWeakMapKeys(weakmap)",
+"  Return an array of the keys in the given WeakMap."),
 
     JS_FN_HELP("internalConst", InternalConst, 1, 0,
 "internalConst(name)",
@@ -925,12 +999,8 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
     JS_FS_HELP_END
 };
 
-namespace js {
-
 bool
-DefineTestingFunctions(JSContext *cx, HandleObject obj)
+js::DefineTestingFunctions(JSContext *cx, HandleObject obj)
 {
     return JS_DefineFunctionsWithHelp(cx, obj, TestingFunctions);
 }
-
-} /* namespace js */

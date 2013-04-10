@@ -9,6 +9,7 @@
 #define Debugger_h__
 
 #include "mozilla/Attributes.h"
+#include "mozilla/LinkedList.h"
 
 #include "jsapi.h"
 #include "jsclist.h"
@@ -19,13 +20,138 @@
 #include "jswrapper.h"
 
 #include "gc/Barrier.h"
+#include "gc/FindSCCs.h"
 #include "js/HashTable.h"
 #include "vm/GlobalObject.h"
 
 namespace js {
 
-class Debugger {
+/*
+ * A weakmap that supports the keys being in different compartments to the
+ * values, although all values must be in the same compartment.
+ *
+ * The Key and Value classes must support the compartment() method.
+ *
+ * The purpose of this is to allow the garbage collector to easily find edges
+ * from debugee object compartments to debugger compartments when calculating
+ * the compartment groups.  Note that these edges are the inverse of the edges
+ * stored in the cross compartment map.
+ *
+ * The current implementation results in all debuggee object compartments being
+ * swept in the same group as the debugger.  This is a conservative approach,
+ * and compartments may be unnecessarily grouped, however it results in a
+ * simpler and faster implementation.
+ */
+template <class Key, class Value>
+class DebuggerWeakMap : private WeakMap<Key, Value, DefaultHasher<Key> >
+{
+  private:
+    typedef HashMap<JSCompartment *,
+                    uintptr_t,
+                    DefaultHasher<JSCompartment *>,
+                    RuntimeAllocPolicy> CountMap;
+
+    CountMap compartmentCounts;
+
+  public:
+    typedef WeakMap<Key, Value, DefaultHasher<Key> > Base;
+    explicit DebuggerWeakMap(JSContext *cx)
+        : Base(cx), compartmentCounts(cx) { }
+
+  public:
+    /* Expose those parts of HashMap public interface that are used by Debugger methods. */
+
+    typedef typename Base::Ptr Ptr;
+    typedef typename Base::AddPtr AddPtr;
+    typedef typename Base::Range Range;
+    typedef typename Base::Enum Enum;
+    typedef typename Base::Lookup Lookup;
+
+    bool init(uint32_t len = 16) {
+        return Base::init(len) && compartmentCounts.init();
+    }
+
+    AddPtr lookupForAdd(const Lookup &l) const {
+        return Base::lookupForAdd(l);
+    }
+
+    template<typename KeyInput, typename ValueInput>
+    bool relookupOrAdd(AddPtr &p, const KeyInput &k, const ValueInput &v) {
+        JS_ASSERT(v->compartment() == Base::compartment);
+        if (!incCompartmentCount(k->compartment()))
+            return false;
+        bool ok = Base::relookupOrAdd(p, k, v);
+        if (!ok)
+            decCompartmentCount(k->compartment());
+        return ok;
+    }
+
+    Range all() const {
+        return Base::all();
+    }
+
+    void remove(const Lookup &l) {
+        Base::remove(l);
+        decCompartmentCount(l->compartment());
+    }
+
+  public:
+    /* Expose WeakMap public interface*/
+    void trace(JSTracer *tracer) {
+        Base::trace(tracer);
+    }
+
+  public:
+    void markKeys(JSTracer *tracer) {
+        for (Range r = all(); !r.empty(); r.popFront()) {
+            Key key = r.front().key;
+            gc::Mark(tracer, &key, "cross-compartment WeakMap key");
+            JS_ASSERT(key == r.front().key);
+        }
+    }
+
+    bool hasKeyInCompartment(JSCompartment *c) {
+        CountMap::Ptr p = compartmentCounts.lookup(c);
+        JS_ASSERT_IF(p, p->value > 0);
+        return p;
+    }
+
+  private:
+    /* Override sweep method to also update our edge cache. */
+    void sweep() {
+        for (Enum e(*static_cast<Base *>(this)); !e.empty(); e.popFront()) {
+            Key k(e.front().key);
+            Value v(e.front().value);
+            if (gc::IsAboutToBeFinalized(&k)) {
+                e.removeFront();
+                decCompartmentCount(k->compartment());
+            }
+        }
+        Base::assertEntriesNotAboutToBeFinalized();
+    }
+
+    bool incCompartmentCount(JSCompartment *c) {
+        CountMap::Ptr p = compartmentCounts.lookupWithDefault(c, 0);
+        if (!p)
+            return false;
+        ++p->value;
+        return true;
+    }
+
+    void decCompartmentCount(JSCompartment *c) {
+        CountMap::Ptr p = compartmentCounts.lookup(c);
+        JS_ASSERT(p);
+        JS_ASSERT(p->value > 0);
+        --p->value;
+        if (p->value == 0)
+            compartmentCounts.remove(c);
+    }
+};
+
+class Debugger : private mozilla::LinkedListElement<Debugger>
+{
     friend class Breakpoint;
+    friend class mozilla::LinkedListElement<Debugger>;
     friend JSBool (::JS_DefineDebuggerObject)(JSContext *cx, JSObject *obj);
 
   public:
@@ -51,7 +177,6 @@ class Debugger {
     };
 
   private:
-    JSCList link;                       /* See JSRuntime::debuggerList. */
     HeapPtrObject object;               /* The Debugger object. Strong reference. */
     GlobalObjectSet debuggees;          /* Debuggee globals. Cross-compartment weak references. */
     js::HeapPtrObject uncaughtExceptionHook; /* Strong reference. */
@@ -86,11 +211,11 @@ class Debugger {
     FrameMap frames;
 
     /* An ephemeral map from JSScript* to Debugger.Script instances. */
-    typedef WeakMap<EncapsulatedPtrScript, RelocatablePtrObject> ScriptWeakMap;
+    typedef DebuggerWeakMap<EncapsulatedPtrScript, RelocatablePtrObject> ScriptWeakMap;
     ScriptWeakMap scripts;
 
     /* The map from debuggee objects to their Debugger.Object instances. */
-    typedef WeakMap<EncapsulatedPtrObject, RelocatablePtrObject> ObjectWeakMap;
+    typedef DebuggerWeakMap<EncapsulatedPtrObject, RelocatablePtrObject> ObjectWeakMap;
     ObjectWeakMap objects;
 
     /* The map from debuggee Envs to Debugger.Environment instances. */
@@ -100,7 +225,13 @@ class Debugger {
     class ScriptQuery;
 
     bool addDebuggeeGlobal(JSContext *cx, Handle<GlobalObject*> obj);
+    bool addDebuggeeGlobal(JSContext *cx, Handle<GlobalObject*> obj,
+                           AutoDebugModeGC &dmgc);
     void removeDebuggeeGlobal(FreeOp *fop, GlobalObject *global,
+                              GlobalObjectSet::Enum *compartmentEnum,
+                              GlobalObjectSet::Enum *debugEnum);
+    void removeDebuggeeGlobal(FreeOp *fop, GlobalObject *global,
+                              AutoDebugModeGC &dmgc,
                               GlobalObjectSet::Enum *compartmentEnum,
                               GlobalObjectSet::Enum *debugEnum);
 
@@ -175,6 +306,7 @@ class Debugger {
     static JSBool getUncaughtExceptionHook(JSContext *cx, unsigned argc, Value *vp);
     static JSBool setUncaughtExceptionHook(JSContext *cx, unsigned argc, Value *vp);
     static JSBool addDebuggee(JSContext *cx, unsigned argc, Value *vp);
+    static JSBool addAllGlobalsAsDebuggees(JSContext *cx, unsigned argc, Value *vp);
     static JSBool removeDebuggee(JSContext *cx, unsigned argc, Value *vp);
     static JSBool removeAllDebuggees(JSContext *cx, unsigned argc, Value *vp);
     static JSBool hasDebuggee(JSContext *cx, unsigned argc, Value *vp);
@@ -215,7 +347,6 @@ class Debugger {
      */
     void fireNewScript(JSContext *cx, HandleScript script);
 
-    static inline Debugger *fromLinks(JSCList *links);
     inline Breakpoint *firstBreakpoint() const;
 
     static inline Debugger *fromOnNewGlobalObjectWatchersLink(JSCList *link);
@@ -252,6 +383,9 @@ class Debugger {
     static void sweepAll(FreeOp *fop);
     static void detachAllDebuggersFromGlobal(FreeOp *fop, GlobalObject *global,
                                              GlobalObjectSet::Enum *compartmentEnum);
+    static unsigned gcGrayLinkSlot();
+    static bool isDebugWrapper(RawObject o);
+    static void findCompartmentEdges(JSCompartment *v, gc::ComponentFinder<JSCompartment> &finder);
 
     static inline JSTrapStatus onEnterFrame(JSContext *cx, Value *vp);
     static inline bool onLeaveFrame(JSContext *cx, bool ok);
@@ -368,7 +502,7 @@ class Debugger {
 class BreakpointSite {
     friend class Breakpoint;
     friend struct ::JSCompartment;
-    friend struct ::JSScript;
+    friend class ::JSScript;
     friend class Debugger;
 
   public:
@@ -436,13 +570,6 @@ class Breakpoint {
     const HeapPtrObject &getHandler() const { return handler; }
     HeapPtrObject &getHandlerRef() { return handler; }
 };
-
-Debugger *
-Debugger::fromLinks(JSCList *links)
-{
-    char *p = reinterpret_cast<char *>(links);
-    return reinterpret_cast<Debugger *>(p - offsetof(Debugger, link));
-}
 
 Breakpoint *
 Debugger::firstBreakpoint() const

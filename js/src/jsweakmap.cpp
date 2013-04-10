@@ -21,14 +21,24 @@
 
 using namespace js;
 
-namespace js {
+WeakMapBase::WeakMapBase(JSObject *memOf, JSCompartment *c)
+  : memberOf(memOf),
+    compartment(c),
+    next(WeakMapNotInList)
+{
+    JS_ASSERT_IF(memberOf, memberOf->compartment() == c);
+}
+
+WeakMapBase::~WeakMapBase()
+{
+    JS_ASSERT(next == WeakMapNotInList);
+}
 
 bool
-WeakMapBase::markAllIteratively(JSTracer *tracer)
+WeakMapBase::markCompartmentIteratively(JSCompartment *c, JSTracer *tracer)
 {
     bool markedAny = false;
-    JSRuntime *rt = tracer->runtime;
-    for (WeakMapBase *m = rt->gcWeakMapList; m; m = m->next) {
+    for (WeakMapBase *m = c->gcWeakMapList; m; m = m->next) {
         if (m->markIteratively(tracer))
             markedAny = true;
     }
@@ -36,28 +46,29 @@ WeakMapBase::markAllIteratively(JSTracer *tracer)
 }
 
 void
-WeakMapBase::sweepAll(JSTracer *tracer)
+WeakMapBase::sweepCompartment(JSCompartment *c)
 {
-    JSRuntime *rt = tracer->runtime;
-    for (WeakMapBase *m = rt->gcWeakMapList; m; m = m->next)
-        m->sweep(tracer);
+    for (WeakMapBase *m = c->gcWeakMapList; m; m = m->next)
+        m->sweep();
 }
 
 void
 WeakMapBase::traceAllMappings(WeakMapTracer *tracer)
 {
     JSRuntime *rt = tracer->runtime;
-    for (WeakMapBase *m = rt->gcWeakMapList; m; m = m->next)
-        m->traceMappings(tracer);
+    for (CompartmentsIter c(rt); !c.done(); c.next()) {
+        for (WeakMapBase *m = c->gcWeakMapList; m; m = m->next)
+            m->traceMappings(tracer);
+    }
 }
 
 void
-WeakMapBase::resetWeakMapList(JSRuntime *rt)
+WeakMapBase::resetCompartmentWeakMapList(JSCompartment *c)
 {
     JS_ASSERT(WeakMapNotInList != NULL);
 
-    WeakMapBase *m = rt->gcWeakMapList;
-    rt->gcWeakMapList = NULL;
+    WeakMapBase *m = c->gcWeakMapList;
+    c->gcWeakMapList = NULL;
     while (m) {
         WeakMapBase *n = m->next;
         m->next = WeakMapNotInList;
@@ -66,9 +77,9 @@ WeakMapBase::resetWeakMapList(JSRuntime *rt)
 }
 
 bool
-WeakMapBase::saveWeakMapList(JSRuntime *rt, WeakMapVector &vector)
+WeakMapBase::saveCompartmentWeakMapList(JSCompartment *c, WeakMapVector &vector)
 {
-    WeakMapBase *m = rt->gcWeakMapList;
+    WeakMapBase *m = c->gcWeakMapList;
     while (m) {
         if (!vector.append(m))
             return false;
@@ -78,18 +89,29 @@ WeakMapBase::saveWeakMapList(JSRuntime *rt, WeakMapVector &vector)
 }
 
 void
-WeakMapBase::restoreWeakMapList(JSRuntime *rt, WeakMapVector &vector)
+WeakMapBase::restoreCompartmentWeakMapLists(WeakMapVector &vector)
 {
-    JS_ASSERT(!rt->gcWeakMapList);
     for (WeakMapBase **p = vector.begin(); p != vector.end(); p++) {
         WeakMapBase *m = *p;
         JS_ASSERT(m->next == WeakMapNotInList);
-        m->next = rt->gcWeakMapList;
-        rt->gcWeakMapList = m;
+        JSCompartment *c = m->compartment;
+        m->next = c->gcWeakMapList;
+        c->gcWeakMapList = m;
     }
 }
 
-} /* namespace js */
+void
+WeakMapBase::removeWeakMapFromList(WeakMapBase *weakmap)
+{
+    JSCompartment *c = weakmap->compartment;
+    for (WeakMapBase **p = &c->gcWeakMapList; *p; p = &(*p)->next) {
+        if (*p == weakmap) {
+            *p = (*p)->next;
+            weakmap->next = WeakMapNotInList;
+            break;
+        }
+    }
+}
 
 typedef WeakMap<EncapsulatedPtrObject, RelocatableValue> ObjectValueMap;
 
@@ -147,6 +169,28 @@ WeakMap_has(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     return CallNonGenericMethod<IsWeakMap, WeakMap_has_impl>(cx, args);
+}
+
+JS_ALWAYS_INLINE bool
+WeakMap_clear_impl(JSContext *cx, CallArgs args)
+{
+    JS_ASSERT(IsWeakMap(args.thisv()));
+
+    // We can't js_delete the weakmap because the data gathered during GC
+    // is used by the Cycle Collector
+    if (ObjectValueMap *map = GetObjectMap(&args.thisv().toObject())) {
+        map->clear();
+    }
+
+    args.rval().setUndefined();
+    return true;
+}
+
+JSBool
+WeakMap_clear(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    return CallNonGenericMethod<IsWeakMap, WeakMap_clear_impl>(cx, args);
 }
 
 JS_ALWAYS_INLINE bool
@@ -218,6 +262,22 @@ WeakMap_delete(JSContext *cx, unsigned argc, Value *vp)
     return CallNonGenericMethod<IsWeakMap, WeakMap_delete_impl>(cx, args);
 }
 
+static bool
+TryPreserveReflector(JSContext *cx, HandleObject obj)
+{
+    if (obj->getClass()->ext.isWrappedNative ||
+        (obj->getClass()->flags & JSCLASS_IS_DOMJSCLASS) ||
+        (obj->isProxy() && GetProxyHandler(obj)->family() == GetListBaseHandlerFamily()))
+    {
+        JS_ASSERT(cx->runtime->preserveWrapperCallback);
+        if (!cx->runtime->preserveWrapperCallback(cx, obj)) {
+            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_BAD_WEAKMAP_KEY);
+            return false;
+        }
+    }
+    return true;
+}
+
 JS_ALWAYS_INLINE bool
 WeakMap_set_impl(JSContext *cx, CallArgs args)
 {
@@ -247,14 +307,17 @@ WeakMap_set_impl(JSContext *cx, CallArgs args)
     }
 
     // Preserve wrapped native keys to prevent wrapper optimization.
-    if (key->getClass()->ext.isWrappedNative) {
-        JS_ASSERT(cx->runtime->preserveWrapperCallback);
-        if (!cx->runtime->preserveWrapperCallback(cx, key)) {
-            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_BAD_WEAKMAP_KEY);
+    if (!TryPreserveReflector(cx, key))
+        return false;
+
+    if (JSWeakmapKeyDelegateOp op = key->getClass()->ext.weakmapKeyDelegateOp) {
+        RootedObject delegate(cx, op(key));
+        if (delegate && !TryPreserveReflector(cx, delegate))
             return false;
-        }
     }
 
+    JS_ASSERT(key->compartment() == thisObj->compartment());
+    JS_ASSERT_IF(value.isObject(), value.toObject().compartment() == thisObj->compartment());
     if (!map->put(key, value)) {
         JS_ReportOutOfMemory(cx);
         return false;
@@ -354,6 +417,7 @@ static JSFunctionSpec weak_map_methods[] = {
     JS_FN("get",    WeakMap_get, 2, 0),
     JS_FN("delete", WeakMap_delete, 1, 0),
     JS_FN("set",    WeakMap_set, 2, 0),
+    JS_FN("clear",  WeakMap_clear, 0, 0),
     JS_FS_END
 };
 

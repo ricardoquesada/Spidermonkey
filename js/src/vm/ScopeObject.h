@@ -8,6 +8,8 @@
 #ifndef ScopeObject_h___
 #define ScopeObject_h___
 
+#include "mozilla/GuardObjects.h"
+
 #include "jscntxt.h"
 #include "jsobj.h"
 #include "jsweakmap.h"
@@ -65,13 +67,13 @@ class StaticScopeIter
 
     /* Return whether this static scope will be on the dynamic scope chain. */
     bool hasDynamicScopeObject() const;
-    Shape *scopeShape() const;
+    UnrootedShape scopeShape() const;
 
     enum Type { BLOCK, FUNCTION, NAMED_LAMBDA };
     Type type() const;
 
     StaticBlockObject &block() const;
-    JSScript *funScript() const;
+    UnrootedScript funScript() const;
 };
 
 /*****************************************************************************/
@@ -189,9 +191,11 @@ class CallObject : public ScopeObject
     create(JSContext *cx, HandleShape shape, HandleTypeObject type, HeapSlot *slots);
 
     static CallObject *
-    createTemplateObject(JSContext *cx, JSScript *script);
+    createTemplateObject(JSContext *cx, HandleScript script);
 
     static const uint32_t RESERVED_SLOTS = 2;
+
+    static CallObject *createForFunction(JSContext *cx, HandleObject enclosing, HandleFunction callee);
 
     static CallObject *createForFunction(JSContext *cx, StackFrame *fp);
     static CallObject *createForStrictEval(JSContext *cx, StackFrame *fp);
@@ -218,11 +222,21 @@ class CallObject : public ScopeObject
 
 class DeclEnvObject : public ScopeObject
 {
+    // Pre-allocated slot for the named lambda.
+    static const uint32_t LAMBDA_SLOT = 1;
+
   public:
-    static const uint32_t RESERVED_SLOTS = 1;
+    static const uint32_t RESERVED_SLOTS = 2;
     static const gc::AllocKind FINALIZE_KIND = gc::FINALIZE_OBJECT2;
 
-    static DeclEnvObject *create(JSContext *cx, StackFrame *fp);
+    static DeclEnvObject *
+    createTemplateObject(JSContext *cx, HandleFunction fun);
+
+    static DeclEnvObject *create(JSContext *cx, HandleObject enclosing, HandleFunction callee);
+
+    static inline size_t lambdaSlot() {
+        return LAMBDA_SLOT;
+    }
 };
 
 class NestedScopeObject : public ScopeObject
@@ -334,8 +348,8 @@ class StaticBlockObject : public BlockObject
     void initPrevBlockChainFromParser(StaticBlockObject *prev);
     void resetPrevBlockChainFromParser();
 
-    static Shape *addVar(JSContext *cx, Handle<StaticBlockObject*> block, HandleId id,
-                         int index, bool *redeclared);
+    static UnrootedShape addVar(JSContext *cx, Handle<StaticBlockObject*> block, HandleId id,
+                                int index, bool *redeclared);
 };
 
 class ClonedBlockObject : public BlockObject
@@ -402,33 +416,33 @@ class ScopeIter
   public:
     /* The default constructor leaves ScopeIter totally invalid */
     explicit ScopeIter(JSContext *cx
-                       JS_GUARD_OBJECT_NOTIFIER_PARAM);
+                       MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
 
     /* Constructing from a copy of an existing ScopeIter. */
     explicit ScopeIter(const ScopeIter &si, JSContext *cx
-                       JS_GUARD_OBJECT_NOTIFIER_PARAM);
+                       MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
 
     /* Constructing from StackFrame places ScopeIter on the innermost scope. */
     explicit ScopeIter(StackFrame *fp, JSContext *cx
-                       JS_GUARD_OBJECT_NOTIFIER_PARAM);
+                       MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
 
     /*
      * Without a StackFrame, the resulting ScopeIter is done() with
      * enclosingScope() as given.
      */
     explicit ScopeIter(JSObject &enclosingScope, JSContext *cx
-                       JS_GUARD_OBJECT_NOTIFIER_PARAM);
+                       MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
 
     /*
      * For the special case of generators, copy the given ScopeIter, with 'fp'
      * as the StackFrame instead of si.fp(). Not for general use.
      */
     ScopeIter(const ScopeIter &si, StackFrame *fp, JSContext *cx
-              JS_GUARD_OBJECT_NOTIFIER_PARAM);
+              MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
 
     /* Like ScopeIter(StackFrame *) except start at 'scope'. */
     ScopeIter(StackFrame *fp, ScopeObject &scope, JSContext *cx
-              JS_GUARD_OBJECT_NOTIFIER_PARAM);
+              MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
 
     bool done() const { return !fp_; }
 
@@ -447,7 +461,7 @@ class ScopeIter
 
     StaticBlockObject &staticBlock() const { JS_ASSERT(type() == Block); return *block_; }
 
-    JS_DECL_USE_GUARD_OBJECT_NOTIFIER
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 class ScopeIterKey
@@ -534,11 +548,9 @@ class DebugScopeObject : public JSObject
     bool isForDeclarative() const;
 };
 
-/* Maintains runtime-wide debug scope bookkeeping information. */
+/* Maintains per-compartment debug scope bookkeeping information. */
 class DebugScopes
 {
-    JSRuntime *rt;
-
     /* The map from (non-debug) scopes to debug scopes. */
     typedef WeakMap<EncapsulatedPtrObject, RelocatablePtrObject> ObjectWeakMap;
     ObjectWeakMap proxiedScopes;
@@ -567,32 +579,37 @@ class DebugScopes
     LiveScopeMap liveScopes;
 
   public:
-    DebugScopes(JSRuntime *rt);
+    DebugScopes(JSContext *c);
     ~DebugScopes();
+
+  private:
     bool init();
 
+    static DebugScopes *ensureCompartmentData(JSContext *cx);
+
+  public:
     void mark(JSTracer *trc);
-    void sweep();
+    void sweep(JSRuntime *rt);
 
-    DebugScopeObject *hasDebugScope(JSContext *cx, ScopeObject &scope) const;
-    bool addDebugScope(JSContext *cx, ScopeObject &scope, DebugScopeObject &debugScope);
+    static DebugScopeObject *hasDebugScope(JSContext *cx, ScopeObject &scope);
+    static bool addDebugScope(JSContext *cx, ScopeObject &scope, DebugScopeObject &debugScope);
 
-    DebugScopeObject *hasDebugScope(JSContext *cx, const ScopeIter &si) const;
-    bool addDebugScope(JSContext *cx, const ScopeIter &si, DebugScopeObject &debugScope);
+    static DebugScopeObject *hasDebugScope(JSContext *cx, const ScopeIter &si);
+    static bool addDebugScope(JSContext *cx, const ScopeIter &si, DebugScopeObject &debugScope);
 
-    bool updateLiveScopes(JSContext *cx);
-    StackFrame *hasLiveFrame(ScopeObject &scope);
+    static bool updateLiveScopes(JSContext *cx);
+    static StackFrame *hasLiveFrame(ScopeObject &scope);
 
     /*
      * In debug-mode, these must be called whenever exiting a call/block or
      * when activating/yielding a generator.
      */
-    void onPopCall(StackFrame *fp, JSContext *cx);
-    void onPopBlock(JSContext *cx, StackFrame *fp);
-    void onPopWith(StackFrame *fp);
-    void onPopStrictEvalScope(StackFrame *fp);
-    void onGeneratorFrameChange(StackFrame *from, StackFrame *to, JSContext *cx);
-    void onCompartmentLeaveDebugMode(JSCompartment *c);
+    static void onPopCall(StackFrame *fp, JSContext *cx);
+    static void onPopBlock(JSContext *cx, StackFrame *fp);
+    static void onPopWith(StackFrame *fp);
+    static void onPopStrictEvalScope(StackFrame *fp);
+    static void onGeneratorFrameChange(StackFrame *from, StackFrame *to, JSContext *cx);
+    static void onCompartmentLeaveDebugMode(JSCompartment *c);
 };
 
 }  /* namespace js */

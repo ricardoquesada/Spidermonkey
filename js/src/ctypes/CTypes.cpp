@@ -1330,6 +1330,28 @@ JS_SetCTypesCallbacks(JSRawObject ctypesObj, JSCTypesCallbacks* callbacks)
 }
 
 namespace js {
+
+JS_FRIEND_API(size_t)
+SizeOfDataIfCDataObject(JSMallocSizeOfFun mallocSizeOf, JSObject *obj)
+{
+    if (!CData::IsCData(obj))
+        return 0;
+
+    size_t n = 0;
+    jsval slot = JS_GetReservedSlot(obj, ctypes::SLOT_OWNS);
+    if (!JSVAL_IS_VOID(slot)) {
+        JSBool owns = JSVAL_TO_BOOLEAN(slot);
+        slot = JS_GetReservedSlot(obj, ctypes::SLOT_DATA);
+        if (!JSVAL_IS_VOID(slot)) {
+            char** buffer = static_cast<char**>(JSVAL_TO_PRIVATE(slot));
+            n += mallocSizeOf(buffer);
+            if (owns)
+                n += mallocSizeOf(*buffer);
+        }
+    }
+    return n;
+}
+
 namespace ctypes {
 
 /*******************************************************************************
@@ -5767,6 +5789,9 @@ FunctionType::Call(JSContext* cx,
     return false;
   }
 
+  // Let the runtime callback know that we are about to call into C.
+  js::AutoCTypesActivityCallback autoCallback(cx, js::CTYPES_CALL_BEGIN, js::CTYPES_CALL_END);
+
   uintptr_t fn = *reinterpret_cast<uintptr_t*>(CData::GetData(obj));
 
 #if defined(XP_WIN)
@@ -5793,6 +5818,9 @@ FunctionType::Call(JSContext* cx,
 #endif // defined(XP_WIN)
 
   errno = savedErrno;
+
+  // We're no longer calling into C.
+  autoCallback.DoEndCallback();
 
   // Store the error value for later consultation with |ctypes.getStatus|
   JSObject *objCTypes = CType::GetGlobalCTypes(cx, typeObj);
@@ -6075,6 +6103,12 @@ CClosure::ClosureStub(ffi_cif* cif, void* result, void** args, void* userData)
   // Retrieve the essentials from our closure object.
   ClosureInfo* cinfo = static_cast<ClosureInfo*>(userData);
   JSContext* cx = cinfo->cx;
+
+  // Let the runtime callback know that we are about to call into JS again. The end callback will
+  // fire automatically when we exit this function.
+  js::AutoCTypesActivityCallback autoCallback(cx, js::CTYPES_CALLBACK_BEGIN,
+                                              js::CTYPES_CALLBACK_END);
+
   RootedObject typeObj(cx, cinfo->typeObj);
   RootedObject thisObj(cx, cinfo->thisObj);
   RootedObject jsfnObj(cx, cinfo->jsfnObj);

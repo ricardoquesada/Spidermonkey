@@ -22,20 +22,15 @@
 #include "ion/IonCode.h"
 #include "ion/Ion.h"
 
-namespace js {
+using namespace js;
 
-size_t MemoryReportingSundriesThreshold()
+JS_FRIEND_API(size_t)
+js::MemoryReportingSundriesThreshold()
 {
     return 8 * 1024;
 }
 
-} // namespace js
-
 #ifdef JS_THREADSAFE
-
-namespace JS {
-
-using namespace js;
 
 typedef HashSet<ScriptSource *, DefaultHasher<ScriptSource *>, SystemAllocPolicy> SourceSet;
 
@@ -99,7 +94,7 @@ StatsCompartmentCallback(JSRuntime *rt, void *data, JSCompartment *compartment)
     // Measure the compartment object itself, and things hanging off it.
     compartment->sizeOfIncludingThis(rtStats->mallocSizeOf,
                                      &cStats.compartmentObject,
-                                     &cStats.typeInferenceSizes,
+                                     &cStats.typeInference,
                                      &cStats.shapesCompartmentTables,
                                      &cStats.crossCompartmentWrappersTable,
                                      &cStats.regexpCompartment,
@@ -156,23 +151,17 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
         } else {
             cStats->gcHeapObjectsOrdinary += thingSize;
         }
-        size_t slotsSize, elementsSize, argumentsDataSize, regExpStaticsSize,
-               propertyIteratorDataSize;
-        obj->sizeOfExcludingThis(rtStats->mallocSizeOf, &slotsSize, &elementsSize,
-                                 &argumentsDataSize, &regExpStaticsSize,
-                                 &propertyIteratorDataSize);
-        cStats->objectsExtraSlots += slotsSize;
-        cStats->objectsExtraElements += elementsSize;
-        cStats->objectsExtraArgumentsData += argumentsDataSize;
-        cStats->objectsExtraRegExpStatics += regExpStaticsSize;
-        cStats->objectsExtraPropertyIteratorData += propertyIteratorDataSize;
 
+        ObjectsExtraSizes objectsExtra;
+        obj->sizeOfExcludingThis(rtStats->mallocSizeOf, &objectsExtra);
+        cStats->objectsExtra.add(objectsExtra);
+
+        // JSObject::sizeOfExcludingThis() doesn't measure objectsExtraPrivate,
+        // so we do it here.
         if (ObjectPrivateVisitor *opv = closure->opv) {
-            js::Class *clazz = js::GetObjectClass(obj);
-            if (clazz->flags & JSCLASS_HAS_PRIVATE &&
-                clazz->flags & JSCLASS_PRIVATE_IS_NSISUPPORTS)
-            {
-                cStats->objectsExtraPrivate += opv->sizeOfIncludingThis(GetObjectPrivate(obj));
+            nsISupports *iface;
+            if (opv->getISupports(obj, &iface) && iface) {
+                cStats->objectsExtra.private_ += opv->sizeOfIncludingThis(iface);
             }
         }
         break;
@@ -202,7 +191,7 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
     }
     case JSTRACE_SHAPE:
     {
-        Shape *shape = static_cast<Shape*>(thing);
+        UnrootedShape shape = static_cast<RawShape>(thing);
         size_t propTableSize, kidsSize;
         shape->sizeOfExcludingThis(rtStats->mallocSizeOf, &propTableSize, &kidsSize);
         if (shape->inDictionary()) {
@@ -259,7 +248,7 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
     {
         types::TypeObject *obj = static_cast<types::TypeObject *>(thing);
         cStats->gcHeapTypeObjects += thingSize;
-        obj->sizeOfExcludingThis(&cStats->typeInferenceSizes, rtStats->mallocSizeOf);
+        cStats->typeInference.typeObjects += obj->sizeOfExcludingThis(rtStats->mallocSizeOf);
         break;
     }
 #if JS_HAS_XML_SUPPORT
@@ -275,7 +264,7 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
 }
 
 JS_PUBLIC_API(bool)
-CollectRuntimeStats(JSRuntime *rt, RuntimeStats *rtStats, ObjectPrivateVisitor *opv)
+JS::CollectRuntimeStats(JSRuntime *rt, RuntimeStats *rtStats, ObjectPrivateVisitor *opv)
 {
     if (!rtStats->compartmentStatsVector.reserve(rt->compartments.length()))
         return false;
@@ -328,7 +317,7 @@ CollectRuntimeStats(JSRuntime *rt, RuntimeStats *rtStats, ObjectPrivateVisitor *
 }
 
 JS_PUBLIC_API(int64_t)
-GetExplicitNonHeapForRuntime(JSRuntime *rt, JSMallocSizeOfFun mallocSizeOf)
+JS::GetExplicitNonHeapForRuntime(JSRuntime *rt, JSMallocSizeOfFun mallocSizeOf)
 {
     // explicit/<compartment>/gc-heap/*
     size_t n = size_t(JS_GetGCParameter(rt, JSGC_TOTAL_CHUNKS)) * gc::ChunkSize;
@@ -343,7 +332,7 @@ GetExplicitNonHeapForRuntime(JSRuntime *rt, JSMallocSizeOfFun mallocSizeOf)
 }
 
 JS_PUBLIC_API(size_t)
-SystemCompartmentCount(const JSRuntime *rt)
+JS::SystemCompartmentCount(const JSRuntime *rt)
 {
     size_t n = 0;
     for (size_t i = 0; i < rt->compartments.length(); i++) {
@@ -354,7 +343,7 @@ SystemCompartmentCount(const JSRuntime *rt)
 }
 
 JS_PUBLIC_API(size_t)
-UserCompartmentCount(const JSRuntime *rt)
+JS::UserCompartmentCount(const JSRuntime *rt)
 {
     size_t n = 0;
     for (size_t i = 0; i < rt->compartments.length(); i++) {
@@ -363,7 +352,5 @@ UserCompartmentCount(const JSRuntime *rt)
     }
     return n;
 }
-
-} // namespace JS
 
 #endif // JS_THREADSAFE

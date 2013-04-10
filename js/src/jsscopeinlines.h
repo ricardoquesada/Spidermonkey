@@ -7,6 +7,8 @@
 #ifndef jsscopeinlines_h___
 #define jsscopeinlines_h___
 
+#include "mozilla/DebugOnly.h"
+
 #include "jsarray.h"
 #include "jsbool.h"
 #include "jscntxt.h"
@@ -124,7 +126,7 @@ BaseShape::matchesGetterSetter(PropertyOp rawGetter, StrictPropertyOp rawSetter)
 }
 
 inline
-StackBaseShape::StackBaseShape(Shape *shape)
+StackBaseShape::StackBaseShape(UnrootedShape shape)
   : flags(shape->getObjectFlags()),
     clasp(shape->getObjectClass()),
     parent(shape->getObjectParent())
@@ -152,7 +154,7 @@ StackBaseShape::updateGetterSetter(uint8_t attrs,
 }
 
 inline void
-BaseShape::adoptUnowned(UnownedBaseShape *other)
+BaseShape::adoptUnowned(UnrootedUnownedBaseShape other)
 {
     /*
      * This is a base shape owned by a dictionary object, update it to reflect the
@@ -174,7 +176,7 @@ BaseShape::adoptUnowned(UnownedBaseShape *other)
 }
 
 inline void
-BaseShape::setOwned(UnownedBaseShape *unowned)
+BaseShape::setOwned(UnrootedUnownedBaseShape unowned)
 {
     flags |= OWNED_SHAPE;
     this->unowned_ = unowned;
@@ -185,7 +187,7 @@ BaseShape::assertConsistency()
 {
 #ifdef DEBUG
     if (isOwned()) {
-        UnownedBaseShape *unowned = baseUnowned();
+        UnrootedUnownedBaseShape unowned = baseUnowned();
         JS_ASSERT(hasGetterObject() == unowned->hasGetterObject());
         JS_ASSERT(hasSetterObject() == unowned->hasSetterObject());
         JS_ASSERT_IF(hasGetterObject(), getterObject() == unowned->getterObject());
@@ -210,7 +212,7 @@ Shape::Shape(const StackShape &other, uint32_t nfixed)
 }
 
 inline
-Shape::Shape(UnownedBaseShape *base, uint32_t nfixed)
+Shape::Shape(UnrootedUnownedBaseShape base, uint32_t nfixed)
   : base_(base),
     propid_(JSID_EMPTY),
     slotInfo(SHAPE_INVALID_SLOT | (nfixed << FIXED_SLOTS_SHIFT)),
@@ -238,7 +240,7 @@ StackShape::hash() const
 }
 
 inline bool
-Shape::matches(const js::Shape *other) const
+Shape::matches(const UnrootedShape other) const
 {
     return propid_.get() == other->propid_.get() &&
            matchesParamsAfterId(other->base(), other->maybeSlot(), other->attrs,
@@ -253,7 +255,7 @@ Shape::matches(const StackShape &other) const
 }
 
 inline bool
-Shape::matchesParamsAfterId(BaseShape *base, uint32_t aslot,
+Shape::matchesParamsAfterId(UnrootedBaseShape base, uint32_t aslot,
                             unsigned aattrs, unsigned aflags, int ashortid) const
 {
     return base->unowned() == this->base()->unowned() &&
@@ -334,7 +336,7 @@ Shape::set(JSContext* cx, HandleObject obj, HandleObject receiver, bool strict, 
 }
 
 inline void
-Shape::setParent(js::Shape *p)
+Shape::setParent(UnrootedShape p)
 {
     JS_ASSERT_IF(p && !p->hasMissingSlot() && !inDictionary(),
                  p->maybeSlot() <= maybeSlot());
@@ -373,7 +375,7 @@ Shape::insertIntoDictionary(HeapPtrShape *dictp)
     JS_ASSERT_IF(*dictp, (*dictp)->listp == dictp);
     JS_ASSERT_IF(*dictp, compartment() == (*dictp)->compartment());
 
-    setParent(*dictp);
+    setParent(dictp->get());
     if (parent)
         parent->listp = &parent;
     listp = (HeapPtrShape *) dictp;
@@ -391,7 +393,7 @@ Shape::initDictionaryShape(const StackShape &child, uint32_t nfixed, HeapPtrShap
 }
 
 inline
-EmptyShape::EmptyShape(UnownedBaseShape *base, uint32_t nfixed)
+EmptyShape::EmptyShape(UnrootedUnownedBaseShape base, uint32_t nfixed)
   : js::Shape(base, nfixed)
 {
     /* Only empty shapes can be NON_NATIVE. */
@@ -400,7 +402,7 @@ EmptyShape::EmptyShape(UnownedBaseShape *base, uint32_t nfixed)
 }
 
 inline void
-Shape::writeBarrierPre(Shape *shape)
+Shape::writeBarrierPre(UnrootedShape shape)
 {
 #ifdef JSGC_INCREMENTAL
     if (!shape)
@@ -408,7 +410,7 @@ Shape::writeBarrierPre(Shape *shape)
 
     JSCompartment *comp = shape->compartment();
     if (comp->needsBarrier()) {
-        Shape *tmp = const_cast<Shape *>(shape);
+        UnrootedShape tmp = shape;
         MarkShapeUnbarriered(comp->barrierTracer(), &tmp, "write barrier");
         JS_ASSERT(tmp == shape);
     }
@@ -416,17 +418,17 @@ Shape::writeBarrierPre(Shape *shape)
 }
 
 inline void
-Shape::writeBarrierPost(Shape *shape, void *addr)
+Shape::writeBarrierPost(UnrootedShape shape, void *addr)
 {
 }
 
 inline void
-Shape::readBarrier(Shape *shape)
+Shape::readBarrier(UnrootedShape shape)
 {
 #ifdef JSGC_INCREMENTAL
     JSCompartment *comp = shape->compartment();
     if (comp->needsBarrier()) {
-        Shape *tmp = const_cast<Shape *>(shape);
+        UnrootedShape tmp = shape;
         MarkShapeUnbarriered(comp->barrierTracer(), &tmp, "read barrier");
         JS_ASSERT(tmp == shape);
     }
@@ -443,7 +445,7 @@ Shape::markChildren(JSTracer *trc)
 }
 
 inline void
-BaseShape::writeBarrierPre(BaseShape *base)
+BaseShape::writeBarrierPre(RawBaseShape base)
 {
 #ifdef JSGC_INCREMENTAL
     if (!base)
@@ -451,7 +453,7 @@ BaseShape::writeBarrierPre(BaseShape *base)
 
     JSCompartment *comp = base->compartment();
     if (comp->needsBarrier()) {
-        BaseShape *tmp = base;
+        RawBaseShape tmp = base;
         MarkBaseShapeUnbarriered(comp->barrierTracer(), &tmp, "write barrier");
         JS_ASSERT(tmp == base);
     }
@@ -459,17 +461,17 @@ BaseShape::writeBarrierPre(BaseShape *base)
 }
 
 inline void
-BaseShape::writeBarrierPost(BaseShape *shape, void *addr)
+BaseShape::writeBarrierPost(RawBaseShape shape, void *addr)
 {
 }
 
 inline void
-BaseShape::readBarrier(BaseShape *base)
+BaseShape::readBarrier(RawBaseShape base)
 {
 #ifdef JSGC_INCREMENTAL
     JSCompartment *comp = base->compartment();
     if (comp->needsBarrier()) {
-        BaseShape *tmp = base;
+        RawBaseShape tmp = base;
         MarkBaseShapeUnbarriered(comp->barrierTracer(), &tmp, "read barrier");
         JS_ASSERT(tmp == base);
     }

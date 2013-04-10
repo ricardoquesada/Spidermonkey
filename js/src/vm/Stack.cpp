@@ -5,6 +5,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/DebugOnly.h"
+
 #include "jscntxt.h"
 #include "gc/Marking.h"
 #include "methodjit/MethodJIT.h"
@@ -48,7 +50,7 @@ using mozilla::DebugOnly;
 /*****************************************************************************/
 
 void
-StackFrame::initExecuteFrame(JSScript *script, StackFrame *prev, FrameRegs *regs,
+StackFrame::initExecuteFrame(UnrootedScript script, StackFrame *prev, FrameRegs *regs,
                              const Value &thisv, JSObject &scopeChain, ExecuteType type)
 {
     /*
@@ -72,7 +74,7 @@ StackFrame::initExecuteFrame(JSScript *script, StackFrame *prev, FrameRegs *regs
         dstvp[0] = NullValue();
         exec.script = script;
 #ifdef DEBUG
-        u.evalScript = (JSScript *)0xbad;
+        u.evalScript = (RawScript)0xbad;
 #endif
     }
 
@@ -126,7 +128,7 @@ StackFrame::copyFrameAndValues(JSContext *cx, Value *vp, StackFrame *otherfp,
     }
 
     if (cx->compartment->debugMode())
-        cx->runtime->debugScopes->onGeneratorFrameChange(otherfp, this, cx);
+        DebugScopes::onGeneratorFrameChange(otherfp, this, cx);
 }
 
 /* Note: explicit instantiation for js_NewGenerator located in jsiter.cpp. */
@@ -230,6 +232,24 @@ StackFrame::copyRawFrameSlots(AutoValueVector *vec)
     return true;
 }
 
+static void
+CleanupTornValue(StackFrame *fp, Value *vp)
+{
+    if (vp->isObject() && !vp->toGCThing())
+        vp->setObject(fp->global());
+    if (vp->isString() && !vp->toGCThing())
+        vp->setString(fp->compartment()->rt->emptyString);
+}
+
+void
+StackFrame::cleanupTornValues()
+{
+    for (size_t i = 0; i < numFormalArgs(); i++)
+        CleanupTornValue(this, &formals()[i]);
+    for (size_t i = 0; i < script()->nfixed; i++)
+        CleanupTornValue(this, &slots()[i]);
+}
+
 static inline void
 AssertDynamicScopeMatchesStaticScope(JSScript *script, JSObject *scope)
 {
@@ -249,7 +269,7 @@ AssertDynamicScopeMatchesStaticScope(JSScript *script, JSObject *scope)
                 scope = &scope->asClonedBlock().enclosingScope();
                 break;
               case StaticScopeIter::FUNCTION:
-                JS_ASSERT(scope->asCall().callee().script() == i.funScript());
+                JS_ASSERT(scope->asCall().callee().nonLazyScript() == i.funScript());
                 scope = &scope->asCall().enclosingScope();
                 break;
               case StaticScopeIter::NAMED_LAMBDA:
@@ -267,7 +287,7 @@ AssertDynamicScopeMatchesStaticScope(JSScript *script, JSObject *scope)
 }
 
 bool
-StackFrame::initCallObject(JSContext *cx)
+StackFrame::initFunctionScopeObjects(JSContext *cx)
 {
     CallObject *callobj = CallObject::createForFunction(cx, this);
     if (!callobj)
@@ -286,7 +306,7 @@ StackFrame::prologue(JSContext *cx, bool newType)
     JS_ASSERT(cx->regs().pc == script->code);
 
     if (isEvalFrame()) {
-        if (script->strictModeCode) {
+        if (script->strict) {
             CallObject *callobj = CallObject::createForStrictEval(cx, this);
             if (!callobj)
                 return false;
@@ -305,7 +325,7 @@ StackFrame::prologue(JSContext *cx, bool newType)
     JS_ASSERT(isNonEvalFunctionFrame());
     AssertDynamicScopeMatchesStaticScope(script, scopeChain());
 
-    if (fun()->isHeavyweight() && !initCallObject(cx))
+    if (fun()->isHeavyweight() && !initFunctionScopeObjects(cx))
         return false;
 
     if (isConstructing()) {
@@ -333,7 +353,7 @@ StackFrame::epilogue(JSContext *cx)
         if (isStrictEvalFrame()) {
             JS_ASSERT_IF(hasCallObj(), scopeChain()->asCall().isForEval());
             if (cx->compartment->debugMode())
-                cx->runtime->debugScopes->onPopStrictEvalScope(this);
+                DebugScopes::onPopStrictEvalScope(this);
         } else if (isDirectEvalFrame()) {
             if (isDebuggerFrame())
                 JS_ASSERT(!scopeChain()->isScope());
@@ -363,12 +383,12 @@ StackFrame::epilogue(JSContext *cx)
     JS_ASSERT(isNonEvalFunctionFrame());
 
     if (fun()->isHeavyweight())
-        JS_ASSERT_IF(hasCallObj(), scopeChain()->asCall().callee().script() == script);
+        JS_ASSERT_IF(hasCallObj(), scopeChain()->asCall().callee().nonLazyScript() == script);
     else
         AssertDynamicScopeMatchesStaticScope(script, scopeChain());
 
     if (cx->compartment->debugMode())
-        cx->runtime->debugScopes->onPopCall(this, cx);
+        DebugScopes::onPopCall(this, cx);
 
 
     if (isConstructing() && returnValue().isPrimitive())
@@ -416,7 +436,7 @@ StackFrame::popBlock(JSContext *cx)
     JS_ASSERT(hasBlockChain());
 
     if (cx->compartment->debugMode())
-        cx->runtime->debugScopes->onPopBlock(cx, this);
+        DebugScopes::onPopBlock(cx, this);
 
     if (blockChain_->needsClone()) {
         JS_ASSERT(scopeChain_->asClonedBlock().staticBlock() == *blockChain_);
@@ -430,7 +450,7 @@ void
 StackFrame::popWith(JSContext *cx)
 {
     if (cx->compartment->debugMode())
-        cx->runtime->debugScopes->onPopWith(this);
+        DebugScopes::onPopWith(this);
 
     JS_ASSERT(scopeChain()->isWith());
     popOffScopeChain();
@@ -639,8 +659,14 @@ StackSpace::containingSegment(const StackFrame *target) const
 void
 StackSpace::markFrame(JSTracer *trc, StackFrame *fp, Value *slotsEnd)
 {
+    /*
+     * JM may leave values with object/string type but a null payload on the
+     * stack. This can happen if the script was initially compiled by Ion,
+     * which replaced dead values with undefined, and later ran under JM which
+     * assumed values were of the original type.
+     */
     Value *slotsBegin = fp->slots();
-    gc::MarkValueRootRange(trc, slotsBegin, slotsEnd, "vm_stack");
+    gc::MarkValueRootRangeMaybeNullPayload(trc, slotsEnd - slotsBegin, slotsBegin, "vm_stack");
 }
 
 void
@@ -688,7 +714,12 @@ StackSpace::markActiveCompartments()
 JS_FRIEND_API(bool)
 StackSpace::ensureSpaceSlow(JSContext *cx, MaybeReportError report, Value *from, ptrdiff_t nvals) const
 {
-    AssertCanGC();
+    mozilla::Maybe<AutoAssertNoGC> maybeNoGC;
+    if (report)
+        AssertCanGC();
+    else
+        maybeNoGC.construct();
+
     assertInvariants();
 
     JSCompartment *dest = cx->compartment;
@@ -868,7 +899,11 @@ Value *
 ContextStack::ensureOnTop(JSContext *cx, MaybeReportError report, unsigned nvars,
                           MaybeExtend extend, bool *pushedSeg)
 {
-    AssertCanGC();
+    mozilla::Maybe<AutoAssertNoGC> maybeNoGC;
+    if (report)
+        AssertCanGC();
+    else
+        maybeNoGC.construct();
 
     Value *firstUnused = space().firstUnused();
     FrameRegs *regs = cx->maybeRegs();
@@ -903,7 +938,7 @@ ContextStack::ensureOnTop(JSContext *cx, MaybeReportError report, unsigned nvars
 
         if (fun) {
             AutoCompartment ac(cx, fun);
-            fun->script()->uninlineable = true;
+            fun->nonLazyScript()->uninlineable = true;
             types::MarkTypeObjectFlags(cx, fun, types::OBJECT_FLAG_UNINLINEABLE);
         }
     }
@@ -948,7 +983,12 @@ bool
 ContextStack::pushInvokeArgs(JSContext *cx, unsigned argc, InvokeArgsGuard *iag,
                              MaybeReportError report)
 {
-    AssertCanGC();
+    mozilla::Maybe<AutoAssertNoGC> maybeNoGC;
+    if (report)
+        AssertCanGC();
+    else
+        maybeNoGC.construct();
+
     JS_ASSERT(argc <= StackSpace::ARGS_LENGTH_MAX);
 
     unsigned nvars = 2 + argc;
@@ -987,11 +1027,16 @@ ContextStack::pushInvokeFrame(JSContext *cx, MaybeReportError report,
                               const CallArgs &args, JSFunction *fun,
                               InitialFrameFlags initial, FrameGuard *fg)
 {
-    AssertCanGC();
+    mozilla::Maybe<AutoAssertNoGC> maybeNoGC;
+    if (report)
+        AssertCanGC();
+    else
+        maybeNoGC.construct();
+
     JS_ASSERT(onTop());
     JS_ASSERT(space().firstUnused() == args.end());
 
-    RootedScript script(cx, fun->script());
+    RootedScript script(cx, fun->nonLazyScript());
 
     StackFrame::Flags flags = ToFrameFlags(initial);
     StackFrame *fp = getCallFrame(cx, report, args, fun, script, &flags);
@@ -1225,7 +1270,7 @@ void
 StackIter::poisonRegs()
 {
     pc_ = (jsbytecode *)0xbad;
-    script_ = (JSScript *)0xbad;
+    script_ = (RawScript)0xbad;
 }
 
 void
@@ -1301,6 +1346,9 @@ void
 StackIter::settleOnNewState()
 {
     AutoAssertNoGC nogc;
+
+    /* Reset whether or we popped a call last time we settled. */
+    poppedCallDuringSettle_ = false;
 
     /*
      * There are elements of the calls_ and fp_ chains that we want to skip
@@ -1399,6 +1447,7 @@ StackIter::settleOnNewState()
 
         /* Pop the call and keep looking. */
         popCall();
+        poppedCallDuringSettle_ = true;
     }
 }
 
@@ -1406,7 +1455,8 @@ StackIter::StackIter(JSContext *cx, SavedOption savedOption)
   : perThread_(&cx->runtime->mainThread),
     maybecx_(cx),
     savedOption_(savedOption),
-    script_(cx, NULL)
+    script_(cx, NULL),
+    poppedCallDuringSettle_(false)
 #ifdef JS_ION
     , ionActivations_(cx),
     ionFrames_((uint8_t *)NULL),
@@ -1431,7 +1481,8 @@ StackIter::StackIter(JSRuntime *rt, StackSegment &seg)
   : perThread_(&rt->mainThread),
     maybecx_(NULL),
     savedOption_(STOP_AT_SAVED),
-    script_(rt, NULL)
+    script_(rt, NULL),
+    poppedCallDuringSettle_(false)
 #ifdef JS_ION
     , ionActivations_(rt),
     ionFrames_((uint8_t *)NULL),
@@ -1457,7 +1508,8 @@ StackIter::StackIter(const StackIter &other)
     seg_(other.seg_),
     pc_(other.pc_),
     script_(perThread_, other.script_),
-    args_(other.args_)
+    args_(other.args_),
+    poppedCallDuringSettle_(other.poppedCallDuringSettle_)
 #ifdef JS_ION
     , ionActivations_(other.ionActivations_),
     ionFrames_(other.ionFrames_),

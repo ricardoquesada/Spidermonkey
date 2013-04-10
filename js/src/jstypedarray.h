@@ -17,6 +17,8 @@ typedef struct JSProperty JSProperty;
 
 namespace js {
 
+typedef Vector<ArrayBufferObject *, 0, SystemAllocPolicy> ArrayBufferVector;
+
 /*
  * ArrayBufferObject
  *
@@ -130,7 +132,11 @@ class ArrayBufferObject : public JSObject
     static JSBool obj_enumerate(JSContext *cx, HandleObject obj, JSIterateOp enum_op,
                                 MutableHandleValue statep, MutableHandleId idp);
 
-    static void sweepAll(JSRuntime *rt);
+    static void sweep(JSCompartment *rt);
+
+    static void resetArrayBufferList(JSCompartment *rt);
+    static bool saveArrayBufferList(JSCompartment *c, ArrayBufferVector &vector);
+    static void restoreArrayBufferLists(ArrayBufferVector &vector);
 
     static bool stealContents(JSContext *cx, JSObject *obj, void **contents,
                               uint8_t **data);
