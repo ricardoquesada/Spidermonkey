@@ -182,7 +182,7 @@ class RegExpShared
     bool multiline() const              { return flags & MultilineFlag; }
     bool sticky() const                 { return flags & StickyFlag; }
 
-#ifdef ENABLE_YARR_JIT
+#if ENABLE_YARR_JIT
     bool hasCode() const                { return codeBlock.has16BitCode(); }
     bool hasMatchOnlyCode() const       { return codeBlock.has16BitCodeMatchOnly(); }
 #else

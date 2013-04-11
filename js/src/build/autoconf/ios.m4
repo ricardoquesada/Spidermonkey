@@ -41,12 +41,16 @@ iPhoneOS|iPhoneSimulator)
         ios_arch=i386
         target_name=x86
         target=i386-darwin
+        TARGET_CPU=i386
     else
         if test -z "$ios_arch" ; then
             ios_arch=armv7
         fi 
         target_name=arm
         target=arm-darwin
+        TARGET_CPU=armv7
+        DISABLE_YARR_JIT=1
+        AC_SUBST(DISABLE_YARR_JIT)
     fi
     target_os=darwin
 
