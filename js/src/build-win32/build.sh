@@ -3,9 +3,9 @@
 # configure
 ../configure --disable-tests \
              --disable-debug \
-             --disable-methodjit \
-             --disable-monoic \
-             --disable-polyic
+             --disable-ion \
+             --disable-jm \
+             --disable-tm
 
 # make
 make -j4
