@@ -19,8 +19,9 @@
 #include "methodjit/MachineRegs.h"
 #include "CodeGenIncludes.h"
 #include "jsobjinlines.h"
-#include "jsscopeinlines.h"
 #include "jstypedarrayinlines.h"
+
+#include "vm/Shape-inl.h"
 
 using mozilla::DebugOnly;
 
@@ -924,8 +925,8 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
     }
 
     void loadObjClass(RegisterID obj, RegisterID dest) {
-        loadBaseShape(obj, dest);
-        loadPtr(Address(dest, BaseShape::offsetOfClass()), dest);
+        loadPtr(Address(obj, JSObject::offsetOfType()), dest);
+        loadPtr(Address(dest, offsetof(types::TypeObject, clasp)), dest);
     }
 
     Jump testClass(Condition cond, RegisterID claspReg, js::Class *clasp) {
@@ -933,8 +934,8 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
     }
 
     Jump testObjClass(Condition cond, RegisterID obj, RegisterID temp, js::Class *clasp) {
-        loadBaseShape(obj, temp);
-        return branchPtr(cond, Address(temp, BaseShape::offsetOfClass()), ImmPtr(clasp));
+        loadPtr(Address(obj, JSObject::offsetOfType()), temp);
+        return branchPtr(cond, Address(temp, offsetof(types::TypeObject, clasp)), ImmPtr(clasp));
     }
 
     Jump testFunction(Condition cond, RegisterID fun, RegisterID temp) {
@@ -1364,7 +1365,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
          * span is not empty is handled.
          */
         gc::FreeSpan *list = const_cast<gc::FreeSpan *>
-                             (cx->compartment->arenas.getFreeList(allocKind));
+                             (cx->zone()->allocator.arenas.getFreeList(allocKind));
         loadPtr(&list->first, result);
 
         Jump jump = branchPtr(Assembler::BelowOrEqual, AbsoluteAddress(&list->last), result);
@@ -1389,8 +1390,8 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
          * as for dense arrays we will need to get the address of the fixed
          * elements first.
          */
-        if (templateObject->isDenseArray()) {
-            JS_ASSERT(!templateObject->getDenseArrayInitializedLength());
+        if (templateObject->isArray()) {
+            JS_ASSERT(!templateObject->getDenseInitializedLength());
             addPtr(Imm32(-thingSize + elementsOffset), result);
             storePtr(result, Address(result, -elementsOffset + JSObject::offsetOfElements()));
             addPtr(Imm32(-elementsOffset), result);
@@ -1403,14 +1404,16 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
         storePtr(ImmPtr(templateObject->type()), Address(result, JSObject::offsetOfType()));
         storePtr(ImmPtr(NULL), Address(result, JSObject::offsetOfSlots()));
 
-        if (templateObject->isDenseArray()) {
+        if (templateObject->isArray()) {
             /* Fill in the elements header. */
-            store32(Imm32(templateObject->getDenseArrayCapacity()),
+            store32(Imm32(templateObject->getDenseCapacity()),
                     Address(result, elementsOffset + ObjectElements::offsetOfCapacity()));
-            store32(Imm32(templateObject->getDenseArrayInitializedLength()),
+            store32(Imm32(templateObject->getDenseInitializedLength()),
                     Address(result, elementsOffset + ObjectElements::offsetOfInitializedLength()));
             store32(Imm32(templateObject->getArrayLength()),
                     Address(result, elementsOffset + ObjectElements::offsetOfLength()));
+            store32(Imm32(templateObject->shouldConvertDoubleElements() ? 1 : 0),
+                    Address(result, elementsOffset + ObjectElements::offsetOfConvertDoubleElements()));
         } else {
             /*
              * Fixed slots of non-array objects are required to be initialized;

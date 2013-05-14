@@ -132,7 +132,7 @@ template <typename T>
 void
 StoreBuffer::RelocatableMonoTypeBuffer<T>::unput(const T &v)
 {
-    put(v.tagged());
+    MonoTypeBuffer<T>::put(v.tagged());
 }
 
 /*** GenericBuffer ***/
@@ -213,6 +213,9 @@ StoreBuffer::enable()
 void
 StoreBuffer::disable()
 {
+    if (!enabled)
+        return;
+
     bufferVal.disable();
     bufferCell.disable();
     bufferSlot.disable();

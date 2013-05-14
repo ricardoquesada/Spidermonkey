@@ -31,7 +31,7 @@ enum Scale {
 };
 
 static inline Scale
-ScaleFromShift(int shift)
+ScaleFromElemWidth(int shift)
 {
     switch (shift) {
       case 1:
@@ -100,13 +100,17 @@ struct ImmGCPtr
     uintptr_t value;
 
     explicit ImmGCPtr(const gc::Cell *ptr) : value(reinterpret_cast<uintptr_t>(ptr))
-    { }
+    {
+        JS_ASSERT(!IsPoisonedPtr(ptr));
+    }
 
     // ImmGCPtr is rooted so we can convert safely directly from Unrooted<T>.
     template <typename T>
     explicit ImmGCPtr(Unrooted<T> ptr)
       : value(reinterpret_cast<uintptr_t>(static_cast<T>(ptr)))
-    { }
+    {
+        JS_ASSERT(!IsPoisonedPtr(static_cast<T>(ptr)));
+    }
 };
 
 // Specifies a hardcoded, absolute address.
@@ -315,7 +319,7 @@ struct AbsoluteLabel : public LabelBase
 
 // A code label contains an absolute reference to a point in the code
 // Thus, it cannot be patched until after linking
-class CodeLabel : public TempObject
+class CodeLabel
 {
     // The destination position, where the absolute reference should get patched into
     AbsoluteLabel dest_;
@@ -333,36 +337,6 @@ class CodeLabel : public TempObject
     Label *src() {
         return &src_;
     }
-};
-
-// Deferred data is a chunk of data that cannot be computed until an assembly
-// buffer has been fully allocated, but should be attached to the final code
-// stream. At the time deferred data is emitted, the code buffer has been
-// completely allocated.
-class DeferredData : public TempObject
-{
-    // Label, which before linking is unbound.
-    AbsoluteLabel label_;
-
-    // Offset from the start of the data section.
-    int32_t offset_;
-
-  public:
-    DeferredData() : offset_(-1)
-    { }
-    int32_t offset() const {
-        JS_ASSERT(offset_ > -1);
-        return offset_;
-    }
-    void setOffset(int32_t offset) {
-        offset_ = offset;
-    }
-    AbsoluteLabel *label() {
-        return &label_;
-    }
-
-    // Must copy pending data into the buffer.
-    virtual void copy(IonCode *code, uint8_t *buffer) const = 0;
 };
 
 // Location of a jump or label in a generated IonCode block, relative to the

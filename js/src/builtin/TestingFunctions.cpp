@@ -16,6 +16,7 @@
 
 #include "builtin/TestingFunctions.h"
 #include "methodjit/MethodJIT.h"
+#include "vm/ForkJoin.h"
 
 #include "vm/Stack-inl.h"
 
@@ -62,6 +63,30 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
     value = BooleanValue(false);
 #endif
     if (!JS_SetProperty(cx, info, "has-ctypes", &value))
+        return false;
+
+#ifdef JS_CPU_X86
+    value = BooleanValue(true);
+#else
+    value = BooleanValue(false);
+#endif
+    if (!JS_SetProperty(cx, info, "x86", &value))
+        return false;
+
+#ifdef JS_CPU_X64
+    value = BooleanValue(true);
+#else
+    value = BooleanValue(false);
+#endif
+    if (!JS_SetProperty(cx, info, "x64", &value))
+        return false;
+
+#ifdef MOZ_ASAN
+    value = BooleanValue(true);
+#else
+    value = BooleanValue(false);
+#endif
+    if (!JS_SetProperty(cx, info, "asan", &value))
         return false;
 
 #ifdef JS_GC_ZEAL
@@ -152,14 +177,6 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
     if (!JS_SetProperty(cx, info, "methodjit", &value))
         return false;
 
-#ifdef JS_HAS_XML_SUPPORT
-    value = BooleanValue(true);
-#else
-    value = BooleanValue(false);
-#endif
-    if (!JS_SetProperty(cx, info, "e4x", &value))
-        return false;
-
     *vp = ObjectValue(*info);
     return true;
 }
@@ -180,7 +197,7 @@ GC(JSContext *cx, unsigned argc, jsval *vp)
             if (!JS_StringEqualsAscii(cx, arg.toString(), "compartment", &compartment))
                 return false;
         } else if (arg.isObject()) {
-            PrepareCompartmentForGC(UnwrapObject(&arg.toObject())->compartment());
+            PrepareZoneForGC(UnwrapObject(&arg.toObject())->zone());
             compartment = true;
         }
     }
@@ -327,6 +344,23 @@ InternalConst(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
+static JSBool
+GCPreserveCode(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (argc != 0) {
+        RootedObject callee(cx, &args.callee());
+        ReportUsageError(cx, callee, "Wrong number of arguments");
+        return JS_FALSE;
+    }
+
+    cx->runtime->alwaysPreserveCode = true;
+
+    *vp = JSVAL_VOID;
+    return JS_TRUE;
+}
+
 #ifdef JS_GC_ZEAL
 static JSBool
 GCZeal(JSContext *cx, unsigned argc, jsval *vp)
@@ -365,12 +399,12 @@ ScheduleGC(JSContext *cx, unsigned argc, jsval *vp)
         /* Schedule a GC to happen after |arg| allocations. */
         JS_ScheduleGC(cx, args[0].toInt32());
     } else if (args[0].isObject()) {
-        /* Ensure that |comp| is collected during the next GC. */
-        JSCompartment *comp = UnwrapObject(&args[0].toObject())->compartment();
-        PrepareCompartmentForGC(comp);
+        /* Ensure that |zone| is collected during the next GC. */
+        Zone *zone = UnwrapObject(&args[0].toObject())->zone();
+        PrepareZoneForGC(zone);
     } else if (args[0].isString()) {
         /* This allows us to schedule atomsCompartment for GC. */
-        PrepareCompartmentForGC(args[0].toString()->compartment());
+        PrepareZoneForGC(args[0].toString()->zone());
     }
 
     *vp = JSVAL_VOID;
@@ -474,23 +508,6 @@ GCState(JSContext *cx, unsigned argc, jsval *vp)
         return false;
     *vp = StringValue(str);
     return true;
-}
-
-static JSBool
-GCPreserveCode(JSContext *cx, unsigned argc, jsval *vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-
-    if (argc != 0) {
-        RootedObject callee(cx, &args.callee());
-        ReportUsageError(cx, callee, "Wrong number of arguments");
-        return JS_FALSE;
-    }
-
-    cx->runtime->alwaysPreserveCode = true;
-
-    *vp = JSVAL_VOID;
-    return JS_TRUE;
 }
 
 static JSBool
@@ -614,9 +631,6 @@ static const struct TraceKindPair {
     { "all",        -1                  },
     { "object",     JSTRACE_OBJECT      },
     { "string",     JSTRACE_STRING      },
-#if JS_HAS_XML_SUPPORT
-    { "xml",        JSTRACE_XML         },
-#endif
 };
 
 static JSBool
@@ -865,6 +879,16 @@ DisplayName(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
+JSBool
+js::testingFunc_inParallelSection(JSContext *cx, unsigned argc, jsval *vp)
+{
+    // If we were actually *in* a parallel section, then this function
+    // would be inlined to TRUE in ion-generated code.
+    JS_ASSERT(!InParallelSection());
+    JS_SET_RVAL(cx, vp, JSVAL_FALSE);
+    return true;
+}
+
 static JSFunctionSpecWithHelp TestingFunctions[] = {
     JS_FN_HELP("gc", ::GC, 0, 0,
 "gc([obj] | 'compartment')",
@@ -886,8 +910,8 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
 "countHeap([start[, kind]])",
 "  Count the number of live GC things in the heap or things reachable from\n"
 "  start when it is given and is not null. kind is either 'all' (default) to\n"
-"  count all things or one of 'object', 'double', 'string', 'function',\n"
-"  'qname', 'namespace', 'xml' to count only things of that kind."),
+"  count all things or one of 'object', 'double', 'string', 'function'\n"
+"  to count only things of that kind."),
 
     JS_FN_HELP("makeFinalizeObserver", MakeFinalizeObserver, 0, 0,
 "makeFinalizeObserver()",
@@ -899,6 +923,10 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
 "  Return the current value of the finalization counter that is incremented\n"
 "  each time an object returned by the makeFinalizeObserver is finalized."),
 
+    JS_FN_HELP("gcPreserveCode", GCPreserveCode, 0, 0,
+"gcPreserveCode()",
+"  Preserve JIT code during garbage collections."),
+
 #ifdef JS_GC_ZEAL
     JS_FN_HELP("gczeal", GCZeal, 2, 0,
 "gczeal(level, [period])",
@@ -909,8 +937,8 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
 "    3: Collect when the window paints (browser only)\n"
 "    4: Verify pre write barriers between instructions\n"
 "    5: Verify pre write barriers between paints\n"
-"    6: Verify stack rooting (ignoring XML and Reflect)\n"
-"    7: Verify stack rooting (all roots)\n"
+"    6: Verify stack rooting\n"
+"    7: Verify stack rooting (yes, it's the same as 6)\n"
 "    8: Incremental GC in two slices: 1) mark roots 2) finish collection\n"
 "    9: Incremental GC in two slices: 1) mark all 2) new marking and finish\n"
 "   10: Incremental GC in multiple slices\n"
@@ -943,10 +971,6 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
     JS_FN_HELP("gcstate", GCState, 0, 0,
 "gcstate()",
 "  Report the global GC state."),
-
-    JS_FN_HELP("gcPreserveCode", GCPreserveCode, 0, 0,
-"gcPreserveCode()",
-"  Preserve JIT code during garbage collections."),
 
     JS_FN_HELP("deterministicgc", DeterministicGC, 1, 0,
 "deterministicgc(true|false)",
@@ -995,6 +1019,10 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
 "  Gets the display name for a function, which can possibly be a guessed or\n"
 "  inferred name based on where the function was defined. This can be\n"
 "  different from the 'name' property on the function."),
+
+    JS_FN_HELP("inParallelSection", testingFunc_inParallelSection, 0, 0,
+"inParallelSection()",
+"  True if this code is executing within a parallel section."),
 
     JS_FS_HELP_END
 };

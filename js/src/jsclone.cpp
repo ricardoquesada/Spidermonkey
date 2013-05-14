@@ -121,7 +121,7 @@ SwapBytes(uint64_t u)
 }
 
 bool
-js::WriteStructuredClone(JSContext *cx, const Value &v, uint64_t **bufp, size_t *nbytesp,
+js::WriteStructuredClone(JSContext *cx, HandleValue v, uint64_t **bufp, size_t *nbytesp,
                          const JSStructuredCloneCallbacks *cb, void *cbClosure,
                          jsval transferable)
 {
@@ -466,7 +466,7 @@ JSStructuredCloneWriter::parseTransferable()
         return false;
     }
 
-    JSObject* array = &transferable.toObject();
+    RootedObject array(context(), &transferable.toObject());
     if (!JS_IsArrayObject(context(), array)) {
         reportErrorTransferable();
         return false;
@@ -477,9 +477,10 @@ JSStructuredCloneWriter::parseTransferable()
         return false;
     }
 
+    RootedValue v(context());
+
     for (uint32_t i = 0; i < length; ++i) {
-        Value v;
-        if (!JS_GetElement(context(), array, i, &v)) {
+        if (!JS_GetElement(context(), array, i, v.address())) {
             return false;
         }
 
@@ -769,8 +770,8 @@ JSStructuredCloneWriter::write(const Value &v)
                  */
                 RootedObject obj2(context());
                 RootedShape prop(context());
-                if (!js_HasOwnProperty(context(), obj->getOps()->lookupGeneric, obj, id,
-                                       &obj2, &prop)) {
+                if (!HasOwnProperty<CanGC>(context(), obj->getOps()->lookupGeneric, obj, id,
+                                           &obj2, &prop)) {
                     return false;
                 }
 
@@ -839,7 +840,7 @@ JSStructuredCloneReader::readString(uint32_t nchars)
     Chars chars(context());
     if (!chars.allocate(nchars) || !in.readChars(chars.get(), nchars))
         return NULL;
-    JSString *str = js_NewString(context(), chars.get(), nchars);
+    JSString *str = js_NewString<CanGC>(context(), chars.get(), nchars);
     if (str)
         chars.forget();
     return str;
@@ -1110,7 +1111,7 @@ JSStructuredCloneReader::readId(jsid *idp)
         JSString *str = readString(data);
         if (!str)
             return false;
-        JSAtom *atom = AtomizeString(context(), str);
+        JSAtom *atom = AtomizeString<CanGC>(context(), str);
         if (!atom)
             return false;
         *idp = NON_INTEGER_ATOM_TO_JSID(atom);

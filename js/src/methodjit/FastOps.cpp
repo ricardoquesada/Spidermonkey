@@ -8,12 +8,12 @@
 #include "jsbool.h"
 #include "jscntxt.h"
 #include "jslibmath.h"
-#include "jsscope.h"
 
 #include "methodjit/MethodJIT.h"
 #include "methodjit/Compiler.h"
 #include "methodjit/StubCalls.h"
 #include "vm/NumericConversions.h"
+#include "vm/Shape.h"
 
 #include "jsobjinlines.h"
 #include "jsscriptinlines.h"
@@ -382,47 +382,35 @@ mjit::Compiler::jsop_equality_obj_obj(JSOp op, jsbytecode *target, JSOp fused)
     JS_ASSERT(cx->typeInferenceEnabled() &&
               lhs->isType(JSVAL_TYPE_OBJECT) && rhs->isType(JSVAL_TYPE_OBJECT));
 
-    /*
-     * Handle equality between two objects. We have to ensure there is no
-     * special equality operator on either object, if that passes then
-     * this is a pointer comparison.
-     */
-    types::StackTypeSet *lhsTypes = analysis->poppedTypes(PC, 1);
-    types::StackTypeSet *rhsTypes = analysis->poppedTypes(PC, 0);
-    if (!lhsTypes->hasObjectFlags(cx, types::OBJECT_FLAG_SPECIAL_EQUALITY) &&
-        !rhsTypes->hasObjectFlags(cx, types::OBJECT_FLAG_SPECIAL_EQUALITY)) {
-        /* :TODO: Merge with jsop_relational_int? */
-        JS_ASSERT_IF(!target, fused != JSOP_IFEQ);
-        frame.forgetMismatchedObject(lhs);
-        frame.forgetMismatchedObject(rhs);
-        Assembler::Condition cond = GetCompareCondition(op, fused);
-        if (target) {
-            Jump sj = stubcc.masm.branchTest32(GetStubCompareCondition(fused),
-                                               Registers::ReturnReg, Registers::ReturnReg);
-            if (!frame.syncForBranch(target, Uses(2)))
-                return Compile_Error;
-            RegisterID lreg = frame.tempRegForData(lhs);
-            frame.pinReg(lreg);
-            RegisterID rreg = frame.tempRegForData(rhs);
-            frame.unpinReg(lreg);
-            Jump fast = masm.branchPtr(cond, lreg, rreg);
-            frame.popn(2);
-            return jumpAndRun(fast, target, &sj) ? Compile_Okay : Compile_Error;
-        } else {
-            RegisterID result = frame.allocReg();
-            RegisterID lreg = frame.tempRegForData(lhs);
-            frame.pinReg(lreg);
-            RegisterID rreg = frame.tempRegForData(rhs);
-            frame.unpinReg(lreg);
-            masm.branchValue(cond, lreg, rreg, result);
-
-            frame.popn(2);
-            frame.pushTypedPayload(JSVAL_TYPE_BOOLEAN, result);
-            return Compile_Okay;
-        }
+    /* :TODO: Merge with jsop_relational_int? */
+    JS_ASSERT_IF(!target, fused != JSOP_IFEQ);
+    frame.forgetMismatchedObject(lhs);
+    frame.forgetMismatchedObject(rhs);
+    Assembler::Condition cond = GetCompareCondition(op, fused);
+    if (target) {
+        Jump sj = stubcc.masm.branchTest32(GetStubCompareCondition(fused),
+                                           Registers::ReturnReg, Registers::ReturnReg);
+        if (!frame.syncForBranch(target, Uses(2)))
+            return Compile_Error;
+        RegisterID lreg = frame.tempRegForData(lhs);
+        frame.pinReg(lreg);
+        RegisterID rreg = frame.tempRegForData(rhs);
+        frame.unpinReg(lreg);
+        Jump fast = masm.branchPtr(cond, lreg, rreg);
+        frame.popn(2);
+        return jumpAndRun(fast, target, &sj) ? Compile_Okay : Compile_Error;
     }
 
-    return Compile_Skipped;
+    RegisterID result = frame.allocReg();
+    RegisterID lreg = frame.tempRegForData(lhs);
+    frame.pinReg(lreg);
+    RegisterID rreg = frame.tempRegForData(rhs);
+    frame.unpinReg(lreg);
+    masm.branchValue(cond, lreg, rreg, result);
+
+    frame.popn(2);
+    frame.pushTypedPayload(JSVAL_TYPE_BOOLEAN, result);
+    return Compile_Okay;
 }
 
 bool
@@ -858,11 +846,27 @@ IsCacheableSetElem(FrameEntry *obj, FrameEntry *id, FrameEntry *value)
 }
 
 void
-mjit::Compiler::jsop_setelem_dense()
+mjit::Compiler::jsop_setelem_dense(types::StackTypeSet::DoubleConversion conversion)
 {
     FrameEntry *obj = frame.peek(-3);
     FrameEntry *id = frame.peek(-2);
     FrameEntry *value = frame.peek(-1);
+
+    frame.forgetMismatchedObject(obj);
+
+    bool convertDouble = false;
+
+    // If the array being written to might need integer elements converted to
+    // doubles, make the conversion before writing.
+    if (conversion == types::StackTypeSet::AlwaysConvertToDoubles ||
+        conversion == types::StackTypeSet::MaybeConvertToDoubles)
+    {
+        // A constant value may still be live and the entry itself should not
+        // be updated.
+        convertDouble = true;
+        if (!value->isConstant())
+            frame.ensureDouble(value);
+    }
 
     // We might not know whether this is an object, but if it is an object we
     // know it is a dense array.
@@ -884,6 +888,10 @@ mjit::Compiler::jsop_setelem_dense()
 
     ValueRemat vr;
     frame.pinEntry(value, vr, /* breakDouble = */ false);
+
+    // Constant values that need conversion to double have not been fixed yet.
+    if (convertDouble && value->isConstant() && value->getValue().isInt32())
+        vr = ValueRemat::FromConstant(DoubleValue(value->getValue().toInt32()));
 
     Int32Key key = id->isConstant()
                  ? Int32Key::FromConstant(id->getValue().toInt32())
@@ -972,7 +980,7 @@ mjit::Compiler::jsop_setelem_dense()
      * undefined.
      */
     types::StackTypeSet *types = frame.extra(obj).types;
-    if (cx->compartment->compileBarriers() && (!types || types->propertyNeedsBarrier(cx, JSID_VOID))) {
+    if (cx->zone()->compileBarriers() && (!types || types->propertyNeedsBarrier(cx, JSID_VOID))) {
         Label barrierStart = stubcc.masm.label();
         stubcc.linkExitDirect(masm.jump(), barrierStart);
 
@@ -1333,41 +1341,51 @@ mjit::Compiler::jsop_setelem(bool popGuaranteed)
         return true;
     }
 
+    types::StackTypeSet::DoubleConversion conversion = types::StackTypeSet::DontConvertToDoubles;
+
     // If the object is definitely a dense array or a typed array we can generate
     // code directly without using an inline cache.
     if (cx->typeInferenceEnabled()) {
         types::StackTypeSet *types = analysis->poppedTypes(PC, 2);
 
-        if (!types->hasObjectFlags(cx, types::OBJECT_FLAG_NON_DENSE_ARRAY) &&
-            !types::ArrayPrototypeHasIndexedProperty(cx, outerScript)) {
+        conversion = types->convertDoubleElements(cx);
+        if (types->getKnownClass() == &ArrayClass &&
+            !types->hasObjectFlags(cx, types::OBJECT_FLAG_SPARSE_INDEXES |
+                                   types::OBJECT_FLAG_LENGTH_OVERFLOW) &&
+            !types::ArrayPrototypeHasIndexedProperty(cx, outerScript) &&
+            conversion != types::StackTypeSet::AmbiguousDoubleConversion &&
+            (conversion == types::StackTypeSet::DontConvertToDoubles ||
+             value->isType(JSVAL_TYPE_DOUBLE) ||
+             value->isConstant() ||
+             popGuaranteed))
+        {
             // Inline dense array path.
-            jsop_setelem_dense();
+            jsop_setelem_dense(conversion);
             return true;
         }
 
 #ifdef JS_METHODJIT_TYPED_ARRAY
+        int atype = types->getTypedArrayType();
         if ((value->mightBeType(JSVAL_TYPE_INT32) || value->mightBeType(JSVAL_TYPE_DOUBLE)) &&
-            !types->hasObjectFlags(cx, types::OBJECT_FLAG_NON_TYPED_ARRAY)) {
+            atype != TypedArray::TYPE_MAX)
+        {
             // Inline typed array path.
-            int atype = types->getTypedArrayType();
-            if (atype != TypedArray::TYPE_MAX) {
-                jsop_setelem_typed(atype);
-                return true;
-            }
+            jsop_setelem_typed(atype);
+            return true;
         }
 #endif
     }
 
     frame.forgetMismatchedObject(obj);
 
-    if (id->isType(JSVAL_TYPE_DOUBLE) || !globalObj) {
+    if (id->isType(JSVAL_TYPE_DOUBLE) || !globalObj || conversion != types::StackTypeSet::DontConvertToDoubles) {
         jsop_setelem_slow();
         return true;
     }
 
 #ifdef JSGC_INCREMENTAL_MJ
     // Write barrier.
-    if (cx->compartment->compileBarriers()) {
+    if (cx->zone()->compileBarriers()) {
         jsop_setelem_slow();
         return true;
     }
@@ -1562,6 +1580,8 @@ mjit::Compiler::jsop_getelem_dense(bool isPacked)
 {
     FrameEntry *obj = frame.peek(-2);
     FrameEntry *id = frame.peek(-1);
+
+    frame.forgetMismatchedObject(obj);
 
     // We might not know whether this is an object, but if it is an object we
     // know it is a dense array.
@@ -1944,24 +1964,24 @@ mjit::Compiler::jsop_getelem()
         }
 
         if (obj->mightBeType(JSVAL_TYPE_OBJECT) &&
-            !types->hasObjectFlags(cx, types::OBJECT_FLAG_NON_DENSE_ARRAY) &&
-            !types::ArrayPrototypeHasIndexedProperty(cx, outerScript)) {
+            types->getKnownClass() == &ArrayClass &&
+            !types->hasObjectFlags(cx, types::OBJECT_FLAG_SPARSE_INDEXES |
+                                   types::OBJECT_FLAG_LENGTH_OVERFLOW) &&
+            !types::ArrayPrototypeHasIndexedProperty(cx, outerScript))
+        {
             // Inline dense array path.
-            bool packed = !types->hasObjectFlags(cx, types::OBJECT_FLAG_NON_PACKED_ARRAY);
+            bool packed = !types->hasObjectFlags(cx, types::OBJECT_FLAG_NON_PACKED);
             jsop_getelem_dense(packed);
             return true;
         }
 
 #ifdef JS_METHODJIT_TYPED_ARRAY
-        if (obj->mightBeType(JSVAL_TYPE_OBJECT) &&
-            !types->hasObjectFlags(cx, types::OBJECT_FLAG_NON_TYPED_ARRAY)) {
+        int atype = types->getTypedArrayType();
+        if (obj->mightBeType(JSVAL_TYPE_OBJECT) && atype != TypedArray::TYPE_MAX) {
             // Inline typed array path.
-            int atype = types->getTypedArrayType();
-            if (atype != TypedArray::TYPE_MAX) {
-                if (jsop_getelem_typed(atype))
-                    return true;
-                // Fallthrough to the normal GETELEM path.
-            }
+            if (jsop_getelem_typed(atype))
+                return true;
+            // Fallthrough to the normal GETELEM path.
         }
 #endif
     }
@@ -2476,7 +2496,7 @@ mjit::Compiler::jsop_initprop()
 
     RootedObject baseobj(cx, frame.extra(obj).initObject);
 
-    if (!baseobj || monitored(PC) || cx->compartment->compileBarriers()) {
+    if (!baseobj || monitored(PC) || cx->zone()->compileBarriers()) {
         if (monitored(PC) && script_ == outerScript)
             monitoredBytecodes.append(PC - script_->code);
 
@@ -2508,6 +2528,13 @@ mjit::Compiler::jsop_initelem_array()
 {
     FrameEntry *obj = frame.peek(-2);
     FrameEntry *fe = frame.peek(-1);
+
+    if (cx->typeInferenceEnabled()) {
+        types::StackTypeSet::DoubleConversion conversion =
+            script_->analysis()->poppedTypes(PC, 1)->convertDoubleElements(cx);
+        if (conversion == types::StackTypeSet::AlwaysConvertToDoubles)
+            frame.ensureDouble(fe);
+    }
 
     uint32_t index = GET_UINT24(PC);
 

@@ -14,13 +14,13 @@
 #include "jscompartment.h"
 #include "jsgc.h"
 #include "jsobj.h"
-#include "jsscope.h"
 #include "jsscript.h"
 
-#include "jsobjinlines.h"
-
-#include "ion/IonCode.h"
 #include "ion/Ion.h"
+#include "ion/IonCode.h"
+#include "vm/Shape.h"
+
+#include "jsobjinlines.h"
 
 using namespace js;
 
@@ -64,9 +64,6 @@ CompartmentStats::gcHeapThingsSize()
     n += gcHeapScripts;
     n += gcHeapTypeObjects;
     n += gcHeapIonCodes;
-#if JS_HAS_XML_SUPPORT
-    n += gcHeapXML;
-#endif
 
 #ifdef DEBUG
     size_t n2 = n;
@@ -92,7 +89,7 @@ StatsCompartmentCallback(JSRuntime *rt, void *data, JSCompartment *compartment)
     rtStats->currCompartmentStats = &cStats;
 
     // Measure the compartment object itself, and things hanging off it.
-    compartment->sizeOfIncludingThis(rtStats->mallocSizeOf,
+    compartment->sizeOfIncludingThis(rtStats->mallocSizeOf_,
                                      &cStats.compartmentObject,
                                      &cStats.typeInference,
                                      &cStats.shapesCompartmentTables,
@@ -142,10 +139,8 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
         JSObject *obj = static_cast<JSObject *>(thing);
         if (obj->isFunction()) {
             cStats->gcHeapObjectsFunction += thingSize;
-        } else if (obj->isDenseArray()) {
+        } else if (obj->isArray()) {
             cStats->gcHeapObjectsDenseArray += thingSize;
-        } else if (obj->isSlowArray()) {
-            cStats->gcHeapObjectsSlowArray += thingSize;
         } else if (obj->isCrossCompartmentWrapper()) {
             cStats->gcHeapObjectsCrossCompartmentWrapper += thingSize;
         } else {
@@ -153,14 +148,14 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
         }
 
         ObjectsExtraSizes objectsExtra;
-        obj->sizeOfExcludingThis(rtStats->mallocSizeOf, &objectsExtra);
+        obj->sizeOfExcludingThis(rtStats->mallocSizeOf_, &objectsExtra);
         cStats->objectsExtra.add(objectsExtra);
 
         // JSObject::sizeOfExcludingThis() doesn't measure objectsExtraPrivate,
         // so we do it here.
         if (ObjectPrivateVisitor *opv = closure->opv) {
             nsISupports *iface;
-            if (opv->getISupports(obj, &iface) && iface) {
+            if (opv->getISupports_(obj, &iface) && iface) {
                 cStats->objectsExtra.private_ += opv->sizeOfIncludingThis(iface);
             }
         }
@@ -170,7 +165,7 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
     {
         JSString *str = static_cast<JSString *>(thing);
 
-        size_t strSize = str->sizeOfExcludingThis(rtStats->mallocSizeOf);
+        size_t strSize = str->sizeOfExcludingThis(rtStats->mallocSizeOf_);
 
         // If we can't grow hugeStrings, let's just call this string non-huge.
         // We're probably about to OOM anyway.
@@ -193,7 +188,7 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
     {
         UnrootedShape shape = static_cast<RawShape>(thing);
         size_t propTableSize, kidsSize;
-        shape->sizeOfExcludingThis(rtStats->mallocSizeOf, &propTableSize, &kidsSize);
+        shape->sizeOfExcludingThis(rtStats->mallocSizeOf_, &propTableSize, &kidsSize);
         if (shape->inDictionary()) {
             cStats->gcHeapShapesDict += thingSize;
             cStats->shapesExtraDictTables += propTableSize;
@@ -218,11 +213,11 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
     {
         JSScript *script = static_cast<JSScript *>(thing);
         cStats->gcHeapScripts += thingSize;
-        cStats->scriptData += script->sizeOfData(rtStats->mallocSizeOf);
+        cStats->scriptData += script->sizeOfData(rtStats->mallocSizeOf_);
 #ifdef JS_METHODJIT
-        cStats->jaegerData += script->sizeOfJitScripts(rtStats->mallocSizeOf);
+        cStats->jaegerData += script->sizeOfJitScripts(rtStats->mallocSizeOf_);
 # ifdef JS_ION
-        cStats->ionData += ion::MemoryUsed(script, rtStats->mallocSizeOf);
+        cStats->ionData += ion::MemoryUsed(script, rtStats->mallocSizeOf_);
 # endif
 #endif
 
@@ -230,7 +225,7 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
         SourceSet::AddPtr entry = closure->seenSources.lookupForAdd(ss);
         if (!entry) {
             closure->seenSources.add(entry, ss); // Not much to be done on failure.
-            rtStats->runtime.scriptSources += ss->sizeOfIncludingThis(rtStats->mallocSizeOf);
+            rtStats->runtime.scriptSources += ss->sizeOfIncludingThis(rtStats->mallocSizeOf_);
         }
         break;
     }
@@ -248,16 +243,9 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
     {
         types::TypeObject *obj = static_cast<types::TypeObject *>(thing);
         cStats->gcHeapTypeObjects += thingSize;
-        cStats->typeInference.typeObjects += obj->sizeOfExcludingThis(rtStats->mallocSizeOf);
+        cStats->typeInference.typeObjects += obj->sizeOfExcludingThis(rtStats->mallocSizeOf_);
         break;
     }
-#if JS_HAS_XML_SUPPORT
-    case JSTRACE_XML:
-    {
-        cStats->gcHeapXML += thingSize;
-        break;
-    }
-#endif
     }
     // Yes, this is a subtraction:  see StatsArenaCallback() for details.
     cStats->gcHeapUnusedGcThings -= thingSize;
@@ -287,7 +275,7 @@ JS::CollectRuntimeStats(JSRuntime *rt, RuntimeStats *rtStats, ObjectPrivateVisit
                                    StatsArenaCallback, StatsCellCallback);
 
     // Take the "explicit/js/runtime/" measurements.
-    rt->sizeOfIncludingThis(rtStats->mallocSizeOf, &rtStats->runtime);
+    rt->sizeOfIncludingThis(rtStats->mallocSizeOf_, &rtStats->runtime);
 
     rtStats->gcHeapGcThings = 0;
     for (size_t i = 0; i < rtStats->compartmentStatsVector.length(); i++) {
@@ -336,7 +324,7 @@ JS::SystemCompartmentCount(const JSRuntime *rt)
 {
     size_t n = 0;
     for (size_t i = 0; i < rt->compartments.length(); i++) {
-        if (rt->compartments[i]->isSystemCompartment)
+        if (rt->compartments[i]->zone()->isSystem)
             ++n;
     }
     return n;
@@ -347,7 +335,7 @@ JS::UserCompartmentCount(const JSRuntime *rt)
 {
     size_t n = 0;
     for (size_t i = 0; i < rt->compartments.length(); i++) {
-        if (!rt->compartments[i]->isSystemCompartment)
+        if (!rt->compartments[i]->zone()->isSystem)
             ++n;
     }
     return n;

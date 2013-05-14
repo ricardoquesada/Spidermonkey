@@ -9,6 +9,8 @@
 #ifndef jsanalyze_h___
 #define jsanalyze_h___
 
+#include "mozilla/TypeTraits.h"
+
 #include "jsautooplen.h"
 #include "jscompartment.h"
 #include "jscntxt.h"
@@ -183,8 +185,6 @@ GetDefCount(UnrootedScript script, unsigned offset)
       case JSOP_OR:
       case JSOP_AND:
         return 1;
-      case JSOP_FILTER:
-        return 2;
       case JSOP_PICK:
         /*
          * Pick pops and pushes how deep it looks in the stack + 1
@@ -247,7 +247,6 @@ BytecodeNoFallThrough(JSOp op)
       case JSOP_RETRVAL:
       case JSOP_THROW:
       case JSOP_TABLESWITCH:
-      case JSOP_FILTER:
         return true;
       case JSOP_GOSUB:
         /* These fall through indirectly, after executing a 'finally'. */
@@ -884,6 +883,7 @@ class ScriptAnalysis
     bool failed() const { return hadFailure; }
     bool ionInlineable() const { return isIonInlineable; }
     bool ionInlineable(uint32_t argc) const { return isIonInlineable && argc == script_->function()->nargs; }
+    void setIonUninlineable() { isIonInlineable = false; }
     bool jaegerInlineable() const { return isJaegerInlineable; }
     bool jaegerInlineable(uint32_t argc) const { return isJaegerInlineable && argc == script_->function()->nargs; }
     bool jaegerCompileable() { return isJaegerCompileable; }
@@ -992,7 +992,8 @@ class ScriptAnalysis
     void addTypeBarrier(JSContext *cx, const jsbytecode *pc,
                         types::TypeSet *target, types::Type type);
     void addSingletonTypeBarrier(JSContext *cx, const jsbytecode *pc,
-                                 types::TypeSet *target, HandleObject singleton, jsid singletonId);
+                                 types::TypeSet *target,
+                                 HandleObject singleton, HandleId singletonId);
 
     /* Remove obsolete type barriers at the given offset. */
     void pruneTypeBarriers(JSContext *cx, uint32_t offset);
@@ -1203,39 +1204,6 @@ class ScriptAnalysis
 #endif
 };
 
-/* Protect analysis structures from GC while they are being used. */
-class AutoEnterAnalysis
-{
-    JSCompartment *compartment;
-    bool oldActiveAnalysis;
-    bool left;
-
-    void construct(JSCompartment *compartment)
-    {
-        this->compartment = compartment;
-        oldActiveAnalysis = compartment->activeAnalysis;
-        compartment->activeAnalysis = true;
-        left = false;
-    }
-
-  public:
-    AutoEnterAnalysis(JSContext *cx) { construct(cx->compartment); }
-    AutoEnterAnalysis(JSCompartment *compartment) { construct(compartment); }
-
-    void leave()
-    {
-        if (!left) {
-            left = true;
-            compartment->activeAnalysis = oldActiveAnalysis;
-        }
-    }
-
-    ~AutoEnterAnalysis()
-    {
-        leave();
-    }
-};
-
 /* SSA value as used by CrossScriptSSA, identifies the frame it came from. */
 struct CrossSSAValue
 {
@@ -1323,16 +1291,14 @@ void PrintBytecode(JSContext *cx, HandleScript script, jsbytecode *pc);
 } /* namespace analyze */
 } /* namespace js */
 
-namespace js {
-namespace tl {
+namespace mozilla {
 
-template <> struct IsPodType<js::analyze::LifetimeVariable> { static const bool result = true; };
-template <> struct IsPodType<js::analyze::LoopAnalysis>     { static const bool result = true; };
-template <> struct IsPodType<js::analyze::SlotValue>        { static const bool result = true; };
-template <> struct IsPodType<js::analyze::SSAValue>         { static const bool result = true; };
-template <> struct IsPodType<js::analyze::SSAUseChain>      { static const bool result = true; };
+template <> struct IsPod<js::analyze::LifetimeVariable> { static const bool value = true; };
+template <> struct IsPod<js::analyze::LoopAnalysis>     { static const bool value = true; };
+template <> struct IsPod<js::analyze::SlotValue>        { static const bool value = true; };
+template <> struct IsPod<js::analyze::SSAValue>         { static const bool value = true; };
+template <> struct IsPod<js::analyze::SSAUseChain>      { static const bool value = true; };
 
-} /* namespace tl */
-} /* namespace js */
+} /* namespace mozilla */
 
 #endif // jsanalyze_h___

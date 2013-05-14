@@ -10,8 +10,8 @@
 #include "mozilla/dom/HTMLCanvasElement.h"
 #include "nsHTMLFormElement.h"
 #include "mozilla/dom/HTMLImageElement.h"
-#include "nsHTMLOptionElement.h"
-#include "nsHTMLOptGroupElement.h"
+#include "mozilla/dom/HTMLOptionElement.h"
+#include "HTMLOptGroupElement.h"
 #include "nsHTMLVideoElement.h"
 #include "nsHTMLDocument.h"
 #include "nsICSSDeclaration.h"
@@ -171,8 +171,8 @@ xpc_qsUnwrapArg<_clazz>(JSContext *cx, jsval v, _clazz **ppArg,               \
 DEFINE_UNWRAP_CAST_HTML(canvas, mozilla::dom::HTMLCanvasElement)
 DEFINE_UNWRAP_CAST_HTML(form, nsHTMLFormElement)
 DEFINE_UNWRAP_CAST_HTML(img, mozilla::dom::HTMLImageElement)
-DEFINE_UNWRAP_CAST_HTML(optgroup, nsHTMLOptGroupElement)
-DEFINE_UNWRAP_CAST_HTML(option, nsHTMLOptionElement)
+DEFINE_UNWRAP_CAST_HTML(optgroup, mozilla::dom::HTMLOptGroupElement)
+DEFINE_UNWRAP_CAST_HTML(option, mozilla::dom::HTMLOptionElement)
 DEFINE_UNWRAP_CAST_HTML(video, nsHTMLVideoElement)
 
 inline nsISupports*

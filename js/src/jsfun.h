@@ -17,7 +17,7 @@
 
 #include "gc/Barrier.h"
 
-ForwardDeclareJS(Script);
+ForwardDeclareJS(Atom);
 
 namespace js { class FunctionExtended; }
 
@@ -42,6 +42,13 @@ class JSFunction : public JSObject
         HAS_REST         = 0x0400,  /* function has a rest (...) parameter */
         HAS_DEFAULTS     = 0x0800,  /* function has at least one default parameter */
         INTERPRETED_LAZY = 0x1000,  /* function is interpreted but doesn't have a script yet */
+
+        /*
+         * Function is cloned anew at each callsite. This is temporarily
+         * needed for ParallelArray selfhosted code until type information can
+         * be made context sensitive. See discussion in bug 826148.
+         */
+        CALLSITE_CLONE   = 0x2000,
 
         /* Derived Flags values for convenience: */
         NATIVE_FUN = 0,
@@ -99,6 +106,11 @@ class JSFunction : public JSObject
     bool hasRest()                  const { return flags & HAS_REST; }
     bool hasDefaults()              const { return flags & HAS_DEFAULTS; }
 
+    /* Original functions that should be cloned are not extended. */
+    bool isCloneAtCallsite()        const { return (flags & CALLSITE_CLONE) && !isExtended(); }
+    /* Cloned functions keep a backlink to the original in extended slot 0. */
+    bool isCallsiteClone()          const { return (flags & CALLSITE_CLONE) && isExtended(); }
+
     /* Compound attributes: */
     bool isBuiltin() const {
         return isNative() || isSelfHostedBuiltin();
@@ -140,6 +152,10 @@ class JSFunction : public JSObject
         flags |= SELF_HOSTED_CTOR;
     }
 
+    void setIsCloneAtCallsite() {
+        flags |= CALLSITE_CLONE;
+    }
+
     void setIsFunctionPrototype() {
         JS_ASSERT(!isFunctionPrototype());
         flags |= IS_FUN_PROTO;
@@ -165,7 +181,7 @@ class JSFunction : public JSObject
     inline void initAtom(JSAtom *atom);
     JSAtom *displayAtom() const { return atom_; }
 
-    inline void setGuessedAtom(JSAtom *atom);
+    inline void setGuessedAtom(js::UnrootedAtom atom);
 
     /* uint16_t representation bounds number of call object dynamic slots. */
     enum { MAX_ARGS_AND_VARS = 2 * ((1U << 16) - 1) };
@@ -183,23 +199,27 @@ class JSFunction : public JSObject
 
     js::UnrootedScript getOrCreateScript(JSContext *cx) {
         JS_ASSERT(isInterpreted());
+        JS_ASSERT(cx);
         if (isInterpretedLazy()) {
             js::RootedFunction self(cx, this);
             js::MaybeCheckStackRoots(cx);
-            if (!initializeLazyScript(cx))
+            if (!self->initializeLazyScript(cx))
                 return js::UnrootedScript(NULL);
+            return self->u.i.script_;
         }
         JS_ASSERT(hasScript());
-        return JS::HandleScript::fromMarkedLocation(&u.i.script_);
+        return u.i.script_;
     }
 
-    bool maybeGetOrCreateScript(JSContext *cx, js::MutableHandle<JSScript*> script) {
-        if (isNative()) {
+    static bool maybeGetOrCreateScript(JSContext *cx, js::HandleFunction fun,
+                                       js::MutableHandle<JSScript*> script)
+    {
+        if (fun->isNative()) {
             script.set(NULL);
             return true;
         }
-        script.set(getOrCreateScript(cx));
-        return hasScript();
+        script.set(fun->getOrCreateScript(cx));
+        return fun->hasScript();
     }
 
     js::UnrootedScript nonLazyScript() const {
@@ -312,22 +332,19 @@ JSAPIToJSFunctionFlags(unsigned flags)
            : JSFunction::NATIVE_FUN;
 }
 
-extern JSFunction *
-js_NewFunction(JSContext *cx, js::HandleObject funobj, JSNative native, unsigned nargs,
-               JSFunction::Flags flags, js::HandleObject parent, js::HandleAtom atom,
-               js::gc::AllocKind kind = JSFunction::FinalizeKind);
-
-extern JSFunction * JS_FASTCALL
-js_CloneFunctionObject(JSContext *cx, js::HandleFunction fun,
-                       js::HandleObject parent, js::HandleObject proto,
-                       js::gc::AllocKind kind = JSFunction::FinalizeKind);
-
-extern JSFunction *
-js_DefineFunction(JSContext *cx, js::HandleObject obj, js::HandleId id, JSNative native,
-                  unsigned nargs, unsigned flags,
-                  js::gc::AllocKind kind = JSFunction::FinalizeKind);
-
 namespace js {
+
+extern JSFunction *
+NewFunction(JSContext *cx, HandleObject funobj, JSNative native, unsigned nargs,
+            JSFunction::Flags flags, HandleObject parent, HandleAtom atom,
+            gc::AllocKind allocKind = JSFunction::FinalizeKind,
+            NewObjectKind newKind = GenericObject);
+
+extern JSFunction *
+DefineFunction(JSContext *cx, HandleObject obj, HandleId id, JSNative native,
+               unsigned nargs, unsigned flags,
+               gc::AllocKind allocKind = JSFunction::FinalizeKind,
+               NewObjectKind newKind = GenericObject);
 
 /*
  * Function extended with reserved slots for use by various kinds of functions.
@@ -341,6 +358,10 @@ class FunctionExtended : public JSFunction
     /* Reserved slots available for storage by particular native functions. */
     HeapValue extendedSlots[2];
 };
+
+extern JSFunction *
+CloneFunctionObject(JSContext *cx, HandleFunction fun, HandleObject parent,
+                    gc::AllocKind kind = JSFunction::FinalizeKind);
 
 } // namespace js
 

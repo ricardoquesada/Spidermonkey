@@ -5,13 +5,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "jsnum.h"
+
 #include "CodeGenerator-x64.h"
-#include "ion/shared/CodeGenerator-shared-inl.h"
 #include "ion/MIR.h"
 #include "ion/MIRGraph.h"
-#include "jsnum.h"
-#include "jsscope.h"
-#include "jsscopeinlines.h"
+#include "ion/shared/CodeGenerator-shared-inl.h"
+#include "vm/Shape.h"
+
+#include "vm/Shape-inl.h"
 
 using namespace js;
 using namespace js::ion;
@@ -249,7 +251,16 @@ bool
 CodeGeneratorX64::visitLoadElementT(LLoadElementT *load)
 {
     Operand source = createArrayElementOperand(ToRegister(load->elements()), load->index());
-    loadUnboxedValue(source, load->mir()->type(), load->output());
+
+    if (load->mir()->loadDoubles()) {
+        FloatRegister fpreg = ToFloatRegister(load->output());
+        if (source.kind() == Operand::REG_DISP)
+            masm.loadDouble(source.toAddress(), fpreg);
+        else
+            masm.loadDouble(source.toBaseIndex(), fpreg);
+    } else {
+        loadUnboxedValue(source, load->mir()->type(), load->output());
+    }
 
     JS_ASSERT(!load->mir()->needsHoleCheck());
     return true;
@@ -336,7 +347,7 @@ CodeGeneratorX64::visitCompareB(LCompareB *lir)
 
     // Perform the comparison.
     masm.cmpq(lhs.valueReg(), ScratchReg);
-    emitSet(JSOpToCondition(mir->jsop()), output);
+    masm.emitSet(JSOpToCondition(mir->jsop()), output);
     return true;
 }
 
@@ -369,11 +380,10 @@ CodeGeneratorX64::visitCompareV(LCompareV *lir)
     const ValueOperand rhs = ToValue(lir, LCompareV::RhsInput);
     const Register output = ToRegister(lir->output());
 
-    JS_ASSERT(mir->jsop() == JSOP_EQ || mir->jsop() == JSOP_STRICTEQ ||
-              mir->jsop() == JSOP_NE || mir->jsop() == JSOP_STRICTNE);
+    JS_ASSERT(IsEqualityOp(mir->jsop()));
 
     masm.cmpq(lhs.valueReg(), rhs.valueReg());
-    emitSet(JSOpToCondition(mir->jsop()), output);
+    masm.emitSet(JSOpToCondition(mir->jsop()), output);
     return true;
 }
 

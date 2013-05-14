@@ -111,6 +111,9 @@ class MacroAssemblerX86Shared : public Assembler
     void sub32(Imm32 imm, Register dest) {
         subl(imm, dest);
     }
+    void xor32(Imm32 imm, Register dest) {
+        xorl(imm, dest);
+    }
 
     void branch32(Condition cond, const Address &lhs, const Register &rhs, Label *label) {
         cmpl(Operand(lhs), rhs);
@@ -141,14 +144,7 @@ class MacroAssemblerX86Shared : public Assembler
         j(cond, label);
     }
     void branchTestBool(Condition cond, const Register &lhs, const Register &rhs, Label *label) {
-        if (GeneralRegisterSet(Registers::SingleByteRegs).has(lhs) &&
-            GeneralRegisterSet(Registers::SingleByteRegs).has(rhs))
-        {
-            testb(lhs, rhs);
-        } else {
-            testl(lhs, rhs);
-        }
-
+        testb(lhs, rhs);
         j(cond, label);
     }
 
@@ -296,6 +292,39 @@ class MacroAssemblerX86Shared : public Assembler
         movss(src, Operand(dest));
     }
 
+    // Checks whether a double is representable as a 32-bit integer. If so, the
+    // integer is written to the output register. Otherwise, a bailout is taken to
+    // the given snapshot. This function overwrites the scratch float register.
+    void convertDoubleToInt32(FloatRegister src, Register dest, Label *fail,
+                              bool negativeZeroCheck = true)
+    {
+        cvttsd2si(src, dest);
+        cvtsi2sd(dest, ScratchFloatReg);
+        ucomisd(src, ScratchFloatReg);
+        j(Assembler::Parity, fail);
+        j(Assembler::NotEqual, fail);
+
+        // Check for -0
+        if (negativeZeroCheck) {
+            Label notZero;
+            testl(dest, dest);
+            j(Assembler::NonZero, &notZero);
+
+            if (Assembler::HasSSE41()) {
+                ptest(src, src);
+                j(Assembler::NonZero, fail);
+            } else {
+                // bit 0 = sign of low double
+                // bit 1 = sign of high double
+                movmskpd(src, dest);
+                andl(Imm32(1), dest);
+                j(Assembler::NonZero, fail);
+            }
+
+            bind(&notZero);
+        }
+    }
+
     void clampIntToUint8(Register src, Register dest) {
         Label inRange, done;
         branchTest32(Assembler::Zero, src, Imm32(0xffffff00), &inRange);
@@ -319,7 +348,7 @@ class MacroAssemblerX86Shared : public Assembler
     }
 
     bool maybeInlineDouble(uint64_t u, const FloatRegister &dest) {
-        // This implements parts of "13.4 Generating constants" of 
+        // This implements parts of "13.4 Generating constants" of
         // "2. Optimizing subroutines in assembly language" by Agner Fog.
         switch (u) {
           case 0x0000000000000000ULL: // 0.0
@@ -359,6 +388,40 @@ class MacroAssemblerX86Shared : public Assembler
         return true;
     }
 
+    void emitSet(Assembler::Condition cond, const Register &dest,
+                 Assembler::NaNCond ifNaN = Assembler::NaN_Unexpected) {
+        if (GeneralRegisterSet(Registers::SingleByteRegs).has(dest)) {
+            // If the register we're defining is a single byte register,
+            // take advantage of the setCC instruction
+            setCC(cond, dest);
+            movzxbl(dest, dest);
+
+            if (ifNaN != Assembler::NaN_Unexpected) {
+                Label noNaN;
+                j(Assembler::NoParity, &noNaN);
+                if (ifNaN == Assembler::NaN_IsTrue)
+                    movl(Imm32(1), dest);
+                else
+                    xorl(dest, dest);
+                bind(&noNaN);
+            }
+        } else {
+            Label end;
+            Label ifFalse;
+
+            if (ifNaN == Assembler::NaN_IsFalse)
+                j(Assembler::Parity, &ifFalse);
+            movl(Imm32(1), dest);
+            j(cond, &end);
+            if (ifNaN == Assembler::NaN_IsTrue)
+                j(Assembler::Parity, &end);
+            bind(&ifFalse);
+            xorl(dest, dest);
+
+            bind(&end);
+        }
+    }
+
     // Emit a JMP that can be toggled to a CMP. See ToggleToJmp(), ToggleToCmp().
     CodeOffsetLabel toggledJump(Label *label) {
         CodeOffsetLabel offset(size());
@@ -376,20 +439,18 @@ class MacroAssemblerX86Shared : public Assembler
     bool buildFakeExitFrame(const Register &scratch, uint32_t *offset) {
         mozilla::DebugOnly<uint32_t> initialDepth = framePushed();
 
-        CodeLabel *cl = new CodeLabel();
-        if (!addCodeLabel(cl))
-            return false;
-        mov(cl->dest(), scratch);
+        CodeLabel cl;
+        mov(cl.dest(), scratch);
 
         uint32_t descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
         Push(Imm32(descriptor));
         Push(scratch);
 
-        bind(cl->src());
+        bind(cl.src());
         *offset = currentOffset();
 
         JS_ASSERT(framePushed() == initialDepth + IonExitFrameLayout::Size());
-        return true;
+        return addCodeLabel(cl);
     }
 
     bool buildOOLFakeExitFrame(void *fakeReturnAddr) {

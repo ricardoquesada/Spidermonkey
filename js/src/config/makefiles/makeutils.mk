@@ -45,11 +45,11 @@ subargv =$(wordlist $(1),$(words $(getargv)),$(getargv))
 #     $(NULL)
 #   target: $(target-preqs)
 
-banner =\
-$(info )\
-$(info ***************************************************************************)\
-$(info ** $(getargv))\
-$(info ***************************************************************************)\
+banner = \
+$(info ) \
+$(info ***************************************************************************) \
+$(info ** $(getargv)) \
+$(info ***************************************************************************) \
 $(NULL)
 
 #####################################################################
@@ -112,3 +112,10 @@ topORerr =$(if $(topsrcdir),$(topsrcdir),$(error topsrcdir is not defined))
 ifdef USE_AUTOTARGETS_MK # mkdir_deps
   include $(topORerr)/config/makefiles/autotargets.mk
 endif
+
+ifdef USE_RCS_MK
+  include $(topORerr)/config/makefiles/rcs.mk
+endif
+
+## copy(src, dst): recursive copy
+copy_dir = (cd $(1)/. && $(TAR) $(TAR_CREATE_FLAGS_QUIET) - .) | (cd $(2)/. && tar -xf -)

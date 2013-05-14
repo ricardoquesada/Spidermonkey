@@ -25,6 +25,7 @@ namespace ion {
 class OutOfLineCode;
 class CodeGenerator;
 class MacroAssembler;
+class OutOfLineParallelAbort;
 
 template <class ArgSeq, class StoreOutputTo>
 class OutOfLineCallVM;
@@ -34,6 +35,7 @@ class CodeGeneratorShared : public LInstructionVisitor
 {
     js::Vector<OutOfLineCode *, 0, SystemAllocPolicy> outOfLineCode_;
     OutOfLineCode *oolIns;
+    OutOfLineParallelAbort *oolParallelAbort_;
 
   public:
     MacroAssembler masm;
@@ -60,9 +62,6 @@ class CodeGeneratorShared : public LInstructionVisitor
 
     // Vector of information about generated polymorphic inline caches.
     js::Vector<IonCache, 0, SystemAllocPolicy> cacheList_;
-
-    // Vector of all patchable write pre-barrier offsets.
-    js::Vector<CodeOffsetLabel, 0, SystemAllocPolicy> barrierOffsets_;
 
     // List of stack slots that have been pushed as arguments to an MCall.
     js::Vector<uint32_t, 0, SystemAllocPolicy> pushedArgumentSlots_;
@@ -160,10 +159,6 @@ class CodeGeneratorShared : public LInstructionVisitor
         size_t index = cacheList_.length();
         masm.reportMemory(cacheList_.append(cache));
         return index;
-    }
-
-    void addPreBarrierOffset(CodeOffsetLabel offset) {
-        masm.reportMemory(barrierOffsets_.append(offset));
     }
 
   protected:
@@ -300,6 +295,15 @@ class CodeGeneratorShared : public LInstructionVisitor
     bool visitOutOfLineCallVM(OutOfLineCallVM<ArgSeq, StoreOutputTo> *ool);
 
     bool visitOutOfLineTruncateSlow(OutOfLineTruncateSlow *ool);
+
+  public:
+    // When compiling parallel code, all bailouts just abort funnel to
+    // this same point and hence abort execution altogether:
+    virtual bool visitOutOfLineParallelAbort(OutOfLineParallelAbort *ool) = 0;
+    bool callTraceLIR(uint32_t blockIndex, LInstruction *lir, const char *bailoutName = NULL);
+
+  protected:
+    bool ensureOutOfLineParallelAbort(Label **result);
 };
 
 // Wrapper around Label, on the heap, to avoid a bogus assert with OOM.
@@ -547,6 +551,17 @@ CodeGeneratorShared::visitOutOfLineCallVM(OutOfLineCallVM<ArgSeq, StoreOutputTo>
     masm.jump(ool->rejoin());
     return true;
 }
+
+
+// An out-of-line parallel abort thunk.
+class OutOfLineParallelAbort : public OutOfLineCode
+{
+  public:
+    OutOfLineParallelAbort()
+    { }
+
+    bool generate(CodeGeneratorShared *codegen);
+};
 
 } // namespace ion
 } // namespace js

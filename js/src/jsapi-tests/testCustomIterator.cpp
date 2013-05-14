@@ -45,11 +45,10 @@ js::Class HasCustomIterClass = {
     NULL, /* hasInstance */
     NULL, /* mark */
     {
-        NULL,
-        NULL,
-        NULL,
+        NULL,       /* outerObject */
+        NULL,       /* innerObject */
         IterHook,
-        NULL
+        false        /* isWrappedNative */
     }
 };
 
@@ -68,11 +67,11 @@ BEGIN_TEST(testCustomIterator_bug612523)
     CHECK(JS_InitClass(cx, global, NULL, Jsvalify(&HasCustomIterClass),
                        IterClassConstructor, 0, NULL, NULL, NULL, NULL));
 
-    jsval result;
+    js::RootedValue result(cx);
     EVAL("var o = new HasCustomIter(); \n"
          "var j = 0; \n"
          "for (var i in o) { ++j; }; \n"
-         "j;", &result);
+         "j;", result.address());
 
     CHECK(JSVAL_IS_INT(result));
     CHECK_EQUAL(JSVAL_TO_INT(result), 100);

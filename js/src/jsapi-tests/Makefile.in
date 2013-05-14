@@ -34,7 +34,6 @@ CPPSRCS = \
   testDefineProperty.cpp \
   testEnclosingFunction.cpp \
   testErrorCopying.cpp \
-  testExtendedEq.cpp \
   testExternalStrings.cpp \
   testFindSCCs.cpp \
   testFuncCallback.cpp \
@@ -68,6 +67,7 @@ CPPSRCS = \
   testStringBuffer.cpp \
   testTrap.cpp \
   testTypedArrays.cpp \
+  testUTF8.cpp \
   testVersion.cpp \
   testXDR.cpp \
   $(NULL)

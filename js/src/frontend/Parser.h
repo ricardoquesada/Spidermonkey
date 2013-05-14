@@ -81,12 +81,12 @@ struct ParseContext                 /* tree context for semantic checks */
     }
 
     uint32_t numArgs() const {
-        JS_ASSERT(sc->isFunction);
+        JS_ASSERT(sc->isFunctionBox());
         return args_.length();
     }
 
     uint32_t numVars() const {
-        JS_ASSERT(sc->isFunction);
+        JS_ASSERT(sc->isFunctionBox());
         return vars_.length();
     }
 
@@ -116,7 +116,7 @@ struct ParseContext                 /* tree context for semantic checks */
      *    'pn' if they are in the scope of 'pn'.
      *  + Pre-existing placeholders in the scope of 'pn' have been removed.
      */
-    bool define(JSContext *cx, PropertyName *name, ParseNode *pn, Definition::Kind);
+    bool define(JSContext *cx, HandlePropertyName name, ParseNode *pn, Definition::Kind);
 
     /*
      * Let definitions may shadow same-named definitions in enclosing scopes.
@@ -179,9 +179,9 @@ struct ParseContext                 /* tree context for semantic checks */
     bool            parsingForInit:1;   /* true while parsing init expr of for;
                                            exclude 'in' */
     bool            parsingWith:1;  /* true while we are within a
-                                       with-statement or E4X filter-expression
-                                       in the current ParseContext chain
-                                       (which stops at the top-level or an eval() */
+                                       with-statement in the current
+                                       ParseContext chain (which stops at the
+                                       top-level or an eval() */
 
     // Set when parsing a declaration-like destructuring pattern.  This flag
     // causes PrimaryExpr to create PN_NAME parse nodes for variable references
@@ -285,10 +285,6 @@ struct Parser : private AutoGCRooter
      * Parse a top-level JS script.
      */
     ParseNode *parse(JSObject *chain);
-
-#if JS_HAS_XML_SUPPORT
-    ParseNode *parseXMLText(JSObject *chain, bool allowList);
-#endif
 
     /*
      * Allocate a new parsed object or function container from
@@ -417,7 +413,7 @@ struct Parser : private AutoGCRooter
     ParseNode *mulExpr1n();
     ParseNode *unaryExpr();
     ParseNode *memberExpr(bool allowCallSyntax);
-    ParseNode *primaryExpr(TokenKind tt, bool afterDoubleDot);
+    ParseNode *primaryExpr(TokenKind tt);
     ParseNode *parenExpr(bool *genexp = NULL);
 
     /*
@@ -444,35 +440,11 @@ struct Parser : private AutoGCRooter
     ParseNode *returnOrYield(bool useAssignExpr);
     ParseNode *destructuringExpr(BindData *data, TokenKind tt);
 
-    bool checkForFunctionNode(PropertyName *name, ParseNode *node);
-
-    ParseNode *identifierName(bool afterDoubleDot);
-
-#if JS_HAS_XML_SUPPORT
-    bool allowsXML() const { return tokenStream.allowsXML(); }
-
-    ParseNode *endBracketedExpr();
-
-    ParseNode *propertySelector();
-    ParseNode *qualifiedSuffix(ParseNode *pn);
-    ParseNode *qualifiedIdentifier();
-    ParseNode *attributeIdentifier();
-    ParseNode *xmlExpr(bool inTag);
-    ParseNode *xmlNameExpr();
-    ParseNode *xmlTagContent(ParseNodeKind tagkind, JSAtom **namep);
-    bool xmlElementContent(ParseNode *pn);
-    ParseNode *xmlElementOrList(bool allowList);
-    ParseNode *xmlElementOrListRoot(bool allowList);
-
-    ParseNode *starOrAtPropertyIdentifier(TokenKind tt);
-    ParseNode *propertyQualifiedIdentifier();
-#endif /* JS_HAS_XML_SUPPORT */
+    ParseNode *identifierName();
 
     bool allowsForEachIn() {
 #if !JS_HAS_FOR_EACH_IN
         return false;
-#elif JS_HAS_XML_SUPPORT
-        return allowsXML() || tokenStream.hasMoarXML();
 #else
         return versionNumber() >= JSVERSION_1_6;
 #endif

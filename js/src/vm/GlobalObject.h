@@ -49,11 +49,10 @@ class Debugger;
  *   for the corresponding JSProtoKey offset from 2 * JSProto_LIMIT.
  * [3 * JSProto_LIMIT, RESERVED_SLOTS)
  *   Various one-off values: ES5 13.2.3's [[ThrowTypeError]], RegExp statics,
- *   the Namespace object for E4X's function::, the original eval for this
- *   global object (implementing |var eval = otherWindow.eval; eval(...)| as an
- *   indirect eval), a bit indicating whether this object has been cleared
- *   (see JS_ClearScope), and a cache for whether eval is allowed (per the
- *   global's Content Security Policy).
+ *   the original eval for this global object (implementing |var eval =
+ *   otherWindow.eval; eval(...)| as an indirect eval), a bit indicating
+ *   whether this object has been cleared (see JS_ClearScope), and a cache for
+ *   whether eval is allowed (per the global's Content Security Policy).
  *
  * The first two ranges are necessary to implement js::FindClassObject,
  * FindClassPrototype, and spec language speaking in terms of "the original
@@ -382,28 +381,19 @@ class GlobalObject : public JSObject
         return &getSlotRef(INTRINSICS).toObject();
     }
 
-    bool getIntrinsicValue(JSContext *cx, PropertyName *name, MutableHandleValue value) {
+    bool getIntrinsicValue(JSContext *cx, HandlePropertyName name, MutableHandleValue value) {
         RootedObject holder(cx, intrinsicsHolder());
         RootedId id(cx, NameToId(name));
         if (HasDataProperty(cx, holder, id, value.address()))
             return true;
-        Rooted<PropertyName*> rootedName(cx, name);
-        if (!cx->runtime->cloneSelfHostedValue(cx, rootedName, value))
+        if (!cx->runtime->cloneSelfHostedValue(cx, name, value))
             return false;
         mozilla::DebugOnly<bool> ok = JS_DefinePropertyById(cx, holder, id, value, NULL, NULL, 0);
         JS_ASSERT(ok);
         return true;
     }
 
-    bool setIntrinsicValue(JSContext *cx, PropertyName *name, HandleValue value) {
-#ifdef DEBUG
-        RootedObject self(cx, this);
-        JS_ASSERT(cx->runtime->isSelfHostingGlobal(self));
-#endif
-        RootedObject holder(cx, intrinsicsHolder());
-        RootedValue valCopy(cx, value);
-        return JSObject::setProperty(cx, holder, holder, name, &valCopy, false);
-     }
+    inline bool setIntrinsicValue(JSContext *cx, PropertyName *name, HandleValue value);
 
     inline RegExpStatics *getRegExpStatics() const;
 
@@ -430,14 +420,12 @@ class GlobalObject : public JSObject
         return getSlot(PROTO_GETTER);
     }
 
-    bool isRuntimeCodeGenEnabled(JSContext *cx);
+    static bool isRuntimeCodeGenEnabled(JSContext *cx, Handle<GlobalObject*> global);
 
     const Value &getOriginalEval() const {
         JS_ASSERT(getSlot(EVAL).isObject());
         return getSlot(EVAL);
     }
-
-    bool getFunctionNamespace(JSContext *cx, Value *vp);
 
     // Implemented in jsiter.cpp.
     static bool initIteratorClasses(JSContext *cx, Handle<GlobalObject*> global);

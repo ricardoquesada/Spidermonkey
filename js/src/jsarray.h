@@ -15,9 +15,6 @@
 #include "jsatom.h"
 #include "jsobj.h"
 
-/* Small arrays are dense, no matter what. */
-const unsigned MIN_SPARSE_INDEX = 512;
-
 namespace js {
 /* 2^32-2, inclusive */
 const uint32_t MAX_ARRAY_INDEX = 4294967294u;
@@ -28,14 +25,13 @@ js_IdIsIndex(jsid id, uint32_t *indexp)
 {
     if (JSID_IS_INT(id)) {
         int32_t i = JSID_TO_INT(id);
-        if (i < 0)
-            return JS_FALSE;
+        JS_ASSERT(i >= 0);
         *indexp = (uint32_t)i;
-        return JS_TRUE;
+        return true;
     }
 
     if (JS_UNLIKELY(!JSID_IS_STRING(id)))
-        return JS_FALSE;
+        return false;
 
     return js::StringIsArrayIndex(JSID_TO_ATOM(id), indexp);
 }
@@ -50,18 +46,21 @@ namespace js {
 
 /* Create a dense array with no capacity allocated, length set to 0. */
 extern JSObject * JS_FASTCALL
-NewDenseEmptyArray(JSContext *cx, RawObject proto = NULL);
+NewDenseEmptyArray(JSContext *cx, RawObject proto = NULL,
+                   NewObjectKind newKind = GenericObject);
 
 /* Create a dense array with length and capacity == 'length', initialized length set to 0. */
 extern JSObject * JS_FASTCALL
-NewDenseAllocatedArray(JSContext *cx, uint32_t length, RawObject proto = NULL);
+NewDenseAllocatedArray(JSContext *cx, uint32_t length, RawObject proto = NULL,
+                       NewObjectKind newKind = GenericObject);
 
 /*
  * Create a dense array with a set length, but without allocating space for the
  * contents. This is useful, e.g., when accepting length from the user.
  */
 extern JSObject * JS_FASTCALL
-NewDenseUnallocatedArray(JSContext *cx, uint32_t length, RawObject proto = NULL);
+NewDenseUnallocatedArray(JSContext *cx, uint32_t length, RawObject proto = NULL,
+                         NewObjectKind newKind = GenericObject);
 
 /* Create a dense array with a copy of the dense array elements in src. */
 extern JSObject *
@@ -69,11 +68,8 @@ NewDenseCopiedArray(JSContext *cx, uint32_t length, HandleObject src, uint32_t e
 
 /* Create a dense array from the given array values, which must be rooted */
 extern JSObject *
-NewDenseCopiedArray(JSContext *cx, uint32_t length, const Value *values, RawObject proto = NULL);
-
-/* Create a sparse array. */
-extern JSObject *
-NewSlowEmptyArray(JSContext *cx);
+NewDenseCopiedArray(JSContext *cx, uint32_t length, const Value *values, RawObject proto = NULL,
+                    NewObjectKind newKind = GenericObject);
 
 /* Get the common shape used by all dense arrays with a prototype at globalObj. */
 extern UnrootedShape
@@ -86,12 +82,7 @@ extern JSBool
 SetLengthProperty(JSContext *cx, HandleObject obj, double length);
 
 extern JSBool
-array_defineElement(JSContext *cx, HandleObject obj, uint32_t index, HandleValue value,
-                    PropertyOp getter, StrictPropertyOp setter, unsigned attrs);
-
-extern JSBool
-array_deleteElement(JSContext *cx, HandleObject obj, uint32_t index,
-                    MutableHandleValue rval, JSBool strict);
+ObjectMayHaveExtraIndexedProperties(JSObject *obj);
 
 /*
  * Copy 'length' elements from aobj to vp.
@@ -141,16 +132,6 @@ js_ArrayInfo(JSContext *cx, unsigned argc, js::Value *vp);
  */
 extern JSBool
 js_NewbornArrayPush(JSContext *cx, js::HandleObject obj, const js::Value &v);
-
-JSBool
-js_PrototypeHasIndexedProperties(JSObject *obj);
-
-/*
- * Utility to access the value from the id returned by array_lookupProperty.
- */
-JSBool
-js_GetDenseArrayElementValue(JSContext *cx, js::HandleObject obj, jsid id,
-                             js::Value *vp);
 
 /* Array constructor native. Exposed only so the JIT can know its address. */
 JSBool

@@ -29,7 +29,7 @@ JSFunction::initAtom(JSAtom *atom)
 }
 
 inline void
-JSFunction::setGuessedAtom(JSAtom *atom)
+JSFunction::setGuessedAtom(js::UnrootedAtom atom)
 {
     JS_ASSERT(atom_ == NULL);
     JS_ASSERT(atom != NULL);
@@ -107,66 +107,6 @@ JSFunction::getExtendedSlot(size_t which) const
 
 namespace js {
 
-static JS_ALWAYS_INLINE bool
-IsFunctionObject(const js::Value &v)
-{
-    return v.isObject() && v.toObject().isFunction();
-}
-
-static JS_ALWAYS_INLINE bool
-IsFunctionObject(const js::Value &v, JSFunction **fun)
-{
-    if (v.isObject() && v.toObject().isFunction()) {
-        *fun = v.toObject().toFunction();
-        return true;
-    }
-    return false;
-}
-
-static JS_ALWAYS_INLINE bool
-IsNativeFunction(const js::Value &v)
-{
-    JSFunction *fun;
-    return IsFunctionObject(v, &fun) && fun->isNative();
-}
-
-static JS_ALWAYS_INLINE bool
-IsNativeFunction(const js::Value &v, JSFunction **fun)
-{
-    return IsFunctionObject(v, fun) && (*fun)->isNative();
-}
-
-static JS_ALWAYS_INLINE bool
-IsNativeFunction(const js::Value &v, JSNative native)
-{
-    JSFunction *fun;
-    return IsFunctionObject(v, &fun) && fun->maybeNative() == native;
-}
-
-/*
- * When we have an object of a builtin class, we don't quite know what its
- * valueOf/toString methods are, since these methods may have been overwritten
- * or shadowed. However, we can still do better than the general case by
- * hard-coding the necessary properties for us to find the native we expect.
- *
- * TODO: a per-thread shape-based cache would be faster and simpler.
- */
-static JS_ALWAYS_INLINE bool
-ClassMethodIsNative(JSContext *cx, HandleObject obj, Class *clasp, HandleId methodid, JSNative native)
-{
-    JS_ASSERT(!obj->isProxy());
-    JS_ASSERT(obj->getClass() == clasp);
-
-    Value v;
-    if (!HasDataProperty(cx, obj, methodid, &v)) {
-        RootedObject proto(cx, obj->getProto());
-        if (!proto || proto->getClass() != clasp || !HasDataProperty(cx, proto, methodid, &v))
-            return false;
-    }
-
-    return js::IsNativeFunction(v, native);
-}
-
 extern JS_ALWAYS_INLINE bool
 SameTraceType(const Value &lhs, const Value &rhs)
 {
@@ -223,18 +163,6 @@ SkipScopeParent(JSObject *parent)
 }
 
 inline JSFunction *
-CloneFunctionObject(JSContext *cx, HandleFunction fun, HandleObject parent,
-                    gc::AllocKind kind = JSFunction::FinalizeKind)
-{
-    JS_ASSERT(parent);
-    RootedObject proto(cx, parent->global().getOrCreateFunctionPrototype(cx));
-    if (!proto)
-        return NULL;
-
-    return js_CloneFunctionObject(cx, fun, parent, proto, kind);
-}
-
-inline JSFunction *
 CloneFunctionObjectIfNotSingleton(JSContext *cx, HandleFunction fun, HandleObject parent)
 {
     /*
@@ -243,13 +171,22 @@ CloneFunctionObjectIfNotSingleton(JSContext *cx, HandleFunction fun, HandleObjec
      * was called pessimistically, and we need to preserve the type's
      * property that if it is singleton there is only a single object
      * with its type in existence.
+     *
+     * For functions inner to run once lambda, it may be possible that
+     * the lambda runs multiple times and we repeatedly clone it. In these
+     * cases, fall through to CloneFunctionObject, which will deep clone
+     * the function's script.
      */
     if (fun->hasSingletonType()) {
-        Rooted<JSObject*> obj(cx, SkipScopeParent(parent));
-        if (!JSObject::setParent(cx, fun, obj))
-            return NULL;
-        fun->setEnvironment(parent);
-        return fun;
+        RootedScript script(cx, fun->getOrCreateScript(cx));
+        if (!script->hasBeenCloned) {
+            script->hasBeenCloned = true;
+            Rooted<JSObject*> obj(cx, SkipScopeParent(parent));
+            if (!JSObject::setParent(cx, fun, obj))
+                return NULL;
+            fun->setEnvironment(parent);
+            return fun;
+        }
     }
 
     return CloneFunctionObject(cx, fun, parent);

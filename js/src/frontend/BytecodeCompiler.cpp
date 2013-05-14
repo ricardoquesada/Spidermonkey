@@ -47,11 +47,12 @@ SetSourceMap(JSContext *cx, TokenStream &tokenStream, ScriptSource *ss, Unrooted
 }
 
 UnrootedScript
-frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *callerFrame,
+frontend::CompileScript(JSContext *cx, HandleObject scopeChain, AbstractFramePtr callerFrame,
                         const CompileOptions &options,
                         const jschar *chars, size_t length,
                         JSString *source_ /* = NULL */,
-                        unsigned staticLevel /* = 0 */)
+                        unsigned staticLevel /* = 0 */,
+                        SourceCompressionToken *extraSct /* = NULL */)
 {
     RootedString source(cx, source_);
 
@@ -81,11 +82,12 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
     ScriptSource *ss = cx->new_<ScriptSource>();
     if (!ss)
         return UnrootedScript(NULL);
-    ScriptSourceHolder ssh(cx->runtime, ss);
-    SourceCompressionToken sct(cx);
+    ScriptSourceHolder ssh(ss);
+    SourceCompressionToken mysct(cx);
+    SourceCompressionToken *sct = (extraSct) ? extraSct : &mysct;
     switch (options.sourcePolicy) {
       case CompileOptions::SAVE_SOURCE:
-        if (!ss->setSourceCopy(cx, chars, length, false, &sct))
+        if (!ss->setSourceCopy(cx, chars, length, false, sct))
             return UnrootedScript(NULL);
         break;
       case CompileOptions::LAZY_SOURCE:
@@ -98,7 +100,7 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
     Parser parser(cx, options, chars, length, /* foldConstants = */ true);
     if (!parser.init())
         return UnrootedScript(NULL);
-    parser.sct = &sct;
+    parser.sct = sct;
 
     GlobalSharedContext globalsc(cx, scopeChain, StrictModeFromContext(cx));
 
@@ -106,7 +108,7 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
     if (!pc.init())
         return UnrootedScript(NULL);
 
-    bool savedCallerFun = options.compileAndGo && callerFrame && callerFrame->isFunctionFrame();
+    bool savedCallerFun = options.compileAndGo && callerFrame && callerFrame.isFunctionFrame();
     Rooted<JSScript*> script(cx, JSScript::Create(cx, NullPtr(), savedCallerFun,
                                                   options, staticLevel, ss, 0, length));
     if (!script)
@@ -129,7 +131,7 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
         return UnrootedScript(NULL);
 
     /* If this is a direct call to eval, inherit the caller's strictness.  */
-    if (callerFrame && callerFrame->script()->strict)
+    if (callerFrame && callerFrame.script()->strict)
         globalsc.strict = true;
 
     if (options.compileAndGo) {
@@ -138,32 +140,25 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
              * Save eval program source in script->atoms[0] for the
              * eval cache (see EvalCacheLookup in jsobj.cpp).
              */
-            JSAtom *atom = AtomizeString(cx, source);
+            JSAtom *atom = AtomizeString<CanGC>(cx, source);
             jsatomid _;
             if (!atom || !bce.makeAtomIndex(atom, &_))
                 return UnrootedScript(NULL);
         }
 
-        if (callerFrame && callerFrame->isFunctionFrame()) {
+        if (callerFrame && callerFrame.isFunctionFrame()) {
             /*
              * An eval script in a caller frame needs to have its enclosing
              * function captured in case it refers to an upvar, and someone
              * wishes to decompile it while it's running.
              */
-            JSFunction *fun = callerFrame->fun();
+            JSFunction *fun = callerFrame.fun();
             ObjectBox *funbox = parser.newFunctionBox(fun, &pc, fun->strict());
             if (!funbox)
                 return UnrootedScript(NULL);
             bce.objectList.add(funbox);
         }
     }
-
-    ParseNode *pn;
-#if JS_HAS_XML_SUPPORT
-    pn = NULL;
-    bool onlyXML;
-    onlyXML = true;
-#endif
 
     TokenStream &tokenStream = parser.tokenStream;
     bool canHaveDirectives = true;
@@ -176,7 +171,7 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
             return UnrootedScript(NULL);
         }
 
-        pn = parser.statement();
+        ParseNode *pn = parser.statement();
         if (!pn)
             return UnrootedScript(NULL);
 
@@ -185,7 +180,7 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
                 return UnrootedScript(NULL);
         }
 
-        if (!FoldConstants(cx, pn, &parser))
+        if (!FoldConstants(cx, &pn, &parser))
             return UnrootedScript(NULL);
         if (!NameFunctions(cx, pn))
             return UnrootedScript(NULL);
@@ -193,31 +188,14 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
         if (!EmitTree(cx, &bce, pn))
             return UnrootedScript(NULL);
 
-#if JS_HAS_XML_SUPPORT
-        if (!pn->isKind(PNK_SEMI) || !pn->pn_kid || !pn->pn_kid->isXMLItem())
-            onlyXML = false;
-#endif
         parser.freeTree(pn);
     }
 
     if (!SetSourceMap(cx, tokenStream, ss, script))
         return UnrootedScript(NULL);
 
-#if JS_HAS_XML_SUPPORT
-    /*
-     * Prevent XML data theft via <script src="http://victim.com/foo.xml">.
-     * For background, see:
-     *
-     * https://bugzilla.mozilla.org/show_bug.cgi?id=336551
-     */
-    if (pn && onlyXML && !callerFrame) {
-        parser.reportError(NULL, JSMSG_XML_WHOLE_PROGRAM);
-        return UnrootedScript(NULL);
-    }
-#endif
-
     // It's an error to use |arguments| in a function that has a rest parameter.
-    if (callerFrame && callerFrame->isFunctionFrame() && callerFrame->fun()->hasRest()) {
+    if (callerFrame && callerFrame.isFunctionFrame() && callerFrame.fun()->hasRest()) {
         HandlePropertyName arguments = cx->names().arguments;
         for (AtomDefnRange r = pc.lexdeps->all(); !r.empty(); r.popFront()) {
             if (r.front().key() == arguments) {
@@ -239,7 +217,7 @@ frontend::CompileScript(JSContext *cx, HandleObject scopeChain, StackFrame *call
 
     bce.tellDebuggerAboutCompiledScript(cx);
 
-    if (!sct.complete())
+    if (sct == &mysct && !sct->complete())
         return UnrootedScript(NULL);
 
     return script;
@@ -256,7 +234,7 @@ frontend::CompileFunctionBody(JSContext *cx, HandleFunction fun, CompileOptions 
     ScriptSource *ss = cx->new_<ScriptSource>();
     if (!ss)
         return false;
-    ScriptSourceHolder ssh(cx->runtime, ss);
+    ScriptSourceHolder ssh(ss);
     SourceCompressionToken sct(cx);
     JS_ASSERT(options.sourcePolicy != CompileOptions::LAZY_SOURCE);
     if (options.sourcePolicy == CompileOptions::SAVE_SOURCE) {
@@ -275,11 +253,12 @@ frontend::CompileFunctionBody(JSContext *cx, HandleFunction fun, CompileOptions 
     fun->setArgCount(formals.length());
 
     /* FIXME: make Function format the source for a function definition. */
-    ParseNode *fn = FunctionNode::create(PNK_NAME, &parser);
+    ParseNode *fn = FunctionNode::create(PNK_FUNCTION, &parser);
     if (!fn)
         return false;
 
     fn->pn_body = NULL;
+    fn->pn_funbox = NULL;
     fn->pn_cookie.makeFree();
 
     ParseNode *argsbody = ListNode::create(PNK_ARGSBODY, &parser);
@@ -317,7 +296,8 @@ frontend::CompileFunctionBody(JSContext *cx, HandleFunction fun, CompileOptions 
             return false;
     }
 
-    BytecodeEmitter funbce(/* parent = */ NULL, &parser, funbox, script, /* callerFrame = */ NULL,
+    BytecodeEmitter funbce(/* parent = */ NULL, &parser, funbox, script,
+                           /* callerFrame = */ NullFramePtr(),
                            /* hasGlobalScope = */ false, options.lineno);
     if (!funbce.init())
         return false;

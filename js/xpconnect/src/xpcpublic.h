@@ -15,6 +15,7 @@
 #include "jspubtd.h"
 #include "jsproxy.h"
 #include "js/HeapAPI.h"
+#include "js/GCAPI.h"
 
 #include "nsISupports.h"
 #include "nsIPrincipal.h"
@@ -23,6 +24,8 @@
 #include "nsTArray.h"
 #include "mozilla/dom/DOMJSClass.h"
 #include "nsMathUtils.h"
+#include "nsStringBuffer.h"
+#include "mozilla/dom/BindingDeclarations.h"
 
 class nsIPrincipal;
 class nsIXPConnectWrappedJS;
@@ -40,6 +43,20 @@ JSObject *
 TransplantObjectWithWrapper(JSContext *cx,
                             JSObject *origobj, JSObject *origwrapper,
                             JSObject *targetobj, JSObject *targetwrapper);
+
+// Return a raw XBL scope object corresponding to contentScope, which must
+// be an object whose global is a DOM window.
+//
+// The return value is not wrapped into cx->compartment, so be sure to enter
+// its compartment before doing anything meaningful.
+JSObject *
+GetXBLScope(JSContext *cx, JSObject *contentScope);
+
+// Returns whether XBL scopes have been explicitly disabled for code running
+// in this compartment. See the comment around mAllowXBLScope.
+bool
+AllowXBLScope(JSCompartment *c);
+
 } /* namespace xpc */
 
 #define XPCONNECT_GLOBAL_FLAGS                                                \
@@ -50,9 +67,11 @@ TransplantObjectWithWrapper(JSContext *cx,
 void
 TraceXPCGlobal(JSTracer *trc, JSObject *obj);
 
-// XXX where should this live?
+// XXX These should be moved into XPCJSRuntime!
+NS_EXPORT_(bool)
+xpc_LocalizeRuntime(JSRuntime *rt);
 NS_EXPORT_(void)
-xpc_LocalizeContext(JSContext *cx);
+xpc_DelocalizeRuntime(JSRuntime *rt);
 
 nsresult
 xpc_MorphSlimWrapper(JSContext *cx, nsISupports *tomorph);
@@ -205,6 +224,54 @@ xpc_ActivateDebugMode();
 
 class nsIMemoryMultiReporterCallback;
 
+// readable string conversions, static methods and members only
+class XPCStringConvert
+{
+public:
+
+    // If the string shares the readable's buffer, that buffer will
+    // get assigned to *sharedBuffer.  Otherwise null will be
+    // assigned.
+    static jsval ReadableToJSVal(JSContext *cx, const nsAString &readable,
+                                 nsStringBuffer** sharedBuffer);
+
+    // Convert the given stringbuffer/length pair to a jsval
+    static MOZ_ALWAYS_INLINE bool
+    StringBufferToJSVal(JSContext* cx, nsStringBuffer* buf, uint32_t length,
+                        JS::Value* rval, bool* sharedBuffer)
+    {
+        if (buf == sCachedBuffer &&
+            js::GetGCThingCompartment(sCachedString) == js::GetContextCompartment(cx)) {
+            *rval = JS::StringValue(sCachedString);
+            *sharedBuffer = false;
+            return true;
+        }
+
+        JSString *str = JS_NewExternalString(cx,
+                                             static_cast<jschar*>(buf->Data()),
+                                             length, &sDOMStringFinalizer);
+        if (!str) {
+            return false;
+        }
+        *rval = JS::StringValue(str);
+        sCachedString = str;
+        sCachedBuffer = buf;
+        *sharedBuffer = true;
+        return true;
+    }
+
+    static void ClearCache();
+
+private:
+    static nsStringBuffer* sCachedBuffer;
+    static JSString* sCachedString;
+    static const JSStringFinalizer sDOMStringFinalizer;
+
+    static void FinalizeDOMString(const JSStringFinalizer *fin, jschar *chars);
+
+    XPCStringConvert();         // not implemented
+};
+
 namespace xpc {
 
 bool DeferredRelease(nsISupports *obj);
@@ -229,7 +296,51 @@ inline bool StringToJsval(JSContext *cx, nsAString &str, JS::Value *rval)
     return NonVoidStringToJsval(cx, str, rval);
 }
 
+/**
+ * As above, but for mozilla::dom::DOMString.
+ */
+MOZ_ALWAYS_INLINE
+bool NonVoidStringToJsval(JSContext* cx, mozilla::dom::DOMString& str,
+                          JS::Value *rval)
+{
+    if (!str.HasStringBuffer()) {
+        // It's an actual XPCOM string
+        return NonVoidStringToJsval(cx, str.AsAString(), rval);
+    }
+
+    uint32_t length = str.StringBufferLength();
+    if (length == 0) {
+        *rval = JS_GetEmptyStringValue(cx);
+        return true;
+    }
+
+    nsStringBuffer* buf = str.StringBuffer();
+    bool shared;
+    if (!XPCStringConvert::StringBufferToJSVal(cx, buf, length, rval,
+                                               &shared)) {
+        return false;
+    }
+    if (shared) {
+        // JS now needs to hold a reference to the buffer
+        buf->AddRef();
+    }
+    return true;
+}
+
+MOZ_ALWAYS_INLINE
+bool StringToJsval(JSContext* cx, mozilla::dom::DOMString& str,
+                   JS::Value *rval)
+{
+    if (str.IsNull()) {
+        *rval = JS::NullValue();
+        return true;
+    }
+    return NonVoidStringToJsval(cx, str, rval);
+}
+
 nsIPrincipal *GetCompartmentPrincipal(JSCompartment *compartment);
+
+bool IsXBLScope(JSCompartment *compartment);
 
 void DumpJSHeap(FILE* file);
 

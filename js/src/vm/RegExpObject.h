@@ -14,6 +14,8 @@
 #include "jscntxt.h"
 #include "jsobj.h"
 
+#include "gc/Barrier.h"
+#include "gc/Marking.h"
 #include "js/TemplateLib.h"
 #include "vm/MatchPairs.h"
 
@@ -107,6 +109,7 @@ CloneRegExpObject(JSContext *cx, JSObject *obj, JSObject *proto);
 class RegExpShared
 {
     friend class RegExpCompartment;
+    friend class RegExpStatics;
     friend class RegExpGuard;
 
     typedef frontend::TokenStream TokenStream;
@@ -120,11 +123,12 @@ class RegExpShared
 #endif
 
     /*
-     * Source to the RegExp. The RegExpShared must either be protected by a
-     * RegExpGuard, which handles rooting for stacky RegExpShareds,
-     * or trace() must be explicitly called during marking.
+     * Source to the RegExp, for lazy compilation.
+     * The source must be rooted while activeUseCount is non-zero
+     * via RegExpGuard or explicit calls to trace().
      */
     JSAtom *           source;
+
     RegExpFlag         flags;
     unsigned           parenCount;
 
@@ -149,7 +153,10 @@ class RegExpShared
     RegExpShared(JSRuntime *rt, JSAtom *source, RegExpFlag flags);
     ~RegExpShared();
 
-    void trace(JSTracer *trc);
+    /* Explicit trace function for use by the RegExpStatics and JITs. */
+    void trace(JSTracer *trc) {
+        MarkStringUnbarriered(trc, &source, "regexpshared source");
+    }
 
     /* Static functions to expose some Yarr logic. */
     static inline bool isJITRuntimeEnabled(JSContext *cx);
@@ -182,7 +189,7 @@ class RegExpShared
     bool multiline() const              { return flags & MultilineFlag; }
     bool sticky() const                 { return flags & StickyFlag; }
 
-#if ENABLE_YARR_JIT
+#ifdef ENABLE_YARR_JIT
     bool hasCode() const                { return codeBlock.has16BitCode(); }
     bool hasMatchOnlyCode() const       { return codeBlock.has16BitCodeMatchOnly(); }
 #else
@@ -212,28 +219,13 @@ class RegExpGuard
     void operator=(const RegExpGuard &) MOZ_DELETE;
 
   public:
-    RegExpGuard(JSContext *cx)
-      : re_(NULL), source_(cx)
-    { }
-
-    RegExpGuard(JSContext *cx, RegExpShared &re)
-      : re_(&re), source_(cx, re.source)
-    {
-        re_->incRef();
-    }
-
-    ~RegExpGuard() {
-        if (re_)
-            re_->decRef();
-    }
+    inline RegExpGuard(JSContext *cx);
+    inline RegExpGuard(JSContext *cx, RegExpShared &re);
+    inline ~RegExpGuard();
 
   public:
-    void init(RegExpShared &re) {
-        JS_ASSERT(!re_);
-        re_ = &re;
-        re_->incRef();
-        source_ = re.source;
-    }
+    inline void init(RegExpShared &re);
+    inline void release();
 
     bool initialized() const { return !!re_; }
     RegExpShared *re() const { JS_ASSERT(initialized()); return re_; }
@@ -246,9 +238,12 @@ class RegExpCompartment
     struct Key {
         JSAtom *atom;
         uint16_t flag;
+
         Key() {}
         Key(JSAtom *atom, RegExpFlag flag)
-          : atom(atom), flag(flag) {}
+          : atom(atom), flag(flag)
+        { }
+
         typedef Key Lookup;
         static HashNumber hash(const Lookup &l) {
             return DefaultHasher<JSAtom *>::hash(l.atom) ^ (l.flag << 1);
@@ -283,7 +278,7 @@ class RegExpCompartment
     bool get(JSContext *cx, JSAtom *source, RegExpFlag flags, RegExpGuard *g);
 
     /* Like 'get', but compile 'maybeOpt' (if non-null). */
-    bool get(JSContext *cx, JSAtom *source, JSString *maybeOpt, RegExpGuard *g);
+    bool get(JSContext *cx, HandleAtom source, JSString *maybeOpt, RegExpGuard *g);
 
     size_t sizeOfExcludingThis(JSMallocSizeOfFun mallocSizeOf);
 };
@@ -361,7 +356,7 @@ class RegExpObject : public JSObject
      */
     UnrootedShape assignInitialShape(JSContext *cx);
 
-    inline bool init(JSContext *cx, HandleAtom source, RegExpFlag flags);
+    bool init(JSContext *cx, HandleAtom source, RegExpFlag flags);
 
     /*
      * Precondition: the syntax for |source| has already been validated.

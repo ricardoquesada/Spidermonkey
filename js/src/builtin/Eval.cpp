@@ -25,10 +25,10 @@ static void
 AssertInnerizedScopeChain(JSContext *cx, JSObject &scopeobj)
 {
 #ifdef DEBUG
-    for (JSObject *o = &scopeobj; o; o = o->enclosingScope()) {
-        if (JSObjectOp op = o->getClass()->ext.innerObject) {
-            Rooted<JSObject*> obj(cx, o);
-            JS_ASSERT(op(cx, obj) == o);
+    RootedObject obj(cx);
+    for (obj = &scopeobj; obj; obj = obj->enclosingScope()) {
+        if (JSObjectOp op = obj->getClass()->ext.innerObject) {
+            JS_ASSERT(op(cx, obj) == obj);
         }
     }
 #endif
@@ -156,14 +156,15 @@ enum EvalType { DIRECT_EVAL = EXECUTE_DIRECT_EVAL, INDIRECT_EVAL = EXECUTE_INDIR
 //
 // On success, store the completion value in call.rval and return true.
 static bool
-EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, StackFrame *caller,
+EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, AbstractFramePtr caller,
            HandleObject scopeobj)
 {
-    JS_ASSERT((evalType == INDIRECT_EVAL) == (caller == NULL));
+    JS_ASSERT((evalType == INDIRECT_EVAL) == !caller);
     JS_ASSERT_IF(evalType == INDIRECT_EVAL, scopeobj->isGlobal());
     AssertInnerizedScopeChain(cx, *scopeobj);
 
-    if (!scopeobj->global().isRuntimeCodeGenEnabled(cx)) {
+    Rooted<GlobalObject*> scopeObjGlobal(cx, &scopeobj->global());
+    if (!GlobalObject::isRuntimeCodeGenEnabled(cx, scopeObjGlobal)) {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_CSP_BLOCKED_EVAL);
         return false;
     }
@@ -187,15 +188,15 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, StackFrame *c
     unsigned staticLevel;
     RootedValue thisv(cx);
     if (evalType == DIRECT_EVAL) {
-        JS_ASSERT(!caller->runningInIon());
-        staticLevel = caller->script()->staticLevel + 1;
+        JS_ASSERT_IF(caller.isStackFrame(), !caller.asStackFrame()->runningInIon());
+        staticLevel = caller.script()->staticLevel + 1;
 
         // Direct calls to eval are supposed to see the caller's |this|. If we
         // haven't wrapped that yet, do so now, before we make a copy of it for
         // the eval code to use.
         if (!ComputeThis(cx, caller))
             return false;
-        thisv = caller->thisValue();
+        thisv = caller.thisValue();
     } else {
         JS_ASSERT(args.callee().global() == *scopeobj);
         staticLevel = 0;
@@ -226,7 +227,7 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, StackFrame *c
     if (length > 2 &&
         ((chars[0] == '[' && chars[length - 1] == ']') ||
         (chars[0] == '(' && chars[length - 1] == ')')) &&
-         (!caller || !caller->script()->strict))
+         (!caller || !caller.script()->strict))
     {
         // Remarkably, JavaScript syntax is not a superset of JSON syntax:
         // strings in JavaScript cannot contain the Unicode line and paragraph
@@ -257,8 +258,8 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, StackFrame *c
 
     JSPrincipals *principals = PrincipalsForCompiledCode(args, cx);
 
-    if (evalType == DIRECT_EVAL && caller->isNonEvalFunctionFrame())
-        esg.lookupInEvalCache(stableStr, caller->fun(), staticLevel);
+    if (evalType == DIRECT_EVAL && caller.isNonEvalFunctionFrame())
+        esg.lookupInEvalCache(stableStr, caller.fun(), staticLevel);
 
     if (!esg.foundScript()) {
         unsigned lineno;
@@ -283,7 +284,7 @@ EvalKernel(JSContext *cx, const CallArgs &args, EvalType evalType, StackFrame *c
     }
 
     return ExecuteKernel(cx, esg.script(), *scopeobj, thisv, ExecuteType(evalType),
-                         NULL /* evalInFrame */, args.rval().address());
+                         NullFramePtr() /* evalInFrame */, args.rval().address());
 }
 
 // We once supported a second argument to eval to use as the scope chain
@@ -318,7 +319,7 @@ js::IndirectEval(JSContext *cx, unsigned argc, Value *vp)
         return false;
 
     Rooted<GlobalObject*> global(cx, &args.callee().global());
-    return EvalKernel(cx, args, INDIRECT_EVAL, NULL, global);
+    return EvalKernel(cx, args, INDIRECT_EVAL, NullFramePtr(), global);
 }
 
 bool

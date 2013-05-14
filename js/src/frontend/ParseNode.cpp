@@ -5,6 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "builtin/Module.h"
 #include "frontend/ParseNode.h"
 #include "frontend/Parser.h"
 
@@ -25,54 +26,6 @@ using namespace js::frontend;
 JS_STATIC_ASSERT(pn_offsetof(pn_link) == pn_offsetof(dn_uses));
 
 #undef pn_offsetof
-
-void
-ParseNode::become(ParseNode *pn2)
-{
-    JS_ASSERT(!pn_defn);
-    JS_ASSERT(!pn2->isDefn());
-
-    JS_ASSERT(!pn_used);
-    if (pn2->isUsed()) {
-        ParseNode **pnup = &pn2->pn_lexdef->dn_uses;
-        while (*pnup != pn2)
-            pnup = &(*pnup)->pn_link;
-        *pnup = this;
-        pn_link = pn2->pn_link;
-        pn_used = true;
-        pn2->pn_link = NULL;
-        pn2->pn_used = false;
-    }
-
-    pn_type = pn2->pn_type;
-    pn_op = pn2->pn_op;
-    pn_arity = pn2->pn_arity;
-    pn_parens = pn2->pn_parens;
-    pn_u = pn2->pn_u;
-
-    /*
-     * If any pointers are pointing to pn2, change them to point to this
-     * instead, since pn2 will be cleared and probably recycled.
-     */
-    if (pn_arity == PN_LIST && !pn_head) {
-        /* Empty list: fix up the pn_tail pointer. */
-        JS_ASSERT(pn_count == 0);
-        JS_ASSERT(pn_tail == &pn2->pn_head);
-        pn_tail = &pn_head;
-    }
-
-    pn2->clear();
-}
-
-void
-ParseNode::clear()
-{
-    pn_type = PNK_LIMIT;
-    setOp(JSOP_NOP);
-    pn_used = pn_defn = false;
-    pn_arity = PN_NULLARY;
-    pn_parens = false;
-}
 
 #ifdef DEBUG
 void
@@ -224,10 +177,6 @@ PushNodeChildren(ParseNode *pn, NodeStack *stack)
         stack->pushUnlessNull(pn->pn_kid);
         break;
       case PN_NULLARY:
-        /*
-         * E4X function namespace nodes are PN_NULLARY, but can appear on use
-         * lists.
-         */
         return !pn->isUsed() && !pn->isDefn();
       default:
         ;
@@ -312,40 +261,44 @@ ParseNode::create(ParseNodeKind kind, ParseNodeArity arity, Parser *parser)
 }
 
 ParseNode *
-ParseNode::append(ParseNodeKind kind, JSOp op, ParseNode *left, ParseNode *right)
+ParseNode::append(ParseNodeKind kind, JSOp op, ParseNode *left, ParseNode *right, Parser *parser)
 {
     if (!left || !right)
         return NULL;
 
     JS_ASSERT(left->isKind(kind) && left->isOp(op) && (js_CodeSpec[op].format & JOF_LEFTASSOC));
 
-    if (left->pn_arity != PN_LIST) {
+    ListNode *list;
+    if (left->pn_arity == PN_LIST) {
+        list = &left->as<ListNode>();
+    } else {
         ParseNode *pn1 = left->pn_left, *pn2 = left->pn_right;
-        left->setArity(PN_LIST);
-        left->pn_parens = false;
-        left->initList(pn1);
-        left->append(pn2);
+        list = parser->new_<ListNode>(kind, op, pn1);
+        if (!list)
+            return NULL;
+        list->append(pn2);
         if (kind == PNK_ADD) {
             if (pn1->isKind(PNK_STRING))
-                left->pn_xflags |= PNX_STRCAT;
+                list->pn_xflags |= PNX_STRCAT;
             else if (!pn1->isKind(PNK_NUMBER))
-                left->pn_xflags |= PNX_CANTFOLD;
+                list->pn_xflags |= PNX_CANTFOLD;
             if (pn2->isKind(PNK_STRING))
-                left->pn_xflags |= PNX_STRCAT;
+                list->pn_xflags |= PNX_STRCAT;
             else if (!pn2->isKind(PNK_NUMBER))
-                left->pn_xflags |= PNX_CANTFOLD;
+                list->pn_xflags |= PNX_CANTFOLD;
         }
     }
-    left->append(right);
-    left->pn_pos.end = right->pn_pos.end;
+
+    list->append(right);
+    list->pn_pos.end = right->pn_pos.end;
     if (kind == PNK_ADD) {
         if (right->isKind(PNK_STRING))
-            left->pn_xflags |= PNX_STRCAT;
+            list->pn_xflags |= PNX_STRCAT;
         else if (!right->isKind(PNK_NUMBER))
-            left->pn_xflags |= PNX_CANTFOLD;
+            list->pn_xflags |= PNX_CANTFOLD;
     }
 
-    return left;
+    return list;
 }
 
 ParseNode *
@@ -360,7 +313,7 @@ ParseNode::newBinaryOrAppend(ParseNodeKind kind, JSOp op, ParseNode *left, Parse
      * a list to reduce js::FoldConstants and js::frontend::EmitTree recursion.
      */
     if (left->isKind(kind) && left->isOp(op) && (js_CodeSpec[op].format & JOF_LEFTASSOC))
-        return append(kind, op, left, right);
+        return append(kind, op, left, right, parser);
 
     /*
      * Fold constant addition immediately, to conserve node space and, what's
@@ -498,7 +451,6 @@ CloneParseTree(ParseNode *opn, Parser *parser)
         break;
 
       case PN_NULLARY:
-        // Even PN_NULLARY may have data (xmlpi for E4X -- what a botch).
         pn->pn_u = opn->pn_u;
         break;
 
@@ -805,6 +757,29 @@ ObjectBox::ObjectBox(JSFunction *function, ObjectBox* traceLink)
     emitLink(NULL)
 {
     JS_ASSERT(object->isFunction());
+    JS_ASSERT(asFunctionBox()->function() == function);
+}
+
+ModuleBox *
+ObjectBox::asModuleBox()
+{
+    JS_ASSERT(isModuleBox());
+    return static_cast<ModuleBox *>(this);
+}
+
+FunctionBox *
+ObjectBox::asFunctionBox()
+{
+    JS_ASSERT(isFunctionBox());
+    return static_cast<FunctionBox *>(this);
+}
+
+ObjectBox::ObjectBox(Module *module, ObjectBox* traceLink)
+  : object(module),
+    traceLink(traceLink),
+    emitLink(NULL)
+{
+    JS_ASSERT(object->isModule());
 }
 
 void
@@ -813,6 +788,8 @@ ObjectBox::trace(JSTracer *trc)
     ObjectBox *box = this;
     while (box) {
         MarkObjectRoot(trc, &box->object, "parser.object");
+        if (box->isModuleBox())
+            box->asModuleBox()->bindings.trace(trc);
         if (box->isFunctionBox())
             box->asFunctionBox()->bindings.trace(trc);
         box = box->traceLink;

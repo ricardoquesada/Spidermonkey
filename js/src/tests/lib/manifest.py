@@ -3,7 +3,7 @@
 # This includes classes for representing and parsing JS manifests.
 
 import os, os.path, re, sys
-from subprocess import *
+from subprocess import Popen, PIPE
 
 from tests import TestCase
 
@@ -164,9 +164,6 @@ def _parse_one(testcase, xul_tester):
             # silentfails use tons of memory, and Darwin doesn't support ulimit.
             if xul_tester.test("xulRuntime.OS == 'Darwin'"):
                 testcase.expect = testcase.enable = False
-            pos += 1
-        elif parts[pos] == 'pref(javascript.options.xml.content,true)':
-            testcase.options += ['-e', 'options("allow_xml");']
             pos += 1
         else:
             print 'warning: invalid manifest line element "%s"'%parts[pos]

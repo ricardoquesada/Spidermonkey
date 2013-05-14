@@ -116,7 +116,7 @@ cppunittests-remote:
 			--localLib=$(DEPTH)/dist/$(MOZ_APP_NAME) \
 			--dm_trans=$(DM_TRANS) \
 			--deviceIP=${TEST_DEVICE} \
- 			$(subst .cpp,$(BIN_SUFFIX),$(CPP_UNIT_TESTS)) $(EXTRA_TEST_ARGS); \
+			$(subst .cpp,$(BIN_SUFFIX),$(CPP_UNIT_TESTS)) $(EXTRA_TEST_ARGS); \
 	else \
 		echo "please prepare your host with environment variables for TEST_DEVICE"; \
 	fi
@@ -1100,6 +1100,10 @@ else
 normalizepath = $(1)
 endif
 
+ifneq (,$(value JAVAFILES)$(value RESFILES))
+  include $(topsrcdir)/config/makefiles/java-build.mk
+endif
+
 _srcdir = $(call normalizepath,$(srcdir))
 ifdef JAVA_SOURCEPATH
 SP = $(subst $(SPACE),$(SEP),$(call normalizepath,$(strip $(JAVA_SOURCEPATH))))
@@ -1437,11 +1441,30 @@ $(FINAL_TARGET)/chrome: $(call mkdir_deps,$(FINAL_TARGET)/chrome)
 
 ifneq (,$(wildcard $(JAR_MANIFEST)))
 ifndef NO_DIST_INSTALL
+
+ifdef XPI_NAME
+ifdef XPI_ROOT_APPID
+# For add-on packaging we may specify that an application
+# sub-dir should be added to the root chrome manifest with
+# a specific application id.
+MAKE_JARS_FLAGS += --root-manifest-entry-appid="$(XPI_ROOT_APPID)"
+endif
+
+# if DIST_SUBDIR is defined but XPI_ROOT_APPID is not there's
+# no way langpacks will get packaged right, so error out.
+ifneq (,$(DIST_SUBDIR))
+ifndef XPI_ROOT_APPID
+$(error XPI_ROOT_APPID is not defined - langpacks will break.)
+endif
+endif
+endif
+
 libs realchrome:: $(CHROME_DEPS) $(FINAL_TARGET)/chrome
 	$(PYTHON) $(MOZILLA_DIR)/config/JarMaker.py \
 	  $(QUIET) -j $(FINAL_TARGET)/chrome \
 	  $(MAKE_JARS_FLAGS) $(XULPPFLAGS) $(DEFINES) $(ACDEFINES) \
 	  $(JAR_MANIFEST)
+
 endif
 endif
 
@@ -1565,11 +1588,13 @@ endif
 
 # If we're using binary nsinstall and it's not built yet, fallback to python nsinstall.
 ifneq (,$(filter $(CONFIG_TOOLS)/nsinstall$(HOST_BIN_SUFFIX),$(install_cmd)))
-nsinstall_is_usable = $(if $(wildcard $(CONFIG_TOOLS)/nsinstall$(HOST_BIN_SUFFIX)),$(eval nsinstall_is_usable := yes)yes)
+ifeq (,$(wildcard $(CONFIG_TOOLS)/nsinstall$(HOST_BIN_SUFFIX)))
+nsinstall_is_usable = $(if $(wildcard $(CONFIG_TOOLS)/nsinstall$(HOST_BIN_SUFFIX)),yes)
 
 define install_cmd_override
 $(1): install_cmd = $$(if $$(nsinstall_is_usable),$$(INSTALL),$$(NSINSTALL_PY)) $$(1)
 endef
+endif
 endif
 
 define install_file_template
@@ -1716,8 +1741,17 @@ CHECK_FROZEN_VARIABLES = $(foreach var,$(FREEZE_VARIABLES), \
 libs export::
 	$(CHECK_FROZEN_VARIABLES)
 
-default all::
-	if test -d $(DIST)/bin ; then touch $(DIST)/bin/.purgecaches ; fi
+PURGECACHES_DIRS ?= $(DIST)/bin
+ifdef MOZ_WEBAPP_RUNTIME
+PURGECACHES_DIRS += $(DIST)/bin/webapprt
+endif
+
+PURGECACHES_FILES = $(addsuffix /.purgecaches,$(PURGECACHES_DIRS))
+
+default all:: $(PURGECACHES_FILES)
+
+$(PURGECACHES_FILES):
+	if test -d $(@D) ; then touch $@ ; fi
 
 .DEFAULT_GOAL ?= default
 

@@ -10,11 +10,13 @@
 #include "jscntxt.h"
 #include "jsgc.h"
 #include "jspropertytree.h"
-#include "jsscope.h"
+
+#include "vm/Shape.h"
 
 #include "jsgcinlines.h"
 #include "jsobjinlines.h"
-#include "jsscopeinlines.h"
+
+#include "vm/Shape-inl.h"
 
 using namespace js;
 
@@ -157,16 +159,16 @@ PropertyTree::getChild(JSContext *cx, Shape *parent_, uint32_t nfixed, const Sta
 
 #ifdef JSGC_INCREMENTAL
         if (shape) {
-            JSCompartment *comp = shape->compartment();
-            if (comp->needsBarrier()) {
+            JS::Zone *zone = shape->zone();
+            if (zone->needsBarrier()) {
                 /*
                  * We need a read barrier for the shape tree, since these are weak
                  * pointers.
                  */
                 Shape *tmp = shape;
-                MarkShapeUnbarriered(comp->barrierTracer(), &tmp, "read barrier");
+                MarkShapeUnbarriered(zone->barrierTracer(), &tmp, "read barrier");
                 JS_ASSERT(tmp == shape);
-            } else if (comp->isGCSweeping() && !shape->isMarked() &&
+            } else if (zone->isGCSweeping() && !shape->isMarked() &&
                        !shape->arenaHeader()->allocatedDuringIncremental)
             {
                 /*
@@ -200,37 +202,42 @@ PropertyTree::getChild(JSContext *cx, Shape *parent_, uint32_t nfixed, const Sta
 }
 
 void
+Shape::sweep()
+{
+    if (inDictionary())
+        return;
+
+    /*
+     * We detach the child from the parent if the parent is reachable.
+     *
+     * Note that due to incremental sweeping, the parent pointer may point
+     * to the original reachable parent, or it may point to a new live
+     * object allocated in the same cell that used to hold the parent.
+     *
+     * There are three cases:
+     *
+     * Case 1: parent is not marked - parent is unreachable, may have been
+     *         finalized, and the cell may subsequently have been
+     *         reallocated to a compartment that is not being marked (cells
+     *         are marked when allocated in a compartment that is currenly
+     *         being marked by the collector).
+     *
+     * Case 2: parent is marked and is in a different compartment - parent
+     *         has been freed and reallocated to compartment that was being
+     *         marked.
+     *
+     * Case 3: parent is marked and is in the same compartment - parent is
+     *         stil reachable and we need to detach from it.
+     */
+    if (parent && parent->isMarked() && parent->compartment() == compartment())
+        parent->removeChild(this);
+}
+
+void
 Shape::finalize(FreeOp *fop)
 {
-    if (!inDictionary()) {
-        /*
-         * We detach the child from the parent if the parent is reachable.
-         *
-         * Note that due to incremental sweeping, the parent pointer may point
-         * to the original reachable parent, or it may point to a new live
-         * object allocated in the same cell that used to hold the parent.
-         *
-         * There are three cases:
-         *
-         * Case 1: parent is not marked - parent is unreachable, may have been
-         *         finalized, and the cell may subsequently have been
-         *         reallocated to a compartment that is not being marked (cells
-         *         are marked when allocated in a compartment that is currenly
-         *         being marked by the collector).
-         *
-         * Case 2: parent is marked and is in a different compartment - parent
-         *         has been freed and reallocated to compartment that was being
-         *         marked.
-         *
-         * Case 3: parent is marked and is in the same compartment - parent is
-         *         stil reachable and we need to detach from it.
-         */
-        if (parent && parent->isMarked() && parent->compartment() == compartment())
-            parent->removeChild(this);
-
-        if (kids.isHash())
-            fop->delete_(kids.toHash());
-    }
+    if (!inDictionary() && kids.isHash())
+        fop->delete_(kids.toHash());
 }
 
 #ifdef DEBUG
@@ -257,15 +264,13 @@ Shape::dump(JSContext *cx, FILE *fp) const
 
     if (JSID_IS_INT(propid)) {
         fprintf(fp, "[%ld]", (long) JSID_TO_INT(propid));
-    } else if (JSID_IS_DEFAULT_XML_NAMESPACE(propid)) {
-        fprintf(fp, "<default XML namespace>");
     } else {
         JSLinearString *str;
         if (JSID_IS_ATOM(propid)) {
             str = JSID_TO_ATOM(propid);
         } else {
             JS_ASSERT(JSID_IS_OBJECT(propid));
-            JSString *s = ToStringSlow(cx, IdToValue(propid));
+            JSString *s = ToStringSlow<CanGC>(cx, IdToValue(propid));
             fputs("object ", fp);
             str = s ? s->ensureLinear(cx) : NULL;
         }

@@ -146,6 +146,7 @@ class ArrayBufferObject : public JSObject
     void addView(RawObject view);
 
     bool allocateSlots(JSContext *cx, uint32_t size, uint8_t *contents = NULL);
+    void changeContents(ObjectElements *newHeader);
 
     /*
      * Ensure that the data is not stored inline. Used when handing back a
@@ -339,7 +340,7 @@ private:
     static JSBool class_constructor(JSContext *cx, unsigned argc, Value *vp);
     static JSBool constructWithProto(JSContext *cx, unsigned argc, Value *vp);
     static JSBool construct(JSContext *cx, JSObject *bufobj, const CallArgs &args,
-                            JSObject *proto);
+                            HandleObject proto);
 
     static inline DataViewObject *
     create(JSContext *cx, uint32_t byteOffset, uint32_t byteLength,

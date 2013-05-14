@@ -13,12 +13,12 @@
 #include "jsfun.h"
 #include "jsopcode.h"
 #include "jsscript.h"
-#include "jsscope.h"
 
 #include "vm/GlobalObject.h"
 #include "vm/RegExpObject.h"
+#include "vm/Shape.h"
 
-#include "jsscopeinlines.h"
+#include "vm/Shape-inl.h"
 
 namespace js {
 
@@ -75,6 +75,18 @@ MarkScriptFilename(JSRuntime *rt, const char *filename)
      */
     if (rt->gcIsFull)
         ScriptFilenameEntry::fromFilename(filename)->marked = true;
+}
+
+inline void
+MarkScriptBytecode(JSRuntime *rt, const jsbytecode *bytecode)
+{
+    /*
+     * As an invariant, a ScriptBytecodeEntry should not be 'marked' outside of
+     * a GC. Since SweepScriptBytecodes is only called during a full gc,
+     * to preserve this invariant, only mark during a full gc.
+     */
+    if (rt->gcIsFull)
+        SharedScriptData::fromBytecode(bytecode)->marked = true;
 }
 
 } // namespace js
@@ -157,11 +169,11 @@ JSScript::writeBarrierPre(js::UnrootedScript script)
     if (!script)
         return;
 
-    JSCompartment *comp = script->compartment();
-    if (comp->needsBarrier()) {
-        JS_ASSERT(!comp->rt->isHeapBusy());
+    JS::Zone *zone = script->zone();
+    if (zone->needsBarrier()) {
+        JS_ASSERT(!zone->rt->isHeapBusy());
         js::UnrootedScript tmp = script;
-        MarkScriptUnbarriered(comp->barrierTracer(), &tmp, "write barrier");
+        MarkScriptUnbarriered(zone->barrierTracer(), &tmp, "write barrier");
         JS_ASSERT(tmp == script);
     }
 #endif
@@ -170,6 +182,12 @@ JSScript::writeBarrierPre(js::UnrootedScript script)
 inline void
 JSScript::writeBarrierPost(js::UnrootedScript script, void *addr)
 {
+}
+
+inline JSPrincipals *
+JSScript::principals()
+{
+    return compartment()->principals;
 }
 
 #endif /* jsscriptinlines_h___ */

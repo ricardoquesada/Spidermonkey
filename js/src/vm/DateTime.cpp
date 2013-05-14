@@ -24,10 +24,40 @@ ComputeLocalTime(time_t local, struct tm *ptm)
 #endif
 }
 
+static bool
+ComputeUTCTime(time_t t, struct tm *ptm)
+{
+#ifdef HAVE_GMTIME_R
+    return gmtime_r(&t, ptm);
+#else
+    struct tm *otm = gmtime(&t);
+    if (!otm)
+        return false;
+    *ptm = *otm;
+    return true;
+#endif
+}
+
+/*
+ * Compute the offset in seconds from the current UTC time to the current local
+ * standard time (i.e. not including any offset due to DST).
+ *
+ * Examples:
+ *
+ * Suppose we are in California, USA on January 1, 2013 at 04:00 PST (UTC-8, no
+ * DST in effect), corresponding to 12:00 UTC.  This function would then return
+ * -8 * SecondsPerHour, or -28800.
+ *
+ * Or suppose we are in Berlin, Germany on July 1, 2013 at 17:00 CEST (UTC+2,
+ * DST in effect), corresponding to 15:00 UTC.  This function would then return
+ * +1 * SecondsPerHour, or +3600.
+ */
 static int32_t
-LocalUTCDifferenceSeconds()
+UTCToLocalStandardOffsetSeconds()
 {
     using js::SecondsPerDay;
+    using js::SecondsPerHour;
+    using js::SecondsPerMinute;
 
 #if defined(XP_WIN)
     // Windows doesn't follow POSIX: updates to the TZ environment variable are
@@ -36,35 +66,74 @@ LocalUTCDifferenceSeconds()
     _tzset();
 #endif
 
-    /*
-     * Get the difference between this time zone and GMT, by checking the local
-     * time for days 0 and 180 of 1970, using a date for which daylight savings
-     * time was not in effect.
-     */
-    int day = 0;
-    struct tm tm;
-
-    if (!ComputeLocalTime(0, &tm))
+    // Get the current time.
+    time_t currentMaybeWithDST = time(NULL);
+    if (currentMaybeWithDST == time_t(-1))
         return 0;
-    if (tm.tm_isdst > 0) {
-        day = 180;
-        if (!ComputeLocalTime(SecondsPerDay * day, &tm))
+
+    // Break down the current time into its (locally-valued, maybe with DST)
+    // components.
+    struct tm local;
+    if (!ComputeLocalTime(currentMaybeWithDST, &local))
+        return 0;
+
+    // Compute a |time_t| corresponding to |local| interpreted without DST.
+    time_t currentNoDST;
+    if (local.tm_isdst == 0) {
+        // If |local| wasn't DST, we can use the same time.
+        currentNoDST = currentMaybeWithDST;
+    } else {
+        // If |local| respected DST, we need a time broken down into components
+        // ignoring DST.  Turn off DST in the broken-down time.
+        local.tm_isdst = 0;
+
+        // Compute a |time_t t| corresponding to the broken-down time with DST
+        // off.  This has boundary-condition issues (for about the duration of
+        // a DST offset) near the time a location moves to a different time
+        // zone.  But 1) errors will be transient; 2) locations rarely change
+        // time zone; and 3) in the absence of an API that provides the time
+        // zone offset directly, this may be the best we can do.
+        currentNoDST = mktime(&local);
+        if (currentNoDST == time_t(-1))
             return 0;
     }
 
-    int32_t time = (tm.tm_hour * 3600) + (tm.tm_min * 60) + tm.tm_sec;
-    time = SecondsPerDay - time;
+    // Break down the time corresponding to the no-DST |local| into UTC-based
+    // components.
+    struct tm utc;
+    if (!ComputeUTCTime(currentNoDST, &utc))
+        return 0;
 
-    if (tm.tm_yday == day)
-        time -= SecondsPerDay;
+    // Finally, compare the seconds-based components of the local non-DST
+    // representation and the UTC representation to determine the actual
+    // difference.
+    int utc_secs = utc.tm_hour * SecondsPerHour + utc.tm_min * SecondsPerMinute;
+    int local_secs = local.tm_hour * SecondsPerHour + local.tm_min * SecondsPerMinute;
 
-    return time;
+    // Same-day?  Just subtract the seconds counts.
+    if (utc.tm_mday == local.tm_mday)
+        return local_secs - utc_secs;
+
+    // If we have more UTC seconds, move local seconds into the UTC seconds'
+    // frame of reference and then subtract.
+    if (utc_secs > local_secs)
+        return (SecondsPerDay + local_secs) - utc_secs;
+
+    // Otherwise we have more local seconds, so move the UTC seconds into the
+    // local seconds' frame of reference and then subtract.
+    return local_secs - (utc_secs + SecondsPerDay);
 }
 
 void
 js::DateTimeInfo::updateTimeZoneAdjustment()
 {
-    double newTZA = -(LocalUTCDifferenceSeconds() * msPerSecond);
+    /*
+     * The difference between local standard time and UTC will never change for
+     * a given time zone.
+     */
+    utcToLocalStandardOffsetSeconds = UTCToLocalStandardOffsetSeconds();
+
+    double newTZA = utcToLocalStandardOffsetSeconds * msPerSecond;
     if (newTZA == localTZA_)
         return;
 
@@ -98,29 +167,24 @@ js::DateTimeInfo::DateTimeInfo()
 }
 
 int64_t
-js::DateTimeInfo::computeDSTOffsetMilliseconds(int64_t localTimeSeconds)
+js::DateTimeInfo::computeDSTOffsetMilliseconds(int64_t utcSeconds)
 {
-    MOZ_ASSERT(localTimeSeconds >= 0);
-    MOZ_ASSERT(localTimeSeconds <= MaxUnixTimeT);
+    MOZ_ASSERT(utcSeconds >= 0);
+    MOZ_ASSERT(utcSeconds <= MaxUnixTimeT);
 
 #if defined(XP_WIN)
-    /* Windows does not follow POSIX. Updates to the
-     * TZ environment variable are not reflected
-     * immediately on that platform as they are
-     * on UNIX systems without this call.
-     */
+    // Windows does not follow POSIX. Updates to the TZ environment variable
+    // are not reflected immediately on that platform as they are on UNIX
+    // systems without this call.
     _tzset();
 #endif
 
     struct tm tm;
-    if (!ComputeLocalTime(static_cast<time_t>(localTimeSeconds), &tm))
+    if (!ComputeLocalTime(static_cast<time_t>(utcSeconds), &tm))
         return 0;
 
-    int32_t base = LocalUTCDifferenceSeconds();
-
-    int32_t dayoff = int32_t((localTimeSeconds - base) % (SecondsPerHour * 24));
-    int32_t tmoff = tm.tm_sec + (tm.tm_min * SecondsPerMinute) +
-        (tm.tm_hour * SecondsPerHour);
+    int32_t dayoff = int32_t((utcSeconds + utcToLocalStandardOffsetSeconds) % SecondsPerDay);
+    int32_t tmoff = tm.tm_sec + (tm.tm_min * SecondsPerMinute) + (tm.tm_hour * SecondsPerHour);
 
     int32_t diff = tmoff - dayoff;
 
@@ -131,17 +195,17 @@ js::DateTimeInfo::computeDSTOffsetMilliseconds(int64_t localTimeSeconds)
 }
 
 int64_t
-js::DateTimeInfo::getDSTOffsetMilliseconds(int64_t localTimeMilliseconds)
+js::DateTimeInfo::getDSTOffsetMilliseconds(int64_t utcMilliseconds)
 {
     sanityCheck();
 
-    int64_t localTimeSeconds = localTimeMilliseconds / msPerSecond;
+    int64_t utcSeconds = utcMilliseconds / msPerSecond;
 
-    if (localTimeSeconds > MaxUnixTimeT) {
-        localTimeSeconds = MaxUnixTimeT;
-    } else if (localTimeSeconds < 0) {
+    if (utcSeconds > MaxUnixTimeT) {
+        utcSeconds = MaxUnixTimeT;
+    } else if (utcSeconds < 0) {
         /* Go ahead a day to make localtime work (does not work with 0). */
-        localTimeSeconds = SecondsPerDay;
+        utcSeconds = SecondsPerDay;
     }
 
     /*
@@ -150,64 +214,60 @@ js::DateTimeInfo::getDSTOffsetMilliseconds(int64_t localTimeMilliseconds)
      *     values, must result in a cache miss.
      */
 
-    if (rangeStartSeconds <= localTimeSeconds &&
-        localTimeSeconds <= rangeEndSeconds) {
+    if (rangeStartSeconds <= utcSeconds && utcSeconds <= rangeEndSeconds)
         return offsetMilliseconds;
-    }
 
-    if (oldRangeStartSeconds <= localTimeSeconds &&
-        localTimeSeconds <= oldRangeEndSeconds) {
+    if (oldRangeStartSeconds <= utcSeconds && utcSeconds <= oldRangeEndSeconds)
         return oldOffsetMilliseconds;
-    }
 
     oldOffsetMilliseconds = offsetMilliseconds;
     oldRangeStartSeconds = rangeStartSeconds;
     oldRangeEndSeconds = rangeEndSeconds;
 
-    if (rangeStartSeconds <= localTimeSeconds) {
+    if (rangeStartSeconds <= utcSeconds) {
         int64_t newEndSeconds = Min(rangeEndSeconds + RangeExpansionAmount, MaxUnixTimeT);
-        if (newEndSeconds >= localTimeSeconds) {
+        if (newEndSeconds >= utcSeconds) {
             int64_t endOffsetMilliseconds = computeDSTOffsetMilliseconds(newEndSeconds);
             if (endOffsetMilliseconds == offsetMilliseconds) {
                 rangeEndSeconds = newEndSeconds;
                 return offsetMilliseconds;
             }
 
-            offsetMilliseconds = computeDSTOffsetMilliseconds(localTimeSeconds);
+            offsetMilliseconds = computeDSTOffsetMilliseconds(utcSeconds);
             if (offsetMilliseconds == endOffsetMilliseconds) {
-                rangeStartSeconds = localTimeSeconds;
+                rangeStartSeconds = utcSeconds;
                 rangeEndSeconds = newEndSeconds;
             } else {
-                rangeEndSeconds = localTimeSeconds;
+                rangeEndSeconds = utcSeconds;
             }
             return offsetMilliseconds;
         }
 
-        offsetMilliseconds = computeDSTOffsetMilliseconds(localTimeSeconds);
-        rangeStartSeconds = rangeEndSeconds = localTimeSeconds;
+        offsetMilliseconds = computeDSTOffsetMilliseconds(utcSeconds);
+        rangeStartSeconds = rangeEndSeconds = utcSeconds;
         return offsetMilliseconds;
     }
 
     int64_t newStartSeconds = Max<int64_t>(rangeStartSeconds - RangeExpansionAmount, 0);
-    if (newStartSeconds <= localTimeSeconds) {
+    if (newStartSeconds <= utcSeconds) {
         int64_t startOffsetMilliseconds = computeDSTOffsetMilliseconds(newStartSeconds);
         if (startOffsetMilliseconds == offsetMilliseconds) {
             rangeStartSeconds = newStartSeconds;
             return offsetMilliseconds;
         }
 
-        offsetMilliseconds = computeDSTOffsetMilliseconds(localTimeSeconds);
+        offsetMilliseconds = computeDSTOffsetMilliseconds(utcSeconds);
         if (offsetMilliseconds == startOffsetMilliseconds) {
             rangeStartSeconds = newStartSeconds;
-            rangeEndSeconds = localTimeSeconds;
+            rangeEndSeconds = utcSeconds;
         } else {
-            rangeStartSeconds = localTimeSeconds;
+            rangeStartSeconds = utcSeconds;
         }
         return offsetMilliseconds;
     }
 
-    rangeStartSeconds = rangeEndSeconds = localTimeSeconds;
-    offsetMilliseconds = computeDSTOffsetMilliseconds(localTimeSeconds);
+    rangeStartSeconds = rangeEndSeconds = utcSeconds;
+    offsetMilliseconds = computeDSTOffsetMilliseconds(utcSeconds);
     return offsetMilliseconds;
 }
 

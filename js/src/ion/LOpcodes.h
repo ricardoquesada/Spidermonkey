@@ -22,14 +22,20 @@
     _(TableSwitch)                  \
     _(TableSwitchV)                 \
     _(Goto)                         \
+    _(NewParallelArray)             \
     _(NewArray)                     \
     _(NewObject)                    \
     _(NewSlots)                     \
     _(NewDeclEnvObject)             \
     _(NewCallObject)                \
     _(NewStringObject)              \
+    _(ParNew)                       \
+    _(ParNewDenseArray)             \
+    _(ParNewCallObject)             \
+    _(ParBailout)                   \
     _(InitProp)                     \
     _(CheckOverRecursed)            \
+    _(ParCheckOverRecursed)         \
     _(RecompileCheck)               \
     _(DefVar)                       \
     _(DefFun)                       \
@@ -62,6 +68,8 @@
     _(CompareD)                     \
     _(CompareDAndBranch)            \
     _(CompareS)                     \
+    _(CompareStrictS)               \
+    _(ParCompareS)                  \
     _(CompareB)                     \
     _(CompareBAndBranch)            \
     _(CompareV)                     \
@@ -108,15 +116,19 @@
     _(RegExpTest)                   \
     _(Lambda)                       \
     _(LambdaForSingleton)           \
+    _(ParLambda)                    \
     _(ImplicitThis)                 \
     _(Slots)                        \
     _(Elements)                     \
+    _(ConvertElementsToDoubles)     \
     _(LoadSlotV)                    \
     _(LoadSlotT)                    \
     _(StoreSlotV)                   \
     _(StoreSlotT)                   \
     _(GuardShape)                   \
     _(GuardClass)                   \
+    _(ParWriteGuard)                \
+    _(ParDump)                      \
     _(TypeBarrier)                  \
     _(MonitorTypes)                 \
     _(InitializedLength)            \
@@ -147,6 +159,7 @@
     _(StoreFixedSlotV)              \
     _(StoreFixedSlotT)              \
     _(FunctionEnvironment)          \
+    _(ParSlice)                     \
     _(GetPropertyCacheV)            \
     _(GetPropertyCacheT)            \
     _(GetElementCacheV)             \
@@ -154,6 +167,7 @@
     _(CallGetProperty)              \
     _(GetNameCache)                 \
     _(CallGetIntrinsicValue)        \
+    _(CallsiteCloneCache)           \
     _(CallGetElement)               \
     _(CallSetElement)               \
     _(CallSetProperty)              \
@@ -181,6 +195,7 @@
     _(InstanceOfV)                  \
     _(CallInstanceOf)               \
     _(InterruptCheck)               \
+    _(ParCheckInterrupt)            \
     _(FunctionBoundary)             \
     _(GetDOMProperty)               \
     _(SetDOMProperty)               \

@@ -46,11 +46,11 @@ SnapshotIterator::SnapshotIterator(const IonBailoutIterator &iter)
 {
 }
 
-InlineFrameIterator::InlineFrameIterator(const IonBailoutIterator *iter)
+InlineFrameIterator::InlineFrameIterator(JSContext *cx, const IonBailoutIterator *iter)
   : frame_(iter),
     framesRead_(0),
-    callee_(NULL),
-    script_(NULL)
+    callee_(cx),
+    script_(cx)
 {
     if (iter) {
         start_ = SnapshotIterator(*iter);
@@ -62,7 +62,7 @@ void
 IonBailoutIterator::dump() const
 {
     if (type_ == IonFrame_OptimizedJS) {
-        InlineFrameIterator frames(this);
+        InlineFrameIterator frames(GetIonContext()->cx, this);
         for (;;) {
             frames.dump();
             if (!frames.more())
@@ -81,7 +81,7 @@ GetBailedJSScript(JSContext *cx)
 
     // Just after the frame conversion, we can safely interpret the ionTop as JS
     // frame because it targets the bailed JS frame converted to an exit frame.
-    IonJSFrameLayout *frame = reinterpret_cast<IonJSFrameLayout*>(cx->runtime->ionTop);
+    IonJSFrameLayout *frame = reinterpret_cast<IonJSFrameLayout*>(cx->mainThread().ionTop);
     switch (GetCalleeTokenTag(frame->calleeToken())) {
       case CalleeToken_Function: {
         JSFunction *fun = CalleeTokenToFunction(frame->calleeToken());
@@ -179,7 +179,12 @@ StackFrame::initFromBailout(JSContext *cx, SnapshotIterator &iter)
 
     IonSpew(IonSpew_Bailouts, " new PC is offset %u within script %p (line %d)",
             pcOff, (void *)script(), PCToLineNumber(script(), regs.pc));
-    JS_ASSERT(exprStackSlots == js_ReconstructStackDepth(cx, script(), regs.pc));
+
+    // For fun.apply({}, arguments) the reconstructStackDepth will be atleast 4,
+    // but it could be that we inlined the funapply. In that case exprStackSlots,
+    // will have the real arguments in the slots and not always be equal.
+    JS_ASSERT_IF(JSOp(*regs.pc) != JSOP_FUNAPPLY,
+                 exprStackSlots == js_ReconstructStackDepth(cx, script(), regs.pc));
 }
 
 static StackFrame *
@@ -192,8 +197,11 @@ PushInlinedFrame(JSContext *cx, StackFrame *callerFrame)
     // which will not be the case when we inline getters (in which case it would be a
     // JSOP_GETPROP). That will have to be handled differently.
     FrameRegs &regs = cx->regs();
-    JS_ASSERT(JSOp(*regs.pc) == JSOP_CALL || JSOp(*regs.pc) == JSOP_NEW);
+    JS_ASSERT(JSOp(*regs.pc) == JSOP_CALL || JSOp(*regs.pc) == JSOP_NEW ||
+              JSOp(*regs.pc) == JSOP_FUNAPPLY);
     int callerArgc = GET_ARGC(regs.pc);
+    if (JSOp(*regs.pc) == JSOP_FUNAPPLY)
+        callerArgc = callerFrame->nactual();
     const Value &calleeVal = regs.sp[-callerArgc - 2];
 
     RootedFunction fun(cx, calleeVal.toObject().toFunction());
@@ -208,7 +216,7 @@ PushInlinedFrame(JSContext *cx, StackFrame *callerFrame)
     if (JSOp(*regs.pc) == JSOP_NEW)
         flags = INITIAL_CONSTRUCT;
 
-    if (!cx->stack.pushInlineFrame(cx, regs, inlineArgs, *fun, script, flags, DONT_REPORT_ERROR))
+    if (!cx->stack.pushInlineFrame(cx, regs, inlineArgs, fun, script, flags, DONT_REPORT_ERROR))
         return NULL;
 
     StackFrame *fp = cx->stack.fp();
@@ -231,13 +239,13 @@ ConvertFrames(JSContext *cx, IonActivation *activation, IonBailoutIterator &it)
 #ifdef DEBUG
     // Use count is reset after invalidation. Log use count on bailouts to
     // determine if we have a critical sequence of bailout.
+    //
+    // Note: frame conversion only occurs in sequential mode
     if (it.script()->ion == it.ionScript()) {
         IonSpew(IonSpew_Bailouts, " Current script use count is %u",
                 it.script()->getUseCount());
     }
 #endif
-
-    SnapshotIterator iter(it);
 
     // Set a flag to avoid bailing out on every iteration or function call. Ion can
     // compile and run the script again after an invalidation.
@@ -285,6 +293,8 @@ ConvertFrames(JSContext *cx, IonActivation *activation, IonBailoutIterator &it)
 
     if (it.isConstructing())
         fp->setConstructing();
+
+    SnapshotIterator iter(it);
 
     while (true) {
         IonSpew(IonSpew_Bailouts, " restoring frame");
@@ -334,35 +344,13 @@ ConvertFrames(JSContext *cx, IonActivation *activation, IonBailoutIterator &it)
     return BAILOUT_RETURN_FATAL_ERROR;
 }
 
-static inline void
-EnsureExitFrame(IonCommonFrameLayout *frame)
-{
-    if (frame->prevType() == IonFrame_Entry) {
-        // The previous frame type is the entry frame, so there's no actual
-        // need for an exit frame.
-        return;
-    }
-
-    if (frame->prevType() == IonFrame_Rectifier) {
-        // The rectifier code uses the frame descriptor to discard its stack,
-        // so modifying its descriptor size here would be dangerous. Instead,
-        // we change the frame type, and teach the stack walking code how to
-        // deal with this edge case. bug 717297 would obviate the need
-        frame->changePrevType(IonFrame_Bailed_Rectifier);
-        return;
-    }
-
-    JS_ASSERT(frame->prevType() == IonFrame_OptimizedJS);
-    frame->changePrevType(IonFrame_Bailed_JS);
-}
-
 uint32_t
 ion::Bailout(BailoutStack *sp)
 {
     AutoAssertNoGC nogc;
     JSContext *cx = GetIonContext()->cx;
     // We don't have an exit frame.
-    cx->runtime->ionTop = NULL;
+    cx->mainThread().ionTop = NULL;
     IonActivationIterator ionActivations(cx);
     IonBailoutIterator iter(ionActivations, sp);
     IonActivation *activation = ionActivations.activation();
@@ -388,7 +376,7 @@ ion::InvalidationBailout(InvalidationBailoutStack *sp, size_t *frameSizeOut)
     JSContext *cx = GetIonContext()->cx;
 
     // We don't have an exit frame.
-    cx->runtime->ionTop = NULL;
+    cx->mainThread().ionTop = NULL;
     IonActivationIterator ionActivations(cx);
     IonBailoutIterator iter(ionActivations, sp);
     IonActivation *activation = ionActivations.activation();
@@ -421,16 +409,6 @@ ion::InvalidationBailout(InvalidationBailoutStack *sp, size_t *frameSizeOut)
         cx->regs().sp[-1] = cx->runtime->takeIonReturnOverride();
 
     if (retval != BAILOUT_RETURN_FATAL_ERROR) {
-        if (activation->entryfp()) {
-            if (void *annotation = activation->entryfp()->annotation()) {
-                // If the entry frame has an annotation, then we invalidated and have
-                // immediately returned into this bailout. Transfer the annotation to
-                // the new topmost frame.
-                activation->entryfp()->setAnnotation(NULL);
-                cx->fp()->setAnnotation(annotation);
-            }
-        }
-
         // If invalidation was triggered inside a stub call, we may still have to
         // monitor the result, since the bailout happens before the MMonitorTypes
         // instruction is executed.
@@ -458,7 +436,7 @@ ReflowArgTypes(JSContext *cx)
     unsigned nargs = fp->fun()->nargs;
     RootedScript script(cx, fp->script());
 
-    types::AutoEnterTypeInference enter(cx);
+    types::AutoEnterAnalysis enter(cx);
 
     if (!fp->isConstructing())
         types::TypeScript::SetThis(cx, script, fp->thisValue());
@@ -470,7 +448,7 @@ uint32_t
 ion::ReflowTypeInfo(uint32_t bailoutResult)
 {
     JSContext *cx = GetIonContext()->cx;
-    IonActivation *activation = cx->runtime->ionActivation;
+    IonActivation *activation = cx->mainThread().ionActivation;
 
     IonSpew(IonSpew_Bailouts, "reflowing type info");
 
@@ -488,7 +466,7 @@ ion::ReflowTypeInfo(uint32_t bailoutResult)
     IonSpew(IonSpew_Bailouts, "reflowing type info at %s:%d pcoff %d", script->filename,
             script->lineno, pc - script->code);
 
-    types::AutoEnterTypeInference enter(cx);
+    types::AutoEnterAnalysis enter(cx);
     if (bailoutResult == BAILOUT_RETURN_TYPE_BARRIER)
         script->analysis()->breakTypeBarriers(cx, pc - script->code, false);
     else
@@ -516,7 +494,7 @@ ion::RecompileForInlining()
         return BAILOUT_RETURN_FATAL_ERROR;
 
     // Invalidation should not reset the use count.
-    JS_ASSERT(script->getUseCount() >= js_IonOptions.usesBeforeInlining);
+    JS_ASSERT(script->getUseCount() >= js_IonOptions.usesBeforeInlining());
 
     return true;
 }
@@ -596,7 +574,7 @@ uint32_t
 ion::ThunkToInterpreter(Value *vp)
 {
     JSContext *cx = GetIonContext()->cx;
-    IonActivation *activation = cx->runtime->ionActivation;
+    IonActivation *activation = cx->mainThread().ionActivation;
     BailoutClosure *br = activation->takeBailout();
     InterpMode resumeMode = JSINTERP_BAILOUT;
 

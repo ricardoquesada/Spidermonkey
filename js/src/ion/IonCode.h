@@ -45,8 +45,14 @@ class IonCode : public gc::Cell
     uint32_t dataSize_;               // Size of the read-only data area.
     uint32_t jumpRelocTableBytes_;    // Size of the jump relocation table.
     uint32_t dataRelocTableBytes_;    // Size of the data relocation table.
+    uint32_t preBarrierTableBytes_;   // Size of the prebarrier table.
     JSBool invalidated_;            // Whether the code object has been invalidated.
                                     // This is necessary to prevent GC tracing.
+
+#if JS_BITS_PER_WORD == 32
+    // Ensure IonCode is gc::Cell aligned.
+    uint32_t padding_;
+#endif
 
     IonCode()
       : code_(NULL),
@@ -60,6 +66,7 @@ class IonCode : public gc::Cell
         dataSize_(0),
         jumpRelocTableBytes_(0),
         dataRelocTableBytes_(0),
+        preBarrierTableBytes_(0),
         invalidated_(false)
     { }
 
@@ -71,6 +78,9 @@ class IonCode : public gc::Cell
     }
     uint32_t dataRelocTableOffset() const {
         return jumpRelocTableOffset() + jumpRelocTableBytes_;
+    }
+    uint32_t preBarrierTableOffset() const {
+        return dataRelocTableOffset() + dataRelocTableBytes_;
     }
 
   public:
@@ -85,6 +95,8 @@ class IonCode : public gc::Cell
     void setInvalidated() {
         invalidated_ = true;
     }
+
+    void togglePreBarriers(bool enabled);
 
     // If this IonCode object has been, effectively, corrupted due to
     // invalidation patching, then we have to remember this so we don't try and
@@ -191,10 +203,6 @@ struct IonScript
     uint32_t cacheList_;
     uint32_t cacheEntries_;
 
-    // Offset list for patchable pre-barriers.
-    uint32_t prebarrierList_;
-    uint32_t prebarrierEntries_;
-
     // Offset to and length of the safepoint table in bytes.
     uint32_t safepointsStart_;
     uint32_t safepointsSize_;
@@ -202,6 +210,18 @@ struct IonScript
     // List of compiled/inlined JSScript's.
     uint32_t scriptList_;
     uint32_t scriptEntries_;
+
+    // In parallel mode, list of scripts that we call that were invalidated
+    // last time this script bailed out. These will be recompiled (or tried to
+    // be) upon next parallel entry of this script.
+    //
+    // For non-parallel IonScripts, this is NULL.
+    //
+    // For parallel IonScripts, there are as many entries as there are slices,
+    // since for any single parallel execution, we can only get a single
+    // invalidation per slice.
+    uint32_t parallelInvalidatedScriptList_;
+    uint32_t parallelInvalidatedScriptEntries_;
 
     // Number of references from invalidation records.
     size_t refcount_;
@@ -233,11 +253,12 @@ struct IonScript
     IonCache *cacheList() {
         return (IonCache *)(reinterpret_cast<uint8_t *>(this) + cacheList_);
     }
-    CodeOffsetLabel *prebarrierList() {
-        return (CodeOffsetLabel *)(reinterpret_cast<uint8_t *>(this) + prebarrierList_);
-    }
     JSScript **scriptList() const {
         return (JSScript **)(reinterpret_cast<const uint8_t *>(this) + scriptList_);
+    }
+    JSScript **parallelInvalidatedScriptList() {
+        return (JSScript **)(reinterpret_cast<const uint8_t *>(this) +
+                             parallelInvalidatedScriptList_);
     }
 
   private:
@@ -250,8 +271,8 @@ struct IonScript
     static IonScript *New(JSContext *cx, uint32_t frameLocals, uint32_t frameSize,
                           size_t snapshotsSize, size_t snapshotEntries,
                           size_t constants, size_t safepointIndexEntries, size_t osiIndexEntries,
-                          size_t cacheEntries, size_t prebarrierEntries, size_t safepointsSize,
-                          size_t scriptEntries);
+                          size_t cacheEntries, size_t safepointsSize, size_t scriptEntries,
+                          size_t parallelInvalidatedScriptEntries);
     static void Trace(JSTracer *trc, IonScript *script);
     static void Destroy(FreeOp *fop, IonScript *script);
 
@@ -335,6 +356,15 @@ struct IonScript
     size_t scriptEntries() const {
         return scriptEntries_;
     }
+    size_t parallelInvalidatedScriptEntries() const {
+        return parallelInvalidatedScriptEntries_;
+    }
+    RawScript getAndZeroParallelInvalidatedScript(uint32_t i) {
+        JS_ASSERT(i < parallelInvalidatedScriptEntries_);
+        RawScript script = parallelInvalidatedScriptList()[i];
+        parallelInvalidatedScriptList()[i] = NULL;
+        return script;
+    }
     size_t sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf) const {
         return mallocSizeOf(this);
     }
@@ -366,10 +396,6 @@ struct IonScript
     size_t numCaches() const {
         return cacheEntries_;
     }
-    inline CodeOffsetLabel &getPrebarrier(size_t index);
-    size_t numPrebarriers() const {
-        return prebarrierEntries_;
-    }
     void toggleBarriers(bool enabled);
     void purgeCaches(JSCompartment *c);
     void copySnapshots(const SnapshotWriter *writer);
@@ -378,9 +404,9 @@ struct IonScript
     void copySafepointIndices(const SafepointIndex *firstSafepointIndex, MacroAssembler &masm);
     void copyOsiIndices(const OsiIndex *firstOsiIndex, MacroAssembler &masm);
     void copyCacheEntries(const IonCache *caches, MacroAssembler &masm);
-    void copyPrebarrierEntries(const CodeOffsetLabel *barriers, MacroAssembler &masm);
     void copySafepoints(const SafepointWriter *writer);
     void copyScriptEntries(JSScript **scripts);
+    void zeroParallelInvalidatedScripts();
 
     bool invalidated() const {
         return refcount_ != 0;

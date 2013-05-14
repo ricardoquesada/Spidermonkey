@@ -709,49 +709,6 @@ XPC_WN_NoHelper_Resolve(JSContext *cx, JSHandleObject obj, JSHandleId id)
                                  JSPROP_PERMANENT, nullptr);
 }
 
-nsISupports *
-XPC_GetIdentityObject(JSContext *cx, JSObject *obj)
-{
-    XPCWrappedNative *wrapper =
-        XPCWrappedNative::GetWrappedNativeOfJSObject(cx, obj);
-
-    return wrapper ? wrapper->GetIdentityObject() : nullptr;
-}
-
-JSBool
-XPC_WN_Equality(JSContext *cx, JSHandleObject obj, JSHandleValue v, JSBool *bp)
-{
-    *bp = false;
-
-    JSObject *obj2;
-    XPCWrappedNative *wrapper =
-        XPCWrappedNative::GetWrappedNativeOfJSObject(cx, obj, nullptr, &obj2);
-    if (obj2) {
-        *bp = !JSVAL_IS_PRIMITIVE(v) && (JSVAL_TO_OBJECT(v) == obj2);
-
-        return true;
-    }
-
-    THROW_AND_RETURN_IF_BAD_WRAPPER(cx, wrapper);
-
-    XPCNativeScriptableInfo* si = wrapper->GetScriptableInfo();
-    if (si && si->GetFlags().WantEquality()) {
-        bool res;
-        nsresult rv = si->GetCallback()->Equality(wrapper, cx, obj, v, &res);
-        if (NS_FAILED(rv))
-            return Throw(rv, cx);
-        *bp = res;
-    } else if (!JSVAL_IS_PRIMITIVE(v)) {
-        JSObject *other = JSVAL_TO_OBJECT(v);
-
-        *bp = (obj == other ||
-               XPC_GetIdentityObject(cx, obj) ==
-               XPC_GetIdentityObject(cx, other));
-    }
-
-    return true;
-}
-
 static JSObject *
 XPC_WN_OuterObject(JSContext *cx, JSHandleObject obj_)
 {
@@ -815,11 +772,9 @@ XPCWrappedNativeJSClass XPC_WN_NoHelper_JSClass = {
 
     // ClassExtension
     {
-        XPC_WN_Equality,
         nullptr, // outerObject
         nullptr, // innerObject
         nullptr, // iteratorObject
-        nullptr, // unused
         true,   // isWrappedNative
     },
 
@@ -854,7 +809,6 @@ XPCWrappedNativeJSClass XPC_WN_NoHelper_JSClass = {
         nullptr, // deleteElement
         nullptr, // deleteSpecial
         XPC_WN_JSOp_Enumerate,
-        XPC_WN_JSOp_TypeOf_Object,
         XPC_WN_JSOp_ThisObject,
     }
   },
@@ -1241,18 +1195,6 @@ XPC_WN_JSOp_Enumerate(JSContext *cx, JSHandleObject obj, JSIterateOp enum_op,
     return JS_EnumerateState(cx, obj, enum_op, statep, idp);
 }
 
-JSType
-XPC_WN_JSOp_TypeOf_Object(JSContext *cx, JSHandleObject obj)
-{
-    return JSTYPE_OBJECT;
-}
-
-JSType
-XPC_WN_JSOp_TypeOf_Function(JSContext *cx, JSHandleObject obj)
-{
-    return JSTYPE_FUNCTION;
-}
-
 namespace {
 
 NS_STACK_CLASS class AutoPopJSContext
@@ -1417,24 +1359,11 @@ XPCNativeScriptableShared::PopulateJSClass()
     ops->enumerate = XPC_WN_JSOp_Enumerate;
     ops->thisObject = XPC_WN_JSOp_ThisObject;
 
-    if (mFlags.WantCall() || mFlags.WantConstruct()) {
-        ops->typeOf = XPC_WN_JSOp_TypeOf_Function;
-        if (mFlags.WantCall())
-            mJSClass.base.call = XPC_WN_Helper_Call;
-        if (mFlags.WantConstruct())
-            mJSClass.base.construct = XPC_WN_Helper_Construct;
-    } else {
-        ops->typeOf = XPC_WN_JSOp_TypeOf_Object;
-    }
 
-    if (mFlags.UseStubEqualityHook()) {
-        NS_ASSERTION(!mFlags.WantEquality(),
-                     "If you want an Equality callback, you can't use a stub "
-                     "equality hook");
-        mJSClass.base.ext.equality = nullptr;
-    } else {
-        mJSClass.base.ext.equality = XPC_WN_Equality;
-    }
+    if (mFlags.WantCall())
+        mJSClass.base.call = XPC_WN_Helper_Call;
+    if (mFlags.WantConstruct())
+        mJSClass.base.construct = XPC_WN_Helper_Construct;
 
     if (mFlags.WantHasInstance())
         mJSClass.base.hasInstance = XPC_WN_Helper_HasInstance;

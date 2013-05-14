@@ -103,11 +103,11 @@ ion::EliminateDeadResumePointOperands(MIRGenerator *mir, MIRGraph &graph)
             // Walk the uses a second time, removing any in resume points after
             // the last use in a definition.
             for (MUseIterator uses(ins->usesBegin()); uses != ins->usesEnd(); ) {
-                if (uses->node()->isDefinition()) {
+                if (uses->consumer()->isDefinition()) {
                     uses++;
                     continue;
                 }
-                MResumePoint *mrp = uses->node()->toResumePoint();
+                MResumePoint *mrp = uses->consumer()->toResumePoint();
                 if (mrp->block() != *block ||
                     !mrp->instruction() ||
                     mrp->instruction() == *ins ||
@@ -188,8 +188,8 @@ IsPhiObservable(MPhi *phi, Observability observe)
 
       case ConservativeObservability:
         for (MUseIterator iter(phi->usesBegin()); iter != phi->usesEnd(); iter++) {
-            if (!iter->node()->isDefinition() ||
-                !iter->node()->toDefinition()->isPhi())
+            if (!iter->consumer()->isDefinition() ||
+                !iter->consumer()->toDefinition()->isPhi())
                 return true;
         }
         break;
@@ -374,6 +374,7 @@ class TypeAnalyzer
     bool respecialize(MPhi *phi, MIRType type);
     bool propagateSpecialization(MPhi *phi);
     bool specializePhis();
+    bool specializeTruncatedInstructions();
     void replaceRedundantPhi(MPhi *phi);
     void adjustPhiInputs(MPhi *phi);
     bool adjustInputs(MDefinition *def);
@@ -606,6 +607,8 @@ bool
 TypeAnalyzer::analyze()
 {
     if (!specializePhis())
+        return false;
+    if (!specializeTruncatedInstructions())
         return false;
     if (!insertConversions())
         return false;
@@ -876,15 +879,29 @@ CheckPredecessorImpliesSuccessor(MBasicBlock *A, MBasicBlock *B)
 }
 
 static bool
-CheckMarkedAsUse(MInstruction *ins, MDefinition *operand)
+CheckOperandImpliesUse(MInstruction *ins, MDefinition *operand)
 {
     for (MUseIterator i = operand->usesBegin(); i != operand->usesEnd(); i++) {
-        if (i->node()->isDefinition()) {
-            if (ins == i->node()->toDefinition())
-                return true;
-        }
+        if (i->consumer()->isDefinition() && i->consumer()->toDefinition() == ins)
+            return true;
     }
     return false;
+}
+
+static bool
+CheckUseImpliesOperand(MInstruction *ins, MUse *use)
+{
+    MNode *consumer = use->consumer();
+    uint32_t index = use->index();
+
+    if (consumer->isDefinition()) {
+        MDefinition *def = consumer->toDefinition();
+        return (def->getOperand(index) == ins);
+    }
+
+    JS_ASSERT(consumer->isResumePoint());
+    MResumePoint *res = consumer->toResumePoint();
+    return (res->getOperand(index) == ins);
 }
 #endif // DEBUG
 
@@ -923,9 +940,14 @@ ion::AssertGraphCoherency(MIRGraph &graph)
         for (size_t i = 0; i < block->numPredecessors(); i++)
             JS_ASSERT(CheckPredecessorImpliesSuccessor(*block, block->getPredecessor(i)));
 
+        // Assert that use chains are valid for this instruction.
         for (MInstructionIterator ins = block->begin(); ins != block->end(); ins++) {
             for (uint32_t i = 0; i < ins->numOperands(); i++)
-                JS_ASSERT(CheckMarkedAsUse(*ins, ins->getOperand(i)));
+                JS_ASSERT(CheckOperandImpliesUse(*ins, ins->getOperand(i)));
+        }
+        for (MInstructionIterator ins = block->begin(); ins != block->end(); ins++) {
+            for (MUseIterator i(ins->usesBegin()); i != ins->usesEnd(); i++)
+                JS_ASSERT(CheckUseImpliesOperand(*ins, *i));
         }
     }
 
@@ -1339,6 +1361,11 @@ ion::EliminateRedundantChecks(MIRGraph &graph)
             } else if (iter->isTypeBarrier()) {
                 if (!TryEliminateTypeBarrier(iter->toTypeBarrier(), &eliminated))
                     return false;
+            } else if (iter->isConvertElementsToDoubles()) {
+                // Now that code motion passes have finished, replace any
+                // ConvertElementsToDoubles with the actual elements.
+                MConvertElementsToDoubles *ins = iter->toConvertElementsToDoubles();
+                ins->replaceAllUsesWith(ins->elements());
             }
 
             if (eliminated)
@@ -1434,4 +1461,36 @@ LinearSum::print(Sprinter &sp) const
         sp.printf("+%d", constant_);
     else if (constant_ < 0)
         sp.printf("%d", constant_);
+}
+
+bool
+TypeAnalyzer::specializeTruncatedInstructions()
+{
+    // This specialization is a two step process: First we loop over the
+    // instruction stream forwards, marking all of the instructions that
+    // are computed purely from integers.  The theory is that we can observe
+    // values that don't fit into a 32 bit integer that can still be treated as
+    // integers.
+    for (ReversePostorderIterator block(graph.rpoBegin()); block != graph.rpoEnd(); block++) {
+        if (mir->shouldCancel("recoverBigInts (forwards loop)"))
+            return false;
+
+        for (MDefinitionIterator iter(*block); iter; iter++) {
+            iter->recalculateBigInt();
+        }
+    }
+
+    // Now, if these adds of doubles-that-are-really-big-ints get truncated
+    // on all reads, then we know that we don't care that any of these operations
+    // produces a value that is not an integer.  To achieve this, loop over the instruction
+    // stream backwards, marking every instruction where all reads are operations that truncate
+    // If we have a double operation that is marked both "bigInt" and "truncated", then we can
+    // safely convert it into an integer instruction
+    for (PostorderIterator block(graph.poBegin()); block != graph.poEnd(); block++) {
+        if (mir->shouldCancel("Propagate Truncates (backwards loop)"))
+            return false;
+        for (MInstructionReverseIterator riter(block->rbegin()); riter != block->rend(); riter++)
+            riter->analyzeTruncateBackward();
+    }
+    return true;
 }

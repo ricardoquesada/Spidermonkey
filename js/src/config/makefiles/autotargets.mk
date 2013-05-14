@@ -38,7 +38,7 @@ _slashSqueeze =$(foreach val,$(getargv),$(call getPathPrefix,$(val))$(subst $(sp
 # Squeeze extraneous directory slashes from the path
 #  o protect embedded spaces within the path
 #  o replace //+ sequences with /
-slash_strip =\
+slash_strip = \
   $(strip \
     $(subst <--[**]-->,$(space),\
 	$(call _slashSqueeze,\
@@ -62,13 +62,12 @@ mkdir_deps =$(foreach dir,$(getargv),$(call slash_strip,$(dir)/.mkdir.done))
 # 198001010000 would translate to something older than FAT epoch.
 	@$(TOUCH) -t 198001030000 "$@"
 
-# A handful of makefiles are attempting "mkdir dot".  Likely not intended
-# or stale logic so add a stub target to handle the request and warn for now.
+# A handful of makefiles are attempting "mkdir dot".
+# tbpl/valgrind builds are using this target
+# https://bugzilla.mozilla.org/show_bug.cgi?id=837754
 .mkdir.done:
-ifndef NOWARN_AUTOTARGETS # {
 	@echo "WARNING: $(MKDIR) -dot- requested by $(MAKE) -C $(CURDIR) $(MAKECMDGOALS)"
-	@$(TOUCH) -t 198001030000 $@
-endif #}
+	@$(TOUCH) -t 198001030000 "$@"
 
 INCLUDED_AUTOTARGETS_MK = 1
 endif #}
@@ -76,6 +75,7 @@ endif #}
 
 ## Accumulate deps and cleanup
 ifneq (,$(GENERATED_DIRS))
+  GENERATED_DIRS := $(strip $(sort $(GENERATED_DIRS)))
   tmpauto :=$(call mkdir_deps,GENERATED_DIRS)
   GENERATED_DIRS_DEPS +=$(tmpauto)
   GARBAGE_DIRS        +=$(GENERATED_DIRS)
@@ -88,6 +88,7 @@ endif
 #################################################################
 
 AUTO_DEPS +=$(GENERATED_DIRS_DEPS)
+AUTO_DEPS := $(strip $(sort $(AUTO_DEPS)))
 
 # Complain loudly if deps have not loaded so getargv != $(NULL)
 $(call requiredfunction,getargv)

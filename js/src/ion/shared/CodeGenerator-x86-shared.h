@@ -17,6 +17,7 @@ class OutOfLineBailout;
 class OutOfLineUndoALUOperation;
 class MulNegativeZeroCheck;
 class OutOfLineTruncate;
+class OutOfLineTableSwitch;
 
 class CodeGeneratorX86Shared : public CodeGeneratorShared
 {
@@ -59,16 +60,9 @@ class CodeGeneratorX86Shared : public CodeGeneratorShared
     bool generateEpilogue();
     bool generateOutOfLineCode();
 
-    void emitDoubleToInt32(const FloatRegister &src, const Register &dest, Label *fail, bool negativeZeroCheck = true);
-
     Operand createArrayElementOperand(Register elements, const LAllocation *index);
 
     void emitCompare(MCompare::CompareType type, const LAllocation *left, const LAllocation *right);
-
-    // Emits a conditional set.
-    void emitSet(Assembler::Condition cond, const Register &dest,
-                 Assembler::NaNCond ifNaN = Assembler::NaN_Unexpected);
-    void emitSet(Assembler::DoubleCondition cond, const Register &dest);
 
     // Emits a branch that directs control flow to the true block if |cond| is
     // true, and the false block if |cond| is false.
@@ -118,6 +112,7 @@ class CodeGeneratorX86Shared : public CodeGeneratorShared
     bool visitOutOfLineUndoALUOperation(OutOfLineUndoALUOperation *ool);
     bool visitMulNegativeZeroCheck(MulNegativeZeroCheck *ool);
     bool visitOutOfLineTruncate(OutOfLineTruncate *ool);
+    bool visitOutOfLineTableSwitch(OutOfLineTableSwitch *ool);
     bool generateInvalidateEpilogue();
 };
 

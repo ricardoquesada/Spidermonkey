@@ -552,29 +552,9 @@ endif
 endif
 endif
 
-ifeq ($(OS_ARCH),Darwin)
-ifdef NEXT_ROOT
-export NEXT_ROOT
-PBBUILD = NEXT_ROOT= $(PBBUILD_BIN)
-else # NEXT_ROOT
-PBBUILD = $(PBBUILD_BIN)
-endif # NEXT_ROOT
-PBBUILD_SETTINGS = GCC_VERSION="$(GCC_VERSION)" SYMROOT=build ARCHS="$(OS_TEST)"
-ifdef MACOS_SDK_DIR
-PBBUILD_SETTINGS += SDKROOT="$(MACOS_SDK_DIR)"
-endif # MACOS_SDK_DIR
 ifdef MACOSX_DEPLOYMENT_TARGET
 export MACOSX_DEPLOYMENT_TARGET
-PBBUILD_SETTINGS += MACOSX_DEPLOYMENT_TARGET="$(MACOSX_DEPLOYMENT_TARGET)"
 endif # MACOSX_DEPLOYMENT_TARGET
-
-ifdef MOZ_OPTIMIZE
-ifeq (2,$(MOZ_OPTIMIZE))
-# Only override project defaults if the config specified explicit settings
-PBBUILD_SETTINGS += GCC_MODEL_TUNING= OPTIMIZATION_CFLAGS="$(MOZ_OPTIMIZE_FLAGS)"
-endif # MOZ_OPTIMIZE=2
-endif # MOZ_OPTIMIZE
-endif # OS_ARCH=Darwin
 
 ifdef MOZ_USING_CCACHE
 ifdef CLANG_CXX
@@ -606,6 +586,13 @@ else
 WIN32_EXE_LDFLAGS	+= -SUBSYSTEM:WINDOWS
 endif
 endif
+endif
+endif
+
+ifdef _MSC_VER
+ifeq ($(CPU_ARCH),x86_64)
+# set stack to 2MB on x64 build.  See bug 582910
+WIN32_EXE_LDFLAGS	+= -STACK:2097152
 endif
 endif
 
@@ -751,15 +738,13 @@ DIRS += $(foreach tier,$(TIERS),$(tier_$(tier)_dirs))
 STATIC_DIRS += $(foreach tier,$(TIERS),$(tier_$(tier)_staticdirs))
 endif
 
-OPTIMIZE_JARS_CMD = $(PYTHON) $(call core_abspath,$(topsrcdir)/config/optimizejars.py)
-
 CREATE_PRECOMPLETE_CMD = $(PYTHON) $(call core_abspath,$(topsrcdir)/config/createprecomplete.py)
 
 # MDDEPDIR is the subdirectory where dependency files are stored
 MDDEPDIR := .deps
 
-EXPAND_LIBS_EXEC = $(PYTHON) $(topsrcdir)/config/pythonpath.py -I$(DEPTH)/config $(topsrcdir)/config/expandlibs_exec.py $(if $@,--depend $(MDDEPDIR)/$(@F).pp --target $@)
-EXPAND_LIBS_GEN = $(PYTHON) $(topsrcdir)/config/pythonpath.py -I$(DEPTH)/config $(topsrcdir)/config/expandlibs_gen.py $(if $@,--depend $(MDDEPDIR)/$(@F).pp)
+EXPAND_LIBS_EXEC = $(PYTHON) $(topsrcdir)/config/expandlibs_exec.py $(if $@,--depend $(MDDEPDIR)/$(@F).pp --target $@)
+EXPAND_LIBS_GEN = $(PYTHON) $(topsrcdir)/config/expandlibs_gen.py $(if $@,--depend $(MDDEPDIR)/$(@F).pp)
 EXPAND_AR = $(EXPAND_LIBS_EXEC) --extract -- $(AR)
 EXPAND_CC = $(EXPAND_LIBS_EXEC) --uselist -- $(CC)
 EXPAND_CCC = $(EXPAND_LIBS_EXEC) --uselist -- $(CCC)

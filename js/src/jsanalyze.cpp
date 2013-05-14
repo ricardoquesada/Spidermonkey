@@ -310,10 +310,6 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
             isJaegerInlineable = isIonInlineable = false;
             break;
 
-          case JSOP_QNAMEPART:
-          case JSOP_QNAMECONST:
-            isJaegerCompileable = false;
-            /* FALL THROUGH */
           case JSOP_NAME:
           case JSOP_CALLNAME:
           case JSOP_BINDNAME:
@@ -447,7 +443,7 @@ ScriptAnalysis::analyzeBytecode(JSContext *cx)
 
           case JSOP_SETARG:
             modifiesArguments_ = true;
-            isIonInlineable = isJaegerInlineable = false;
+            isJaegerInlineable = false;
             break;
 
           case JSOP_GETPROP:
@@ -875,7 +871,7 @@ ScriptAnalysis::analyzeLifetimes(JSContext *cx)
 
                     jsbytecode *entrypc = script_->code + entry;
 
-                    if (JSOp(*entrypc) == JSOP_GOTO || JSOp(*entrypc) == JSOP_FILTER)
+                    if (JSOp(*entrypc) == JSOP_GOTO)
                         loop->entry = entry + GET_JUMP_OFFSET(entrypc);
                     else
                         loop->entry = targetOffset;
@@ -2016,7 +2012,7 @@ CrossScriptSSA::foldValue(const CrossSSAValue &cv)
 void
 ScriptAnalysis::printSSA(JSContext *cx)
 {
-    AutoEnterAnalysis enter(cx);
+    types::AutoEnterAnalysis enter(cx);
 
     printf("\n");
 

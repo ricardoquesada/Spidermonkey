@@ -1172,12 +1172,12 @@ class Assembler
     // TODO: this should actually be a pool-like object
     //       It is currently a big hack, and probably shouldn't exist
     class JumpPool;
-    js::Vector<DeferredData *, 0, SystemAllocPolicy> data_;
-    js::Vector<CodeLabel *, 0, SystemAllocPolicy> codeLabels_;
+    js::Vector<CodeLabel, 0, SystemAllocPolicy> codeLabels_;
     js::Vector<RelativePatch, 8, SystemAllocPolicy> jumps_;
     js::Vector<JumpPool *, 0, SystemAllocPolicy> jumpPools_;
     js::Vector<BufferOffset, 0, SystemAllocPolicy> tmpJumpRelocations_;
     js::Vector<BufferOffset, 0, SystemAllocPolicy> tmpDataRelocations_;
+    js::Vector<BufferOffset, 0, SystemAllocPolicy> tmpPreBarriers_;
     class JumpPool : TempObject
     {
         BufferOffset start;
@@ -1188,7 +1188,7 @@ class Assembler
     CompactBufferWriter jumpRelocations_;
     CompactBufferWriter dataRelocations_;
     CompactBufferWriter relocations_;
-    size_t dataBytesNeeded_;
+    CompactBufferWriter preBarriers_;
 
     bool enoughMemory_;
 
@@ -1211,8 +1211,7 @@ class Assembler
 
   public:
     Assembler()
-      : dataBytesNeeded_(0),
-        enoughMemory_(true),
+      : enoughMemory_(true),
         m_buffer(4, 4, 0, &pools_[0], 8),
         int32Pool(m_buffer.getPool(1)),
         doublePool(m_buffer.getPool(0)),
@@ -1257,6 +1256,9 @@ class Assembler
         if (ptr.value)
             tmpDataRelocations_.append(nextOffset());
     }
+    void writePrebarrierOffset(CodeOffsetLabel label) {
+        tmpPreBarriers_.append(BufferOffset(label.offset()));
+    }
 
     enum RelocBranchStyle {
         B_MOVWT,
@@ -1291,22 +1293,21 @@ class Assembler
   public:
     void finish();
     void executableCopy(void *buffer);
-    void processDeferredData(IonCode *code, uint8_t *data);
     void processCodeLabels(IonCode *code);
-    void copyJumpRelocationTable(uint8_t *buffer);
-    void copyDataRelocationTable(uint8_t *buffer);
+    void copyJumpRelocationTable(uint8_t *dest);
+    void copyDataRelocationTable(uint8_t *dest);
+    void copyPreBarrierTable(uint8_t *dest);
 
-    bool addDeferredData(DeferredData *data, size_t bytes);
-
-    bool addCodeLabel(CodeLabel *label);
+    bool addCodeLabel(CodeLabel label);
 
     // Size of the instruction stream, in bytes.
     size_t size() const;
     // Size of the jump relocation table, in bytes.
     size_t jumpRelocationTableBytes() const;
     size_t dataRelocationTableBytes() const;
+    size_t preBarrierTableBytes() const;
+
     // Size of the data table, in bytes.
-    size_t dataSize() const;
     size_t bytesNeeded() const;
 
     // Write a blob of binary into the instruction stream *OR*
@@ -1320,9 +1321,7 @@ class Assembler
     static void writeInstStatic(uint32_t x, uint32_t *dest);
 
   public:
-    // resreve enough space in the instruction stream for a jumpPool.
-    // return the reserved space.
-    BufferOffset as_jumpPool(uint32_t size);
+    void writeCodePointer(AbsoluteLabel *label);
 
     BufferOffset align(int alignment);
     BufferOffset as_nop();
@@ -1540,6 +1539,7 @@ class Assembler
     void retarget(Label *label, Label *target);
     // I'm going to pretend this doesn't exist for now.
     void retarget(Label *label, void *target, Relocation::Kind reloc);
+    void Bind(IonCode *code, AbsoluteLabel *label, const void *address);
 
     void call(Label *label);
     void call(void *target);
@@ -1698,6 +1698,7 @@ class Assembler
     static void ToggleToJmp(CodeLocationLabel inst_);
     static void ToggleToCmp(CodeLocationLabel inst_);
 
+    static void ToggleCall(CodeLocationLabel inst_, bool enabled);
 }; // Assembler
 
 // An Instruction is a structure for both encoding and decoding any and all ARM instructions.
@@ -1787,6 +1788,20 @@ class InstLDR : public InstDTR
 
 };
 JS_STATIC_ASSERT(sizeof(InstDTR) == sizeof(InstLDR));
+
+class InstNOP : public Instruction
+{
+    static const uint32_t NopInst = 0x0320f000;
+
+  public:
+    InstNOP()
+      : Instruction(NopInst, Assembler::Always)
+    { }
+
+    static bool isTHIS(const Instruction &i);
+    static InstNOP *asTHIS(Instruction &i);
+};
+
 // Branching to a register, or calling a register
 class InstBranchReg : public Instruction
 {
@@ -1798,7 +1813,7 @@ class InstBranchReg : public Instruction
     };
     static const uint32_t IsBRegMask = 0x0ffffff0;
     InstBranchReg(BranchTag tag, Register rm, Assembler::Condition c)
-      : Instruction(tag | RM(rm), c)
+      : Instruction(tag | rm.code(), c)
     { }
   public:
     static bool isTHIS (const Instruction &i);
@@ -1841,6 +1856,10 @@ class InstBXReg : public InstBranchReg
 class InstBLXReg : public InstBranchReg
 {
   public:
+    InstBLXReg(Register reg, Assembler::Condition c)
+      : InstBranchReg(IsBLX, reg, c)
+    { }
+
     static bool isTHIS (const Instruction &i);
     static InstBLXReg *asTHIS (const Instruction &i);
 };

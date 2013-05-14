@@ -292,7 +292,7 @@ WeakMap_set_impl(JSContext *cx, CallArgs args)
     if (!key)
         return false;
 
-    Value value = (args.length() > 1) ? args[1] : UndefinedValue();
+    RootedValue value(cx, (args.length() > 1) ? args[1] : UndefinedValue());
 
     Rooted<JSObject*> thisObj(cx, &args.thisv().toObject());
     ObjectValueMap *map = GetObjectMap(thisObj);
@@ -322,7 +322,7 @@ WeakMap_set_impl(JSContext *cx, CallArgs args)
         JS_ReportOutOfMemory(cx);
         return false;
     }
-    HashTableWriteBarrierPost(cx->compartment, map, key);
+    HashTableWriteBarrierPost(cx->runtime, map, key);
 
     args.rval().setUndefined();
     return true;
@@ -336,8 +336,9 @@ WeakMap_set(JSContext *cx, unsigned argc, Value *vp)
 }
 
 JS_FRIEND_API(JSBool)
-JS_NondeterministicGetWeakMapKeys(JSContext *cx, JSObject *obj, JSObject **ret)
+JS_NondeterministicGetWeakMapKeys(JSContext *cx, JSObject *objArg, JSObject **ret)
 {
+    RootedObject obj(cx, objArg);
     obj = UnwrapObject(obj);
     if (!obj || !obj->isWeakMap()) {
         *ret = NULL;
@@ -372,6 +373,11 @@ WeakMap_finalize(FreeOp *fop, RawObject obj)
 {
     if (ObjectValueMap *map = GetObjectMap(obj)) {
         map->check();
+        /*
+         * The map may contain finalized entries, so drop them before destructing to avoid calling
+         * ~EncapsulatedPtr.
+         */
+        map->clearWithoutCallingDestructors();
 #ifdef DEBUG
         map->~ObjectValueMap();
         memset(static_cast<void *>(map), 0xdc, sizeof(*map));

@@ -34,6 +34,7 @@
 #include "nsJSEnvironment.h"
 #include "nsXMLHttpRequest.h"
 #include "mozilla/Telemetry.h"
+#include "nsDOMClassInfoID.h"
 
 using namespace mozilla;
 using namespace js;
@@ -3043,14 +3044,6 @@ NS_IMPL_THREADSAFE_RELEASE(nsXPCComponents_utils_Sandbox)
 #define XPC_MAP_FLAGS               0
 #include "xpc_map_end.h" /* This #undef's the above. */
 
-static bool
-WrapForSandbox(JSContext *cx, bool wantXrays, jsval *vp)
-{
-    return wantXrays
-           ? JS_WrapValue(cx, vp)
-           : xpc::WrapperFactory::WaiveXrayAndWrap(cx, vp);
-}
-
 xpc::SandboxProxyHandler xpc::sandboxProxyHandler;
 
 bool
@@ -3289,7 +3282,18 @@ xpc_CreateSandboxObject(JSContext *cx, jsval *vp, nsISupports *prinOrSop, Sandbo
     sandbox = xpc::CreateGlobalObject(cx, &SandboxClass, principal);
     if (!sandbox)
         return NS_ERROR_FAILURE;
-    xpc::GetCompartmentPrivate(sandbox)->wantXrays = options.wantXrays;
+
+    // Set up the wantXrays flag, which indicates whether xrays are desired even
+    // for same-origin access.
+    //
+    // This flag has historically been ignored for chrome sandboxes due to
+    // quirks in the wrapping implementation that have now been removed. Indeed,
+    // same-origin Xrays for chrome->chrome access seems a bit superfluous.
+    // Arguably we should just flip the default for chrome and still honor the
+    // flag, but such a change would break code in subtle ways for minimal
+    // benefit. So we just switch it off here.
+    xpc::GetCompartmentPrivate(sandbox)->wantXrays =
+      AccessCheck::isChrome(sandbox) ? false : options.wantXrays;
 
     JS::AutoObjectRooter tvr(cx, sandbox);
 
@@ -3353,10 +3357,14 @@ xpc_CreateSandboxObject(JSContext *cx, jsval *vp, nsISupports *prinOrSop, Sandbo
     }
 
     if (vp) {
+        // We have this crazy behavior where wantXrays=false also implies that the
+        // returned sandbox is implicitly waived. We've stopped advertising it, but
+        // keep supporting it for now.
         *vp = OBJECT_TO_JSVAL(sandbox);
-        if (!WrapForSandbox(cx, options.wantXrays, vp)) {
+        if (options.wantXrays && !JS_WrapValue(cx, vp))
             return NS_ERROR_UNEXPECTED;
-        }
+        if (!options.wantXrays && !xpc::WrapperFactory::WaiveXrayAndWrap(cx, vp))
+            return NS_ERROR_UNEXPECTED;
     }
 
     // Set the location information for the new global, so that tools like
@@ -3754,16 +3762,12 @@ ContextHolder::ContextHolder(JSContext *aOuterCx,
         DebugOnly<nsresult> rv = XPCWrapper::GetSecurityManager()->
                                    IsSystemPrincipal(mPrincipal, &isChrome);
         MOZ_ASSERT(NS_SUCCEEDED(rv));
-        bool allowXML = Preferences::GetBool(isChrome ?
-                                             "javascript.options.xml.chrome" :
-                                             "javascript.options.xml.content");
 
         JSAutoRequest ar(mJSContext);
         JS_SetOptions(mJSContext,
                       JS_GetOptions(mJSContext) |
                       JSOPTION_DONT_REPORT_UNCAUGHT |
-                      JSOPTION_PRIVATE_IS_NSISUPPORTS |
-                      (allowXML ? JSOPTION_ALLOW_XML : 0));
+                      JSOPTION_PRIVATE_IS_NSISUPPORTS);
         JS_SetGlobalObject(mJSContext, aSandbox);
         JS_SetContextPrivate(mJSContext, this);
         JS_SetOperationCallback(mJSContext, ContextHolderOperationCallback);
@@ -3861,6 +3865,7 @@ xpc_EvalInSandbox(JSContext *cx, JSObject *sandbox, const nsAString& source,
 {
     JS_AbortIfWrongThread(JS_GetRuntime(cx));
 
+    bool waiveXray = xpc::WrapperFactory::HasWaiveXrayFlag(sandbox);
     sandbox = js::UnwrapObjectChecked(sandbox);
     if (!sandbox || js::GetObjectJSClass(sandbox) != &SandboxClass) {
         return NS_ERROR_INVALID_ARG;
@@ -3975,10 +3980,11 @@ xpc_EvalInSandbox(JSContext *cx, JSObject *sandbox, const nsAString& source,
                 v = STRING_TO_JSVAL(str);
             }
 
-            CompartmentPrivate *sandboxdata = GetCompartmentPrivate(sandbox);
-            if (!WrapForSandbox(cx, sandboxdata->wantXrays, &v)) {
+            // Transitively apply Xray waivers if |sb| was waived.
+            if (waiveXray && !xpc::WrapperFactory::WaiveXrayAndWrap(cx, &v))
                 rv = NS_ERROR_FAILURE;
-            }
+            if (!waiveXray && !JS_WrapValue(cx, &v))
+                rv = NS_ERROR_FAILURE;
 
             if (NS_SUCCEEDED(rv)) {
                 *rval = v;
@@ -4465,7 +4471,7 @@ SetBoolOption(JSContext* cx, uint32_t aOption, bool aValue)
     } else {
         options &= ~aOption;
     }
-    JS_SetOptions(cx, options & JSALLOPTION_MASK);
+    JS_SetOptions(cx, options & JSOPTION_MASK);
     return NS_OK;
 }
 
@@ -4484,7 +4490,6 @@ SetBoolOption(JSContext* cx, uint32_t aOption, bool aValue)
 GENERATE_JSOPTION_GETTER_SETTER(Strict, JSOPTION_STRICT)
 GENERATE_JSOPTION_GETTER_SETTER(Werror, JSOPTION_WERROR)
 GENERATE_JSOPTION_GETTER_SETTER(Atline, JSOPTION_ATLINE)
-GENERATE_JSOPTION_GETTER_SETTER(Xml, JSOPTION_MOAR_XML)
 GENERATE_JSOPTION_GETTER_SETTER(Methodjit, JSOPTION_METHODJIT)
 GENERATE_JSOPTION_GETTER_SETTER(Methodjit_always, JSOPTION_METHODJIT_ALWAYS)
 GENERATE_JSOPTION_GETTER_SETTER(Strict_mode, JSOPTION_STRICT_MODE)
@@ -4521,6 +4526,22 @@ nsXPCComponents_Utils::IsXrayWrapper(const JS::Value &obj, bool* aRetval)
     *aRetval =
         obj.isObject() && xpc::WrapperFactory::IsXrayWrapper(&obj.toObject());
     return NS_OK;
+}
+
+NS_IMETHODIMP
+nsXPCComponents_Utils::GetDOMClassInfo(const nsAString& aClassName,
+                                       nsIClassInfo** aClassInfo)
+{
+#ifdef MOZ_WEBRTC
+    if (aClassName.EqualsLiteral("RTCPeerConnection")) {
+        NS_ADDREF(*aClassInfo =
+                  NS_GetDOMClassInfoInstance(eDOMClassInfo_RTCPeerConnection_id));
+        return NS_OK;
+    }
+#endif
+
+    *aClassInfo = nullptr;
+    return NS_ERROR_NOT_AVAILABLE;
 }
 
 /***************************************************************************/

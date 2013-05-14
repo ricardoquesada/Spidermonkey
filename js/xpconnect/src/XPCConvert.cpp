@@ -79,14 +79,6 @@ XPCConvert::GetISupportsFromJSObject(JSObject* obj, nsISupports** iface)
 
 /***************************************************************************/
 
-static void
-FinalizeXPCOMUCString(const JSStringFinalizer *fin, jschar *chars)
-{
-    nsMemory::Free(chars);
-}
-
-static const JSStringFinalizer sXPCOMUCStringFinalizer = { FinalizeXPCOMUCString };
-
 // static
 JSBool
 XPCConvert::NativeData2JS(XPCLazyCallContext& lccx, jsval* d, const void* s,
@@ -245,58 +237,70 @@ XPCConvert::NativeData2JS(XPCLazyCallContext& lccx, jsval* d, const void* s,
             }
         case nsXPTType::T_UTF8STRING:
             {
-                const nsACString* cString = *((const nsACString**)s);
+                const nsACString* utf8String = *((const nsACString**)s);
 
-                if (!cString)
+                if (!utf8String || utf8String->IsVoid())
                     break;
 
-                if (!cString->IsVoid()) {
-                    uint32_t len;
-                    jschar *p = (jschar *)UTF8ToNewUnicode(*cString, &len);
-
-                    if (!p)
-                        return false;
-
-                    JSString* jsString =
-                        JS_NewExternalString(cx, p, len,
-                                             &sXPCOMUCStringFinalizer);
-
-                    if (!jsString) {
-                        nsMemory::Free(p);
-                        return false;
-                    }
-
-                    *d = STRING_TO_JSVAL(jsString);
+                if (utf8String->IsEmpty()) {
+                    *d = JS_GetEmptyStringValue(cx);
+                    break;
                 }
 
-                break;
+                const uint32_t len = CalcUTF8ToUnicodeLength(*utf8String);
+                // The cString is not empty at this point, but the calculated
+                // UTF-16 length is zero, meaning no valid conversion exists.
+                if (!len)
+                    return false;
 
+                const size_t buffer_size = (len + 1) * sizeof(PRUnichar);
+                PRUnichar* buffer =
+                    static_cast<PRUnichar*>(JS_malloc(cx, buffer_size));
+                if (!buffer)
+                    return false;
+
+                uint32_t copied;
+                if (!UTF8ToUnicodeBuffer(*utf8String, buffer, &copied) ||
+                    len != copied) {
+                    // Copy or conversion during copy failed. Did not copy the
+                    // whole string.
+                    JS_free(cx, buffer);
+                    return false;
+                }
+
+                // JS_NewUCString takes ownership on success, i.e. a
+                // successful call will make it the responsiblity of the JS VM
+                // to free the buffer.
+                JSString* str = JS_NewUCString(cx, (jschar*)buffer, len);
+                if (!str) {
+                    JS_free(cx, buffer);
+                    return false;
+                }
+
+                *d = STRING_TO_JSVAL(str);
+                break;
             }
         case nsXPTType::T_CSTRING:
             {
                 const nsACString* cString = *((const nsACString**)s);
 
-                if (!cString)
+                if (!cString || cString->IsVoid())
                     break;
 
-                if (!cString->IsVoid()) {
-                    PRUnichar* unicodeString = ToNewUnicode(*cString);
-                    if (!unicodeString)
-                        return false;
-
-                    JSString* jsString = JS_NewExternalString(cx,
-                                                              (jschar*)unicodeString,
-                                                              cString->Length(),
-                                                              &sXPCOMUCStringFinalizer);
-
-                    if (!jsString) {
-                        nsMemory::Free(unicodeString);
-                        return false;
-                    }
-
-                    *d = STRING_TO_JSVAL(jsString);
+                if (cString->IsEmpty()) {
+                    *d = JS_GetEmptyStringValue(cx);
+                    break;
                 }
 
+                // c-strings (binary blobs) are deliberately not converted from
+                // UTF-8 to UTF-16. T_UTF8Sting is for UTF-8 encoded strings
+                // with automatic conversion.
+                JSString* str = JS_NewStringCopyN(cx, cString->Data(),
+                                                  cString->Length());
+                if (!str)
+                    return false;
+
+                *d = STRING_TO_JSVAL(str);
                 break;
             }
 
@@ -575,7 +579,7 @@ XPCConvert::JSData2Native(JSContext* cx, void* d, jsval s,
         if (!buffer) {
             return false;
         }
-        JS_EncodeStringToBuffer(str, buffer, length);
+        JS_EncodeStringToBuffer(cx, str, buffer, length);
         buffer[length] = '\0';
         *((void**)d) = buffer;
         return true;
@@ -701,7 +705,7 @@ XPCConvert::JSData2Native(JSContext* cx, void* d, jsval s,
         if (rs->Length() != uint32_t(length)) {
             return false;
         }
-        JS_EncodeStringToBuffer(str, rs->BeginWriting(), length);
+        JS_EncodeStringToBuffer(cx, str, rs->BeginWriting(), length);
 
         return true;
     }
@@ -976,10 +980,6 @@ XPCConvert::NativeInterface2JSObject(XPCLazyCallContext& lccx,
     if (!JS_WrapObject(ccx, &flat))
         return false;
 
-    // Outerize if necessary.
-    flat = JS_ObjectToOuterObject(cx, flat);
-    MOZ_ASSERT(flat, "bad outer object hook!");
-
     *d = OBJECT_TO_JSVAL(flat);
 
     if (dest) {
@@ -1054,12 +1054,6 @@ XPCConvert::JSObject2NativeInterface(JSContext* cx,
             return NS_SUCCEEDED(iface->QueryInterface(*iid, dest));
         }
         // else...
-
-        // XXX E4X breaks the world. Don't try wrapping E4X objects!
-        // This hack can be removed (or changed accordingly) when the
-        // DOM <-> E4X bindings are complete, see bug 270553
-        if (JS_TypeOfValue(cx, OBJECT_TO_JSVAL(src)) == JSTYPE_XML)
-            return false;
 
         // Deal with slim wrappers here.
         if (GetISupportsFromJSObject(inner ? inner : src, &iface)) {
@@ -1875,7 +1869,7 @@ XPCConvert::JSStringWithSize2Native(XPCCallContext& ccx, void* d, jsval s,
             if (!buffer) {
                 return false;
             }
-            JS_EncodeStringToBuffer(str, buffer, len);
+            JS_EncodeStringToBuffer(cx, str, buffer, len);
             buffer[len] = '\0';
             *((char**)d) = buffer;
 

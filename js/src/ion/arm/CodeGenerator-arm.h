@@ -15,6 +15,7 @@ namespace js {
 namespace ion {
 
 class OutOfLineBailout;
+class OutOfLineTableSwitch;
 
 class CodeGeneratorARM : public CodeGeneratorShared
 {
@@ -54,11 +55,7 @@ class CodeGeneratorARM : public CodeGeneratorShared
     bool generateEpilogue();
     bool generateOutOfLineCode();
 
-    void emitDoubleToInt32(const FloatRegister &src, const Register &dest, Label *fail, bool negativeZeroCheck = true);
     void emitRoundDouble(const FloatRegister &src, const Register &dest, Label *fail);
-
-    // Emits a conditional set.
-    void emitSet(Assembler::Condition cond, const Register &dest);
 
     // Emits a branch that directs control flow to the true block if |cond| is
     // true, and the false block if |cond| is false.
@@ -107,6 +104,7 @@ class CodeGeneratorARM : public CodeGeneratorShared
 
     // Out of line visitors.
     bool visitOutOfLineBailout(OutOfLineBailout *ool);
+    bool visitOutOfLineTableSwitch(OutOfLineTableSwitch *ool);
 
   protected:
     ValueOperand ToValue(LInstruction *ins, size_t pos);

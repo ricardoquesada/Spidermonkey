@@ -8,12 +8,14 @@
 #include "jscntxt.h"
 #include "jsnum.h"
 #include "jsobj.h"
-#include "jsscope.h"
 
+#include "assembler/assembler/CodeLocation.h"
 #include "assembler/assembler/LinkBuffer.h"
 #include "assembler/assembler/MacroAssembler.h"
-#include "assembler/assembler/CodeLocation.h"
-
+#include "builtin/RegExp.h"
+#ifdef JS_ION
+# include "ion/IonMacroAssembler.h"
+#endif
 #include "methodjit/CodeGenIncludes.h"
 #include "methodjit/Compiler.h"
 #include "methodjit/ICRepatcher.h"
@@ -21,18 +23,14 @@
 #include "methodjit/MonoIC.h"
 #include "methodjit/PolyIC.h"
 #include "methodjit/StubCalls.h"
-
-#include "builtin/RegExp.h"
+#include "vm/Shape.h"
 
 #include "jsinterpinlines.h"
 #include "jsobjinlines.h"
-#include "jsscopeinlines.h"
 #include "jsscriptinlines.h"
 
 #include "methodjit/StubCalls-inl.h"
-#ifdef JS_ION
-# include "ion/IonMacroAssembler.h"
-#endif
+#include "vm/Shape-inl.h"
 
 using namespace js;
 using namespace js::mjit;
@@ -70,7 +68,8 @@ ic::GetGlobalName(VMFrame &f, ic::GetGlobalNameIC *ic)
 
     uint32_t slot;
     {
-        RootedShape shape(f.cx, obj->nativeLookup(f.cx, NameToId(name)));
+        RootedId id(f.cx, NameToId(name));
+        RootedShape shape(f.cx, obj->nativeLookup(f.cx, id));
 
         if (monitor.recompiled()) {
             stubs::Name(f);
@@ -166,7 +165,8 @@ ic::SetGlobalName(VMFrame &f, ic::SetGlobalNameIC *ic)
     RecompilationMonitor monitor(f.cx);
 
     {
-        UnrootedShape shape = obj->nativeLookup(f.cx, NameToId(name));
+        RootedId id(f.cx, NameToId(name));
+        UnrootedShape shape = obj->nativeLookup(f.cx, id);
 
         if (!monitor.recompiled()) {
             LookupStatus status = UpdateSetGlobalName(f, ic, obj, shape);
@@ -296,12 +296,6 @@ class EqualityCompiler : public BaseCompiler
             Jump rhsFail = masm.testObject(Assembler::NotEqual, rvr.typeReg());
             linkToStub(rhsFail);
         }
-
-        masm.loadObjClass(lvr.dataReg(), ic.tempReg);
-        Jump lhsHasEq = masm.branchPtr(Assembler::NotEqual,
-                                       Address(ic.tempReg, offsetof(Class, ext.equality)),
-                                       ImmPtr(NULL));
-        linkToStub(lhsHasEq);
 
         if (rvr.isConstant()) {
             JSObject *obj = &rvr.value().toObject();
@@ -620,7 +614,7 @@ class CallCompiler : public BaseCompiler
         masm.store32(t0, Address(JSFrameReg, StackFrame::offsetOfFlags()));
 
         /* Store the entry fp and calling pc into the IonActivation. */
-        masm.loadPtr(&cx->runtime->ionActivation, t0);
+        masm.loadPtr(&cx->mainThread().ionActivation, t0);
         masm.storePtr(JSFrameReg, Address(t0, ion::IonActivation::offsetOfEntryFp()));
         masm.storePtr(t1, Address(t0, ion::IonActivation::offsetOfPrevPc()));
 
@@ -793,7 +787,7 @@ class CallCompiler : public BaseCompiler
 
         /* Unset IonActivation::entryfp. */
         t0 = regs.takeAnyReg().reg();
-        masm.loadPtr(&cx->runtime->ionActivation, t0);
+        masm.loadPtr(&cx->mainThread().ionActivation, t0);
         masm.storePtr(ImmPtr(NULL), Address(t0, ion::IonActivation::offsetOfEntryFp()));
         masm.storePtr(ImmPtr(NULL), Address(t0, ion::IonActivation::offsetOfPrevPc()));
 
@@ -874,7 +868,7 @@ class CallCompiler : public BaseCompiler
         masm.loadPtr(Address(t0, JSScript::offsetOfMJITInfo()), t0);
         Jump hasNoJitInfo = masm.branchPtr(Assembler::Equal, t0, ImmPtr(NULL));
         size_t offset = JSScript::JITScriptSet::jitHandleOffset(callingNew,
-                                                                f.cx->compartment->compileBarriers());
+                                                                f.cx->zone()->compileBarriers());
         masm.loadPtr(Address(t0, offset), t0);
         Jump hasNoJitCode = masm.branchPtr(Assembler::BelowOrEqual, t0,
                                            ImmPtr(JSScript::JITScriptHandle::UNJITTABLE));
@@ -962,7 +956,7 @@ class CallCompiler : public BaseCompiler
     bool patchInlinePath(JSScript *script, JSObject *obj)
     {
         JS_ASSERT(ic.frameSize.isStatic());
-        JITScript *jit = script->getJIT(callingNew, f.cx->compartment->compileBarriers());
+        JITScript *jit = script->getJIT(callingNew, f.cx->zone()->compileBarriers());
 
         /* Very fast path. */
         Repatcher repatch(f.chunk());
@@ -1029,13 +1023,13 @@ class CallCompiler : public BaseCompiler
         linker.link(claspGuard, ic.slowPathStart);
         linker.link(funGuard, ic.slowPathStart);
         linker.link(done, ic.funGuard.labelAtOffset(ic.hotPathOffset));
-        JSC::CodeLocationLabel cs = linker.finalize(f);
+        ic.funJumpTarget = linker.finalize(f);
 
         JaegerSpew(JSpew_PICs, "generated CALL closure stub %p (%lu bytes)\n",
-                   cs.executableAddress(), (unsigned long) masm.size());
+                   ic.funJumpTarget.executableAddress(), (unsigned long) masm.size());
 
         Repatcher repatch(f.chunk());
-        repatch.relink(ic.funJump, cs);
+        repatch.relink(ic.funJump, ic.funJumpTarget);
 
         return true;
     }
@@ -1209,10 +1203,68 @@ class CallCompiler : public BaseCompiler
         ic.fastGuardedNative = fun;
 
         linker.link(funGuard, ic.slowPathStart);
-        JSC::CodeLocationLabel start = linker.finalize(f);
+        ic.funJumpTarget = linker.finalize(f);
 
         JaegerSpew(JSpew_PICs, "generated native CALL stub %p (%lu bytes)\n",
+                   ic.funJumpTarget.executableAddress(), (unsigned long) masm.size());
+
+        Repatcher repatch(f.chunk());
+        repatch.relink(ic.funJump, ic.funJumpTarget);
+
+        return true;
+    }
+
+    bool generateCallsiteCloneStub(HandleFunction original, HandleFunction fun)
+    {
+        AutoAssertNoGC nogc;
+
+        Assembler masm;
+
+        // If we have a callsite clone, we do the folowing hack:
+        //
+        //  1) Patch funJump to a stub which guards on the identity of the
+        //     original function. If this guard fails, we jump to the original
+        //     funJump target.
+        //  2) Load the clone into the callee register.
+        //  3) Jump *back* to funGuard.
+        //
+        // For the inline path, hopefully we will succeed upon jumping back to
+        // funGuard after loading the clone.
+        //
+        // This hack is not ideal, as we can actually fail the first funGuard
+        // twice: we fail the first funGuard, pass the second funGuard, load
+        // the clone, and jump back to the first funGuard. We fail the first
+        // funGuard again, and this time we also fail the second funGuard,
+        // since a function's clone is never equal to itself. Finally, we jump
+        // to the original funJump target.
+
+        // Guard on the original function's identity.
+        Jump originalGuard = masm.branchPtr(Assembler::NotEqual, ic.funObjReg, ImmPtr(original));
+
+        // Load the clone.
+        masm.move(ImmPtr(fun), ic.funObjReg);
+
+        // Jump back to the first fun guard.
+        Jump done = masm.jump();
+
+        LinkerHelper linker(masm, JSC::JAEGER_CODE);
+        JSC::ExecutablePool *ep = linker.init(f.cx);
+        if (!ep)
+            return false;
+
+        if (!linker.verifyRange(f.chunk())) {
+            disable();
+            return true;
+        }
+
+        linker.link(originalGuard, !!ic.funJumpTarget ? ic.funJumpTarget : ic.slowPathStart);
+        linker.link(done, ic.funGuardLabel);
+        JSC::CodeLocationLabel start = linker.finalize(f);
+
+        JaegerSpew(JSpew_PICs, "generated CALL clone stub %p (%lu bytes)\n",
                    start.executableAddress(), (unsigned long) masm.size());
+        JaegerSpew(JSpew_PICs, "guarding %p with clone %p\n",
+                   static_cast<void*>(original.get()), static_cast<void*>(fun.get()));
 
         Repatcher repatch(f.chunk());
         repatch.relink(ic.funJump, start);
@@ -1303,6 +1355,9 @@ class CallCompiler : public BaseCompiler
             }
         }
 
+        if (ucr.original && !generateCallsiteCloneStub(ucr.original, ucr.fun))
+            THROWV(NULL);
+
         return ucr.codeAddr;
     }
 };
@@ -1379,6 +1434,7 @@ ic::SplatApplyArgs(VMFrame &f)
         /* Steps 7-8. */
         f.regs.fp()->forEachUnaliasedActual(CopyTo(f.regs.sp));
 
+        f.regs.fp()->setJitRevisedStack();
         f.regs.sp += length;
         f.u.call.dynamicArgc = length;
         return true;
@@ -1423,6 +1479,7 @@ ic::SplatApplyArgs(VMFrame &f)
         MakeRangeGCSafe(f.regs.sp, delta);
     }
 
+    f.regs.fp()->setJitRevisedStack();
     f.regs.sp += delta;
 
     /* Steps 7-8. */

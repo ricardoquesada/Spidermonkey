@@ -513,7 +513,7 @@ private:
         if (delegateMightNeedMarking && kkind == JSTRACE_OBJECT) {
             JSObject *kdelegate = js::GetWeakmapKeyDelegate((JSObject *)k);
             if (kdelegate && !xpc_IsGrayGCThing(kdelegate)) {
-                js::UnmarkGrayGCThingRecursively(k, JSTRACE_OBJECT);
+                JS::UnmarkGrayGCThingRecursively(k, JSTRACE_OBJECT);
                 tracer->mAnyMarked = true;
             }
         }
@@ -523,7 +523,7 @@ private:
             (!m || !xpc_IsGrayGCThing(m)) &&
             vkind != JSTRACE_SHAPE)
         {
-            js::UnmarkGrayGCThingRecursively(v, vkind);
+            JS::UnmarkGrayGCThingRecursively(v, vkind);
             tracer->mAnyMarked = true;
         }
 
@@ -769,7 +769,6 @@ DescribeGCThing(bool isMarked, void *p, JSGCTraceKind traceKind,
                 "String",
                 "Script",
                 "IonCode",
-                "Xml",
                 "Shape",
                 "BaseShape",
                 "TypeObject",
@@ -1061,6 +1060,7 @@ CreateGlobalObject(JSContext *cx, JSClass *clasp, nsIPrincipal *principal)
     CheckTypeInference(cx, clasp, principal);
 
     NS_ABORT_IF_FALSE(NS_IsMainThread(), "using a principal off the main thread?");
+    MOZ_ASSERT(principal);
 
     JSObject *global = JS_NewGlobalObject(cx, clasp, nsJSPrincipals::get(principal));
     if (!global)
@@ -2515,13 +2515,8 @@ nsXPConnect::GetTelemetryValue(JSContext *cx, jsval *rval)
 
     unsigned attrs = JSPROP_ENUMERATE | JSPROP_READONLY | JSPROP_PERMANENT;
 
-    size_t i = JS_GetE4XObjectsCreated(cx);
+    size_t i = JS_SetProtoCalled(cx);
     jsval v = DOUBLE_TO_JSVAL(i);
-    if (!JS_DefineProperty(cx, obj, "e4x", v, NULL, NULL, attrs))
-        return NS_ERROR_OUT_OF_MEMORY;
-
-    i = JS_SetProtoCalled(cx);
-    v = DOUBLE_TO_JSVAL(i);
     if (!JS_DefineProperty(cx, obj, "setProto", v, NULL, NULL, attrs))
         return NS_ERROR_OUT_OF_MEMORY;
 

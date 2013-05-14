@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#if !defined(JSGC_ROOT_ANALYSIS) && !defined(JSGC_USE_EXACT_ROOTING)
+
 #include "tests.h"
 #include "jsobj.h"
 #include "vm/String.h"
@@ -10,7 +12,6 @@
 
 BEGIN_TEST(testConservativeGC)
 {
-#ifndef JSGC_USE_EXACT_ROOTING
     js::RootedValue v2(cx);
     EVAL("({foo: 'bar'});", v2.address());
     CHECK(v2.isObject());
@@ -23,14 +24,14 @@ BEGIN_TEST(testConservativeGC)
     char strCopy[sizeof(JSString)];
     js_memcpy(&strCopy, JSVAL_TO_STRING(v3), sizeof(JSString));
 
-    jsval tmp;
-    EVAL("({foo2: 'bar2'});", &tmp);
+    js::RootedValue tmp(cx);
+    EVAL("({foo2: 'bar2'});", tmp.address());
     CHECK(tmp.isObject());
     js::RootedObject obj2(cx, JSVAL_TO_OBJECT(tmp));
     char obj2Copy[sizeof(JSObject)];
     js_memcpy(&obj2Copy, obj2, sizeof(JSObject));
 
-    EVAL("String(Math.sqrt(3));", &tmp);
+    EVAL("String(Math.sqrt(3));", tmp.address());
     CHECK(JSVAL_IS_STRING(tmp));
     js::RootedString str2(cx, JSVAL_TO_STRING(tmp));
     char str2Copy[sizeof(JSString)];
@@ -43,7 +44,7 @@ BEGIN_TEST(testConservativeGC)
     EVAL("var a = [];\n"
          "for (var i = 0; i != 10000; ++i) {\n"
          "a.push(i + 0.1, [1, 2], String(Math.sqrt(i)), {a: i});\n"
-         "}", &tmp);
+         "}", tmp.address());
 
     JS_GC(rt);
 
@@ -52,7 +53,6 @@ BEGIN_TEST(testConservativeGC)
 
     checkObjectFields((JSObject *)obj2Copy, obj2);
     CHECK(!memcmp(str2Copy, str2, sizeof(str2Copy)));
-#endif /* JSGC_USE_EXACT_ROOTING */
 
     return true;
 }
@@ -86,3 +86,5 @@ BEGIN_TEST(testDerivedValues)
   return true;
 }
 END_TEST(testDerivedValues)
+
+#endif /* !defined(JSGC_ROOT_ANALYSIS) && !defined(JSGC_USE_EXACT_ROOTING) */

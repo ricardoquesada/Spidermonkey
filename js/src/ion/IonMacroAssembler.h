@@ -18,10 +18,14 @@
 #include "ion/IonCompartment.h"
 #include "ion/IonInstrumentation.h"
 #include "ion/TypeOracle.h"
+#include "ion/ParallelFunctions.h"
 
-#include "jsscope.h"
+#include "vm/ForkJoin.h"
+
 #include "jstypedarray.h"
 #include "jscompartment.h"
+
+#include "vm/Shape.h"
 
 namespace js {
 namespace ion {
@@ -132,17 +136,14 @@ class MacroAssembler : public MacroAssemblerSpecific
 
         loadPtr(Address(dest, Shape::offsetOfBase()), dest);
     }
-    void loadBaseShapeClass(Register baseShapeReg, Register dest) {
-        loadPtr(Address(baseShapeReg, BaseShape::offsetOfClass()), dest);
-    }
     void loadObjClass(Register objReg, Register dest) {
-        loadBaseShape(objReg, dest);
-        loadBaseShapeClass(dest, dest);
+        loadPtr(Address(objReg, JSObject::offsetOfType()), dest);
+        loadPtr(Address(dest, offsetof(types::TypeObject, clasp)), dest);
     }
     void branchTestObjClass(Condition cond, Register obj, Register scratch, js::Class *clasp,
                             Label *label) {
-        loadBaseShape(obj, scratch);
-        branchPtr(cond, Address(scratch, BaseShape::offsetOfClass()), ImmWord(clasp), label);
+        loadPtr(Address(obj, JSObject::offsetOfType()), scratch);
+        branchPtr(cond, Address(scratch, offsetof(types::TypeObject, clasp)), ImmWord(clasp), label);
     }
     void branchTestObjShape(Condition cond, Register obj, const Shape *shape, Label *label) {
         branchPtr(cond, Address(obj, JSObject::offsetOfShape()), ImmGCPtr(shape), label);
@@ -164,11 +165,11 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     void loadJSContext(const Register &dest) {
         movePtr(ImmWord(GetIonContext()->compartment->rt), dest);
-        loadPtr(Address(dest, offsetof(JSRuntime, ionJSContext)), dest);
+        loadPtr(Address(dest, offsetof(JSRuntime, mainThread.ionJSContext)), dest);
     }
     void loadIonActivation(const Register &dest) {
         movePtr(ImmWord(GetIonContext()->compartment->rt), dest);
-        loadPtr(Address(dest, offsetof(JSRuntime, ionActivation)), dest);
+        loadPtr(Address(dest, offsetof(JSRuntime, mainThread.ionActivation)), dest);
     }
 
     template<typename T>
@@ -386,9 +387,9 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     void branchTestNeedsBarrier(Condition cond, const Register &scratch, Label *label) {
         JS_ASSERT(cond == Zero || cond == NonZero);
-        JSCompartment *comp = GetIonContext()->compartment;
-        movePtr(ImmWord(comp), scratch);
-        Address needsBarrierAddr(scratch, JSCompartment::OffsetOfNeedsBarrier());
+        JS::Zone *zone = GetIonContext()->compartment->zone();
+        movePtr(ImmWord(zone), scratch);
+        Address needsBarrierAddr(scratch, JS::Zone::OffsetOfNeedsBarrier());
         branchTest32(cond, needsBarrierAddr, Imm32(0x1), label);
     }
 
@@ -418,7 +419,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     }
 
     template <typename T>
-    CodeOffsetLabel patchableCallPreBarrier(const T &address, MIRType type) {
+    void patchableCallPreBarrier(const T &address, MIRType type) {
         JS_ASSERT(type == MIRType_Value || type == MIRType_String || type == MIRType_Object);
 
         Label done;
@@ -426,13 +427,13 @@ class MacroAssembler : public MacroAssemblerSpecific
         // All barriers are off by default.
         // They are enabled if necessary at the end of CodeGenerator::generate().
         CodeOffsetLabel nopJump = toggledJump(&done);
+        writePrebarrierOffset(nopJump);
 
         callPreBarrier(address, type);
         jump(&done);
 
         align(8);
         bind(&done);
-        return nopJump;
     }
 
     template<typename T>
@@ -440,7 +441,7 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     template<typename T>
     void loadFromTypedArray(int arrayType, const T &src, const ValueOperand &dest, bool allowDouble,
-                            Label *fail);
+                            Register temp, Label *fail);
 
     template<typename S, typename T>
     void storeToTypedIntArray(int arrayType, const S &value, const T &dest) {
@@ -480,13 +481,36 @@ class MacroAssembler : public MacroAssemblerSpecific
         }
     }
 
+    Register extractString(const Address &address, Register scratch) {
+        return extractObject(address, scratch);
+    }
+    Register extractString(const ValueOperand &value, Register scratch) {
+        return extractObject(value, scratch);
+    }
+
     // Inline version of js_TypedArray_uint8_clamp_double.
     // This function clobbers the input register.
     void clampDoubleToUint8(FloatRegister input, Register output);
 
     // Inline allocation.
     void newGCThing(const Register &result, JSObject *templateObject, Label *fail);
+    void parNewGCThing(const Register &result,
+                       const Register &threadContextReg,
+                       const Register &tempReg1,
+                       const Register &tempReg2,
+                       JSObject *templateObject,
+                       Label *fail);
     void initGCThing(const Register &obj, JSObject *templateObject);
+
+    // Compares two strings for equality based on the JSOP.
+    // This checks for identical pointers, atoms and length and fails for everything else.
+    void compareStrings(JSOp op, Register left, Register right, Register result,
+                        Register temp, Label *fail);
+
+    // Checks the flags that signal that parallel code may need to interrupt or
+    // abort.  Branches to fail in that case.
+    void parCheckInterruptFlags(const Register &tempReg,
+                                Label *fail);
 
     // If the IonCode that created this assembler needs to transition into the VM,
     // we want to store the IonCode on the stack in order to mark it during a GC.

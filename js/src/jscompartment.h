@@ -16,17 +16,16 @@
 #include "jsfun.h"
 #include "jsgc.h"
 #include "jsobj.h"
-#include "jsscope.h"
 
-#include "gc/StoreBuffer.h"
 #include "gc/FindSCCs.h"
 #include "vm/GlobalObject.h"
 #include "vm/RegExpObject.h"
+#include "vm/Shape.h"
 
 namespace js {
 
 namespace ion {
-    class IonCompartment;
+class IonCompartment;
 }
 
 struct NativeIterator;
@@ -39,8 +38,8 @@ struct NativeIterator;
  * is erroneously included in the measurement; see bug 562553.
  */
 class DtoaCache {
-    double        d;
-    int         base;
+    double       d;
+    int          base;
     JSFlatString *s;      // if s==NULL, d and base are not valid
 
   public:
@@ -121,7 +120,36 @@ class AutoDebugModeGC;
 class DebugScopes;
 }
 
-struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNodeBase<JSCompartment>
+namespace js {
+
+/*
+ * Encapsulates the data needed to perform allocation.  Typically
+ * there is precisely one of these per compartment
+ * (|compartment.allocator|).  However, in parallel execution mode,
+ * there will be one per worker thread.  In general, if a piece of
+ * code must perform execution and should work safely either in
+ * parallel or sequential mode, you should make it take an
+ * |Allocator*| rather than a |JSContext*|.
+ */
+class Allocator : public MallocProvider<Allocator>
+{
+    JS::Zone *zone;
+
+  public:
+    explicit Allocator(JS::Zone *zone);
+
+    js::gc::ArenaLists arenas;
+
+    inline void *parallelNewGCThing(gc::AllocKind thingKind, size_t thingSize);
+
+    inline void *onOutOfMemory(void *p, size_t nbytes);
+    inline void updateMallocCounter(size_t nbytes);
+    inline void reportAllocationOverflow();
+};
+
+} /* namespace js */
+
+struct JSCompartment : private JS::shadow::Zone, public js::gc::GraphNodeBase<JSCompartment>
 {
     JSRuntime                    *rt;
     JSPrincipals                 *principals;
@@ -157,16 +185,26 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
     }
 
   public:
-    js::gc::ArenaLists           arenas;
+    js::Allocator                    allocator;
 
-#ifdef JSGC_GENERATIONAL
-    js::gc::Nursery              gcNursery;
-    js::gc::StoreBuffer          gcStoreBuffer;
-#endif
+    /*
+     * Moves all data from the allocator |workerAllocator|, which was
+     * in use by a parallel worker, into the compartment's main
+     * allocator.  This is used at the end of a parallel section.
+     */
+    void adoptWorkerAllocator(js::Allocator *workerAllocator);
 
   private:
     bool                         ionUsingBarriers_;
   public:
+
+    JS::Zone *zone() {
+        return this;
+    }
+
+    const JS::Zone *zone() const {
+        return this;
+    }
 
     bool needsBarrier() const {
         return needsBarrier_;
@@ -285,17 +323,17 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
     double                       gcHeapGrowthFactor;
 
     bool                         hold;
-    bool                         isSystemCompartment;
+    bool                         isSystem;
 
     int64_t                      lastCodeRelease;
 
     /* Pools for analysis and type information in this compartment. */
-    static const size_t LIFO_ALLOC_PRIMARY_CHUNK_SIZE = 32 * 1024;
+    static const size_t ANALYSIS_LIFO_ALLOC_PRIMARY_CHUNK_SIZE = 32 * 1024;
+    static const size_t TYPE_LIFO_ALLOC_PRIMARY_CHUNK_SIZE = 8 * 1024;
     js::LifoAlloc                analysisLifoAlloc;
     js::LifoAlloc                typeLifoAlloc;
 
     bool                         activeAnalysis;
-    bool                         activeInference;
 
     /* Type information about the scripts and objects in this compartment. */
     js::types::TypeCompartment   types;
@@ -346,19 +384,18 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
     js::types::TypeObjectSet     lazyTypeObjects;
     void sweepNewTypeObjectTable(js::types::TypeObjectSet &table);
 
-    js::types::TypeObject *getNewType(JSContext *cx, js::TaggedProto proto,
-                                      JSFunction *fun = NULL, bool isDOM = false);
+    js::types::TypeObject *getNewType(JSContext *cx, js::Class *clasp, js::TaggedProto proto,
+                                      JSFunction *fun = NULL);
 
-    js::types::TypeObject *getLazyType(JSContext *cx, js::Handle<js::TaggedProto> proto);
+    js::types::TypeObject *getLazyType(JSContext *cx, js::Class *clasp, js::TaggedProto proto);
 
     /*
-     * Keeps track of the total number of malloc bytes connected to a
-     * compartment's GC things. This counter should be used in preference to
-     * gcMallocBytes. These counters affect collection in the same way as
-     * gcBytes and gcTriggerBytes.
+     * Hash table of all manually call site-cloned functions from within
+     * self-hosted code. Cloning according to call site provides extra
+     * sensitivity for type specialization and inlining.
      */
-    size_t                       gcMallocAndFreeBytes;
-    size_t                       gcTriggerMallocAndFreeBytes;
+    js::CallsiteCloneTable callsiteClones;
+    void sweepCallsiteClones();
 
     /* During GC, stores the index of this compartment in rt->compartments. */
     unsigned                     gcIndex;
@@ -381,12 +418,6 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
     /* This compartment's gray roots. */
     js::Vector<js::GrayRoot, 0, js::SystemAllocPolicy> gcGrayRoots;
 
-    /*
-     * Whether type objects have been marked by markTypes().  This is used to
-     * determine whether they need to be swept.
-     */
-    bool                         gcTypesMarked;
-
   private:
     /*
      * Malloc counter to measure memory pressure for GC scheduling. It runs from
@@ -408,7 +439,7 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
     /* Mark cross-compartment wrappers. */
     void markCrossCompartmentWrappers(JSTracer *trc);
 
-    bool wrap(JSContext *cx, js::Value *vp, JSObject *existing = NULL);
+    bool wrap(JSContext *cx, JS::MutableHandleValue vp, JS::HandleObject existing = JS::NullPtr());
     bool wrap(JSContext *cx, JSString **strp);
     bool wrap(JSContext *cx, js::HeapPtrString *strp);
     bool wrap(JSContext *cx, JSObject **objp, JSObject *existing = NULL);
@@ -440,14 +471,19 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
     void sweepCrossCompartmentWrappers();
     void purge();
 
-    void findOutgoingEdges(js::gc::ComponentFinder<JSCompartment> &finder);
+    void findOutgoingEdgesFromCompartment(js::gc::ComponentFinder<JS::Zone> &finder);
+    void findOutgoingEdges(js::gc::ComponentFinder<JS::Zone> &finder);
 
-    void setGCLastBytes(size_t lastBytes, size_t lastMallocBytes, js::JSGCInvocationKind gckind);
+    void setGCLastBytes(size_t lastBytes, js::JSGCInvocationKind gckind);
     void reduceGCTriggerBytes(size_t amount);
 
     void resetGCMallocBytes();
     void setGCMaxMallocBytes(size_t value);
     void updateMallocCounter(size_t nbytes) {
+        /*
+         * Note: this code may be run from worker threads.  We
+         * tolerate any thread races when updating gcMallocBytes.
+         */
         ptrdiff_t oldCount = gcMallocBytes;
         ptrdiff_t newCount = oldCount - ptrdiff_t(nbytes);
         gcMallocBytes = newCount;
@@ -461,16 +497,10 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
 
     void onTooMuchMalloc();
 
-    void mallocInCompartment(size_t nbytes) {
-        gcMallocAndFreeBytes += nbytes;
-    }
-
-    void freeInCompartment(size_t nbytes) {
-        JS_ASSERT(gcMallocAndFreeBytes >= nbytes);
-        gcMallocAndFreeBytes -= nbytes;
-    }
-
     js::DtoaCache dtoaCache;
+
+    /* Random number generator state, used by jsmath.cpp. */
+    uint64_t rngState;
 
   private:
     /*
@@ -545,6 +575,10 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
 #endif
 };
 
+namespace JS {
+typedef JSCompartment Zone;
+} /* namespace JS */
+
 // For use when changing the debug mode flag on one or more compartments.
 // Do not run scripts in any compartment that is scheduled for GC using this
 // object. See comment in updateForDebugMode.
@@ -565,9 +599,9 @@ class js::AutoDebugModeGC
             GC(rt, GC_NORMAL, gcreason::DEBUG_MODE_GC);
     }
 
-    void scheduleGC(JSCompartment *compartment) {
+    void scheduleGC(Zone *zone) {
         JS_ASSERT(!rt->isHeapBusy());
-        PrepareCompartmentForGC(compartment);
+        PrepareZoneForGC(zone);
         needGC = true;
     }
 };
@@ -697,6 +731,8 @@ class CompartmentsIter {
     JSCompartment *operator->() const { return get(); }
 };
 
+typedef CompartmentsIter ZonesIter;
+
 /*
  * AutoWrapperVector and AutoWrapperRooter can be used to store wrappers that
  * are obtained from the cross-compartment map. However, these classes should
@@ -778,3 +814,4 @@ class AutoWrapperRooter : private AutoGCRooter {
 } /* namespace js */
 
 #endif /* jscompartment_h___ */
+

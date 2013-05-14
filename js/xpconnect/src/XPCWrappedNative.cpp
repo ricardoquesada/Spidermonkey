@@ -24,6 +24,7 @@
 #include "mozilla/StandardInteger.h"
 #include "mozilla/Util.h"
 #include "mozilla/Likely.h"
+#include <algorithm>
 
 using namespace xpc;
 using namespace mozilla;
@@ -41,8 +42,6 @@ xpc_OkToHandOutWrapper(nsWrapperCache *cache)
 }
 
 /***************************************************************************/
-
-NS_IMPL_CYCLE_COLLECTION_CLASS(XPCWrappedNative)
 
 NS_IMETHODIMP
 NS_CYCLE_COLLECTION_CLASSNAME(XPCWrappedNative)::UnlinkImpl(void *p)
@@ -512,7 +511,7 @@ XPCWrappedNative::GetNewOrUsed(XPCCallContext& ccx,
 
     if (sciWrapper.GetFlags().WantPreCreate()) {
         // PreCreate may touch dead compartments.
-        js::AutoMaybeTouchDeadCompartments agc(parent);
+        js::AutoMaybeTouchDeadZones agc(parent);
 
         JSObject* plannedParent = parent;
         nsresult rv = sciWrapper.GetCallback()->PreCreate(identity, ccx,
@@ -945,7 +944,7 @@ XPCWrappedNative::Destroy()
      */
     if (XPCJSRuntime *rt = GetRuntime()) {
         if (js::IsIncrementalBarrierNeeded(rt->GetJSRuntime()))
-            js::IncrementalReferenceBarrier(GetWrapperPreserveColor());
+            js::IncrementalObjectBarrier(GetWrapperPreserveColor());
         mWrapperWord = WRAPPER_WORD_POISON;
     } else {
         MOZ_ASSERT(mWrapperWord == WRAPPER_WORD_POISON);
@@ -1688,7 +1687,7 @@ RescueOrphans(XPCCallContext& ccx, JSObject* obj)
     parentObj = js::UnwrapObject(parentObj, /* stopAtOuter = */ false);
 
     // PreCreate may touch dead compartments.
-    js::AutoMaybeTouchDeadCompartments agc(parentObj);
+    js::AutoMaybeTouchDeadZones agc(parentObj);
 
     bool isWN = IS_WRAPPER_CLASS(js::GetObjectClass(obj));
 
@@ -2754,7 +2753,7 @@ CallMethodHelper::InitializeDispatchParams()
     if (wantsOptArgc) {
         nsXPTCVariant* dp = &mDispatchParams[mOptArgcIndex];
         dp->type = nsXPTType::T_U8;
-        dp->val.u8 = NS_MIN<uint32_t>(mArgc, paramCount) - requiredArgs;
+        dp->val.u8 = std::min<uint32_t>(mArgc, paramCount) - requiredArgs;
     }
 
     return true;
@@ -3759,6 +3758,11 @@ ConstructSlimWrapper(XPCCallContext &ccx,
     nsISupports *identityObj = aHelper.GetCanonical();
     nsXPCClassInfo *classInfoHelper = aHelper.GetXPCClassInfo();
 
+    if (!classInfoHelper) {
+        SLIM_LOG_NOT_CREATED(ccx, identityObj, "No classinfo helper");
+        return false;
+    }
+
     XPCNativeScriptableFlags flags(classInfoHelper->GetScriptableFlags());
 
     NS_ASSERTION(flags.DontAskInstanceForScriptable(),
@@ -3773,7 +3777,7 @@ ConstructSlimWrapper(XPCCallContext &ccx,
     }
 
     // PreCreate may touch dead compartments.
-    js::AutoMaybeTouchDeadCompartments agc(parent);
+    js::AutoMaybeTouchDeadZones agc(parent);
 
     JSObject* plannedParent = parent;
     nsresult rv = classInfoHelper->PreCreate(identityObj, ccx, parent, &parent);

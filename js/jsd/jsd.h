@@ -210,7 +210,8 @@ struct JSDStackFrameInfo
     JSDThreadState*     jsdthreadstate;
     JSDScript*          jsdscript;
     uintptr_t           pc;
-    JSStackFrame*       fp;
+    bool                isConstructing;
+    JSAbstractFramePtr  frame;
 };
 
 #define GOT_PROTO   ((short) (1 << 0))
@@ -347,7 +348,7 @@ extern JSDScript*
 jsd_FindOrCreateJSDScript(JSDContext    *jsdc,
                           JSContext     *cx,
                           JSScript      *script,
-                          JSStackFrame  *fp);
+                          JSAbstractFramePtr frame);
 
 extern JSDProfileData*
 jsd_GetScriptProfileData(JSDContext* jsdc, JSDScript *script);
@@ -697,7 +698,7 @@ jsd_EvaluateUCScriptInStackFrame(JSDContext* jsdc,
                                  JSDStackFrameInfo* jsdframe,
                                  const jschar *bytes, unsigned length,
                                  const char *filename, unsigned lineno,
-                                 JSBool eatExceptions, jsval *rval);
+                                 JSBool eatExceptions, JS::MutableHandleValue rval);
 
 extern JSBool
 jsd_EvaluateScriptInStackFrame(JSDContext* jsdc,
@@ -705,7 +706,7 @@ jsd_EvaluateScriptInStackFrame(JSDContext* jsdc,
                                JSDStackFrameInfo* jsdframe,
                                const char *bytes, unsigned length,
                                const char *filename, unsigned lineno,
-                               JSBool eatExceptions, jsval *rval);
+                               JSBool eatExceptions, JS::MutableHandleValue rval);
 
 extern JSString*
 jsd_ValToStringInStackFrame(JSDContext* jsdc,
@@ -978,12 +979,12 @@ jsd_GetPropertyFlags(JSDContext* jsdc, JSDProperty* jsdprop);
 /* Stepping Functions */
 
 extern void *
-jsd_FunctionCallHook(JSContext *cx, JSStackFrame *fp, JSBool before,
-                     JSBool *ok, void *closure);
+jsd_FunctionCallHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing,
+                     JSBool before, JSBool *ok, void *closure);
 
 extern void *
-jsd_TopLevelCallHook(JSContext *cx, JSStackFrame *fp, JSBool before,
-                     JSBool *ok, void *closure);
+jsd_TopLevelCallHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing,
+                     JSBool before, JSBool *ok, void *closure);
 
 /**************************************************/
 /* Object Functions */
@@ -999,7 +1000,7 @@ jsd_DestroyObjects(JSDContext* jsdc);
 
 extern void
 jsd_Constructing(JSDContext* jsdc, JSContext *cx, JSObject *obj,
-                 JSStackFrame *fp);
+                 JSAbstractFramePtr frame);
 
 extern JSDObject*
 jsd_IterateObjects(JSDContext* jsdc, JSDObject** iterp);

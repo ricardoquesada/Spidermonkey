@@ -22,7 +22,7 @@ namespace js {
 
 /*
  * Announce to the debugger that the thread has entered a new JavaScript frame,
- * |fp|. Call whatever hooks have been registered to observe new frames, and
+ * |frame|. Call whatever hooks have been registered to observe new frames, and
  * return a JSTrapStatus code indication how execution should proceed:
  *
  * - JSTRAP_CONTINUE: Continue execution normally.
@@ -35,18 +35,18 @@ namespace js {
  *   exception.
  *
  * - JSTRAP_RETURN: Return from the new frame immediately. ScriptDebugPrologue
- *   has set |cx->fp()|'s return value appropriately.
+ *   has set |frame|'s return value appropriately.
  */
 extern JSTrapStatus
-ScriptDebugPrologue(JSContext *cx, StackFrame *fp);
+ScriptDebugPrologue(JSContext *cx, AbstractFramePtr frame);
 
 /*
- * Announce to the debugger that the thread has exited a JavaScript frame, |fp|.
+ * Announce to the debugger that the thread has exited a JavaScript frame, |frame|.
  * If |ok| is true, the frame is returning normally; if |ok| is false, the frame
  * is throwing an exception or terminating.
  *
  * Call whatever hooks have been registered to observe frame exits. Change cx's
- * current exception and |fp|'s return value to reflect the changes in behavior
+ * current exception and |frame|'s return value to reflect the changes in behavior
  * the hooks request, if any. Return the new error/success value.
  *
  * This function may be called twice for the same outgoing frame; only the
@@ -56,7 +56,26 @@ ScriptDebugPrologue(JSContext *cx, StackFrame *fp);
  * alternative path, containing its own call to ScriptDebugEpilogue.)
  */
 extern bool
-ScriptDebugEpilogue(JSContext *cx, StackFrame *fp, bool ok);
+ScriptDebugEpilogue(JSContext *cx, AbstractFramePtr frame, bool ok);
+
+/*
+ * Announce to the debugger that an exception has been thrown and propagated
+ * to |frame|. Call whatever hooks have been registered to observe this and
+ * return a JSTrapStatus code indication how execution should proceed:
+ *
+ * - JSTRAP_CONTINUE: Continue throwing the current exception.
+ *
+ * - JSTRAP_THROW: Throw another value. DebugExceptionUnwind has set |cx|'s
+ *   pending exception to the new value.
+ *
+ * - JSTRAP_ERROR: Terminate execution. DebugExceptionUnwind has cleared |cx|'s
+ *   pending exception.
+ *
+ * - JSTRAP_RETURN: Return from |frame|. DebugExceptionUnwind has cleared
+ *   |cx|'s pending exception and set |frame|'s return value.
+ */
+extern JSTrapStatus
+DebugExceptionUnwind(JSContext *cx, AbstractFramePtr frame, jsbytecode *pc);
 
 /*
  * For a given |call|, convert null/undefined |this| into the global object for
@@ -77,21 +96,25 @@ BoxNonStrictThis(JSContext *cx, MutableHandleValue thisv, bool *modified);
  * an optimization to avoid global-this computation).
  */
 inline bool
-ComputeThis(JSContext *cx, StackFrame *fp);
+ComputeThis(JSContext *cx, AbstractFramePtr frame);
 
 enum MaybeConstruct {
     NO_CONSTRUCT = INITIAL_NONE,
     CONSTRUCT = INITIAL_CONSTRUCT
 };
 
+/*
+ * numToSkip is the number of stack values the expression decompiler should skip
+ * before it reaches |v|. If it's -1, the decompiler will search the stack.
+ */
 extern bool
-ReportIsNotFunction(JSContext *cx, const Value &v, MaybeConstruct construct = NO_CONSTRUCT);
+ReportIsNotFunction(JSContext *cx, const Value &v, int numToSkip = -1,
+                    MaybeConstruct construct = NO_CONSTRUCT);
 
-extern bool
-ReportIsNotFunction(JSContext *cx, const Value *vp, MaybeConstruct construct = NO_CONSTRUCT);
-
+/* See ReportIsNotFunction comment for the meaning of numToSkip. */
 extern JSObject *
-ValueToCallable(JSContext *cx, const Value *vp, MaybeConstruct construct = NO_CONSTRUCT);
+ValueToCallable(JSContext *cx, const Value &vp, int numToSkip = -1,
+                MaybeConstruct construct = NO_CONSTRUCT);
 
 /*
  * InvokeKernel assumes that the given args have been pushed on the top of the
@@ -160,7 +183,7 @@ InvokeConstructor(JSContext *cx, const Value &fval, unsigned argc, Value *argv, 
  */
 extern bool
 ExecuteKernel(JSContext *cx, HandleScript script, JSObject &scopeChain, const Value &thisv,
-              ExecuteType type, StackFrame *evalInFrame, Value *result);
+              ExecuteType type, AbstractFramePtr evalInFrame, Value *result);
 
 /* Execute a script with the given scopeChain as global code. */
 extern bool
@@ -191,7 +214,7 @@ extern JS_NEVER_INLINE InterpretStatus
 Interpret(JSContext *cx, StackFrame *stopFp, InterpMode mode = JSINTERP_NORMAL);
 
 extern bool
-RunScript(JSContext *cx, HandleScript script, StackFrame *fp);
+RunScript(JSContext *cx, StackFrame *fp);
 
 extern bool
 StrictlyEqual(JSContext *cx, const Value &lval, const Value &rval, bool *equal);
@@ -254,12 +277,9 @@ class InterpreterFrames {
     const InterruptEnablerBase &enabler;
 };
 
-/*
- * Unwind block and scope chains to match the given depth. The function sets
- * fp->sp on return to stackDepth.
- */
+/* Unwind block and scope chains to match the given depth. */
 extern void
-UnwindScope(JSContext *cx, uint32_t stackDepth);
+UnwindScope(JSContext *cx, AbstractFramePtr frame, uint32_t stackDepth);
 
 /*
  * Unwind for an uncatchable exception. This means not running finalizers, etc;
@@ -337,41 +357,50 @@ JSObject *
 Lambda(JSContext *cx, HandleFunction fun, HandleObject parent);
 
 bool
-GetElement(JSContext *cx, HandleValue lref, HandleValue rref, MutableHandleValue res);
+GetElement(JSContext *cx, MutableHandleValue lref, HandleValue rref, MutableHandleValue res);
 
 bool
-GetElementMonitored(JSContext *cx, HandleValue lref, HandleValue rref, MutableHandleValue res);
+GetElementMonitored(JSContext *cx, MutableHandleValue lref, HandleValue rref, MutableHandleValue res);
 
 bool
-CallElement(JSContext *cx, HandleValue lref, HandleValue rref, MutableHandleValue res);
+CallElement(JSContext *cx, MutableHandleValue lref, HandleValue rref, MutableHandleValue res);
 
 bool
 SetObjectElement(JSContext *cx, HandleObject obj, HandleValue index, HandleValue value,
                  JSBool strict);
+bool
+SetObjectElement(JSContext *cx, HandleObject obj, HandleValue index, HandleValue value,
+                 JSBool strict, HandleScript script, jsbytecode *pc);
 
 bool
-AddValues(JSContext *cx, HandleScript script, jsbytecode *pc, HandleValue lhs, HandleValue rhs,
+AddValues(JSContext *cx, HandleScript script, jsbytecode *pc,
+          MutableHandleValue lhs, MutableHandleValue rhs,
           Value *res);
 
 bool
-SubValues(JSContext *cx, HandleScript script, jsbytecode *pc, HandleValue lhs, HandleValue rhs,
+SubValues(JSContext *cx, HandleScript script, jsbytecode *pc,
+          MutableHandleValue lhs, MutableHandleValue rhs,
           Value *res);
 
 bool
-MulValues(JSContext *cx, HandleScript script, jsbytecode *pc, HandleValue lhs, HandleValue rhs,
+MulValues(JSContext *cx, HandleScript script, jsbytecode *pc,
+          MutableHandleValue lhs, MutableHandleValue rhs,
           Value *res);
 
 bool
-DivValues(JSContext *cx, HandleScript script, jsbytecode *pc, HandleValue lhs, HandleValue rhs,
+DivValues(JSContext *cx, HandleScript script, jsbytecode *pc,
+          MutableHandleValue lhs, MutableHandleValue rhs,
           Value *res);
 
 bool
-ModValues(JSContext *cx, HandleScript script, jsbytecode *pc, HandleValue lhs, HandleValue rhs,
+ModValues(JSContext *cx, HandleScript script, jsbytecode *pc,
+          MutableHandleValue lhs, MutableHandleValue rhs,
           Value *res);
 
 bool
-UrshValues(JSContext *cx, HandleScript script, jsbytecode *pc, HandleValue lhs, HandleValue rhs,
-          Value *res);
+UrshValues(JSContext *cx, HandleScript script, jsbytecode *pc,
+           MutableHandleValue lhs, MutableHandleValue rhs,
+           Value *res);
 
 template <bool strict>
 bool

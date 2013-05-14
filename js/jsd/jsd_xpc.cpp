@@ -8,6 +8,8 @@
 #include "jslock.h"
 #include "jsd_xpc.h"
 
+#include "js/GCAPI.h"
+
 #include "nsIXPConnect.h"
 #include "mozilla/ModuleUtils.h"
 #include "nsIServiceManager.h"
@@ -77,7 +79,7 @@
 #define JSD_STARTUP_ENTRY "JSDebugger Startup Observer"
 
 static void
-jsds_GCSliceCallbackProc (JSRuntime *rt, js::GCProgress progress, const js::GCDescription &desc);
+jsds_GCSliceCallbackProc (JSRuntime *rt, JS::GCProgress progress, const JS::GCDescription &desc);
 
 /*******************************************************************************
  * global vars
@@ -98,7 +100,7 @@ uint32_t gFrameCount  = 0;
 #endif
 
 static jsdService          *gJsds               = 0;
-static js::GCSliceCallback gPrevGCSliceCallback = jsds_GCSliceCallbackProc;
+static JS::GCSliceCallback gPrevGCSliceCallback = jsds_GCSliceCallbackProc;
 static bool                gGCRunning           = false;
 
 static struct DeadScript {
@@ -478,9 +480,9 @@ jsds_NotifyPendingDeadScripts (JSRuntime *rt)
 }
 
 static void
-jsds_GCSliceCallbackProc (JSRuntime *rt, js::GCProgress progress, const js::GCDescription &desc)
+jsds_GCSliceCallbackProc (JSRuntime *rt, JS::GCProgress progress, const JS::GCDescription &desc)
 {
-    if (progress == js::GC_CYCLE_END || progress == js::GC_SLICE_END) {
+    if (progress == JS::GC_CYCLE_END || progress == JS::GC_SLICE_END) {
         NS_ASSERTION(gGCRunning, "GC slice callback was missed");
 
         while (gDeadScripts)
@@ -915,19 +917,20 @@ jsdProperty::GetValue(jsdIValue **_rval)
 NS_IMPL_THREADSAFE_ISUPPORTS2(jsdScript, jsdIScript, jsdIEphemeral)
 
 static NS_IMETHODIMP
-AssignToJSString(nsACString *x, JSString *str)
+AssignToJSString(JSDContext *aCx, nsACString *x, JSString *str)
 {
     if (!str) {
         x->SetLength(0);
         return NS_OK;
     }
-    size_t length = JS_GetStringEncodingLength(NULL, str);
+    JSContext *cx = JSD_GetDefaultJSContext(aCx);
+    size_t length = JS_GetStringEncodingLength(cx, str);
     if (length == size_t(-1))
         return NS_ERROR_FAILURE;
     x->SetLength(uint32_t(length));
     if (x->Length() != uint32_t(length))
         return NS_ERROR_OUT_OF_MEMORY;
-    JS_EncodeStringToBuffer(str, x->BeginWriting(), length);
+    JS_EncodeStringToBuffer(cx, str, x->BeginWriting(), length);
     return NS_OK;
 }
 
@@ -953,7 +956,7 @@ jsdScript::jsdScript (JSDContext *aCx, JSDScript *aScript) : mValid(false),
         if (mFunctionName) {
             JSString *str = JSD_GetScriptFunctionId(mCx, mScript);
             if (str)
-                AssignToJSString(mFunctionName, str);
+                AssignToJSString(mCx, mFunctionName, str);
         }
         mBaseLineNumber = JSD_GetScriptBaseLineNumber(mCx, mScript);
         mLineExtent = JSD_GetScriptLineExtent(mCx, mScript);
@@ -1908,7 +1911,7 @@ jsdStackFrame::GetFunctionName(nsACString &_rval)
     ASSERT_VALID_EPHEMERAL;
     JSString *str = JSD_GetIdForStackFrame(mCx, mThreadState, mStackFrameInfo);
     if (str)
-        return AssignToJSString(&_rval, str);
+        return AssignToJSString(mCx, &_rval, str);
     
     _rval.Assign("anonymous");
     return NS_OK;
@@ -2022,10 +2025,10 @@ jsdStackFrame::Eval (const nsAString &bytes, const nsACString &fileName,
     const jschar *char_bytes = reinterpret_cast<const jschar *>(h.get());
 
     JSExceptionState *estate = 0;
-    jsval jv;
 
     JSContext *cx = JSD_GetJSContext (mCx, mThreadState);
 
+    js::RootedValue jv(cx);
     JSAutoRequest ar(cx);
 
     estate = JS_SaveExceptionState (cx);
@@ -2047,7 +2050,7 @@ jsdStackFrame::Eval (const nsAString &bytes, const nsACString &fileName,
                                               line, &jv);
     if (!*_rval) {
         if (JS_IsExceptionPending(cx))
-            JS_GetPendingException (cx, &jv);
+            JS_GetPendingException (cx, jv.address());
         else
             jv = JSVAL_NULL;
     }
@@ -2238,7 +2241,7 @@ NS_IMETHODIMP
 jsdValue::GetJsFunctionName(nsACString &_rval)
 {
     ASSERT_VALID_EPHEMERAL;
-    return AssignToJSString(&_rval, JSD_GetValueFunctionId(mCx, mValue));
+    return AssignToJSString(mCx, &_rval, JSD_GetValueFunctionId(mCx, mValue));
 }
 
 NS_IMETHODIMP
@@ -2408,7 +2411,6 @@ NS_INTERFACE_MAP_END
 
 /* NS_IMPL_CYCLE_COLLECTION_10(jsdService, ...) */
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(jsdService)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(jsdService)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mErrorHook)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mBreakpointHook)
@@ -2556,7 +2558,7 @@ jsdService::ActivateDebugger (JSRuntime *rt)
 
     if (gPrevGCSliceCallback == jsds_GCSliceCallbackProc)
         /* condition indicates that the callback proc has not been set yet */
-        gPrevGCSliceCallback = js::SetGCSliceCallback (rt, jsds_GCSliceCallbackProc);
+        gPrevGCSliceCallback = JS::SetGCSliceCallback (rt, jsds_GCSliceCallbackProc);
 
     mCx = JSD_DebuggerOnForUser (rt, NULL, NULL);
     if (!mCx)

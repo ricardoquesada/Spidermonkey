@@ -17,7 +17,15 @@ fi
 if test "$GXX" = "yes"; then
     GNU_CXX=1
     CXX_VERSION=`$CXX -v 2>&1 | grep 'gcc version'`
+    changequote(<<,>>)
+    GCC_VERSION_FULL=`echo "$CXX_VERSION" | $PERL -pe 's/^.*gcc version ([^ ]*).*/<<$>>1/'`
+    GCC_VERSION=`echo "$GCC_VERSION_FULL" | $PERL -pe '(split(/\./))[0]>=4&&s/(^\d*\.\d*).*/<<$>>1/;'`
+
+    GCC_MAJOR_VERSION=`echo ${GCC_VERSION} | $AWK -F\. '{ print <<$>>1 }'`
+    GCC_MINOR_VERSION=`echo ${GCC_VERSION} | $AWK -F\. '{ print <<$>>2 }'`
+    changequote([,])
 fi
+
 if test "`echo | $AS -o conftest.out -v 2>&1 | grep -c GNU`" != "0"; then
     GNU_AS=1
 fi
@@ -48,13 +56,13 @@ fi
 CLANG_CC=
 CLANG_CXX=
 if test "$GCC" = yes; then
-   if test "`$CC -v 2>&1 | grep -c 'clang version'`" != "0"; then
+   if test "`$CC -v 2>&1 | egrep -c '(clang version|Apple.*clang)'`" != "0"; then
      CLANG_CC=1
    fi
 fi
 
 if test "$GXX" = yes; then
-   if test "`$CXX -v 2>&1 | grep -c 'clang version'`" != "0"; then
+   if test "`$CXX -v 2>&1 | egrep -c '(clang version|Apple.*clang)'`" != "0"; then
      CLANG_CXX=1
    fi
 fi

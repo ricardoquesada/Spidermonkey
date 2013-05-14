@@ -198,14 +198,14 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared
     void boxValue(JSValueType type, Register src, Register dest) {
         JSValueShiftedTag tag = (JSValueShiftedTag)JSVAL_TYPE_TO_SHIFTED_TAG(type);
         movq(ImmShiftedTag(tag), dest);
-
-        // Integers must be treated specially, since the top 32 bits of the
-        // register may be filled, we can't clobber the tag bits. This can
-        // happen when instructions automatically sign-extend their result.
-        // To account for this, we clear the top bits of the register, which
-        // is safe since those bits aren't required.
-        if (type == JSVAL_TYPE_INT32 || type == JSVAL_TYPE_BOOLEAN)
-            movl(src, src);
+#ifdef DEBUG
+        if (type == JSVAL_TYPE_INT32 || type == JSVAL_TYPE_BOOLEAN) {
+            Label upper32BitsZeroed;
+            branchPtr(Assembler::BelowOrEqual, src, Imm32(UINT32_MAX), &upper32BitsZeroed);
+            breakpoint();
+            bind(&upper32BitsZeroed);
+        }
+#endif
         orq(src, dest);
     }
 
@@ -355,6 +355,9 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared
     void cmpPtr(const Operand &lhs, const Register &rhs) {
         cmpq(lhs, rhs);
     }
+    void cmpPtr(const Operand &lhs, const Imm32 rhs) {
+        cmpq(lhs, rhs);
+    }
     void cmpPtr(const Address &lhs, const Register &rhs) {
         cmpPtr(Operand(lhs), rhs);
     }
@@ -399,11 +402,17 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared
         movq(imm, ScratchReg);
         addq(ScratchReg, dest);
     }
+    void addPtr(const Address &src, const Register &dest) {
+        addq(Operand(src), dest);
+    }
     void subPtr(Imm32 imm, const Register &dest) {
         subq(imm, dest);
     }
     void subPtr(const Register &src, const Register &dest) {
         subq(src, dest);
+    }
+    void subPtr(const Address &addr, const Register &dest) {
+        subq(Operand(addr), dest);
     }
 
     // Specialization for AbsoluteAddress.
@@ -491,8 +500,17 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared
     void lshiftPtr(Imm32 imm, Register dest) {
         shlq(imm, dest);
     }
+    void xorPtr(Imm32 imm, Register dest) {
+        xorq(imm, dest);
+    }
     void orPtr(Imm32 imm, Register dest) {
         orq(imm, dest);
+    }
+    void orPtr(Register src, Register dest) {
+        orq(src, dest);
+    }
+    void andPtr(Imm32 imm, Register dest) {
+        andq(imm, dest);
     }
 
     void splitTag(Register src, Register dest) {
@@ -636,6 +654,12 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared
         moveValue(v, ScratchReg);
         cmpq(value.valueReg(), ScratchReg);
         j(cond, label);
+    }
+    void branchTestValue(Condition cond, const Address &valaddr, const ValueOperand &value,
+                         Label *label)
+    {
+        JS_ASSERT(cond == Equal || cond == NotEqual);
+        branchPtr(cond, valaddr, value.valueReg(), label);
     }
 
     void boxDouble(const FloatRegister &src, const ValueOperand &dest) {
@@ -874,7 +898,7 @@ class MacroAssemblerX64 : public MacroAssemblerX86Shared
     // ThreadData::ionTop.
     void linkExitFrame() {
         mov(ImmWord(GetIonContext()->compartment->rt), ScratchReg);
-        mov(StackPointer, Operand(ScratchReg, offsetof(JSRuntime, ionTop)));
+        mov(StackPointer, Operand(ScratchReg, offsetof(JSRuntime, mainThread.ionTop)));
     }
 
     void callWithExitFrame(IonCode *target, Register dynStack) {

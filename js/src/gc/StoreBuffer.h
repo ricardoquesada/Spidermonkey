@@ -9,10 +9,13 @@
 #ifndef jsgc_storebuffer_h___
 #define jsgc_storebuffer_h___
 
+#ifndef JSGC_USE_EXACT_ROOTING
+# error "Generational GC requires exact rooting."
+#endif
+
 #include "jsgc.h"
 #include "jsalloc.h"
-
-#include "gc/Marking.h"
+#include "jsobj.h"
 
 namespace js {
 namespace gc {
@@ -38,6 +41,11 @@ class Nursery
         if (!nursery.initialized())
             return;
         nursery.finish();
+    }
+
+    bool clear() {
+        disable();
+        return enable();
     }
 
     bool isInside(void *cell) const {
@@ -280,22 +288,25 @@ class StoreBuffer
 
         JSObject *object;
         uint32_t offset;
+        HeapSlot::Kind kind;
 
-        SlotEdge(JSObject *object, uint32_t offset) : object(object), offset(offset) {}
+        SlotEdge(JSObject *object, HeapSlot::Kind kind, uint32_t offset)
+          : object(object), offset(offset), kind(kind)
+        {}
 
         bool operator==(const SlotEdge &other) const {
-            return object == other.object && offset == other.offset;
+            return object == other.object && offset == other.offset && kind == other.kind;
         }
 
         bool operator!=(const SlotEdge &other) const {
-            return object != other.object || offset != other.offset;
+            return object != other.object || offset != other.offset || kind != other.kind;
         }
 
         HeapSlot *slotLocation() const {
-            if (object->isDenseArray()) {
-                if (offset >= object->getDenseArrayInitializedLength())
+            if (kind == HeapSlot::Element) {
+                if (offset >= object->getDenseInitializedLength())
                     return NULL;
-                return (HeapSlot *)&object->getDenseArrayElement(offset);
+                return (HeapSlot *)&object->getDenseElement(offset);
             }
             if (offset >= object->slotSpan())
                 return NULL;
@@ -351,6 +362,11 @@ class StoreBuffer
     void disable();
     bool isEnabled() { return enabled; }
 
+    bool clear() {
+        disable();
+        return enable();
+    }
+
     /* Get the overflowed status. */
     bool hasOverflowed() const { return overflowed; }
 
@@ -361,8 +377,8 @@ class StoreBuffer
     void putCell(Cell **o) {
         bufferCell.put(o);
     }
-    void putSlot(JSObject *obj, uint32_t slot) {
-        bufferSlot.put(SlotEdge(obj, slot));
+    void putSlot(JSObject *obj, HeapSlot::Kind kind, uint32_t slot) {
+        bufferSlot.put(SlotEdge(obj, kind, slot));
     }
 
     /* Insert or update a single edge in the Relocatable buffer. */

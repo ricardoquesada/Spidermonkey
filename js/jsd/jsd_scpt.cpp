@@ -61,6 +61,9 @@ _newJSDScript(JSDContext*  jsdc,
               JSContext    *cx,
               JSScript     *script)
 {
+    if ( JS_GetScriptIsSelfHosted(script) )
+        return NULL;
+
     JSDScript*  jsdscript;
     unsigned     lineno;
     const char* raw_filename;
@@ -278,7 +281,7 @@ JSDScript *
 jsd_FindOrCreateJSDScript(JSDContext    *jsdc,
                           JSContext     *cx,
                           JSScript      *script,
-                          JSStackFrame  *fp)
+                          JSAbstractFramePtr frame)
 {
     JSDScript *jsdscript;
     JS_ASSERT(JSD_SCRIPTS_LOCKED(jsdc));
@@ -288,9 +291,12 @@ jsd_FindOrCreateJSDScript(JSDContext    *jsdc,
         return jsdscript;
 
     /* Fallback for unknown scripts: create a new script. */
-    if (!fp)
-        JS_BrokenFrameIterator(cx, &fp);
-    if (fp)
+    if (!frame) {
+        JSBrokenFrameIterator iter(cx);
+        if (!iter.done())
+            frame = iter.abstractFramePtr();
+    }
+    if (frame)
         jsdscript = _newJSDScript(jsdc, cx, script);
 
     return jsdscript;

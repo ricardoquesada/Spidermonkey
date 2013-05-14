@@ -502,8 +502,16 @@ public:
 #if WTF_CPU_X86_64
     void addq_rr(RegisterID src, RegisterID dst)
     {
-        FIXME_INSN_PRINTING;
+        spew("addq       %s, %s",
+             nameIReg(8,src), nameIReg(8,dst));
         m_formatter.oneByteOp64(OP_ADD_EvGv, src, dst);
+    }
+
+    void addq_mr(int offset, RegisterID base, RegisterID dst)
+    {
+        spew("addq       %s0x%x(%s), %s",
+             PRETTY_PRINT_OFFSET(offset), nameIReg(8,base), nameIReg(8,dst));
+        m_formatter.oneByteOp64(OP_ADD_GvEv, dst, base, offset);
     }
 
     void addq_ir(int imm, RegisterID dst)
@@ -800,8 +808,16 @@ public:
 #if WTF_CPU_X86_64
     void subq_rr(RegisterID src, RegisterID dst)
     {
-        FIXME_INSN_PRINTING;
+        spew("subq       %s, %s",
+             nameIReg(8,src), nameIReg(8,dst));
         m_formatter.oneByteOp64(OP_SUB_EvGv, src, dst);
+    }
+
+    void subq_mr(int offset, RegisterID base, RegisterID dst)
+    {
+        spew("subq       %s0x%x(%s), %s",
+             PRETTY_PRINT_OFFSET(offset), nameIReg(8,base), nameIReg(8,dst));
+        m_formatter.oneByteOp64(OP_SUB_GvEv, dst, base, offset);
     }
 
     void subq_ir(int imm, RegisterID dst)
@@ -1579,6 +1595,11 @@ public:
         m_formatter.oneByteOp64(OP_GROUP11_EvIz, GROUP11_MOV, base, index, scale, offset);
         m_formatter.immediate32(imm);
     }
+
+    // Intentionally left undefined. If you need this operation, consider
+    // naming it movq_i32r_signExtended to highlight the fact the operand size
+    // is not 32; the 32-bit immediate is sign-extended.
+    void movq_i32r(int imm, RegisterID dst);
 
     void movq_i64r(int64_t imm, RegisterID dst)
     {
@@ -2426,6 +2447,11 @@ public:
         return label();
     }
 
+    void jumpTablePointer(uintptr_t ptr)
+    {
+        m_formatter.jumpTablePointer(ptr);
+    }
+
     // Linking & patching:
     //
     // 'link' and 'patch' methods are for use on unprotected code - such as the code
@@ -2433,7 +2459,7 @@ public:
     // code has been finalized it is (platform support permitting) within a non-
     // writable region of memory; to modify the code in an execute-only execuable
     // pool the 'repatch' and 'relink' methods should be used.
-    
+
     // Like Lua's emitter, we thread jump lists through the unpatched target
     // field, which will get fixed up when the label (which has a pointer to
     // the head of the jump list) is bound.
@@ -2971,6 +2997,18 @@ private:
         {
             m_buffer.putIntUnchecked(0);
             return JmpSrc(m_buffer.size());
+        }
+
+        // Data:
+
+        void jumpTablePointer(uintptr_t ptr)
+        {
+            m_buffer.ensureSpace(sizeof(uintptr_t));
+#if WTF_CPU_X86_64
+            m_buffer.putInt64Unchecked(ptr);
+#else
+            m_buffer.putIntUnchecked(ptr);
+#endif
         }
 
         // Administrative methods:
