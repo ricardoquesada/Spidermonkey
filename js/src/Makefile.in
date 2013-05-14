@@ -438,6 +438,8 @@ CPPSRCS += ExecutableAllocatorOS2.cpp \
            $(NONE)
 endif
 
+# only enable if it is not explicity disabled
+ifndef DISABLE_YARR_JIT 
 ifneq (,$(filter arm% sparc %86 x86_64 mips%,$(TARGET_CPU)))
 ENABLE_YARR_JIT = 1
 DEFINES += -DENABLE_YARR_JIT=1
@@ -461,6 +463,8 @@ endif
 endif
 ifeq (arm, $(findstring arm, $(TARGET_CPU)))
 #CPPSRCS		+= only_on_arm.cpp
+endif
+
 endif
 
 endif
