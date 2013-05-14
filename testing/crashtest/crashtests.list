@@ -1,0 +1,70 @@
+# Add your lines including crashtest manifests below here.
+# DO NOT ADD CRASHTESTS INDIVIDUALLY HERE!
+
+include ../../testing/crashtest/sanity/crashtests.list
+
+include ../../content/base/crashtests/crashtests.list
+include ../../content/canvas/crashtests/crashtests.list
+include ../../content/events/crashtests/crashtests.list
+include ../../content/html/document/crashtests/crashtests.list
+include ../../content/html/content/crashtests/crashtests.list
+include ../../content/smil/crashtests/crashtests.list
+include ../../content/svg/content/src/crashtests/crashtests.list
+include ../../content/xml/content/crashtest/crashtests.list
+include ../../content/xml/document/crashtests/crashtests.list
+include ../../content/xbl/crashtests/crashtests.list
+include ../../content/xslt/crashtests/crashtests.list
+include ../../content/xul/content/crashtests/crashtests.list
+include ../../content/xul/document/crashtests/crashtests.list
+include ../../content/xul/templates/src/crashtests/crashtests.list
+include ../../content/mathml/content/crashtests/crashtests.list
+include ../../content/media/test/crashtests/crashtests.list
+
+include ../../docshell/base/crashtests/crashtests.list
+
+include ../../dom/base/crashtests/crashtests.list
+include ../../dom/bindings/crashtests/crashtests.list
+include ../../dom/indexedDB/crashtests/crashtests.list
+
+# Bug 811873 - mozRTCPeerConnection doesn't support remote browser yet
+skip-if(Android||B2G||browserIsRemote) include ../../dom/media/tests/crashtests/crashtests.list
+
+include ../../dom/src/offline/crashtests/crashtests.list
+include ../../dom/src/jsurl/crashtests/crashtests.list
+
+include ../../editor/crashtests.list
+
+include ../../intl/lwbrk/src/crashtests/crashtests.list
+include ../../intl/uconv/crashtests/crashtests.list
+
+include ../../js/xpconnect/crashtests/crashtests.list
+
+include ../../layout/base/crashtests/crashtests.list
+include ../../layout/forms/crashtests/crashtests.list
+include ../../layout/generic/crashtests/crashtests.list
+include ../../layout/mathml/crashtests/crashtests.list
+include ../../layout/style/crashtests/crashtests.list
+include ../../layout/svg/crashtests/crashtests.list
+include ../../layout/tables/crashtests/crashtests.list
+include ../../layout/xul/base/src/crashtests/crashtests.list
+include ../../layout/xul/grid/crashtests/crashtests.list
+include ../../layout/xul/tree/crashtests/crashtests.list
+
+include ../../gfx/tests/crashtests/crashtests.list
+
+include ../../image/test/crashtests/crashtests.list
+include ../../dom/plugins/test/crashtests/crashtests.list
+
+include ../../parser/htmlparser/tests/crashtests/crashtests.list
+
+include ../../security/manager/ssl/crashtests/crashtests.list
+
+include ../../view/crashtests/crashtests.list
+
+include ../../widget/cocoa/crashtests/crashtests.list
+include ../../widget/gtk2/crashtests/crashtests.list
+include ../../widget/crashtests/crashtests.list
+
+include ../../media/libpng/crashtests/crashtests.list
+
+include ../../xpcom/string/crashtests/crashtests.list

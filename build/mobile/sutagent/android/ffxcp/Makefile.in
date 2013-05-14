@@ -1,0 +1,64 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+DEPTH		= @DEPTH@
+topsrcdir	= @top_srcdir@
+srcdir		= @srcdir@
+VPATH		= @srcdir@
+
+include $(DEPTH)/config/autoconf.mk
+
+MODULE = FfxCP
+
+JAVAFILES = \
+  DirCursor.java \
+  ffxcp.java \
+  FfxCPFP.java \
+  FileCursor.java \
+  R.java \
+  $(NULL)
+
+RES_FILES = \
+  res/drawable-hdpi/icon.png \
+  res/drawable-ldpi/icon.png \
+  res/drawable-mdpi/icon.png \
+  res/layout/main.xml \
+  res/values/strings.xml \
+  $(NULL)
+
+GARBAGE += \
+  AndroidManifest.xml  \
+  classes.dex  \
+  FfxCP.apk  \
+  $(NULL)
+
+GARBAGE_DIRS += network-libs
+
+JAVA_CLASSPATH = $(ANDROID_SDK)/android.jar
+
+include $(topsrcdir)/config/rules.mk
+
+# include Android specific java flags - using these instead of what's in rules.mk
+include $(topsrcdir)/config/android-common.mk
+
+tools:: FfxCP.apk
+
+classes.dex: $(JAVAFILES)
+	$(JAVAC) $(JAVAC_FLAGS) -d classes  $(addprefix $(srcdir)/,$(JAVAFILES))
+	$(DX) --dex --output=$@ classes
+
+FfxCP.ap_: $(srcdir)/AndroidManifest.xml
+	$(AAPT) package -f -M $(srcdir)/AndroidManifest.xml -I $(ANDROID_SDK)/android.jar  -S res -F $@
+
+FfxCP-unsigned-unaligned.apk: FfxCP.ap_ classes.dex
+	$(APKBUILDER) $@ -v $(APKBUILDER_FLAGS) -z FfxCP.ap_ -f classes.dex
+
+FfxCP-unaligned.apk: FfxCP-unsigned-unaligned.apk
+	cp  FfxCP-unsigned-unaligned.apk $@
+ifdef JARSIGNER
+  $(JARSIGNER) $@
+endif
+
+FfxCP.apk: FfxCP-unaligned.apk
+	$(ZIPALIGN) -f -v 4 FfxCP-unaligned.apk $@

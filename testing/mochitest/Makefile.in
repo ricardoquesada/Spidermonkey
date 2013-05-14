@@ -1,0 +1,208 @@
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+DEPTH		= @DEPTH@
+topsrcdir	= @top_srcdir@
+srcdir		= @srcdir@
+VPATH		= @srcdir@
+relativesrcdir  = @relativesrcdir@
+
+include $(DEPTH)/config/autoconf.mk
+
+DIRS = \
+  MochiKit \
+  static \
+  dynamic \
+  tests \
+  chrome \
+  ssltunnel \
+  $(NULL)
+
+ifeq ($(MOZ_BUILD_APP),mobile/android)
+DIRS += roboextender
+endif
+
+NO_JS_MANIFEST = 1
+MOZ_CHROME_FILE_FORMAT = jar
+DIST_FILES = install.rdf
+
+# Used in install.rdf
+USE_EXTENSION_MANIFEST = 1
+
+XPI_NAME = mochijar
+
+# we turn this off for UNIVERSAL_BINARY
+CHROME_JAR = 1
+
+include $(topsrcdir)/config/rules.mk
+# We're installing to _tests/testing/mochitest, so this is the depth
+# necessary for relative objdir paths.
+TARGET_DEPTH = ../../..
+include $(topsrcdir)/build/automation-build.mk
+
+# files that get copied into $objdir/_tests/
+_SERV_FILES = 	\
+		runtests.py \
+		automation.py \
+		runtestsb2g.py \
+		runtestsremote.py \
+		runtestsvmware.py \
+		manifest.webapp \
+		$(topsrcdir)/testing/mozbase/mozdevice/mozdevice/devicemanager.py \
+		$(topsrcdir)/testing/mozbase/mozdevice/mozdevice/devicemanagerADB.py \
+		$(topsrcdir)/testing/mozbase/mozdevice/mozdevice/devicemanagerSUT.py \
+		$(topsrcdir)/testing/mozbase/mozdevice/mozdevice/Zeroconf.py \
+		$(topsrcdir)/build/automationutils.py \
+		$(topsrcdir)/build/manifestparser.py \
+		$(topsrcdir)/build/mobile/remoteautomation.py \
+		$(topsrcdir)/build/mobile/b2gautomation.py \
+		gen_template.pl \
+		server.js \
+		harness-overlay.xul \
+		harness.xul \
+		browser-test-overlay.xul \
+		browser-test.js \
+		cc-analyzer.js \
+		chrome-harness.js \
+		browser-harness.xul \
+		redirect.html \
+		$(topsrcdir)/build/pgo/server-locations.txt \
+		$(topsrcdir)/netwerk/test/httpserver/httpd.js \
+		pywebsocket_wrapper.py \
+ 	 	plain-loop.html \
+		android.json \
+		b2g.json \
+		$(NULL)	
+
+ifeq ($(MOZ_BUILD_APP),mobile/android)
+_SERV_FILES += $(topsrcdir)/mobile/android/base/tests/robocop.ini
+endif
+
+_PYWEBSOCKET_FILES = \
+		pywebsocket/standalone.py \
+		$(NULL)
+
+_MOD_PYWEBSOCKET_FILES = \
+		pywebsocket/mod_pywebsocket/__init__.py \
+		pywebsocket/mod_pywebsocket/common.py \
+		pywebsocket/mod_pywebsocket/dispatch.py \
+		pywebsocket/mod_pywebsocket/extensions.py \
+		pywebsocket/mod_pywebsocket/headerparserhandler.py \
+		pywebsocket/mod_pywebsocket/http_header_util.py \
+		pywebsocket/mod_pywebsocket/memorizingfile.py \
+		pywebsocket/mod_pywebsocket/util.py \
+		pywebsocket/mod_pywebsocket/stream.py \
+		pywebsocket/mod_pywebsocket/_stream_hixie75.py \
+		pywebsocket/mod_pywebsocket/msgutil.py \
+		pywebsocket/mod_pywebsocket/_stream_hybi.py \
+		pywebsocket/mod_pywebsocket/_stream_base.py \
+		$(NULL)
+
+_HANDSHAKE_FILES = \
+		pywebsocket/mod_pywebsocket/handshake/__init__.py \
+		pywebsocket/mod_pywebsocket/handshake/hybi00.py \
+		pywebsocket/mod_pywebsocket/handshake/_base.py \
+		pywebsocket/mod_pywebsocket/handshake/draft75.py \
+		pywebsocket/mod_pywebsocket/handshake/hybi.py \
+		$(NULL)
+
+_DEST_DIR = $(DEPTH)/_tests/$(relativesrcdir)
+
+libs:: 
+	(cd $(DIST)/xpi-stage && tar $(TAR_CREATE_FLAGS) - mochijar) | (cd $(_DEST_DIR) && tar -xf -)
+
+libs:: $(_PYWEBSOCKET_FILES)
+	$(INSTALL) $(foreach f,$^,"$f") $(_DEST_DIR)/pywebsocket
+
+libs:: $(_MOD_PYWEBSOCKET_FILES)
+	$(INSTALL) $(foreach f,$^,"$f") $(_DEST_DIR)/pywebsocket/mod_pywebsocket
+
+libs:: $(_HANDSHAKE_FILES)
+	$(INSTALL) $(foreach f,$^,"$f") $(_DEST_DIR)/pywebsocket/mod_pywebsocket/handshake
+
+libs:: $(_SERV_FILES)
+	$(INSTALL) $^ $(_DEST_DIR)
+
+# Binaries and scripts that don't get packaged with the build,
+# but that we need for the test harness
+TEST_HARNESS_BINS := \
+  xpcshell$(BIN_SUFFIX) \
+  ssltunnel$(BIN_SUFFIX) \
+  certutil$(BIN_SUFFIX) \
+  pk12util$(BIN_SUFFIX) \
+  fix_stack_using_bpsyms.py \
+  $(NULL)
+
+ifeq ($(OS_ARCH),WINNT)
+TEST_HARNESS_BINS += \
+  crashinject$(BIN_SUFFIX) \
+  crashinjectdll$(DLL_SUFFIX) \
+  vmwarerecordinghelper$(DLL_SUFFIX) \
+  $(NULL)
+endif
+
+ifeq ($(OS_ARCH),Darwin)
+TEST_HARNESS_BINS += fix_macosx_stack.py
+endif
+
+ifeq ($(OS_ARCH),Linux)
+TEST_HARNESS_BINS += fix-linux-stack.pl
+endif
+
+ifeq (gtk2_1,$(MOZ_WIDGET_TOOLKIT)_$(MOZ_X11))
+TEST_HARNESS_BINS += screentopng
+endif
+
+ifeq (windows,$(MOZ_WIDGET_TOOLKIT))
+TEST_HARNESS_BINS += screenshot$(BIN_SUFFIX)
+endif
+
+# Components / typelibs that don't get packaged with
+# the build, but that we need for the test harness.
+TEST_HARNESS_COMPONENTS := \
+  test_necko.xpt \
+  $(NULL)
+
+# We need the test plugin as some tests rely on it
+ifeq (Darwin,$(OS_TARGET))
+TEST_HARNESS_PLUGINS := \
+  Test.plugin/ \
+  SecondTest.plugin/
+else
+TEST_HARNESS_PLUGINS := \
+  $(DLL_PREFIX)nptest$(DLL_SUFFIX) \
+  $(DLL_PREFIX)npsecondtest$(DLL_SUFFIX)
+endif
+
+# Rules for staging the necessary harness bits for a test package
+PKG_STAGE = $(DIST)/test-package-stage
+DIST_BIN = $(DIST)/bin
+
+PKG_CHROMEJAR = $(PKG_STAGE)/mochitest/content/
+
+ifdef CHROME_JAR
+stage-chromejar:
+	$(NSINSTALL) -D $(PKG_CHROMEJAR)
+	cp -RL $(DEPTH)/_tests/testing/mochitest/browser $(PKG_CHROMEJAR)
+	cp -RL $(DEPTH)/_tests/testing/mochitest/chrome $(PKG_CHROMEJAR)
+ifdef ACCESSIBILITY
+	cp -RL $(DEPTH)/_tests/testing/mochitest/a11y $(PKG_CHROMEJAR)
+endif
+	(cd $(PKG_STAGE)/mochitest && zip -rq tests.jar content/)
+	@(rm -rf $(PKG_CHROMEJAR))
+
+stage-package: stage-chromejar
+endif
+
+$(_DEST_DIR):
+	$(NSINSTALL) -D $@
+
+stage-package:
+	$(NSINSTALL) -D $(PKG_STAGE)/mochitest && $(NSINSTALL) -D $(PKG_STAGE)/bin/plugins && $(NSINSTALL) -D $(DIST)/plugins
+	(cd $(DEPTH)/_tests/testing/mochitest/ && tar $(TAR_CREATE_FLAGS_QUIET) - *) | (cd $(PKG_STAGE)/mochitest && tar -xf -)
+	@(cd $(DIST_BIN) && tar $(TAR_CREATE_FLAGS) - $(TEST_HARNESS_BINS)) | (cd $(PKG_STAGE)/bin && tar -xf -)
+	@(cd $(DIST_BIN)/components && tar $(TAR_CREATE_FLAGS) - $(TEST_HARNESS_COMPONENTS)) | (cd $(PKG_STAGE)/bin/components && tar -xf -)
+	(cd $(topsrcdir)/build/pgo/certs && tar $(TAR_CREATE_FLAGS_QUIET) - *) | (cd $(PKG_STAGE)/certs && tar -xf -)
+	@(cd $(DIST)/plugins && tar $(TAR_CREATE_FLAGS) - $(TEST_HARNESS_PLUGINS)) | (cd $(PKG_STAGE)/bin/plugins && tar -xf -)

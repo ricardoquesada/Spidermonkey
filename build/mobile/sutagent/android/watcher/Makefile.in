@@ -1,0 +1,74 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+DEPTH		= @DEPTH@
+topsrcdir	= @top_srcdir@
+srcdir		= @srcdir@
+VPATH		= @srcdir@
+
+include $(DEPTH)/config/autoconf.mk
+
+MODULE = Watcher
+
+JAVAFILES = \
+  IWatcherService.java \
+  RedirOutputThread.java \
+  R.java \
+  WatcherMain.java \
+  WatcherReceiver.java \
+  WatcherService.java \
+  $(NULL)
+
+RES_FILES = \
+  res/drawable-hdpi/icon.png \
+  res/drawable-hdpi/ateamlogo.png \
+  res/drawable-ldpi/icon.png \
+  res/drawable-ldpi/ateamlogo.png \
+  res/drawable-mdpi/icon.png \
+  res/drawable-mdpi/ateamlogo.png \
+  res/layout/main.xml \
+  res/values/strings.xml \
+  $(NULL)
+
+GARBAGE += \
+  AndroidManifest.xml  \
+  classes.dex  \
+  Watcher.apk  \
+  $(NULL)
+
+GARBAGE_DIRS += res classes network-libs
+
+JAVA_CLASSPATH = $(ANDROID_SDK)/android.jar
+
+include $(topsrcdir)/config/rules.mk
+
+# include Android specific java flags - using these instead of what's in rules.mk
+include $(topsrcdir)/config/android-common.mk
+
+tools:: Watcher.apk
+
+classes.dex: $(JAVAFILES)
+	$(NSINSTALL) -D classes
+	$(JAVAC) $(JAVAC_FLAGS) -d classes  $(addprefix $(srcdir)/,$(JAVAFILES))
+	$(DX) --dex --output=$@ classes
+
+Watcher.ap_: $(srcdir)/AndroidManifest.xml
+	$(AAPT) package -f -M $(srcdir)/AndroidManifest.xml -I $(ANDROID_SDK)/android.jar  -S res -F $@
+
+Watcher-unsigned-unaligned.apk: Watcher.ap_ classes.dex
+	$(APKBUILDER) $@ -v $(APKBUILDER_FLAGS) -z Watcher.ap_ -f classes.dex
+
+Watcher-unaligned.apk: Watcher-unsigned-unaligned.apk
+	cp  Watcher-unsigned-unaligned.apk $@
+ifdef JARSIGNER
+  $(JARSIGNER) $@
+endif
+
+Watcher.apk: Watcher-unaligned.apk
+	$(ZIPALIGN) -f -v 4 Watcher-unaligned.apk $@
+
+export::
+	$(NSINSTALL) -D res
+	@(cd $(srcdir)/res && tar $(TAR_CREATE_FLAGS) - *) | (cd $(DEPTH)/build/mobile/sutagent/android/watcher/res && tar -xf -)
+

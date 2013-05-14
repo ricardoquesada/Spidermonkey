@@ -1,0 +1,1 @@
+http://hg.mozilla.org/projects/addon-sdk/archive/0c8af8009e2c.tar.bz2

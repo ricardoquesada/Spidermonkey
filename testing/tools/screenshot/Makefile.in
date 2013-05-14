@@ -1,0 +1,37 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+DEPTH		= @DEPTH@
+topsrcdir	= @top_srcdir@
+srcdir		= @srcdir@
+VPATH		= @srcdir@
+
+include $(DEPTH)/config/autoconf.mk
+
+ifeq ($(MOZ_WIDGET_TOOLKIT),gtk2)
+ifdef MOZ_X11
+
+PROGRAM = screentopng
+CPPSRCS = gdk-screenshot.cpp
+LOCAL_INCLUDES = $(MOZ_GTK2_CFLAGS)
+OS_LIBS = $(MOZ_GTK2_LIBS) $(XSS_LIBS)
+
+endif # X11
+endif # GTK2
+
+ifeq ($(MOZ_WIDGET_TOOLKIT),windows)
+
+PROGRAM = screenshot$(BIN_SUFFIX)
+CPPSRCS = win32-screenshot.cpp
+OS_LIBS += $(call EXPAND_LIBNAME,gdiplus)
+MOZ_GLUE_PROGRAM_LDFLAGS =
+USE_STATIC_LIBS = 1
+
+ifdef GNU_CC
+WIN32_EXE_LDFLAGS = -municode
+endif
+
+endif # windows
+
+include $(topsrcdir)/config/rules.mk

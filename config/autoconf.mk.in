@@ -1,0 +1,2 @@
+@ALLSUBSTS@
+include $(topsrcdir)/config/baseconfig.mk
