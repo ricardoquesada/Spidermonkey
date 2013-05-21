@@ -10,18 +10,30 @@
  - Contains build scripts for iOS, Android, Win32 and OS X
  
  
-## About iOS builds
+## About builds
 
+### iOS
  - JIT is disabled
  - Device only: compiled in RELEASE mode
  - Simulator only: compiled in DEBUG mode
+
+### Android
+
+ - JIT is disabled (Why???)
+ - compiled in RELEASE mode
  
 
-## About OS X builds
+### OS X
 
  - JIT enabled
  - compiled in DEBUG mode
  
+
+### Windows
+
+ - JIT disabled (Why???)
+ - compiled in RELEASE mode
+
 
 ## About the patches
  
