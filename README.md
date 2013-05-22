@@ -19,19 +19,19 @@
 
 ### Android
 
- - JIT is disabled (Why???)
+ - JIT is enabled
  - compiled in RELEASE mode
  
 
 ### OS X
 
- - JIT enabled
+ - JIT is enabled
  - compiled in DEBUG mode
  
 
 ### Windows
 
- - JIT disabled (Why???)
+ - JIT is enabled
  - compiled in RELEASE mode
 
 
