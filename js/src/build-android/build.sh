@@ -37,11 +37,16 @@ done
 set -x
 
 host_os=`uname -s | tr "[:upper:]" "[:lower:]"`
+host_arch="x86_64"
 
 build_with_arch()
 {
-../configure --with-android-ndk=$HOME/bin/android-ndk \
+
+NDK_ROOT=$HOME/bin/android-ndk
+
+../configure --with-android-ndk=$NDK_ROOT \
              --with-android-sdk=$HOME/bin/android-sdk \
+             --with-android-toolchain=$NDK_ROOT/toolchains/arm-linux-androideabi-4.6/prebuilt/${host_os}-${host_arch} \
              --with-android-version=9 \
              --enable-application=mobile/android \
              --with-android-gnu-compiler-version=4.6 \
@@ -52,10 +57,7 @@ build_with_arch()
              --disable-tests \
              --enable-strip \
              --enable-install-strip \
-             --disable-debug \
-             --disable-ion \
-             --disable-jm \
-             --disable-tm
+             --disable-debug 
 
 # make
 make -j15
@@ -78,7 +80,7 @@ if [[ $release ]]; then
     cp -L dist/lib/libjs_static.a "$RELEASE_DIR/lib/$ARCH_DIR/libjs_static.a"
 
 # strip unneeded symbols
-    $HOME/bin/android-ndk/toolchains/arm-linux-androideabi-4.6/prebuilt/${host_os}-x86/bin/arm-linux-androideabi-strip \
+    $HOME/bin/android-ndk/toolchains/arm-linux-androideabi-4.6/prebuilt/${host_os}-${host_arch}/bin/arm-linux-androideabi-strip \
         --strip-unneeded "$RELEASE_DIR/lib/$ARCH_DIR/libjs_static.a"
 fi
 
