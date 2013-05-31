@@ -2,8 +2,6 @@
 develop=
 release=
 RELEASE_DIR="spidermonkey-android"
-ARCH=armv6
-ARCH_DIR=armeabi
 
 usage(){
 cat << EOF
@@ -37,22 +35,25 @@ done
 set -x
 
 host_os=`uname -s | tr "[:upper:]" "[:lower:]"`
-host_arch="x86_64"
+host_arch=`uname -m`
 
 build_with_arch()
 {
 
 NDK_ROOT=$HOME/bin/android-ndk
 
+rm -rf dist
+rm -f ./config.cache
+
 ../configure --with-android-ndk=$NDK_ROOT \
              --with-android-sdk=$HOME/bin/android-sdk \
-             --with-android-toolchain=$NDK_ROOT/toolchains/arm-linux-androideabi-4.6/prebuilt/${host_os}-${host_arch} \
+             --with-android-toolchain=$NDK_ROOT/toolchains/${TOOLS_ARCH}-${GCC_VERSION}/prebuilt/${host_os}-${host_arch} \
              --with-android-version=9 \
              --enable-application=mobile/android \
-             --with-android-gnu-compiler-version=4.6 \
-             --with-arch=$ARCH \
+             --with-android-gnu-compiler-version=${GCC_VERSION} \
+             --with-arch=${CPU_ARCH} \
              --enable-android-libstdcxx \
-             --target=arm-linux-androideabi \
+             --target=${TARGET_NAME} \
              --disable-shared-js \
              --disable-tests \
              --enable-strip \
@@ -63,8 +64,8 @@ NDK_ROOT=$HOME/bin/android-ndk
 make -j15
 
 if [[ $develop ]]; then
-    rm -rf ../../../include
-    rm -rf ../../../lib
+    rm ../../../include
+    rm ../../../lib
 
     ln -s -f "$PWD"/dist/include ../../..
     ln -s -f "$PWD"/dist/lib ../../..
@@ -73,24 +74,42 @@ fi
 if [[ $release ]]; then
 # copy specific files from dist
     rm -r "$RELEASE_DIR/include"
-    rm -r "$RELEASE_DIR/lib/$ARCH_DIR"
+    rm -r "$RELEASE_DIR/lib/$RELEASE_ARCH_DIR"
     mkdir -p "$RELEASE_DIR/include"
     cp -RL dist/include/* "$RELEASE_DIR/include/"
-    mkdir -p "$RELEASE_DIR/lib/$ARCH_DIR"
-    cp -L dist/lib/libjs_static.a "$RELEASE_DIR/lib/$ARCH_DIR/libjs_static.a"
+    mkdir -p "$RELEASE_DIR/lib/$RELEASE_ARCH_DIR"
+    cp -L dist/lib/libjs_static.a "$RELEASE_DIR/lib/$RELEASE_ARCH_DIR/libjs_static.a"
 
 # strip unneeded symbols
-    $HOME/bin/android-ndk/toolchains/arm-linux-androideabi-4.6/prebuilt/${host_os}-${host_arch}/bin/arm-linux-androideabi-strip \
-        --strip-unneeded "$RELEASE_DIR/lib/$ARCH_DIR/libjs_static.a"
+    $HOME/bin/android-ndk/toolchains/${TOOLS_ARCH}-${GCC_VERSION}/prebuilt/${host_os}-${host_arch}/bin/${TOOLNAME_PREFIX}-strip \
+        --strip-unneeded "$RELEASE_DIR/lib/$RELEASE_ARCH_DIR/libjs_static.a"
 fi
 
 }
 
 # Build with armv6
+TOOLS_ARCH=arm-linux-androideabi
+TARGET_NAME=arm-linux-androideabi
+CPU_ARCH=armv6
+RELEASE_ARCH_DIR=armeabi
+GCC_VERSION=4.6
+TOOLNAME_PREFIX=arm-linux-androideabi
 build_with_arch
 
 # Build with armv7
-ARCH=armv7-a
-ARCH_DIR=armeabi-v7a
+TOOLS_ARCH=arm-linux-androideabi
+TARGET_NAME=arm-linux-androideabi
+CPU_ARCH=armv7-a
+RELEASE_ARCH_DIR=armeabi-v7a
+GCC_VERSION=4.6
+TOOLNAME_PREFIX=arm-linux-androideabi
+build_with_arch
 
+# Build with x86
+TOOLS_ARCH=x86
+TARGET_NAME=i686-linux-android
+CPU_ARCH=i686
+RELEASE_ARCH_DIR=x86
+GCC_VERSION=4.6
+TOOLNAME_PREFIX=i686-linux-android
 build_with_arch
