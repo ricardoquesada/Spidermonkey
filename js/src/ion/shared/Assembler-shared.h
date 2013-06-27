@@ -24,11 +24,30 @@ namespace js {
 namespace ion {
 
 enum Scale {
-    TimesOne,
-    TimesTwo,
-    TimesFour,
-    TimesEight
+    TimesOne = 0,
+    TimesTwo = 1,
+    TimesFour = 2,
+    TimesEight = 3
 };
+
+static inline unsigned
+ScaleToShift(Scale scale)
+{
+    return unsigned(scale);
+}
+
+static inline bool
+IsShiftInScaleRange(int i)
+{
+    return i >= TimesOne && i <= TimesEight;
+}
+
+static inline Scale
+ShiftToScale(int i)
+{
+    JS_ASSERT(IsShiftInScaleRange(i));
+    return Scale(i);
+}
 
 static inline Scale
 ScaleFromElemWidth(int shift)
@@ -102,14 +121,6 @@ struct ImmGCPtr
     explicit ImmGCPtr(const gc::Cell *ptr) : value(reinterpret_cast<uintptr_t>(ptr))
     {
         JS_ASSERT(!IsPoisonedPtr(ptr));
-    }
-
-    // ImmGCPtr is rooted so we can convert safely directly from Unrooted<T>.
-    template <typename T>
-    explicit ImmGCPtr(Unrooted<T> ptr)
-      : value(reinterpret_cast<uintptr_t>(static_cast<T>(ptr)))
-    {
-        JS_ASSERT(!IsPoisonedPtr(static_cast<T>(ptr)));
     }
 };
 
@@ -246,9 +257,12 @@ class Label : public LabelBase
     { }
     ~Label()
     {
-        // Note: the condition is a hack to avoid this assert when OOM testing,
+#ifdef DEBUG
+        // Note: the condition is a hack to silence this assert when OOM testing,
         // see bug 756614.
-        JS_ASSERT_IF(OOM_counter < OOM_maxAllocations, !used());
+        if (!js_IonOptions.parallelCompilation)
+            JS_ASSERT_IF(!GetIonContext()->runtime->hadOutOfMemory, !used());
+#endif
     }
 };
 
@@ -331,6 +345,9 @@ class CodeLabel
   public:
     CodeLabel()
     { }
+    CodeLabel(const AbsoluteLabel &dest)
+       : dest_(dest)
+    { }
     AbsoluteLabel *dest() {
         return &dest_;
     }
@@ -396,14 +413,33 @@ class CodeOffsetLabel
 class CodeLocationJump
 {
     uint8_t *raw_;
-    mozilla::DebugOnly<bool> absolute_;
+#ifdef DEBUG
+    bool absolute_;
+    void setAbsolute() {
+        absolute_ = true;
+    }
+    void setRelative() {
+        absolute_ = false;
+    }
+#else
+    void setAbsolute() const {
+    }
+    void setRelative() const {
+    }
+#endif
 
 #ifdef JS_SMALL_BRANCH
     uint8_t *jumpTableEntry_;
 #endif
 
   public:
-    CodeLocationJump() {}
+    CodeLocationJump() {
+        raw_ = (uint8_t *) 0xdeadc0de;
+        setAbsolute();
+#ifdef JS_SMALL_BRANCH
+        jumpTableEntry_ = (uint8_t *) 0xdeadab1e;
+#endif
+    }
     CodeLocationJump(IonCode *code, CodeOffsetJump base) {
         *this = base;
         repoint(code);
@@ -411,7 +447,7 @@ class CodeLocationJump
 
     void operator = (CodeOffsetJump base) {
         raw_ = (uint8_t *) base.offset();
-        absolute_ = false;
+        setRelative();
 #ifdef JS_SMALL_BRANCH
         jumpTableEntry_ = (uint8_t *) base.jumpTableIndex();
 #endif
@@ -420,11 +456,11 @@ class CodeLocationJump
     void repoint(IonCode *code, MacroAssembler* masm = NULL);
 
     uint8_t *raw() const {
-        JS_ASSERT(absolute_);
+        JS_ASSERT(absolute_ && raw_ != (uint8_t *) 0xdeadc0de);
         return raw_;
     }
     uint8_t *offset() const {
-        JS_ASSERT(!absolute_);
+        JS_ASSERT(!absolute_ && raw_ != (uint8_t *) 0xdeadc0de);
         return raw_;
     }
 
@@ -439,26 +475,42 @@ class CodeLocationJump
 class CodeLocationLabel
 {
     uint8_t *raw_;
-    mozilla::DebugOnly<bool> absolute_;
+#ifdef DEBUG
+    bool absolute_;
+    void setAbsolute() {
+        absolute_ = true;
+    }
+    void setRelative() {
+        absolute_ = false;
+    }
+#else
+    void setAbsolute() const {
+    }
+    void setRelative() const {
+    }
+#endif
 
   public:
-    CodeLocationLabel() {}
+    CodeLocationLabel() {
+        raw_ = (uint8_t *) 0xdeadc0de;
+        setAbsolute();
+    }
     CodeLocationLabel(IonCode *code, CodeOffsetLabel base) {
         *this = base;
         repoint(code);
     }
     CodeLocationLabel(IonCode *code) {
         raw_ = code->raw();
-        absolute_ = true;
+        setAbsolute();
     }
     CodeLocationLabel(uint8_t *raw) {
         raw_ = raw;
-        absolute_ = true;
+        setAbsolute();
     }
 
     void operator = (CodeOffsetLabel base) {
         raw_ = (uint8_t *)base.offset();
-        absolute_ = false;
+        setRelative();
     }
     ptrdiff_t operator - (const CodeLocationLabel &other) {
         return raw_ - other.raw_;
@@ -467,11 +519,11 @@ class CodeLocationLabel
     void repoint(IonCode *code, MacroAssembler *masm = NULL);
 
     uint8_t *raw() {
-        JS_ASSERT(absolute_);
+        JS_ASSERT(absolute_ && raw_ != (uint8_t *) 0xdeadc0de);
         return raw_;
     }
     uint8_t *offset() {
-        JS_ASSERT(!absolute_);
+        JS_ASSERT(!absolute_ && raw_ != (uint8_t *) 0xdeadc0de);
         return raw_;
     }
 };

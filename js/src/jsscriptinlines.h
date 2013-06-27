@@ -14,6 +14,7 @@
 #include "jsopcode.h"
 #include "jsscript.h"
 
+#include "ion/AsmJS.h"
 #include "vm/GlobalObject.h"
 #include "vm/RegExpObject.h"
 #include "vm/Shape.h"
@@ -28,7 +29,7 @@ Bindings::Bindings()
 {}
 
 inline
-AliasedFormalIter::AliasedFormalIter(js::UnrootedScript script)
+AliasedFormalIter::AliasedFormalIter(js::RawScript script)
   : begin_(script->bindings.bindingArray()),
     p_(begin_),
     end_(begin_ + (script->funHasAnyAliasedFormal ? script->bindings.numArgs() : 0)),
@@ -45,12 +46,13 @@ CurrentScriptFileLineOrigin(JSContext *cx, const char **file, unsigned *linenop,
                             LineOption opt = NOT_CALLED_FROM_JSOP_EVAL)
 {
     if (opt == CALLED_FROM_JSOP_EVAL) {
-        AutoAssertNoGC nogc;
-        JS_ASSERT(JSOp(*cx->regs().pc) == JSOP_EVAL);
-        JS_ASSERT(*(cx->regs().pc + JSOP_EVAL_LENGTH) == JSOP_LINENO);
-        UnrootedScript script = cx->fp()->script();
-        *file = script->filename;
-        *linenop = GET_UINT16(cx->regs().pc + JSOP_EVAL_LENGTH);
+        JSScript *script = NULL;
+        jsbytecode *pc = NULL;
+        types::TypeScript::GetPcScript(cx, &script, &pc);
+        JS_ASSERT(JSOp(*pc) == JSOP_EVAL);
+        JS_ASSERT(*(pc + JSOP_EVAL_LENGTH) == JSOP_LINENO);
+        *file = script->filename();
+        *linenop = GET_UINT16(pc + JSOP_EVAL_LENGTH);
         *origin = script->originPrincipals;
         return;
     }
@@ -66,18 +68,6 @@ ScriptCounts::destroy(FreeOp *fop)
 }
 
 inline void
-MarkScriptFilename(JSRuntime *rt, const char *filename)
-{
-    /*
-     * As an invariant, a ScriptFilenameEntry should not be 'marked' outside of
-     * a GC. Since SweepScriptFilenames is only called during a full gc,
-     * to preserve this invariant, only mark during a full gc.
-     */
-    if (rt->gcIsFull)
-        ScriptFilenameEntry::fromFilename(filename)->marked = true;
-}
-
-inline void
 MarkScriptBytecode(JSRuntime *rt, const jsbytecode *bytecode)
 {
     /*
@@ -89,7 +79,18 @@ MarkScriptBytecode(JSRuntime *rt, const jsbytecode *bytecode)
         SharedScriptData::fromBytecode(bytecode)->marked = true;
 }
 
+void
+SetFrameArgumentsObject(JSContext *cx, AbstractFramePtr frame,
+                        HandleScript script, JSObject *argsobj);
+
 } // namespace js
+
+inline const char *
+JSScript::filename() const
+{
+    JS_ASSERT(scriptSource_);
+    return scriptSource()->filename();
+}
 
 inline void
 JSScript::setFunction(JSFunction *fun)
@@ -101,7 +102,10 @@ inline JSFunction *
 JSScript::getFunction(size_t index)
 {
     JSObject *funobj = getObject(index);
-    JS_ASSERT(funobj->isFunction() && funobj->toFunction()->isInterpreted());
+#ifdef DEBUG
+    JSFunction *fun = funobj->toFunction();
+    JS_ASSERT_IF(fun->isNative(), IsAsmJSModuleNative(fun->native()));
+#endif
     return funobj->toFunction();
 }
 
@@ -110,6 +114,16 @@ JSScript::getCallerFunction()
 {
     JS_ASSERT(savedCallerFun);
     return getFunction(0);
+}
+
+inline JSFunction *
+JSScript::functionOrCallerFunction()
+{
+    if (function())
+        return function();
+    if (savedCallerFun)
+        return getCallerFunction();
+    return NULL;
 }
 
 inline js::RegExpObject *
@@ -163,7 +177,7 @@ JSScript::destroyMJITInfo(js::FreeOp *fop)
 #endif /* JS_METHODJIT */
 
 inline void
-JSScript::writeBarrierPre(js::UnrootedScript script)
+JSScript::writeBarrierPre(js::RawScript script)
 {
 #ifdef JSGC_INCREMENTAL
     if (!script)
@@ -172,7 +186,7 @@ JSScript::writeBarrierPre(js::UnrootedScript script)
     JS::Zone *zone = script->zone();
     if (zone->needsBarrier()) {
         JS_ASSERT(!zone->rt->isHeapBusy());
-        js::UnrootedScript tmp = script;
+        js::RawScript tmp = script;
         MarkScriptUnbarriered(zone->barrierTracer(), &tmp, "write barrier");
         JS_ASSERT(tmp == script);
     }
@@ -180,7 +194,7 @@ JSScript::writeBarrierPre(js::UnrootedScript script)
 }
 
 inline void
-JSScript::writeBarrierPost(js::UnrootedScript script, void *addr)
+JSScript::writeBarrierPost(js::RawScript script, void *addr)
 {
 }
 
@@ -188,6 +202,20 @@ inline JSPrincipals *
 JSScript::principals()
 {
     return compartment()->principals;
+}
+
+inline JSFunction *
+JSScript::originalFunction() const {
+    if (!isCallsiteClone)
+        return NULL;
+    return enclosingScopeOrOriginalFunction_->toFunction();
+}
+
+inline void
+JSScript::setOriginalFunctionObject(JSObject *fun) {
+    JS_ASSERT(isCallsiteClone);
+    JS_ASSERT(fun->isFunction());
+    enclosingScopeOrOriginalFunction_ = fun;
 }
 
 #endif /* jsscriptinlines_h___ */

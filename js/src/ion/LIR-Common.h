@@ -508,8 +508,7 @@ class LCheckOverRecursed : public LInstructionHelper<0, 0, 1>
   public:
     LIR_HEADER(CheckOverRecursed)
 
-    LCheckOverRecursed(const LDefinition &limitreg)
-    {
+    LCheckOverRecursed(const LDefinition &limitreg) {
         setTemp(0, limitreg);
     }
 
@@ -1012,6 +1011,95 @@ class LApplyArgsGeneric : public LCallInstructionHelper<BOX_PIECES, BOX_PIECES +
     }
 };
 
+class LGetDynamicName : public LCallInstructionHelper<BOX_PIECES, 2, 3>
+{
+  public:
+    LIR_HEADER(GetDynamicName)
+
+    LGetDynamicName(const LAllocation &scopeChain, const LAllocation &name,
+                    const LDefinition &temp1, const LDefinition &temp2, const LDefinition &temp3)
+    {
+        setOperand(0, scopeChain);
+        setOperand(1, name);
+        setTemp(0, temp1);
+        setTemp(1, temp2);
+        setTemp(2, temp3);
+    }
+
+    MGetDynamicName *mir() const {
+        return mir_->toGetDynamicName();
+    }
+
+    const LAllocation *getScopeChain() {
+        return getOperand(0);
+    }
+    const LAllocation *getName() {
+        return getOperand(1);
+    }
+
+    const LDefinition *temp1() {
+        return getTemp(0);
+    }
+    const LDefinition *temp2() {
+        return getTemp(1);
+    }
+    const LDefinition *temp3() {
+        return getTemp(2);
+    }
+};
+
+class LFilterArguments : public LCallInstructionHelper<0, 1, 2>
+{
+  public:
+    LIR_HEADER(FilterArguments)
+
+    LFilterArguments(const LAllocation &string, const LDefinition &temp1, const LDefinition &temp2)
+    {
+        setOperand(0, string);
+        setTemp(0, temp1);
+        setTemp(1, temp2);
+    }
+
+    MFilterArguments *mir() const {
+        return mir_->toFilterArguments();
+    }
+
+    const LAllocation *getString() {
+        return getOperand(0);
+    }
+    const LDefinition *temp1() {
+        return getTemp(0);
+    }
+    const LDefinition *temp2() {
+        return getTemp(1);
+    }
+};
+
+class LCallDirectEval : public LCallInstructionHelper<BOX_PIECES, 2 + BOX_PIECES, 0>
+{
+  public:
+    LIR_HEADER(CallDirectEval)
+
+    LCallDirectEval(const LAllocation &scopeChain, const LAllocation &string)
+    {
+        setOperand(0, scopeChain);
+        setOperand(1, string);
+    }
+
+    static const size_t ThisValueInput = 2;
+
+    MCallDirectEval *mir() const {
+        return mir_->toCallDirectEval();
+    }
+
+    const LAllocation *getScopeChain() {
+        return getOperand(0);
+    }
+    const LAllocation *getString() {
+        return getOperand(1);
+    }
+};
+
 // Takes in either an integer or boolean input and tests it for truthiness.
 class LTestIAndBranch : public LInstructionHelper<0, 1, 0>
 {
@@ -1137,6 +1225,47 @@ class LTestVAndBranch : public LInstructionHelper<0, BOX_PIECES, 3>
 
     MTest *mir() {
         return mir_->toTest();
+    }
+};
+
+// Dispatches control flow to a successor based on incoming JSFunction*.
+// Used to implemenent polymorphic inlining.
+class LFunctionDispatch : public LInstructionHelper<0, 1, 0>
+{
+    // Dispatch is performed based on a function -> block map
+    // stored in the MIR.
+
+  public:
+    LIR_HEADER(FunctionDispatch);
+
+    LFunctionDispatch(const LAllocation &in) {
+        setOperand(0, in);
+    }
+
+    MFunctionDispatch *mir() {
+        return mir_->toFunctionDispatch();
+    }
+};
+
+class LTypeObjectDispatch : public LInstructionHelper<0, 1, 1>
+{
+    // Dispatch is performed based on a TypeObject -> block
+    // map inferred by the MIR.
+
+  public:
+    LIR_HEADER(TypeObjectDispatch);
+
+    LTypeObjectDispatch(const LAllocation &in, const LDefinition &temp) {
+        setOperand(0, in);
+        setTemp(0, temp);
+    }
+
+    const LDefinition *temp() {
+        return getTemp(0);
+    }
+
+    MTypeObjectDispatch *mir() {
+        return mir_->toTypeObjectDispatch();
     }
 };
 
@@ -1792,6 +1921,16 @@ class LMinMaxD : public LInstructionHelper<1, 2, 0>
     }
     MMinMax *mir() const {
         return mir_->toMinMax();
+    }
+};
+
+// Negative of an integer
+class LNegI : public LInstructionHelper<1, 1, 0>
+{
+  public:
+    LIR_HEADER(NegI);
+    LNegI(const LAllocation &num) {
+        setOperand(0, num);
     }
 };
 
@@ -2964,6 +3103,26 @@ class LStoreTypedArrayElement : public LInstructionHelper<0, 3, 0>
     }
 };
 
+class LEffectiveAddress : public LInstructionHelper<1, 2, 0>
+{
+  public:
+    LIR_HEADER(EffectiveAddress);
+
+    LEffectiveAddress(const LAllocation &base, const LAllocation &index) {
+        setOperand(0, base);
+        setOperand(1, index);
+    }
+    const MEffectiveAddress *mir() const {
+        return mir_->toEffectiveAddress();
+    }
+    const LAllocation *base() {
+        return getOperand(0);
+    }
+    const LAllocation *index() {
+        return getOperand(1);
+    }
+};
+
 class LClampIToUint8 : public LInstructionHelper<1, 1, 0>
 {
   public:
@@ -3161,6 +3320,29 @@ class LGetElementCacheV : public LInstructionHelper<BOX_PIECES, 1 + BOX_PIECES, 
     }
     const LAllocation *object() {
         return getOperand(0);
+    }
+    const MGetElementCache *mir() const {
+        return mir_->toGetElementCache();
+    }
+};
+
+class LGetElementCacheT : public LInstructionHelper<1, 2, 0>
+{
+  public:
+    LIR_HEADER(GetElementCacheT)
+
+    LGetElementCacheT(const LAllocation &object, const LAllocation &index) {
+        setOperand(0, object);
+        setOperand(1, index);
+    }
+    const LAllocation *object() {
+        return getOperand(0);
+    }
+    const LAllocation *index() {
+        return getOperand(1);
+    }
+    const LDefinition *output() {
+        return getDef(0);
     }
     const MGetElementCache *mir() const {
         return mir_->toGetElementCache();
@@ -3629,11 +3811,10 @@ class LParDump : public LCallInstructionHelper<0, BOX_PIECES, 0>
 };
 
 // Guard that a value is in a TypeSet.
-class LTypeBarrier : public LInstructionHelper<BOX_PIECES, BOX_PIECES, 1>
+class LTypeBarrier : public LInstructionHelper<0, BOX_PIECES, 1>
 {
   public:
     LIR_HEADER(TypeBarrier)
-    BOX_OUTPUT_ACCESSORS()
 
     LTypeBarrier(const LDefinition &temp) {
         setTemp(0, temp);
@@ -3835,7 +4016,7 @@ class LFunctionBoundary : public LInstructionHelper<0, 0, 1>
         return getTemp(0);
     }
 
-    UnrootedScript script() {
+    RawScript script() {
         return mir_->toFunctionBoundary()->script();
     }
 
@@ -3848,6 +4029,173 @@ class LFunctionBoundary : public LInstructionHelper<0, 0, 1>
     }
 };
 
+class LAsmJSLoadHeap : public LInstructionHelper<1, 1, 0>
+{
+  public:
+    LIR_HEADER(AsmJSLoadHeap);
+    LAsmJSLoadHeap(const LAllocation &ptr) {
+        setOperand(0, ptr);
+    }
+    MAsmJSLoadHeap *mir() const {
+        return mir_->toAsmJSLoadHeap();
+    }
+    const LAllocation *ptr() {
+        return getOperand(0);
+    }
+};
+
+class LAsmJSStoreHeap : public LInstructionHelper<0, 2, 0>
+{
+  public:
+    LIR_HEADER(AsmJSStoreHeap);
+    LAsmJSStoreHeap(const LAllocation &ptr, const LAllocation &value) {
+        setOperand(0, ptr);
+        setOperand(1, value);
+    }
+    MAsmJSStoreHeap *mir() const {
+        return mir_->toAsmJSStoreHeap();
+    }
+    const LAllocation *ptr() {
+        return getOperand(0);
+    }
+    const LAllocation *value() {
+        return getOperand(1);
+    }
+};
+
+class LAsmJSLoadGlobalVar : public LInstructionHelper<1, 0, 0>
+{
+  public:
+    LIR_HEADER(AsmJSLoadGlobalVar);
+    MAsmJSLoadGlobalVar *mir() const {
+        return mir_->toAsmJSLoadGlobalVar();
+    }
+};
+
+class LAsmJSStoreGlobalVar : public LInstructionHelper<0, 1, 0>
+{
+  public:
+    LIR_HEADER(AsmJSStoreGlobalVar);
+    LAsmJSStoreGlobalVar(const LAllocation &value) {
+        setOperand(0, value);
+    }
+    MAsmJSStoreGlobalVar *mir() const {
+        return mir_->toAsmJSStoreGlobalVar();
+    }
+    const LAllocation *value() {
+        return getOperand(0);
+    }
+};
+
+class LAsmJSLoadFFIFunc : public LInstructionHelper<1, 0, 0>
+{
+  public:
+    LIR_HEADER(AsmJSLoadFFIFunc);
+    MAsmJSLoadFFIFunc *mir() const {
+        return mir_->toAsmJSLoadFFIFunc();
+    }
+};
+
+class LAsmJSParameter : public LInstructionHelper<1, 0, 0>
+{
+  public:
+    LIR_HEADER(AsmJSParameter);
+};
+
+class LAsmJSReturn : public LInstructionHelper<0, 1, 0>
+{
+  public:
+    LIR_HEADER(AsmJSReturn);
+};
+
+class LAsmJSVoidReturn : public LInstructionHelper<0, 0, 0>
+{
+  public:
+    LIR_HEADER(AsmJSVoidReturn);
+};
+
+class LAsmJSPassStackArg : public LInstructionHelper<0, 1, 0>
+{
+  public:
+    LIR_HEADER(AsmJSPassStackArg);
+    LAsmJSPassStackArg(const LAllocation &arg) {
+        setOperand(0, arg);
+    }
+    MAsmJSPassStackArg *mir() const {
+        return mirRaw()->toAsmJSPassStackArg();
+    }
+    const LAllocation *arg() {
+        return getOperand(0);
+    }
+};
+
+class LAsmJSCall : public LInstruction
+{
+    LAllocation *operands_;
+    uint32_t numOperands_;
+    LDefinition def_;
+
+  public:
+    LIR_HEADER(AsmJSCall);
+
+    LAsmJSCall(LAllocation *operands, uint32_t numOperands)
+      : operands_(operands),
+        numOperands_(numOperands),
+        def_(LDefinition::BogusTemp())
+    {}
+
+    MAsmJSCall *mir() const {
+        return mir_->toAsmJSCall();
+    }
+
+    bool isCall() const {
+        return true;
+    };
+
+    // LInstruction interface
+    size_t numDefs() const {
+        return def_.isBogusTemp() ? 0 : 1;
+    }
+    LDefinition *getDef(size_t index) {
+        JS_ASSERT(numDefs() == 1);
+        JS_ASSERT(index == 0);
+        return &def_;
+    }
+    void setDef(size_t index, const LDefinition &def) {
+        JS_ASSERT(index == 0);
+        def_ = def;
+    }
+    size_t numOperands() const {
+        return numOperands_;
+    }
+    LAllocation *getOperand(size_t index) {
+        JS_ASSERT(index < numOperands_);
+        return &operands_[index];
+    }
+    void setOperand(size_t index, const LAllocation &a) {
+        JS_ASSERT(index < numOperands_);
+        operands_[index] = a;
+    }
+    size_t numTemps() const {
+        return 0;
+    }
+    LDefinition *getTemp(size_t index) {
+        JS_NOT_REACHED("no temps");
+    }
+    void setTemp(size_t index, const LDefinition &a) {
+        JS_NOT_REACHED("no temps");
+    }
+};
+
+class LAsmJSCheckOverRecursed : public LInstructionHelper<0, 0, 0>
+{
+  public:
+    LIR_HEADER(AsmJSCheckOverRecursed)
+
+    MAsmJSCheckOverRecursed *mir() const {
+        return mir_->toAsmJSCheckOverRecursed();
+    }
+};
 
 } // namespace ion
 } // namespace js

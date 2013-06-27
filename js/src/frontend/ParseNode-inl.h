@@ -7,6 +7,7 @@
 #ifndef ParseNode_inl_h__
 #define ParseNode_inl_h__
 
+#include "frontend/Parser.h"
 #include "frontend/ParseNode.h"
 
 namespace js {
@@ -36,28 +37,15 @@ ParseNode::name() const
     return atom->asPropertyName();
 }
 
-inline bool
-ParseNode::isConstant()
+inline JSAtom *
+ParseNode::atom() const
 {
-    switch (pn_type) {
-      case PNK_NUMBER:
-      case PNK_STRING:
-      case PNK_NULL:
-      case PNK_FALSE:
-      case PNK_TRUE:
-        return true;
-      case PNK_ARRAY:
-      case PNK_OBJECT:
-        return isOp(JSOP_NEWINIT) && !(pn_xflags & PNX_NONCONST);
-      default:
-        return false;
-    }
+    JS_ASSERT(isKind(PNK_MODULE) || isKind(PNK_STRING));
+    return isKind(PNK_MODULE) ? pn_modulebox->module()->atom() : pn_atom;
 }
 
-struct ParseContext;
-
 inline void
-NameNode::initCommon(ParseContext *pc)
+NameNode::initCommon(ParseContext<FullParseHandler> *pc)
 {
     pn_expr = NULL;
     pn_cookie.makeFree();

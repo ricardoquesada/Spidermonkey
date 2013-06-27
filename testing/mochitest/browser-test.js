@@ -1,5 +1,5 @@
 // Test timeout (seconds)
-const TIMEOUT_SECONDS = 30;
+var gTimeoutSeconds = 30;
 var gConfig;
 
 if (Cc === undefined) {
@@ -28,6 +28,9 @@ function testOnLoad() {
       return;
 
     prefs.setBoolPref("testing.browserTestHarness.running", true);
+
+    if (prefs.prefHasUserValue("testing.browserTestHarness.timeout"))
+      gTimeoutSeconds = prefs.getIntPref("testing.browserTestHarness.timeout");
 
     var sstring = Cc["@mozilla.org/supports-string;1"].
                   createInstance(Ci.nsISupportsString);
@@ -89,6 +92,15 @@ Tester.prototype = {
   },
 
   start: function Tester_start() {
+    // Check whether this window is ready to run tests.
+    if (window.BrowserChromeTest) {
+      BrowserChromeTest.runWhenReady(this.actuallyStart.bind(this));
+      return;
+    }
+    this.actuallyStart();
+  },
+
+  actuallyStart: function Tester_actuallyStart() {
     //if testOnLoad was not called, then gConfig is not defined
     if (!gConfig)
       gConfig = readConfig();
@@ -251,6 +263,13 @@ Tester.prototype = {
         }
       };
 
+      let winUtils = window.QueryInterface(Ci.nsIInterfaceRequestor)
+                           .getInterface(Ci.nsIDOMWindowUtils);
+      if (winUtils.isTestControllingRefreshes) {
+        this.currentTest.addResult(new testResult(false, "test left refresh driver under test control", "", false));
+        winUtils.restoreNormalRefresh();
+      }
+
       if (this.SimpleTest.isExpectingUncaughtException()) {
         this.currentTest.addResult(new testResult(false, "expectUncaughtException was called but no uncaught exception was detected!", "", false));
       }
@@ -407,14 +426,14 @@ Tester.prototype = {
             "Longer timeout required, waiting longer...  Remaining timeouts: " +
             self.currentTest.scope.__timeoutFactor);
           self.currentTest.scope.__waitTimer =
-            setTimeout(arguments.callee, TIMEOUT_SECONDS * 1000);
+            setTimeout(arguments.callee, gTimeoutSeconds * 1000);
           return;
         }
         self.currentTest.addResult(new testResult(false, "Test timed out", "", false));
         self.currentTest.timedOut = true;
         self.currentTest.scope.__waitTimer = null;
         self.nextTest();
-      }, TIMEOUT_SECONDS * 1000);
+      }, gTimeoutSeconds * 1000);
     }
   },
 

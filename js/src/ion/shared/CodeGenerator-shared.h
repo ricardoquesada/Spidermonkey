@@ -25,10 +25,12 @@ namespace ion {
 class OutOfLineCode;
 class CodeGenerator;
 class MacroAssembler;
+class IonCache;
 class OutOfLineParallelAbort;
 
 template <class ArgSeq, class StoreOutputTo>
 class OutOfLineCallVM;
+
 class OutOfLineTruncateSlow;
 
 class CodeGeneratorShared : public LInstructionVisitor
@@ -37,8 +39,11 @@ class CodeGeneratorShared : public LInstructionVisitor
     OutOfLineCode *oolIns;
     OutOfLineParallelAbort *oolParallelAbort_;
 
+    MacroAssembler &ensureMasm(MacroAssembler *masm);
+    mozilla::Maybe<MacroAssembler> maybeMasm_;
+
   public:
-    MacroAssembler masm;
+    MacroAssembler &masm;
 
   protected:
     MIRGenerator *gen;
@@ -60,8 +65,11 @@ class CodeGeneratorShared : public LInstructionVisitor
     // Mapping from bailout table ID to an offset in the snapshot buffer.
     js::Vector<SnapshotOffset, 0, SystemAllocPolicy> bailouts_;
 
+    // Allocated data space needed at runtime.
+    js::Vector<uint8_t, 0, SystemAllocPolicy> runtimeData_;
+
     // Vector of information about generated polymorphic inline caches.
-    js::Vector<IonCache, 0, SystemAllocPolicy> cacheList_;
+    js::Vector<uint32_t, 0, SystemAllocPolicy> cacheList_;
 
     // List of stack slots that have been pushed as arguments to an MCall.
     js::Vector<uint32_t, 0, SystemAllocPolicy> pushedArgumentSlots_;
@@ -100,7 +108,9 @@ class CodeGeneratorShared : public LInstructionVisitor
 
     // For arguments to the current function.
     inline int32_t ArgToStackOffset(int32_t slot) const {
-        return masm.framePushed() + sizeof(IonJSFrameLayout) + slot;
+        return masm.framePushed() +
+               (gen->compilingAsmJS() ? NativeFrameSize : sizeof(IonJSFrameLayout)) +
+               slot;
     }
 
     // For the callee of the current function.
@@ -154,10 +164,35 @@ class CodeGeneratorShared : public LInstructionVisitor
     }
 
   protected:
-
-    size_t allocateCache(const IonCache &cache) {
+    // Ensure the cache is an IonCache while expecting the size of the derived
+    // class.
+    size_t allocateCache(const IonCache &, size_t size) {
+        size_t dataOffset = allocateData(size);
         size_t index = cacheList_.length();
-        masm.reportMemory(cacheList_.append(cache));
+        masm.propagateOOM(cacheList_.append(dataOffset));
+        return index;
+    }
+
+    // This is needed by addCache to update the cache with the jump
+    // informations provided by the out-of-line path.
+    IonCache *getCache(size_t index) {
+        return reinterpret_cast<IonCache *>(&runtimeData_[cacheList_[index]]);
+    }
+
+  protected:
+
+    size_t allocateData(size_t size) {
+        JS_ASSERT(size % sizeof(void *) == 0);
+        size_t dataOffset = runtimeData_.length();
+        masm.propagateOOM(runtimeData_.appendN(0, size));
+        return dataOffset;
+    }
+
+    template <typename T>
+    inline size_t allocateCache(const T &cache) {
+        size_t index = allocateCache(cache, sizeof(mozilla::AlignedStorage2<T>));
+        // Use the copy constructor on the allocated space.
+        new (&runtimeData_[cacheList_.back()]) T(cache);
         return index;
     }
 
@@ -277,18 +312,18 @@ class CodeGeneratorShared : public LInstructionVisitor
     inline OutOfLineCode *oolCallVM(const VMFunction &fun, LInstruction *ins, const ArgSeq &args,
                                     const StoreOutputTo &out);
 
+    bool addCache(LInstruction *lir, size_t cacheIndex);
+
   protected:
     bool addOutOfLineCode(OutOfLineCode *code);
+    bool hasOutOfLineCode() { return !outOfLineCode_.empty(); }
     bool generateOutOfLineCode();
-
-    void linkAbsoluteLabels() {
-    }
 
   private:
     void generateInvalidateEpilogue();
 
   public:
-    CodeGeneratorShared(MIRGenerator *gen, LIRGraph *graph);
+    CodeGeneratorShared(MIRGenerator *gen, LIRGraph *graph, MacroAssembler *masm);
 
   public:
     template <class ArgSeq, class StoreOutputTo>
@@ -346,14 +381,14 @@ class OutOfLineCode : public TempObject
     uint32_t framePushed() const {
         return framePushed_;
     }
-    void setSource(UnrootedScript script, jsbytecode *pc) {
+    void setSource(RawScript script, jsbytecode *pc) {
         script_ = script;
         pc_ = pc;
     }
     jsbytecode *pc() {
         return pc_;
     }
-    UnrootedScript script() {
+    RawScript script() {
         return script_;
     }
 };
@@ -373,7 +408,7 @@ class OutOfLineCodeBase : public OutOfLineCode
 
 // ArgSeq store arguments for OutOfLineCallVM.
 //
-// OutOfLineCallVM are created with "oolCallVM" function. The last argument of
+// OutOfLineCallVM are created with "oolCallVM" function. The third argument of
 // this function is an instance of a class which provides a "generate" function
 // to call the "pushArg" needed by the VMFunction call.  The list of argument
 // can be created by using the ArgList function which create an empty list of
@@ -412,6 +447,7 @@ class ArgSeq : public SeqType
     }
 };
 
+// Mark the end of an argument list.
 template <>
 class ArgSeq<void, void>
 {
@@ -539,7 +575,6 @@ template <class ArgSeq, class StoreOutputTo>
 bool
 CodeGeneratorShared::visitOutOfLineCallVM(OutOfLineCallVM<ArgSeq, StoreOutputTo> *ool)
 {
-    AssertCanGC();
     LInstruction *lir = ool->lir();
 
     saveLive(lir);

@@ -96,7 +96,7 @@ public class FennecNativeActions implements Actions {
             }
             FennecNativeDriver.log(FennecNativeDriver.LogLevel.DEBUG, 
                 "Waking up on "+methodName);
-            mEventExpecter.notifyOfEvent();
+            mEventExpecter.notifyOfEvent(args);
             return null;
         }
     }
@@ -105,6 +105,8 @@ public class FennecNativeActions implements Actions {
         private final String mGeckoEvent;
         private final Object[] mRegistrationParams;
         private boolean mEventReceived;
+        private boolean mEventEverReceived;
+        private String mEventData;
         private static final int MAX_WAIT_MS = 90000;
 
         GeckoEventExpecter(String geckoEvent, Object[] registrationParams) {
@@ -113,20 +115,27 @@ public class FennecNativeActions implements Actions {
         }
 
         public synchronized void blockForEvent() {
+            blockForEvent(MAX_WAIT_MS, true);
+        }
+
+        private synchronized void blockForEvent(long millis, boolean failOnTimeout) {
             long startTime = SystemClock.uptimeMillis();
             long endTime = 0;
             while (! mEventReceived) {
                 try {
-                    this.wait(MAX_WAIT_MS);
+                    this.wait(millis);
                 } catch (InterruptedException ie) {
                     FennecNativeDriver.log(LogLevel.ERROR, ie);
                     break;
                 }
                 endTime = SystemClock.uptimeMillis();
-                if (!mEventReceived && (endTime - startTime >= MAX_WAIT_MS)) {
-                    FennecNativeDriver.logAllStackTraces(FennecNativeDriver.LogLevel.ERROR);
-                    mAsserter.ok(false, "GeckoEventExpecter", 
-                        "blockForEvent timeout: "+mGeckoEvent);
+                if (!mEventReceived && (endTime - startTime >= millis)) {
+                    if (failOnTimeout) {
+                        FennecNativeDriver.logAllStackTraces(FennecNativeDriver.LogLevel.ERROR);
+                        mAsserter.ok(false, "GeckoEventExpecter", 
+                            "blockForEvent timeout: "+mGeckoEvent);
+                    }
+                    mEventData = null;
                     return;
                 }
             }
@@ -139,6 +148,7 @@ public class FennecNativeActions implements Actions {
             }
             FennecNativeDriver.log(FennecNativeDriver.LogLevel.DEBUG,
                 "unblocked on expecter for " + mGeckoEvent);
+            mEventReceived = false;
         }
 
         public synchronized void blockUntilClear(long millis) {
@@ -188,17 +198,30 @@ public class FennecNativeActions implements Actions {
             }
             FennecNativeDriver.log(FennecNativeDriver.LogLevel.DEBUG,
                 "unblocked on expecter for " + mGeckoEvent);
+            mEventReceived = false;
+        }
+
+        public synchronized String blockForEventData() {
+            blockForEvent();
+            return mEventData;
+        }
+
+        public synchronized String blockForEventDataWithTimeout(long millis) {
+            blockForEvent(millis, false);
+            return mEventData;
         }
 
         public synchronized boolean eventReceived() {
-            return mEventReceived;
+            return mEventEverReceived;
         }
 
-        void notifyOfEvent() {
+        void notifyOfEvent(Object[] args) {
             FennecNativeDriver.log(FennecNativeDriver.LogLevel.DEBUG,
                 "received event " + mGeckoEvent);
             synchronized (this) {
                 mEventReceived = true;
+                mEventEverReceived = true;
+                mEventData = args[1].toString();
                 this.notifyAll();
             }
         }
@@ -247,7 +270,7 @@ public class FennecNativeActions implements Actions {
             if ("drawFinished".equals(methodName)) {
                 FennecNativeDriver.log(FennecNativeDriver.LogLevel.DEBUG,
                     "Received drawFinished notification");
-                mPaintExpecter.notifyOfEvent();
+                mPaintExpecter.notifyOfEvent(args);
             } else if ("toString".equals(methodName)) {
                 return "DrawListenerProxy";
             } else if ("equals".equals(methodName)) {
@@ -269,27 +292,29 @@ public class FennecNativeActions implements Actions {
             mSetDrawListener.invoke(mRobocopApi, proxy);
         }
 
-        void notifyOfEvent() {
+        void notifyOfEvent(Object[] args) {
             synchronized (this) {
                 mPaintDone = true;
                 this.notifyAll();
             }
         }
 
-        public synchronized void blockForEvent() {
+        private synchronized void blockForEvent(long millis, boolean failOnTimeout) {
             long startTime = SystemClock.uptimeMillis();
             long endTime = 0;
             while (!mPaintDone) {
                 try {
-                    this.wait(MAX_WAIT_MS);
+                    this.wait(millis);
                 } catch (InterruptedException ie) {
                     FennecNativeDriver.log(LogLevel.ERROR, ie);
                     break;
                 }
                 endTime = SystemClock.uptimeMillis();
-                if (!mPaintDone && (endTime - startTime >= MAX_WAIT_MS)) {
-                    FennecNativeDriver.logAllStackTraces(FennecNativeDriver.LogLevel.ERROR);
-                    mAsserter.ok(false, "PaintExpecter", "blockForEvent timeout");
+                if (!mPaintDone && (endTime - startTime >= millis)) {
+                    if (failOnTimeout) {
+                        FennecNativeDriver.logAllStackTraces(FennecNativeDriver.LogLevel.ERROR);
+                        mAsserter.ok(false, "PaintExpecter", "blockForEvent timeout");
+                    }
                     return;
                 }
             }
@@ -298,6 +323,20 @@ public class FennecNativeActions implements Actions {
             } catch (Exception e) {
                 FennecNativeDriver.log(LogLevel.ERROR, e);
             }
+        }
+
+        public synchronized void blockForEvent() {
+            blockForEvent(MAX_WAIT_MS, true);
+        }
+
+        public synchronized String blockForEventData() {
+            blockForEvent();
+            return null;
+        }
+
+        public synchronized String blockForEventDataWithTimeout(long millis) {
+            blockForEvent(millis, false);
+            return null;
         }
 
         public synchronized boolean eventReceived() {

@@ -72,16 +72,19 @@ class MacroAssembler : public MacroAssemblerSpecific
     // If instrumentation should be emitted, then the sps parameter should be
     // provided, but otherwise it can be safely omitted to prevent all
     // instrumentation from being emitted.
-    MacroAssembler(IonInstrumentation *sps = NULL)
+    MacroAssembler()
       : enoughMemory_(true),
-        sps_(sps)
+        sps_(NULL)
     {
         JSContext *cx = GetIonContext()->cx;
         if (cx)
             constructRoot(cx);
 
-        if (!GetIonContext()->temp)
+        if (!GetIonContext()->temp) {
+            JS_ASSERT(cx);
             alloc_.construct(cx);
+        }
+
 #ifdef JS_CPU_ARM
         initWithAllocator();
         m_buffer.id = GetIonContext()->getNextAssemblerId();
@@ -92,15 +95,24 @@ class MacroAssembler : public MacroAssemblerSpecific
     // (for example, Trampoline-$(ARCH).cpp and IonCaches.cpp).
     MacroAssembler(JSContext *cx)
       : enoughMemory_(true),
-        sps_(NULL) // no need for instrumentation in trampolines and such
+        sps_(NULL)
     {
         constructRoot(cx);
-        ionContext_.construct(cx, cx->compartment, (js::ion::TempAllocator *)NULL);
+        ionContext_.construct(cx, (js::ion::TempAllocator *)NULL);
         alloc_.construct(cx);
 #ifdef JS_CPU_ARM
         initWithAllocator();
         m_buffer.id = GetIonContext()->getNextAssemblerId();
 #endif
+    }
+
+    void setInstrumentation(IonInstrumentation *sps) {
+        sps_ = sps;
+    }
+
+    void resetForNewCodeGenerator() {
+        setFramePushed(0);
+        moveResolver_.clearTempObjectPool();
     }
 
     void constructRoot(JSContext *cx) {
@@ -115,7 +127,7 @@ class MacroAssembler : public MacroAssemblerSpecific
         return size();
     }
 
-    void reportMemory(bool success) {
+    void propagateOOM(bool success) {
         enoughMemory_ &= success;
     }
     bool oom() const {
@@ -124,9 +136,12 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     // Emits a test of a value against all types in a TypeSet. A scratch
     // register is required.
-    template <typename T>
-    void guardTypeSet(const T &address, const types::TypeSet *types, Register scratch,
-                      Label *mismatched);
+    template <typename Source, typename TypeSet>
+    void guardTypeSet(const Source &address, const TypeSet *types, Register scratch,
+                      Label *matched, Label *miss);
+    template <typename Source>
+    void guardType(const Source &address, types::Type type, Register scratch,
+                   Label *matched, Label *miss);
 
     void loadObjShape(Register objReg, Register dest) {
         loadPtr(Address(objReg, JSObject::offsetOfShape()), dest);
@@ -149,6 +164,12 @@ class MacroAssembler : public MacroAssemblerSpecific
         branchPtr(cond, Address(obj, JSObject::offsetOfShape()), ImmGCPtr(shape), label);
     }
 
+    // Branches to |label| if |reg| is false. |reg| should be a C++ bool.
+    void branchIfFalseBool(const Register &reg, Label *label) {
+        // Note that C++ bool is only 1 byte, so ignore the higher-order bits.
+        branchTest32(Assembler::Zero, reg, Imm32(0xFF), label);
+    }
+
     void loadObjPrivate(Register obj, uint32_t nfixed, Register dest) {
         loadPtr(Address(obj, JSObject::getPrivateDataOffset(nfixed)), dest);
     }
@@ -164,11 +185,11 @@ class MacroAssembler : public MacroAssemblerSpecific
     }
 
     void loadJSContext(const Register &dest) {
-        movePtr(ImmWord(GetIonContext()->compartment->rt), dest);
+        movePtr(ImmWord(GetIonContext()->runtime), dest);
         loadPtr(Address(dest, offsetof(JSRuntime, mainThread.ionJSContext)), dest);
     }
     void loadIonActivation(const Register &dest) {
-        movePtr(ImmWord(GetIonContext()->compartment->rt), dest);
+        movePtr(ImmWord(GetIonContext()->runtime), dest);
         loadPtr(Address(dest, offsetof(JSRuntime, mainThread.ionActivation)), dest);
     }
 
@@ -436,6 +457,13 @@ class MacroAssembler : public MacroAssemblerSpecific
         bind(&done);
     }
 
+    void canonicalizeDouble(FloatRegister reg) {
+        Label notNaN;
+        branchDouble(DoubleOrdered, reg, reg, &notNaN);
+        loadStaticDouble(&js_NaN, reg);
+        bind(&notNaN);
+    }
+
     template<typename T>
     void loadFromTypedArray(int arrayType, const T &src, AnyRegister dest, Register temp, Label *fail);
 
@@ -536,12 +564,16 @@ class MacroAssembler : public MacroAssemblerSpecific
         freeStack(IonExitFooterFrame::Size());
     }
 
+    bool hasEnteredExitFrame() const {
+        return exitCodePatch_.offset() != 0;
+    }
+
     void link(IonCode *code) {
         JS_ASSERT(!oom());
         // If this code can transition to C++ code and witness a GC, then we need to store
         // the IonCode onto the stack in order to GC it correctly.  exitCodePatch should
         // be unset if the code never needed to push its IonCode*.
-        if (exitCodePatch_.offset() != 0) {
+        if (hasEnteredExitFrame()) {
             patchDataWithValueCheck(CodeLocationLabel(code, exitCodePatch_),
                                     ImmWord(uintptr_t(code)),
                                     ImmWord(uintptr_t(-1)));
@@ -671,7 +703,7 @@ class MacroAssembler : public MacroAssemblerSpecific
         bind(&stackFull);
     }
 
-    void spsPushFrame(SPSProfiler *p, const char *str, UnrootedScript s, Register temp) {
+    void spsPushFrame(SPSProfiler *p, const char *str, RawScript s, Register temp) {
         Label stackFull;
         spsProfileEntryAddress(p, 0, temp, &stackFull);
 
@@ -697,30 +729,6 @@ class MacroAssembler : public MacroAssemblerSpecific
     void printf(const char *output, Register value);
 };
 
-static inline Assembler::Condition
-JSOpToCondition(JSOp op)
-{
-    switch (op) {
-      case JSOP_EQ:
-      case JSOP_STRICTEQ:
-        return Assembler::Equal;
-      case JSOP_NE:
-      case JSOP_STRICTNE:
-        return Assembler::NotEqual;
-      case JSOP_LT:
-        return Assembler::LessThan;
-      case JSOP_LE:
-        return Assembler::LessThanOrEqual;
-      case JSOP_GT:
-        return Assembler::GreaterThan;
-      case JSOP_GE:
-        return Assembler::GreaterThanOrEqual;
-      default:
-        JS_NOT_REACHED("Unrecognized comparison operation");
-        return Assembler::Equal;
-    }
-}
-
 static inline Assembler::DoubleCondition
 JSOpToDoubleCondition(JSOp op)
 {
@@ -744,6 +752,30 @@ JSOpToDoubleCondition(JSOp op)
         return Assembler::DoubleEqual;
     }
 }
+
+typedef Vector<MIRType, 8> MIRTypeVector;
+
+#ifdef JS_ASMJS
+class ABIArgIter
+{
+    ABIArgGenerator gen_;
+    const MIRTypeVector &types_;
+    unsigned i_;
+
+  public:
+    ABIArgIter(const MIRTypeVector &argTypes);
+
+    void operator++(int);
+    bool done() const { return i_ == types_.length(); }
+
+    ABIArg *operator->() { JS_ASSERT(!done()); return &gen_.current(); }
+    ABIArg &operator*() { JS_ASSERT(!done()); return gen_.current(); }
+
+    unsigned index() const { JS_ASSERT(!done()); return i_; }
+    MIRType mirType() const { JS_ASSERT(!done()); return types_[i_]; }
+    uint32_t stackBytesConsumedSoFar() const { return gen_.stackBytesConsumedSoFar(); }
+};
+#endif
 
 } // namespace ion
 } // namespace js

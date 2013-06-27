@@ -55,10 +55,16 @@ class AnyContextFlags
     //
     bool            bindingsAccessedDynamically:1;
 
+    // Whether this script, or any of its inner scripts contains a debugger
+    // statement which could potentially read or write anywhere along the
+    // scope chain.
+    bool            hasDebuggerStatement:1;
+
   public:
     AnyContextFlags()
      :  hasExplicitUseStrict(false),
-        bindingsAccessedDynamically(false)
+        bindingsAccessedDynamically(false),
+        hasDebuggerStatement(false)
     { }
 };
 
@@ -156,9 +162,11 @@ class SharedContext
 
     bool hasExplicitUseStrict()        const { return anyCxFlags.hasExplicitUseStrict; }
     bool bindingsAccessedDynamically() const { return anyCxFlags.bindingsAccessedDynamically; }
+    bool hasDebuggerStatement()        const { return anyCxFlags.hasDebuggerStatement; }
 
     void setExplicitUseStrict()           { anyCxFlags.hasExplicitUseStrict        = true; }
     void setBindingsAccessedDynamically() { anyCxFlags.bindingsAccessedDynamically = true; }
+    void setHasDebuggerStatement()        { anyCxFlags.hasDebuggerStatement        = true; }
 
     // JSOPTION_STRICT warnings or strict mode errors.
     inline bool needStrictChecks();
@@ -179,12 +187,10 @@ class GlobalSharedContext : public SharedContext
 
 class ModuleBox : public ObjectBox, public SharedContext {
 public:
-    size_t      bufStart;
-    size_t      bufEnd;
-    Bindings    bindings;
+    Bindings bindings;
 
-    ModuleBox(JSContext *cx, ParseContext *pc, Module *module,
-              ObjectBox *traceListHead);
+    ModuleBox(JSContext *cx, ObjectBox *traceListHead, Module *module,
+              ParseContext<FullParseHandler> *pc);
     ObjectBox *toObjectBox() { return this; }
     Module *module() const { return &object->asModule(); }
 };
@@ -193,15 +199,19 @@ class FunctionBox : public ObjectBox, public SharedContext
 {
   public:
     Bindings        bindings;               /* bindings for this function */
-    size_t          bufStart;
-    size_t          bufEnd;
+    uint32_t        bufStart;
+    uint32_t        bufEnd;
+    uint32_t        asmStart;               /* offset of the "use asm" directive, if present */
     uint16_t        ndefaults;
     bool            inWith:1;               /* some enclosing scope is a with-statement */
     bool            inGenexpLambda:1;       /* lambda from generator expression */
+    bool            useAsm:1;               /* function contains "use asm" directive */
+    bool            insideUseAsm:1;         /* nested function of function of "use asm" directive */
 
     FunctionContextFlags funCxFlags;
 
-    FunctionBox(JSContext *cx, ObjectBox* traceListHead, JSFunction *fun, ParseContext *pc,
+    template <typename ParseHandler>
+    FunctionBox(JSContext *cx, ObjectBox* traceListHead, JSFunction *fun, ParseContext<ParseHandler> *pc,
                 bool strict);
 
     ObjectBox *toObjectBox() { return this; }
@@ -219,7 +229,20 @@ class FunctionBox : public ObjectBox, public SharedContext
     void setArgumentsHasLocalBinding()     { funCxFlags.argumentsHasLocalBinding = true; }
     void setDefinitelyNeedsArgsObj()       { JS_ASSERT(funCxFlags.argumentsHasLocalBinding);
                                              funCxFlags.definitelyNeedsArgsObj   = true; }
+
+    // Return whether this function has either specified "use asm" or is
+    // (transitively) nested inside a function that has.
+    bool useAsmOrInsideUseAsm() const {
+        return useAsm || insideUseAsm;
+    }
 };
+
+inline FunctionBox *
+SharedContext::asFunctionBox()
+{
+    JS_ASSERT(isFunctionBox());
+    return static_cast<FunctionBox*>(this);
+}
 
 /*
  * NB: If you add a new type of statement that is a scope, add it between

@@ -11,8 +11,8 @@
 #include "jsapi.h"
 
 #include "gc/Heap.h"
-#include "gc/Root.h"
 #include "js/HashTable.h"
+#include "js/RootingAPI.h"
 
 /*
  * A write barrier is a mechanism used by incremental or generation GCs to
@@ -255,7 +255,7 @@ class RelocatablePtr : public EncapsulatedPtr<T>
         if (v)
             post();
     }
-    explicit RelocatablePtr(const RelocatablePtr<T> &v) : EncapsulatedPtr<T>(v) {
+    RelocatablePtr(const RelocatablePtr<T> &v) : EncapsulatedPtr<T>(v) {
         if (this->value)
             post();
     }
@@ -331,6 +331,7 @@ typedef RelocatablePtr<JSScript> RelocatablePtrScript;
 typedef HeapPtr<JSObject> HeapPtrObject;
 typedef HeapPtr<JSFunction> HeapPtrFunction;
 typedef HeapPtr<JSString> HeapPtrString;
+typedef HeapPtr<PropertyName> HeapPtrPropertyName;
 typedef HeapPtr<JSScript> HeapPtrScript;
 typedef HeapPtr<Shape> HeapPtrShape;
 typedef HeapPtr<BaseShape> HeapPtrBaseShape;
@@ -374,14 +375,20 @@ class EncapsulatedValue : public ValueOperations<EncapsulatedValue>
      * implementations.
      */
     EncapsulatedValue() MOZ_DELETE;
-    EncapsulatedValue(const EncapsulatedValue &v) MOZ_DELETE;
-    EncapsulatedValue &operator=(const Value &v) MOZ_DELETE;
-    EncapsulatedValue &operator=(const EncapsulatedValue &v) MOZ_DELETE;
 
-    EncapsulatedValue(const Value &v) : value(v) {}
-    ~EncapsulatedValue() {}
 
   public:
+    EncapsulatedValue(const Value &v) : value(v) {
+        JS_ASSERT(!IsPoisonedValue(v));
+    }
+    EncapsulatedValue(const EncapsulatedValue &v) : value(v) {
+        JS_ASSERT(!IsPoisonedValue(v));
+    }
+    inline ~EncapsulatedValue();
+
+    inline EncapsulatedValue &operator=(const Value &v);
+    inline EncapsulatedValue &operator=(const EncapsulatedValue &v);
+
     bool operator==(const EncapsulatedValue &v) const { return value == v.value; }
     bool operator!=(const EncapsulatedValue &v) const { return value != v.value; }
 
@@ -501,19 +508,6 @@ class HeapSlot : public EncapsulatedValue
 inline void
 DenseRangeWriteBarrierPost(JSRuntime *rt, JSObject *obj, uint32_t start, uint32_t count);
 
-/*
- * This is a post barrier for HashTables whose key can be moved during a GC.
- */
-template <class Map, class Key>
-inline void
-HashTableWriteBarrierPost(JSRuntime *rt, const Map *map, const Key &key)
-{
-#ifdef JS_GCGENERATIONAL
-    if (key && comp->gcNursery.isInside(key))
-        comp->gcStoreBuffer.putGeneric(HashKeyRef(map, key));
-#endif
-}
-
 static inline const Value *
 Valueify(const EncapsulatedValue *array)
 {
@@ -617,7 +611,6 @@ class ReadBarriered
   public:
     ReadBarriered() : value(NULL) {}
     ReadBarriered(T *value) : value(value) {}
-    ReadBarriered(const Unrooted<T*> &unrooted) : value(unrooted) {}
     ReadBarriered(const Rooted<T*> &rooted) : value(rooted) {}
 
     T *get() const {

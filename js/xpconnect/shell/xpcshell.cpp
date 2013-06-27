@@ -473,7 +473,7 @@ Load(JSContext *cx, unsigned argc, jsval *vp)
         options.setUTF8(true)
                .setFileAndLine(filename.ptr(), 1)
                .setPrincipals(gJSPrincipals);
-        js::RootedObject rootedObj(cx, obj);
+        JS::RootedObject rootedObj(cx, obj);
         JSScript *script = JS::Compile(cx, rootedObj, options, file);
         fclose(file);
         if (!script)
@@ -584,7 +584,7 @@ DumpHeap(JSContext *cx, unsigned argc, jsval *vp)
         if (!str)
             return false;
         *vp = STRING_TO_JSVAL(str);
-        if (!fileName.encode(cx, str))
+        if (!fileName.encodeLatin1(cx, str))
             return false;
     }
 
@@ -699,7 +699,6 @@ static const struct JSOption {
     const char  *name;
     uint32_t    flag;
 } js_options[] = {
-    {"atline",          JSOPTION_ATLINE},
     {"strict",          JSOPTION_STRICT},
     {"werror",          JSOPTION_WERROR},
     {"strict_mode",     JSOPTION_STRICT_MODE},
@@ -1041,7 +1040,7 @@ ProcessFile(JSContext *cx, JSObject *obj, const char *filename, FILE *file,
         options.setUTF8(true)
                .setFileAndLine(filename, 1)
                .setPrincipals(gJSPrincipals);
-        js::RootedObject rootedObj(cx, obj);
+        JS::RootedObject rootedObj(cx, obj);
         script = JS::Compile(cx, rootedObj, options, file);
         if (script && !compileOnly)
             (void)JS_ExecuteScript(cx, obj, script, &result);
@@ -1089,7 +1088,7 @@ ProcessFile(JSContext *cx, JSObject *obj, const char *filename, FILE *file,
                     str = JS_ValueToString(cx, result);
                     JS_SetErrorReporter(cx, older);
                     JSAutoByteString bytes;
-                    if (str && bytes.encode(cx, str))
+                    if (str && bytes.encodeLatin1(cx, str))
                         fprintf(gOutFile, "%s\n", bytes.ptr());
                     else
                         ok = false;
@@ -1160,6 +1159,7 @@ ProcessArgsForCompartment(JSContext *cx, char **argv, int argc)
         case 'I':
             JS_ToggleOptions(cx, JSOPTION_COMPILE_N_GO);
             JS_ToggleOptions(cx, JSOPTION_ION);
+            JS_ToggleOptions(cx, JSOPTION_ASMJS);
             break;
         case 'n':
             JS_ToggleOptions(cx, JSOPTION_TYPE_INFERENCE);
@@ -1894,6 +1894,7 @@ main(int argc, char **argv, char **envp)
         rv = xpc->InitClassesWithNewWrappedGlobal(cx, backstagePass,
                                                   systemprincipal,
                                                   0,
+                                                  JS::SystemZone,
                                                   getter_AddRefs(holder));
         if (NS_FAILED(rv))
             return 1;

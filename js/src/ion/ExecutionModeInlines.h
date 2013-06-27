@@ -11,7 +11,7 @@
 namespace js {
 namespace ion {
 
-static inline bool HasIonScript(UnrootedScript script, ExecutionMode cmode)
+static inline bool HasIonScript(RawScript script, ExecutionMode cmode)
 {
     switch (cmode) {
       case SequentialExecution: return script->hasIonScript();
@@ -21,7 +21,7 @@ static inline bool HasIonScript(UnrootedScript script, ExecutionMode cmode)
     return false;
 }
 
-static inline IonScript *GetIonScript(UnrootedScript script, ExecutionMode cmode)
+static inline IonScript *GetIonScript(RawScript script, ExecutionMode cmode)
 {
     switch (cmode) {
       case SequentialExecution: return script->ion;
@@ -31,7 +31,7 @@ static inline IonScript *GetIonScript(UnrootedScript script, ExecutionMode cmode
     return NULL;
 }
 
-static inline void SetIonScript(UnrootedScript script, ExecutionMode cmode, IonScript *ionScript)
+static inline void SetIonScript(RawScript script, ExecutionMode cmode, IonScript *ionScript)
 {
     switch (cmode) {
       case SequentialExecution: script->ion = ionScript; return;
@@ -40,7 +40,16 @@ static inline void SetIonScript(UnrootedScript script, ExecutionMode cmode, IonS
     JS_NOT_REACHED("No such execution mode");
 }
 
-static inline bool CanIonCompile(HandleScript script, ExecutionMode cmode)
+static inline size_t OffsetOfIonInJSScript(ExecutionMode cmode)
+{
+    switch (cmode) {
+      case SequentialExecution: return offsetof(JSScript, ion);
+      case ParallelExecution: return offsetof(JSScript, parallelIon);
+    }
+    JS_NOT_REACHED("No such execution mode");
+}
+
+static inline bool CanIonCompile(RawScript script, ExecutionMode cmode)
 {
     switch (cmode) {
       case SequentialExecution: return script->canIonCompile();
@@ -50,15 +59,12 @@ static inline bool CanIonCompile(HandleScript script, ExecutionMode cmode)
     return false;
 }
 
-static inline bool CanIonCompile(JSContext *cx, HandleFunction fun, ExecutionMode cmode)
+static inline bool CanIonCompile(RawFunction fun, ExecutionMode cmode)
 {
-    if (!fun->isInterpreted())
-        return false;
-    RootedScript script(cx, fun->nonLazyScript());
-    return CanIonCompile(script, cmode);
+    return fun->isInterpreted() && CanIonCompile(fun->nonLazyScript(), cmode);
 }
 
-static inline bool CompilingOffThread(UnrootedScript script, ExecutionMode cmode)
+static inline bool CompilingOffThread(RawScript script, ExecutionMode cmode)
 {
     switch (cmode) {
       case SequentialExecution: return script->isIonCompilingOffThread();
@@ -78,7 +84,7 @@ static inline bool CompilingOffThread(HandleScript script, ExecutionMode cmode)
     return false;
 }
 
-static inline bool Disabled(UnrootedScript script, ExecutionMode cmode) {
+static inline bool Disabled(RawScript script, ExecutionMode cmode) {
     switch (cmode) {
       case SequentialExecution: return script->isIonCompilingOffThread();
       case ParallelExecution: return script->isParallelIonCompilingOffThread();

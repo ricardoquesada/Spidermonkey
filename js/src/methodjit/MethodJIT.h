@@ -942,12 +942,12 @@ DisableScriptCodeForIon(JSScript *script, jsbytecode *osrPC);
 
 // Expand all stack frames inlined by the JIT within a compartment.
 void
-ExpandInlineFrames(JSCompartment *compartment);
+ExpandInlineFrames(JS::Zone *zone);
 
 // Return all VMFrames in a compartment to the interpreter. This must be
 // followed by destroying all JIT code in the compartment.
 void
-ClearAllFrames(JSCompartment *compartment);
+ClearAllFrames(JS::Zone *zone);
 
 // Information about a frame inlined during compilation.
 struct InlineFrame
@@ -1035,7 +1035,7 @@ IsLowerableFunCallOrApply(jsbytecode *pc)
 #endif
 }
 
-UnrootedShape
+RawShape
 GetPICSingleShape(JSContext *cx, JSScript *script, jsbytecode *pc, bool constructing);
 
 static inline void
@@ -1075,7 +1075,6 @@ VMFrame::script()
 inline jsbytecode *
 VMFrame::pc()
 {
-    AutoAssertNoGC nogc;
     if (regs.inlined())
         return script()->code + regs.inlined()->pcOffset;
     return regs.pc;

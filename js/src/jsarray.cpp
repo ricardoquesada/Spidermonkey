@@ -148,14 +148,14 @@ js::StringIsArrayIndex(JSLinearString *str, uint32_t *indexp)
     return false;
 }
 
-UnrootedShape
+RawShape
 js::GetDenseArrayShape(JSContext *cx, HandleObject globalObj)
 {
     JS_ASSERT(globalObj);
 
     JSObject *proto = globalObj->global().getOrCreateArrayPrototype(cx);
     if (!proto)
-        return UnrootedShape(NULL);
+        return NULL;
 
     return EmptyShape::getInitialShape(cx, &ArrayClass, proto, proto->getParent(),
                                        gc::FINALIZE_OBJECT0);
@@ -495,8 +495,8 @@ array_length_setter(JSContext *cx, HandleObject obj, HandleId id, JSBool strict,
 
         uint32_t gap = oldlen - newlen;
         for (;;) {
-            jsid nid;
-            if (!JS_CHECK_OPERATION_LIMIT(cx) || !JS_NextProperty(cx, iter, &nid))
+            RootedId nid(cx);
+            if (!JS_CHECK_OPERATION_LIMIT(cx) || !JS_NextProperty(cx, iter, nid.address()))
                 return false;
             if (JSID_IS_VOID(nid))
                 break;
@@ -904,7 +904,10 @@ InitArrayElements(JSContext *cx, HandleObject obj, uint32_t start, uint32_t coun
     if (count == 0)
         return true;
 
-    if (updateTypes && !InitArrayTypes(cx, obj->getType(cx), vector, count))
+    types::TypeObject *type = obj->getType(cx);
+    if (!type)
+        return false;
+    if (updateTypes && !InitArrayTypes(cx, type, vector, count))
         return false;
 
     /*
@@ -917,6 +920,9 @@ InitArrayElements(JSContext *cx, HandleObject obj, uint32_t start, uint32_t coun
         if (ObjectMayHaveExtraIndexedProperties(obj))
             break;
 
+        if (obj->shouldConvertDoubleElements())
+            break;
+
         JSObject::EnsureDenseResult result = obj->ensureDenseElements(cx, start, count);
         if (result != JSObject::ED_OK) {
             if (result == JSObject::ED_FAILED)
@@ -924,6 +930,7 @@ InitArrayElements(JSContext *cx, HandleObject obj, uint32_t start, uint32_t coun
             JS_ASSERT(result == JSObject::ED_SPARSE);
             break;
         }
+
         uint32_t newlen = start + count;
         if (newlen > obj->getArrayLength())
             obj->setArrayLengthInt32(newlen);
@@ -1324,8 +1331,6 @@ enum ComparatorMatchResult {
 ComparatorMatchResult
 MatchNumericComparator(const Value &v)
 {
-    AutoAssertNoGC nogc;
-
     if (!v.isObject())
         return Match_None;
 
@@ -1337,7 +1342,7 @@ MatchNumericComparator(const Value &v)
     if (!fun->hasScript())
         return Match_None;
 
-    UnrootedScript script = fun->nonLazyScript();
+    RawScript script = fun->nonLazyScript();
     jsbytecode *pc = script->code;
 
     uint16_t arg0, arg1;
@@ -1991,7 +1996,8 @@ CanOptimizeForDenseStorage(HandleObject arr, uint32_t startingIndex, uint32_t co
      * case can't happen, because any dense array used as the prototype of
      * another object is first slowified, for type inference's sake.
      */
-    if (JS_UNLIKELY(arr->getType(cx)->hasAllFlags(OBJECT_FLAG_ITERATED)))
+    types::TypeObject *arrType = arr->getType(cx);
+    if (JS_UNLIKELY(!arrType || arrType->hasAllFlags(OBJECT_FLAG_ITERATED)))
         return false;
 
     /*
@@ -2377,85 +2383,6 @@ array_slice(JSContext *cx, unsigned argc, Value *vp)
     return JS_TRUE;
 }
 
-/* ES5 15.4.4.19. */
-static JSBool
-array_map(JSContext *cx, unsigned argc, Value *vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-
-    /* Step 1. */
-    RootedObject obj(cx, ToObject(cx, args.thisv()));
-    if (!obj)
-        return false;
-
-    /* Step 2-3. */
-    uint32_t len;
-    if (!GetLengthProperty(cx, obj, &len))
-        return false;
-
-    /* Step 4. */
-    if (args.length() == 0) {
-        js_ReportMissingArg(cx, args.calleev(), 0);
-        return false;
-    }
-    RootedObject callable(cx, ValueToCallable(cx, args[0], args.length() - 1));
-    if (!callable)
-        return false;
-
-    /* Step 5. */
-    RootedValue thisv(cx, args.length() >= 2 ? args[1] : UndefinedValue());
-
-    /* Step 6. */
-    RootedObject arr(cx, NewDenseAllocatedArray(cx, len));
-    if (!arr)
-        return false;
-    TypeObject *newtype = GetTypeCallerInitObject(cx, JSProto_Array);
-    if (!newtype)
-        return false;
-    arr->setType(newtype);
-
-    /* Step 7. */
-    uint32_t k = 0;
-
-    /* Step 8. */
-    RootedValue kValue(cx);
-    JS_ASSERT(!InParallelSection());
-    FastInvokeGuard fig(cx, ObjectValue(*callable));
-    InvokeArgsGuard &ag = fig.args();
-    while (k < len) {
-        if (!JS_CHECK_OPERATION_LIMIT(cx))
-            return false;
-
-        /* Step a, b, and c.i. */
-        JSBool kNotPresent;
-        if (!GetElement(cx, obj, k, &kNotPresent, &kValue))
-            return false;
-
-        /* Step c.ii-iii. */
-        if (!kNotPresent) {
-            if (!ag.pushed() && !cx->stack.pushInvokeArgs(cx, 3, &ag))
-                return false;
-            ag.setCallee(ObjectValue(*callable));
-            ag.setThis(thisv);
-            ag[0] = kValue;
-            ag[1] = NumberValue(k);
-            ag[2] = ObjectValue(*obj);
-            if (!fig.invoke(cx))
-                return false;
-            kValue = ag.rval();
-            if (!SetArrayElement(cx, arr, k, kValue))
-                return false;
-        }
-
-        /* Step d. */
-        k++;
-    }
-
-    /* Step 9. */
-    args.rval().setObject(*arr);
-    return true;
-}
-
 /* ES5 15.4.4.20. */
 static JSBool
 array_filter(JSContext *cx, unsigned argc, Value *vp)
@@ -2576,7 +2503,7 @@ static JSFunctionSpec array_methods[] = {
          {"lastIndexOf",        {NULL, NULL},       1,0, "ArrayLastIndexOf"},
          {"indexOf",            {NULL, NULL},       1,0, "ArrayIndexOf"},
          {"forEach",            {NULL, NULL},       1,0, "ArrayForEach"},
-    JS_FN("map",                array_map,          1,JSFUN_GENERIC_NATIVE),
+         {"map",                {NULL, NULL},       1,0, "ArrayMap"},
          {"reduce",             {NULL, NULL},       1,0, "ArrayReduce"},
          {"reduceRight",        {NULL, NULL},       1,0, "ArrayReduceRight"},
     JS_FN("filter",             array_filter,       1,JSFUN_GENERIC_NATIVE),
@@ -2592,6 +2519,7 @@ static JSFunctionSpec array_static_methods[] = {
          {"lastIndexOf",        {NULL, NULL},       2,0, "ArrayStaticLastIndexOf"},
          {"indexOf",            {NULL, NULL},       2,0, "ArrayStaticIndexOf"},
          {"forEach",            {NULL, NULL},       2,0, "ArrayStaticForEach"},
+         {"map",                {NULL, NULL},       2,0, "ArrayStaticMap"},
          {"every",              {NULL, NULL},       2,0, "ArrayStaticEvery"},
          {"some",               {NULL, NULL},       2,0, "ArrayStaticSome"},
          {"reduce",             {NULL, NULL},       2,0, "ArrayStaticReduce"},
@@ -2738,7 +2666,7 @@ NewArray(JSContext *cx, uint32_t length, RawObject protoArg, NewObjectKind newKi
     if (newKind != SingletonObject &&
         cache.lookupGlobal(&ArrayClass, cx->global(), allocKind, &entry))
     {
-        RootedObject obj(cx, cache.newObjectFromHit(cx, entry, InitialHeapForNewKind(newKind)));
+        RootedObject obj(cx, cache.newObjectFromHit(cx, entry, GetInitialHeap(newKind, &ArrayClass)));
         if (obj) {
             /* Fixup the elements pointer and length, which may be incorrect. */
             obj->setFixedElements();
@@ -2751,7 +2679,7 @@ NewArray(JSContext *cx, uint32_t length, RawObject protoArg, NewObjectKind newKi
 
     RootedObject proto(cx, protoArg);
     if (protoArg)
-        PoisonPtr(&protoArg);
+        JS::PoisonPtr(&protoArg);
 
     if (!proto && !FindProto(cx, &ArrayClass, &proto))
         return NULL;

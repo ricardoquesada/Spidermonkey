@@ -37,13 +37,11 @@ MOCHITEST_FILES =	chrome_wrappers_helper.html \
 		test_bug478438.html \
 		test_bug500691.html \
 		bug500931_helper.html \
-		test_bug502959.html \
 		test_bug503926.html \
 		test_bug504877.html \
 		bug504877_helper.html \
 		test_bug505915.html \
 		file_bug505915.html \
-		test_bug553407.html \
 		test_bug560351.html \
 		bug571849_helper.html \
 		test_bug585745.html \
@@ -82,6 +80,8 @@ MOCHITEST_FILES =	chrome_wrappers_helper.html \
 		file_bug781476.html \
 		test_bug785096.html \
 		test_bug789713.html \
+		test_bug790732.html \
+		file_bug790732.html \
 		test_bug793969.html \
 		file_bug795275.html \
 		file_bug795275.xml \
@@ -91,6 +91,9 @@ MOCHITEST_FILES =	chrome_wrappers_helper.html \
 		file_bug802557.html \
 		test_bug803730.html \
 		test_bug809547.html \
+		test_bug809674.html \
+		test_bug865260.html \
+		test_bug871887.html \
 		file_crosscompartment_weakmap.html \
 		test_crosscompartment_weakmap.html \
 		$(NULL)

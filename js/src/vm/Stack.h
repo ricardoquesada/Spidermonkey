@@ -263,7 +263,7 @@ class AbstractFramePtr
 
     inline JSGenerator *maybeSuspendedGenerator(JSRuntime *rt) const;
 
-    inline UnrootedObject scopeChain() const;
+    inline RawObject scopeChain() const;
     inline CallObject &callObj() const;
     inline JSCompartment *compartment() const;
 
@@ -277,7 +277,7 @@ class AbstractFramePtr
     inline bool isFramePushedByExecute() const;
     inline bool isDebuggerFrame() const;
 
-    inline UnrootedScript script() const;
+    inline RawScript script() const;
     inline JSFunction *fun() const;
     inline JSFunction *maybeFun() const;
     inline JSFunction &callee() const;
@@ -297,6 +297,7 @@ class AbstractFramePtr
     inline bool hasArgsObj() const;
     inline ArgumentsObject &argsObj() const;
     inline void initArgsObj(ArgumentsObject &argsobj) const;
+    inline bool useNewType() const;
 
     inline bool copyRawFrameSlots(AutoValueVector *vec) const;
 
@@ -307,7 +308,8 @@ class AbstractFramePtr
 
     inline bool prevUpToDate() const;
     inline void setPrevUpToDate() const;
-    inline AbstractFramePtr evalPrev() const;
+
+    JSObject *evalPrevScopeChain(JSRuntime *rt) const;
 
     inline void *maybeHookData() const;
     inline void setHookData(void *data) const;
@@ -389,10 +391,13 @@ class StackFrame
         HAS_PUSHED_SPS_FRAME = 0x100000,  /* SPS was notified of enty */
 
         /* Ion frame state */
-        RUNNING_IN_ION       = 0x200000,  /* frame is running in Ion */
-        CALLING_INTO_ION     = 0x400000,  /* frame is calling into Ion */
+        RUNNING_IN_ION     =   0x200000,  /* frame is running in Ion */
+        CALLING_INTO_ION   =   0x400000,  /* frame is calling into Ion */
 
-        JIT_REVISED_STACK    = 0x800000   /* sp was revised by JIT for lowered apply */
+        JIT_REVISED_STACK  =   0x800000,  /* sp was revised by JIT for lowered apply */
+
+        /* Miscellaneous state. */
+        USE_NEW_TYPE       =  0x1000000   /* Use new type for constructed |this| object. */
     };
 
   private:
@@ -461,13 +466,13 @@ class StackFrame
 
     /* Used for Invoke, Interpret, trace-jit LeaveTree, and method-jit stubs. */
     void initCallFrame(JSContext *cx, JSFunction &callee,
-                       UnrootedScript script, uint32_t nactual, StackFrame::Flags flags);
+                       RawScript script, uint32_t nactual, StackFrame::Flags flags);
 
     /* Used for getFixupFrame (for FixupArity). */
     void initFixupFrame(StackFrame *prev, StackFrame::Flags flags, void *ncode, unsigned nactual);
 
     /* Used for eval. */
-    void initExecuteFrame(UnrootedScript script, StackFrame *prevLink, AbstractFramePtr prev,
+    void initExecuteFrame(RawScript script, StackFrame *prevLink, AbstractFramePtr prev,
                           FrameRegs *regs, const Value &thisv, JSObject &scopeChain,
                           ExecuteType type);
 
@@ -489,12 +494,9 @@ class StackFrame
      * over-recursed) after pushing the stack frame but before 'prologue' is
      * called or completes fully. To simplify usage, 'epilogue' does not assume
      * 'prologue' has completed and handles all the intermediate state details.
-     *
-     * The 'newType' option indicates whether the constructed 'this' value (if
-     * there is one) should be given a new singleton type.
      */
 
-    bool prologue(JSContext *cx, bool newType);
+    bool prologue(JSContext *cx);
     void epilogue(JSContext *cx);
 
     /* Subsets of 'prologue' called from jit code. */
@@ -726,11 +728,11 @@ class StackFrame
      *   the same VMFrame. Other calls force expansion of the inlined frames.
      */
 
-    UnrootedScript script() const {
+    RawScript script() const {
         return isFunctionFrame()
                ? isEvalFrame()
                  ? u.evalScript
-                 : (RawScript)fun()->nonLazyScript()
+                 : fun()->nonLazyScript()
                : exec.script;
     }
 
@@ -1052,6 +1054,15 @@ class StackFrame
         return flags_ & HAS_ARGS_OBJ;
     }
 
+    void setUseNewType() {
+        JS_ASSERT(isConstructing());
+        flags_ |= USE_NEW_TYPE;
+    }
+    bool useNewType() const {
+        JS_ASSERT(isConstructing());
+        return flags_ & USE_NEW_TYPE;
+    }
+
     /*
      * The method JIT call/apply optimization can erase Function.{call,apply}
      * invocations from the stack and push the callee frame directly. The base
@@ -1295,7 +1306,7 @@ class FrameRegs
     }
 
     /* For stubs::CompileFunction, ContextStack: */
-    void prepareToRun(StackFrame &fp, UnrootedScript script) {
+    void prepareToRun(StackFrame &fp, RawScript script) {
         pc = script->code;
         sp = fp.slots() + script->nfixed;
         fp_ = &fp;
@@ -1303,7 +1314,7 @@ class FrameRegs
     }
 
     void setToEndOfScript() {
-        UnrootedScript script = fp()->script();
+        RawScript script = fp()->script();
         sp = fp()->base();
         pc = script->code + script->length - JSOP_STOP_LENGTH;
         JS_ASSERT(*pc == JSOP_STOP);
@@ -1723,8 +1734,8 @@ class ContextStack
         DONT_ALLOW_CROSS_COMPARTMENT = false,
         ALLOW_CROSS_COMPARTMENT = true
     };
-    inline UnrootedScript currentScript(jsbytecode **pc = NULL,
-                                        MaybeAllowCrossCompartment = DONT_ALLOW_CROSS_COMPARTMENT) const;
+    inline RawScript currentScript(jsbytecode **pc = NULL,
+                                   MaybeAllowCrossCompartment = DONT_ALLOW_CROSS_COMPARTMENT) const;
 
     /* Get the scope chain for the topmost scripted call on the stack. */
     inline HandleObject currentScriptedScopeChain() const;
@@ -1916,7 +1927,7 @@ class StackIter
 #endif
         return data_.state_ == SCRIPTED;
     }
-    UnrootedScript script() const {
+    RawScript script() const {
         JS_ASSERT(isScript());
         if (data_.state_ == SCRIPTED)
             return interpFrame()->script();

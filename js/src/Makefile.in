@@ -11,32 +11,8 @@ srcdir		= @srcdir@
 run_for_side_effects := $(shell echo "MAKE: $(MAKE)")
 include $(DEPTH)/config/autoconf.mk
 
-DIRS		= config
-
-ifdef DEHYDRA_PATH
-DIRS += analysis-tests
-endif
-
-ifdef JS_NATIVE_EDITLINE
-DIRS += editline
-endif
-
-# editline needs to get built before the shell
-ifndef JS_DISABLE_SHELL
-DIRS += shell
-endif
-
-# FIXME: bug 530688 covers getting these working on Android
-ifneq ($(OS_ARCH),ANDROID)
-TEST_DIRS += jsapi-tests
-endif
-
-TEST_DIRS += tests gdb
-
-MODULE		    = js
 LIBRARY_NAME	    = mozjs
 STATIC_LIBRARY_NAME = js_static
-GRE_MODULE	    = 1
 
 LIBS		= $(NSPR_LIBS)
 
@@ -160,12 +136,19 @@ CPPSRCS		= \
 		Statistics.cpp \
 		StoreBuffer.cpp \
 		Iteration.cpp \
+		Zone.cpp \
 		Verifier.cpp \
 		StringBuffer.cpp \
 		Unicode.cpp \
 		Xdr.cpp \
 		Module.cpp \
 		$(NULL)
+
+ifdef MOZ_INSTRUMENTS
+CPPSRCS		+= \
+		Instruments.cpp \
+		$(NULL)
+endif
 
 # Changes to internal header files, used externally, massively slow down
 # browser builds.  Don't add new files here unless you know what you're
@@ -195,20 +178,6 @@ INSTALLED_HEADERS = \
 		$(NULL)
 
 ######################################################
-# BEGIN exported headers that are only exported
-#       because of inclusion by an INSTALLED_HEADER
-#
-EXPORTS_NAMESPACES += ds gc
-
-EXPORTS_ds = \
-		BitArray.h \
-		$(NULL)
-
-EXPORTS_gc = \
-		Root.h \
-		$(NULL)
-
-######################################################
 # BEGIN include exported headers from the JS engine
 #
 #       Ultimately, after cleansing INSTALLED_HEADERS,
@@ -226,6 +195,7 @@ EXPORTS_NAMESPACES += js
 # LegacyIntTypes.h below is deliberately exempted from this requirement.
 EXPORTS_js = \
 		Anchor.h \
+		CallArgs.h \
 		CharacterEncoding.h \
 		GCAPI.h \
 		HashTable.h \
@@ -234,6 +204,7 @@ EXPORTS_js = \
 		MemoryMetrics.h \
 		PropertyKey.h \
 		RequiredDefines.h \
+		RootingAPI.h \
 		TemplateLib.h \
 		Utility.h \
 		Value.h \
@@ -245,6 +216,7 @@ EXPORTS_js = \
 #
 ifeq (,$(filter beta release esr,$(MOZ_UPDATE_CHANNEL)))
 DEFINES += -DENABLE_TYPEDARRAY_MOVE
+DEFINES += -DENABLE_PARALLEL_JS
 endif
 
 ifdef ENABLE_TRACE_LOGGING
@@ -323,6 +295,10 @@ CPPSRCS +=	MIR.cpp \
 		AliasAnalysis.cpp \
 		ParallelArrayAnalysis.cpp \
 		UnreachableCodeElimination.cpp \
+		EffectiveAddressAnalysis.cpp \
+		AsmJS.cpp \
+		AsmJSLink.cpp \
+		AsmJSSignalHandlers.cpp \
 		$(NULL)
 endif #ENABLE_ION
 ifeq (86, $(findstring 86,$(TARGET_CPU)))
@@ -438,12 +414,7 @@ CPPSRCS += ExecutableAllocatorOS2.cpp \
            $(NONE)
 endif
 
-# only enable if it is not explicity disabled
-ifndef DISABLE_YARR_JIT 
-ifneq (,$(filter arm% sparc %86 x86_64 mips%,$(TARGET_CPU)))
-ENABLE_YARR_JIT = 1
-DEFINES += -DENABLE_YARR_JIT=1
-
+ifneq (,$(ENABLE_METHODJIT)$(ENABLE_ION)$(ENABLE_YARR_JIT))
 VPATH += 	$(srcdir)/assembler/assembler \
 		$(srcdir)/methodjit \
 		$(NONE)
@@ -451,8 +422,11 @@ VPATH += 	$(srcdir)/assembler/assembler \
 CPPSRCS +=	ARMAssembler.cpp \
 		MacroAssemblerARM.cpp \
 		MacroAssemblerX86Common.cpp \
-		YarrJIT.cpp \
 		$(NONE)
+
+ifdef ENABLE_YARR_JIT
+CPPSRCS +=	YarrJIT.cpp
+endif
 
 ifeq (86, $(findstring 86,$(TARGET_CPU)))
 ifeq (x86_64, $(TARGET_CPU))
@@ -463,8 +437,6 @@ endif
 endif
 ifeq (arm, $(findstring arm, $(TARGET_CPU)))
 #CPPSRCS		+= only_on_arm.cpp
-endif
-
 endif
 
 endif
@@ -610,6 +582,14 @@ distclean clean::
 		$(call SUBMAKE,$@,ctypes/libffi)
 endif
 endif
+
+# ICU headers need to be available whether we build with the complete
+# Internationalization API or not - ICU stubs rely on them.
+
+LOCAL_INCLUDES += \
+    -I$(topsrcdir)/../../intl/icu/source/common \
+    -I$(topsrcdir)/../../intl/icu/source/i18n \
+    $(NULL)
 
 # The "find any vanilla new/new[] calls" script is tailored to Linux, so
 # only run it there.  That should be enough to catch any such calls that
@@ -894,12 +874,6 @@ SDK_BINARY = js-config
 install:: $(INSTALLED_HEADERS)
 	$(SYSINSTALL) $^ $(DESTDIR)$(includedir)/$(MODULE)
 
-install:: $(EXPORTS_ds)
-	$(SYSINSTALL) $^ $(DESTDIR)$(includedir)/$(MODULE)/ds
-
-install:: $(EXPORTS_gc)
-	$(SYSINSTALL) $^ $(DESTDIR)$(includedir)/$(MODULE)/gc
-
 install:: $(EXPORTS_js)
 	$(SYSINSTALL) $^ $(DESTDIR)$(includedir)/$(MODULE)/js
 
@@ -982,24 +956,31 @@ selfhosting:: selfhosted.out.h
 selfhosting_srcs := \
   $(srcdir)/builtin/Utilities.js \
   $(srcdir)/builtin/Array.js \
+  $(srcdir)/builtin/Date.js \
   $(srcdir)/builtin/Intl.js \
   $(srcdir)/builtin/IntlData.js \
+  $(srcdir)/builtin/Number.js \
+  $(srcdir)/builtin/ParallelArray.js \
+  $(srcdir)/builtin/String.js \
   $(NULL)
 
 selfhosted_out_h_deps := \
   $(selfhosting_srcs) \
   $(srcdir)/js.msg \
-  $(srcdir)/builtin/macros.py \
-  $(srcdir)/builtin/js2c.py \
-  $(srcdir)/builtin/embedjs.py
+  $(srcdir)/builtin/embedjs.py \
+  $(NULL)
 
 ifeq ($(MOZ_DEBUG),1)
-selfhosting_embed_flags += -d
+selfhosting_defines += -DDEBUG
+endif
+
+ifneq (,$(MOZ_ZLIB_LIBS)$(MOZ_GLUE_LDFLAGS))
+selfhosting_defines += -DUSE_ZLIB
 endif
 
 selfhosted.out.h: $(selfhosted_out_h_deps)
-	$(PYTHON) $(srcdir)/builtin/embedjs.py $(selfhosting_embed_flags) $@ \
-	  $(srcdir)/js.msg $(srcdir)/builtin/macros.py $(selfhosting_srcs)
+	$(PYTHON) $(srcdir)/builtin/embedjs.py $(selfhosting_defines) \
+	  -p '$(CPP)' -m $(srcdir)/js.msg -o $@ $(selfhosting_srcs)
 
 ###############################################
 # BEGIN kludges for the Nitro assembler

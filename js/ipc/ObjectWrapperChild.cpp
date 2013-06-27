@@ -42,7 +42,7 @@ namespace {
                                                JSOPTION_DONT_REPORT_UNCAUGHT)))
         {
             MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-            mStack.Push(cx, false);
+            mStack.Push(cx);
         }
 
         ~AutoContextPusher() {
@@ -480,7 +480,7 @@ ObjectWrapperChild::AnswerNewEnumerateNext(const JSVariant& in_state,
 
     int32_t i = JSVAL_TO_INT(v);
     NS_ASSERTION(i >= 0, "Index of next jsid negative?");
-    NS_ASSERTION(i <= strIds->Length(), "Index of next jsid too large?");
+    NS_ASSERTION(size_t(i) <= strIds->Length(), "Index of next jsid too large?");
 
     if (size_t(i) == strIds->Length()) {
         *status = JS_TRUE;

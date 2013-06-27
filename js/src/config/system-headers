@@ -1073,6 +1073,8 @@ conic/conicstatisticsevent.h
 #endif
 #if MOZ_NATIVE_LIBEVENT==1
 event.h
+#else
+sys/event.h
 #endif
 #ifdef MOZ_ENABLE_LIBPROXY
 proxy.h
@@ -1107,7 +1109,6 @@ vpx/vpx_decoder.h
 vpx/vpx_encoder.h
 vpx/vp8cx.h
 vpx/vp8dx.h
-sydneyaudio/sydney_audio.h
 vorbis/codec.h
 theora/theoradec.h
 tremor/ivorbiscodec.h

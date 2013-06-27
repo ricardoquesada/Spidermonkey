@@ -23,7 +23,9 @@ MIRGenerator::MIRGenerator(JSCompartment *compartment,
     temp_(temp),
     graph_(graph),
     error_(false),
-    cancelBuild_(0)
+    cancelBuild_(0),
+    maxAsmJSStackArgBytes_(0),
+    performsAsmJSCall_(false)
 { }
 
 bool
@@ -226,23 +228,27 @@ MBasicBlock::inherit(MBasicBlock *pred, uint32_t popped)
         stackPosition_ -= popped;
         if (kind_ != PENDING_LOOP_HEADER)
             copySlots(pred);
-    } else {
+    } else if (pc()) {
         uint32_t stackDepth = info().script()->analysis()->getCode(pc()).stackDepth;
         stackPosition_ = info().firstStackSlot() + stackDepth;
         JS_ASSERT(stackPosition_ >= popped);
         stackPosition_ -= popped;
+    } else {
+        stackPosition_ = info().firstStackSlot();
     }
 
     JS_ASSERT(info_.nslots() >= stackPosition_);
     JS_ASSERT(!entryResumePoint_);
 
-    // Propagate the caller resume point from the inherited block.
-    MResumePoint *callerResumePoint = pred ? pred->callerResumePoint() : NULL;
+    if (pc()) {
+        // Propagate the caller resume point from the inherited block.
+        MResumePoint *callerResumePoint = pred ? pred->callerResumePoint() : NULL;
 
-    // Create a resume point using our initial stack state.
-    entryResumePoint_ = new MResumePoint(this, pc(), callerResumePoint, MResumePoint::ResumeAt);
-    if (!entryResumePoint_->init())
-        return false;
+        // Create a resume point using our initial stack state.
+        entryResumePoint_ = new MResumePoint(this, pc(), callerResumePoint, MResumePoint::ResumeAt);
+        if (!entryResumePoint_->init())
+            return false;
+    }
 
     if (pred) {
         if (!predecessors_.append(pred))
@@ -251,14 +257,14 @@ MBasicBlock::inherit(MBasicBlock *pred, uint32_t popped)
         if (kind_ == PENDING_LOOP_HEADER) {
             for (size_t i = 0; i < stackDepth(); i++) {
                 MPhi *phi = MPhi::New(i);
-                if (!phi->initLength(1))
+                if (!phi->addInputSlow(pred->getSlot(i)))
                     return false;
-                phi->setOperand(0, pred->getSlot(i));
                 addPhi(phi);
                 setSlot(i, phi);
-                entryResumePoint()->setOperand(i, phi);
+                if (entryResumePoint())
+                    entryResumePoint()->setOperand(i, phi);
             }
-        } else {
+        } else if (entryResumePoint()) {
             for (size_t i = 0; i < stackDepth(); i++)
                 entryResumePoint()->setOperand(i, getSlot(i));
         }
@@ -313,7 +319,8 @@ void
 MBasicBlock::initSlot(uint32_t slot, MDefinition *ins)
 {
     slots_[slot] = ins;
-    entryResumePoint()->setOperand(slot, ins);
+    if (entryResumePoint())
+        entryResumePoint()->setOperand(slot, ins);
 }
 
 void
@@ -434,6 +441,7 @@ void
 MBasicBlock::popn(uint32_t n)
 {
     JS_ASSERT(stackPosition_ - n >= info_.firstStackSlot());
+    JS_ASSERT(stackPosition_ >= stackPosition_ - n);
     stackPosition_ -= n;
 }
 
@@ -662,17 +670,18 @@ MBasicBlock::addPredecessorPopN(MBasicBlock *pred, uint32_t popped)
 
                 // Prime the phi for each predecessor, so input(x) comes from
                 // predecessor(x).
-                if (!phi->initLength(predecessors_.length() + 1))
+                if (!phi->reserveLength(predecessors_.length() + 1))
                     return false;
 
                 for (size_t j = 0; j < predecessors_.length(); j++) {
                     JS_ASSERT(predecessors_[j]->getSlot(i) == mine);
-                    phi->setOperand(j, mine);
+                    phi->addInput(mine);
                 }
-                phi->setOperand(predecessors_.length(), other);
+                phi->addInput(other);
 
                 setSlot(i, phi);
-                entryResumePoint()->replaceOperand(i, phi);
+                if (entryResumePoint())
+                    entryResumePoint()->replaceOperand(i, phi);
             }
         }
     }
@@ -719,7 +728,7 @@ MBasicBlock::setBackedge(MBasicBlock *pred)
     // Predecessors must be finished, and at the correct stack depth.
     JS_ASSERT(lastIns_);
     JS_ASSERT(pred->lastIns_);
-    JS_ASSERT(pred->stackDepth() == entryResumePoint()->stackDepth());
+    JS_ASSERT_IF(entryResumePoint(), pred->stackDepth() == entryResumePoint()->stackDepth());
 
     // We must be a pending loop header
     JS_ASSERT(kind_ == PENDING_LOOP_HEADER);

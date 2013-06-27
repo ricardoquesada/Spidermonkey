@@ -36,9 +36,9 @@ enum JaegerSpewChannel {
     JSpew_Terminator
 };
 
-//#if defined(DEBUG) && !defined(JS_METHODJIT_SPEW)
-//# define JS_METHODJIT_SPEW
-//#endif
+// #if defined(DEBUG) && !defined(JS_METHODJIT_SPEW)
+// # define JS_METHODJIT_SPEW
+// #endif
 
 #if defined(JS_METHODJIT_SPEW)
 

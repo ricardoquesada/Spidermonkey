@@ -9,6 +9,7 @@
 
 #include "xpcprivate.h"
 #include "XPCWrapper.h"
+#include "AccessCheck.h"
 #include "nsWrapperCacheInlines.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/Preferences.h"
@@ -105,6 +106,8 @@ XPC_WN_Shared_ToString(JSContext *cx, unsigned argc, jsval *vp)
     }
 
     XPCCallContext ccx(JS_CALLER, cx, obj);
+    if (!ccx.IsValid())
+        return Throw(NS_ERROR_XPC_BAD_OP_ON_WN_PROTO, cx);
     ccx.SetName(ccx.GetRuntime()->GetStringID(XPCJSRuntime::IDX_TO_STRING));
     ccx.SetArgsAndResultPtr(argc, JS_ARGV(cx, vp), vp);
     return ToStringGuts(ccx);
@@ -316,7 +319,7 @@ DefinePropertyIfFound(XPCCallContext& ccx,
             nsresult rv = NS_OK;
 
             if (JSID_IS_STRING(id) &&
-                name.encode(ccx, JSID_TO_STRING(id)) &&
+                name.encodeLatin1(ccx, JSID_TO_STRING(id)) &&
                 (iface2 = XPCNativeInterface::GetNewOrUsed(ccx, name.ptr()), iface2) &&
                 nullptr != (to = wrapperToReflectInterfaceNames->
                            FindTearOff(ccx, iface2, true, &rv)) &&
@@ -663,19 +666,17 @@ MarkWrappedNative(JSTracer *trc, JSObject *obj)
     if (clazz->flags & JSCLASS_DOM_GLOBAL) {
         mozilla::dom::TraceProtoAndIfaceCache(trc, obj);
     }
+    MOZ_ASSERT(IS_WRAPPER_CLASS(clazz));
 
-    JSObject *obj2;
-
-    // Pass null for the first JSContext* parameter  to skip any security
-    // checks and to avoid potential state change there.
-    XPCWrappedNative* wrapper =
-        XPCWrappedNative::GetWrappedNativeOfJSObject(nullptr, obj, nullptr, &obj2);
-
-    if (wrapper) {
-        if (wrapper->IsValid())
-            wrapper->TraceInside(trc);
-    } else if (obj2) {
-        TraceInsideSlimWrapper(trc, obj2);
+    if (IS_WN_WRAPPER_OBJECT(obj)) {
+        XPCWrappedNative *wrapper = XPCWrappedNative::Get(obj);
+        if (wrapper) {
+            if (wrapper->IsValid())
+                wrapper->TraceInside(trc);
+        }
+    } else {
+        MOZ_ASSERT(IS_SLIM_WRAPPER_OBJECT(obj));
+        TraceInsideSlimWrapper(trc, obj);
     }
 }
 
@@ -849,13 +850,21 @@ XPC_WN_MaybeResolvingStrictPropertyStub(JSContext *cx, JSHandleObject obj, JSHan
 #define PRE_HELPER_STUB                                                       \
     XPCWrappedNative* wrapper;                                                \
     nsIXPCScriptable* si;                                                     \
-    if (IS_SLIM_WRAPPER(obj)) {                                               \
-        wrapper = nullptr;                                                     \
-        si = GetSlimWrapperProto(obj)->GetScriptableInfo()->GetCallback();    \
+    JSObject *unwrapped = js::UnwrapObjectChecked(obj, false);                \
+    if (!unwrapped) {                                                         \
+        JS_ReportError(cx, "Permission denied to operate on object.");        \
+        return false;                                                         \
     }                                                                         \
-    else                                                                      \
-    {                                                                         \
-        wrapper = XPCWrappedNative::GetWrappedNativeOfJSObject(cx, obj);      \
+    if (!IS_WRAPPER_CLASS(js::GetObjectClass(unwrapped))) {                   \
+        return Throw(NS_ERROR_XPC_BAD_OP_ON_WN_PROTO, cx);                    \
+    }                                                                         \
+    if (IS_SLIM_WRAPPER_OBJECT(unwrapped)) {                                  \
+        wrapper = nullptr;                                                    \
+        si = GetSlimWrapperProto(unwrapped)->GetScriptableInfo()              \
+                                           ->GetCallback();                   \
+    } else {                                                                  \
+        MOZ_ASSERT(IS_WN_WRAPPER_OBJECT(unwrapped));                          \
+        wrapper = XPCWrappedNative::Get(unwrapped);                           \
         THROW_AND_RETURN_IF_BAD_WRAPPER(cx, wrapper);                         \
         si = wrapper->GetScriptableCallback();                                \
     }                                                                         \
@@ -1350,11 +1359,6 @@ XPCNativeScriptableShared::PopulateJSClass()
     if (mFlags.WantCheckAccess())
         mJSClass.base.checkAccess = XPC_WN_Helper_CheckAccess;
 
-    // Note that we *must* set the ObjectOps (even for the cases were it does
-    // not do much) because with these dynamically generated JSClasses, the
-    // code in XPCWrappedNative::GetWrappedNativeOfJSObject() needs to look
-    // for that these callback pointers in order to identify that a given
-    // JSObject represents a wrapper.
     js::ObjectOps *ops = &mJSClass.base.ops;
     ops->enumerate = XPC_WN_JSOp_Enumerate;
     ops->thisObject = XPC_WN_JSOp_ThisObject;
@@ -1382,6 +1386,43 @@ XPCNativeScriptableShared::PopulateJSClass()
 /***************************************************************************/
 /***************************************************************************/
 
+// Compatibility hack.
+//
+// XPConnect used to do all sorts of funny tricks to find the "correct"
+// |this| object for a given method (often to the detriment of proper
+// call/apply). When these tricks were removed, a fair amount of chrome
+// code broke, because it was relying on being able to grab methods off
+// some XPCOM object (like the nsITelemetry service) and invoke them without
+// a proper |this|. So, if it's quite clear that we're in this situation and
+// about to use a |this| argument that just won't work, fix things up.
+//
+// This hack is only useful for getters/setters if someone sets an XPCOM object
+// as the prototype for a vanilla JS object and expects the XPCOM attributes to
+// work on the derived object, which we really don't want to support. But we
+// handle it anyway, for now, to minimize regression risk on an already-risky
+// landing.
+//
+// This hack is mainly useful for the NoHelper JSClass. We also fix up
+// Components.utils because it implements nsIXPCScriptable (giving it a custom
+// JSClass) but not nsIClassInfo (which would put the methods on a prototype).
+
+#define IS_NOHELPER_CLASS(clasp) (clasp == &XPC_WN_NoHelper_JSClass.base)
+#define IS_CU_CLASS(clasp) (clasp->name[0] == 'n' && !strcmp(clasp->name, "nsXPCComponents_Utils"))
+
+MOZ_ALWAYS_INLINE JSObject*
+FixUpThisIfBroken(JSObject *obj, JSObject *funobj)
+{
+    if (funobj) {
+        js::Class *parentClass = js::GetObjectClass(js::GetObjectParent(funobj));
+        if (MOZ_UNLIKELY((IS_NOHELPER_CLASS(parentClass) || IS_CU_CLASS(parentClass)) &&
+                         (js::GetObjectClass(obj) != parentClass)))
+        {
+            return js::GetObjectParent(funobj);
+        }
+    }
+    return obj;
+}
+
 JSBool
 XPC_WN_CallMethod(JSContext *cx, unsigned argc, jsval *vp)
 {
@@ -1397,13 +1438,14 @@ XPC_WN_CallMethod(JSContext *cx, unsigned argc, jsval *vp)
         JSFunction* fun = funobj->getFunctionPrivate();
         JSString *funid = JS_GetFunctionDisplayId(fun);
         JSAutoByteString bytes;
-        const char *funname = !funid ? "" : bytes.encode(cx, funid) ? bytes.ptr() : "<error>";
+        const char *funname = !funid ? "" : bytes.encodeLatin1(cx, funid) ? bytes.ptr() : "<error>";
         SLIM_LOG_WILL_MORPH_FOR_PROP(cx, obj, funname);
     }
 #endif
     if (IS_SLIM_WRAPPER(obj) && !MorphSlimWrapper(cx, obj))
         return Throw(NS_ERROR_XPC_BAD_OP_ON_WN_PROTO, cx);
 
+    obj = FixUpThisIfBroken(obj, funobj);
     XPCCallContext ccx(JS_CALLER, cx, obj, funobj, JSID_VOID, argc, JS_ARGV(cx, vp), vp);
     XPCWrappedNative* wrapper = ccx.GetWrapper();
     THROW_AND_RETURN_IF_BAD_WRAPPER(cx, wrapper);
@@ -1411,7 +1453,7 @@ XPC_WN_CallMethod(JSContext *cx, unsigned argc, jsval *vp)
     XPCNativeInterface* iface;
     XPCNativeMember*    member;
 
-    if (!XPCNativeMember::GetCallInfo(ccx, funobj, &iface, &member))
+    if (!XPCNativeMember::GetCallInfo(funobj, &iface, &member))
         return Throw(NS_ERROR_XPC_CANT_GET_METHOD_INFO, cx);
     ccx.SetCallInfo(iface, member, false);
     return XPCWrappedNative::CallMethod(ccx);
@@ -1433,7 +1475,7 @@ XPC_WN_GetterSetter(JSContext *cx, unsigned argc, jsval *vp)
         JSAutoByteString bytes;
         if (JS_TypeOfValue(cx, JS_CALLEE(cx, vp)) == JSTYPE_FUNCTION) {
             JSString *funid = JS_GetFunctionDisplayId(funobj->getFunctionPrivate());
-            funname = !funid ? "" : bytes.encode(cx, funid) ? bytes.ptr() : "<error>";
+            funname = !funid ? "" : bytes.encodeLatin1(cx, funid) ? bytes.ptr() : "<error>";
         }
         SLIM_LOG_WILL_MORPH_FOR_PROP(cx, obj, funname);
     }
@@ -1441,17 +1483,18 @@ XPC_WN_GetterSetter(JSContext *cx, unsigned argc, jsval *vp)
     if (IS_SLIM_WRAPPER(obj) && !MorphSlimWrapper(cx, obj))
         return Throw(NS_ERROR_XPC_BAD_OP_ON_WN_PROTO, cx);
 
-    XPCCallContext ccx(JS_CALLER, cx, obj, funobj);
+
+    obj = FixUpThisIfBroken(obj, funobj);
+    XPCCallContext ccx(JS_CALLER, cx, obj, funobj, JSID_VOID, argc, JS_ARGV(cx, vp), vp);
     XPCWrappedNative* wrapper = ccx.GetWrapper();
     THROW_AND_RETURN_IF_BAD_WRAPPER(cx, wrapper);
 
     XPCNativeInterface* iface;
     XPCNativeMember*    member;
 
-    if (!XPCNativeMember::GetCallInfo(ccx, funobj, &iface, &member))
+    if (!XPCNativeMember::GetCallInfo(funobj, &iface, &member))
         return Throw(NS_ERROR_XPC_CANT_GET_METHOD_INFO, cx);
 
-    ccx.SetArgsAndResultPtr(argc, JS_ARGV(cx, vp), vp);
     if (argc && member->IsWritableAttribute()) {
         ccx.SetCallInfo(iface, member, true);
         JSBool retval = XPCWrappedNative::SetAttribute(ccx);

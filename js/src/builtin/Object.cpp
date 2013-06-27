@@ -288,7 +288,7 @@ obj_toSource(JSContext *cx, unsigned argc, Value *vp)
 #endif /* JS_HAS_TOSOURCE */
 
 JSString *
-js::obj_toStringHelper(JSContext *cx, JSObject *obj)
+js::obj_toStringHelper(JSContext *cx, HandleObject obj)
 {
     if (obj->isProxy())
         return Proxy::obj_toString(cx, obj);
@@ -327,7 +327,7 @@ obj_toString(JSContext *cx, unsigned argc, Value *vp)
         return false;
 
     /* Steps 4-5. */
-    UnrootedString str = js::obj_toStringHelper(cx, obj);
+    RawString str = js::obj_toStringHelper(cx, obj);
     if (!str)
         return false;
     args.rval().setString(str);
@@ -791,6 +791,20 @@ obj_keys(JSContext *cx, unsigned argc, Value *vp)
     return true;
 }
 
+/* ES6 draft 15.2.3.16 */
+static JSBool
+obj_is(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    bool same;
+    if (!SameValue(cx, args.get(0), args.get(1), &same))
+        return false;
+
+    args.rval().setBoolean(same);
+    return true;
+}
+
 static JSBool
 obj_getOwnPropertyNames(JSContext *cx, unsigned argc, Value *vp)
 {
@@ -900,7 +914,7 @@ obj_preventExtensions(JSContext *cx, unsigned argc, Value *vp)
     if (!obj->isExtensible())
         return true;
 
-    return obj->preventExtensions(cx);
+    return JSObject::preventExtensions(cx, obj);
 }
 
 static JSBool
@@ -982,6 +996,7 @@ JSFunctionSpec js::object_static_methods[] = {
     JS_FN("getPrototypeOf",            obj_getPrototypeOf,          1,0),
     JS_FN("getOwnPropertyDescriptor",  obj_getOwnPropertyDescriptor,2,0),
     JS_FN("keys",                      obj_keys,                    1,0),
+    JS_FN("is",                        obj_is,                      2,0),
     JS_FN("defineProperty",            obj_defineProperty,          3,0),
     JS_FN("defineProperties",          obj_defineProperties,        2,0),
     JS_FN("create",                    obj_create,                  2,0),

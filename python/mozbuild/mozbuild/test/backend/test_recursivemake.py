@@ -5,6 +5,7 @@
 from __future__ import unicode_literals
 
 import os
+import time
 
 from mozunit import main
 
@@ -30,11 +31,9 @@ class TestRecursiveMakeBackend(BackendTester):
         expected = ['', 'dir1', 'dir2']
 
         for d in expected:
-            in_path = os.path.join(env.topsrcdir, d, 'Makefile.in')
             out_makefile = os.path.join(env.topobjdir, d, 'Makefile')
             out_backend = os.path.join(env.topobjdir, d, 'backend.mk')
 
-            self.assertTrue(os.path.exists(in_path))
             self.assertTrue(os.path.exists(out_makefile))
             self.assertTrue(os.path.exists(out_backend))
 
@@ -56,27 +55,42 @@ class TestRecursiveMakeBackend(BackendTester):
             'include $(topsrcdir)/config/rules.mk'
         ])
 
+    def test_missing_makefile_in(self):
+        """Ensure missing Makefile.in results in Makefile creation."""
+        env = self._consume('stub0', RecursiveMakeBackend)
+
+        p = os.path.join(env.topobjdir, 'dir2', 'Makefile')
+        self.assertTrue(os.path.exists(p))
+
+        lines = [l.strip() for l in open(p, 'rt').readlines()]
+        self.assertEqual(len(lines), 9)
+
+        self.assertTrue(lines[0].startswith('# THIS FILE WAS AUTOMATICALLY'))
+
     def test_backend_mk(self):
         """Ensure backend.mk file is written out properly."""
         env = self._consume('stub0', RecursiveMakeBackend)
 
         p = os.path.join(env.topobjdir, 'backend.mk')
 
-        lines = [l.strip() for l in open(p, 'rt').readlines()[1:-2]]
+        lines = [l.strip() for l in open(p, 'rt').readlines()[2:-1]]
         self.assertEqual(lines, [
+            'MOZBUILD_DERIVED := 1',
+            'NO_MAKEFILE_RULE := 1',
+            'NO_SUBMAKEFILES_RULE := 1',
             'DIRS := dir1',
             'PARALLEL_DIRS := dir2',
             'TEST_DIRS := dir3',
+            'SUBSTITUTE_FILES += Makefile',
         ])
 
-    def test_no_mtime_bump(self):
+    def test_mtime_no_change(self):
         """Ensure mtime is not updated if file content does not change."""
 
         env = self._consume('stub0', RecursiveMakeBackend)
 
         makefile_path = os.path.join(env.topobjdir, 'Makefile')
         backend_path = os.path.join(env.topobjdir, 'backend.mk')
-
         makefile_mtime = os.path.getmtime(makefile_path)
         backend_mtime = os.path.getmtime(backend_path)
 
@@ -93,12 +107,16 @@ class TestRecursiveMakeBackend(BackendTester):
         env = self._consume('external_make_dirs', RecursiveMakeBackend)
 
         backend_path = os.path.join(env.topobjdir, 'backend.mk')
-        lines = [l.strip() for l in open(backend_path, 'rt').readlines()[1:-2]]
+        lines = [l.strip() for l in open(backend_path, 'rt').readlines()[2:-1]]
         self.assertEqual(lines, [
+            'MOZBUILD_DERIVED := 1',
+            'NO_MAKEFILE_RULE := 1',
+            'NO_SUBMAKEFILES_RULE := 1',
             'DIRS := dir',
             'PARALLEL_DIRS := p_dir',
             'DIRS += external',
             'PARALLEL_DIRS += p_external',
+            'SUBSTITUTE_FILES += Makefile',
         ])
 
     def test_substitute_config_files(self):
@@ -111,6 +129,24 @@ class TestRecursiveMakeBackend(BackendTester):
         self.assertEqual(lines, [
             'TEST = foo',
         ])
+
+    def test_variable_passthru(self):
+        """Ensure variable passthru is written out correctly."""
+        env = self._consume('variable_passthru', RecursiveMakeBackend)
+
+        backend_path = os.path.join(env.topobjdir, 'backend.mk')
+        lines = [l.strip() for l in open(backend_path, 'rt').readlines()[2:-1]]
+        self.assertEqual(lines[3:6], [
+            'XPIDLSRCS += foo.idl',
+            'XPIDLSRCS += bar.idl',
+            'XPIDLSRCS += biz.idl',
+        ])
+        self.assertEqual(lines[6:9], [
+            'XPIDL_FLAGS += -Idir1',
+            'XPIDL_FLAGS += -Idir2',
+            'XPIDL_FLAGS += -Idir3',
+        ])
+        self.assertEqual(lines[9], 'XPIDL_MODULE := module_name')
 
 
 if __name__ == '__main__':

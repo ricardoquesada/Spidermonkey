@@ -526,7 +526,7 @@ endif
 # Default location of include files
 IDL_DIR		= $(DIST)/idl
 
-XPIDL_FLAGS = -I$(srcdir) -I$(IDL_DIR)
+XPIDL_FLAGS += -I$(srcdir) -I$(IDL_DIR)
 ifdef LIBXUL_SDK
 XPIDL_FLAGS += -I$(LIBXUL_SDK)/idl
 endif
@@ -731,11 +731,6 @@ JAVAC_FLAGS += -source 1.4
 
 ifdef MOZ_DEBUG
 JAVAC_FLAGS += -g
-endif
-
-ifdef TIERS
-DIRS += $(foreach tier,$(TIERS),$(tier_$(tier)_dirs))
-STATIC_DIRS += $(foreach tier,$(TIERS),$(tier_$(tier)_staticdirs))
 endif
 
 CREATE_PRECOMPLETE_CMD = $(PYTHON) $(call core_abspath,$(topsrcdir)/config/createprecomplete.py)
