@@ -8,13 +8,15 @@
 #ifndef jsion_cpu_arm_assembler_h__
 #define jsion_cpu_arm_assembler_h__
 
+#include "mozilla/MathAlgorithms.h"
+#include "mozilla/Util.h"
+
 #include "ion/shared/Assembler-shared.h"
 #include "assembler/assembler/AssemblerBufferWithConstantPool.h"
 #include "ion/CompactBuffer.h"
 #include "ion/IonCode.h"
 #include "ion/arm/Architecture-arm.h"
 #include "ion/shared/IonAssemblerBufferWithConstantPools.h"
-#include "mozilla/Util.h"
 
 namespace js {
 namespace ion {
@@ -96,6 +98,8 @@ static const FloatRegister d15 = {FloatRegisters::d15};
 // function boundaries.  I'm trying to make sure this is always true.
 static const uint32_t StackAlignment = 8;
 static const bool StackKeptAligned = true;
+static const uint32_t NativeFrameSize = sizeof(void*);
+static const uint32_t AlignmentAtPrologue = sizeof(void*);
 
 static const Scale ScalePointer = TimesFour;
 
@@ -703,9 +707,9 @@ class DtrOffImm : public DtrOff
 {
   public:
     DtrOffImm(int32_t imm)
-      : DtrOff(datastore::Imm12Data(abs(imm)), imm >= 0 ? IsUp : IsDown)
+      : DtrOff(datastore::Imm12Data(mozilla::Abs(imm)), imm >= 0 ? IsUp : IsDown)
     {
-        JS_ASSERT((imm < 4096) && (imm > -4096));
+        JS_ASSERT(mozilla::Abs(imm) < 4096);
     }
 };
 
@@ -788,8 +792,10 @@ class EDtrOffImm : public EDtrOff
 {
   public:
     EDtrOffImm(int32_t imm)
-      : EDtrOff(datastore::Imm8Data(abs(imm)), (imm >= 0) ? IsUp : IsDown)
-    { }
+      : EDtrOff(datastore::Imm8Data(mozilla::Abs(imm)), (imm >= 0) ? IsUp : IsDown)
+    {
+        JS_ASSERT(mozilla::Abs(imm) < 256);
+    }
 };
 
 // this is the most-derived class, since the extended data
@@ -836,8 +842,10 @@ class VFPOffImm : public VFPOff
 {
   public:
     VFPOffImm(int32_t imm)
-      : VFPOff(datastore::Imm8VFPOffData(abs(imm) >> 2), imm < 0 ? IsDown : IsUp)
-    { }
+      : VFPOff(datastore::Imm8VFPOffData(mozilla::Abs(imm) / 4), imm < 0 ? IsDown : IsUp)
+    {
+        JS_ASSERT(mozilla::Abs(imm) <= 255 * 4);
+    }
 };
 class VFPAddr
 {
@@ -1293,7 +1301,7 @@ class Assembler
   public:
     void finish();
     void executableCopy(void *buffer);
-    void processCodeLabels(IonCode *code);
+    void processCodeLabels(uint8_t *rawCode);
     void copyJumpRelocationTable(uint8_t *dest);
     void copyDataRelocationTable(uint8_t *dest);
     void copyPreBarrierTable(uint8_t *dest);
@@ -1401,6 +1409,8 @@ class Assembler
 
     BufferOffset as_dtm(LoadStore ls, Register rn, uint32_t mask,
                 DTMMode mode, DTMWriteBack wb, Condition c = Always);
+    //overwrite a pool entry with new data.
+    void as_WritePoolEntry(Instruction *addr, Condition c, uint32_t data);
     // load a 32 bit immediate from a pool into a register
     BufferOffset as_Imm32Pool(Register dest, uint32_t value, ARMBuffer::PoolEntry *pe = NULL, Condition c = Always);
     // make a patchable jump that can target the entire 32 bit address space.
@@ -1539,7 +1549,7 @@ class Assembler
     void retarget(Label *label, Label *target);
     // I'm going to pretend this doesn't exist for now.
     void retarget(Label *label, void *target, Relocation::Kind reloc);
-    void Bind(IonCode *code, AbsoluteLabel *label, const void *address);
+    void Bind(uint8_t *rawCode, AbsoluteLabel *label, const void *address);
 
     void call(Label *label);
     void call(void *target);
@@ -1614,14 +1624,19 @@ class Assembler
         dtmCond = c;
         dtmLastReg = -1;
         dtmMode = mode;
+        dtmDelta = 0;
     }
     void transferFloatReg(VFPRegister rn)
     {
         if (dtmLastReg == -1) {
-            vdtmFirstReg = rn;
+            vdtmFirstReg = rn.code();
         } else {
+            if (dtmDelta == 0) {
+                dtmDelta = rn.code() - dtmLastReg;
+                JS_ASSERT(dtmDelta == 1 || dtmDelta == -1);
+            }
             JS_ASSERT(dtmLastReg >= 0);
-            JS_ASSERT(rn.code() == unsigned(dtmLastReg) + 1);
+            JS_ASSERT(rn.code() == unsigned(dtmLastReg) + dtmDelta);
         }
         dtmLastReg = rn.code();
     }
@@ -1629,16 +1644,20 @@ class Assembler
         JS_ASSERT(dtmActive);
         dtmActive = false;
         JS_ASSERT(dtmLastReg != -1);
+        dtmDelta = dtmDelta ? dtmDelta : 1;
         // fencepost problem.
-        int len = dtmLastReg - vdtmFirstReg.code() + 1;
-        as_vdtm(dtmLoadStore, dtmBase, vdtmFirstReg, len, dtmCond);
+        int len = dtmDelta * (dtmLastReg - vdtmFirstReg) + 1;
+        as_vdtm(dtmLoadStore, dtmBase,
+                VFPRegister(FloatRegister::FromCode(Min(vdtmFirstReg, dtmLastReg))),
+                len, dtmCond);
     }
 
   private:
     int dtmRegBitField;
+    int vdtmFirstReg;
     int dtmLastReg;
+    int dtmDelta;
     Register dtmBase;
-    VFPRegister vdtmFirstReg;
     DTMWriteBack dtmUpdate;
     DTMMode dtmMode;
     LoadStore dtmLoadStore;
@@ -1772,7 +1791,7 @@ class InstDTR : public Instruction
     { }
 
     static bool isTHIS(const Instruction &i);
-    static InstDTR *asTHIS(Instruction &i);
+    static InstDTR *asTHIS(const Instruction &i);
 
 };
 JS_STATIC_ASSERT(sizeof(InstDTR) == sizeof(Instruction));
@@ -1784,7 +1803,7 @@ class InstLDR : public InstDTR
         : InstDTR(IsLoad, IsWord, mode, rt, addr, c)
     { }
     static bool isTHIS(const Instruction &i);
-    static InstLDR *asTHIS(Instruction &i);
+    static InstLDR *asTHIS(const Instruction &i);
 
 };
 JS_STATIC_ASSERT(sizeof(InstDTR) == sizeof(InstLDR));

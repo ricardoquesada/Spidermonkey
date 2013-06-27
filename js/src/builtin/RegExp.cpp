@@ -201,7 +201,7 @@ EscapeNakedForwardSlashes(JSContext *cx, HandleAtom unescaped)
             return NULL;
     }
 
-    return sb.empty() ? UnrootedAtom(unescaped) : sb.finishAtom();
+    return sb.empty() ? RawAtom(unescaped) : sb.finishAtom();
 }
 
 /*
@@ -254,7 +254,7 @@ CompileRegExpObject(JSContext *cx, RegExpObjectBuilder &builder, CallArgs args)
         RegExpFlag flags;
         {
             RegExpGuard g(cx);
-            if (!RegExpToShared(cx, *sourceObj, &g))
+            if (!RegExpToShared(cx, sourceObj, &g))
                 return false;
 
             flags = g->getFlags();
@@ -367,7 +367,7 @@ regexp_toString_impl(JSContext *cx, CallArgs args)
 {
     JS_ASSERT(IsRegExp(args.thisv()));
 
-    UnrootedString str = args.thisv().toObject().asRegExp().toString(cx);
+    RawString str = args.thisv().toObject().asRegExp().toString(cx);
     if (!str)
         return false;
 
@@ -559,8 +559,6 @@ js::ExecuteRegExp(JSContext *cx, HandleObject regexp, HandleString string, Match
 
     /* Step 4. */
     Value lastIndex = reobj->getLastIndex();
-
-    const jschar *chars = input->chars();
     size_t length = input->length();
 
     /* Step 5. */
@@ -593,6 +591,7 @@ js::ExecuteRegExp(JSContext *cx, HandleObject regexp, HandleString string, Match
     }
 
     /* Steps 8-21. */
+    const jschar *chars = input->chars();
     size_t lastIndexInt(i);
     RegExpRunStatus status =
         ExecuteRegExpImpl(cx, res, *re, input, chars, length, &lastIndexInt, matches);

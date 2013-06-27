@@ -12,6 +12,8 @@ from mozunit import main
 from mozbuild.frontend.data import (
     ConfigFileSubstitution,
     DirectoryTraversal,
+    ReaderSummary,
+    VariablePassthru,
 )
 from mozbuild.frontend.emitter import TreeMetadataEmitter
 from mozbuild.frontend.reader import BuildReader
@@ -30,12 +32,18 @@ class TestEmitterBasic(unittest.TestCase):
 
         return BuildReader(config)
 
-    def test_dirs_traversal_simple(self):
-        reader = self.reader('traversal-simple')
+    def read_topsrcdir(self, reader):
         emitter = TreeMetadataEmitter(reader.config)
 
         objs = list(emitter.emit(reader.read_topsrcdir()))
+        self.assertGreater(len(objs), 0)
+        self.assertIsInstance(objs[-1], ReaderSummary)
 
+        return objs[:-1]
+
+    def test_dirs_traversal_simple(self):
+        reader = self.reader('traversal-simple')
+        objs = self.read_topsrcdir(reader)
         self.assertEqual(len(objs), 4)
 
         for o in objs:
@@ -57,9 +65,7 @@ class TestEmitterBasic(unittest.TestCase):
 
     def test_traversal_all_vars(self):
         reader = self.reader('traversal-all-vars')
-        emitter = TreeMetadataEmitter(reader.config)
-
-        objs = list(emitter.emit(reader.read_topsrcdir()))
+        objs = self.read_topsrcdir(reader)
         self.assertEqual(len(objs), 6)
 
         for o in objs:
@@ -84,9 +90,7 @@ class TestEmitterBasic(unittest.TestCase):
 
     def test_tier_simple(self):
         reader = self.reader('traversal-tier-simple')
-        emitter = TreeMetadataEmitter(reader.config)
-
-        objs = list(emitter.emit(reader.read_topsrcdir()))
+        objs = self.read_topsrcdir(reader)
         self.assertEqual(len(objs), 4)
 
         reldirs = [o.relativedir for o in objs]
@@ -94,9 +98,7 @@ class TestEmitterBasic(unittest.TestCase):
 
     def test_config_file_substitution(self):
         reader = self.reader('config-file-substitution')
-        emitter = TreeMetadataEmitter(reader.config)
-
-        objs = list(emitter.emit(reader.read_topsrcdir()))
+        objs = self.read_topsrcdir(reader)
         self.assertEqual(len(objs), 3)
 
         self.assertIsInstance(objs[0], DirectoryTraversal)
@@ -104,10 +106,30 @@ class TestEmitterBasic(unittest.TestCase):
         self.assertIsInstance(objs[2], ConfigFileSubstitution)
 
         topobjdir = os.path.abspath(reader.config.topobjdir)
+        self.assertEqual(objs[1].relpath, 'foo')
         self.assertEqual(os.path.normpath(objs[1].output_path),
             os.path.normpath(os.path.join(topobjdir, 'foo')))
         self.assertEqual(os.path.normpath(objs[2].output_path),
             os.path.normpath(os.path.join(topobjdir, 'bar')))
+
+    def test_variable_passthru(self):
+        reader = self.reader('variable-passthru')
+        objs = self.read_topsrcdir(reader)
+
+        self.assertEqual(len(objs), 2)
+        self.assertIsInstance(objs[0], DirectoryTraversal)
+        self.assertIsInstance(objs[1], VariablePassthru)
+
+        variables = objs[1].variables
+        self.assertEqual(len(variables), 3)
+        self.assertIn('XPIDLSRCS', variables)
+        self.assertEqual(variables['XPIDLSRCS'],
+            ['foo.idl', 'bar.idl', 'biz.idl'])
+        self.assertIn('XPIDL_MODULE', variables)
+        self.assertEqual(variables['XPIDL_MODULE'], 'module_name')
+        self.assertIn('XPIDL_FLAGS', variables)
+        self.assertEqual(variables['XPIDL_FLAGS'],
+            ['-Idir1', '-Idir2', '-Idir3'])
 
 
 if __name__ == '__main__':

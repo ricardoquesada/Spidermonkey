@@ -97,9 +97,11 @@ ComputeThis(JSContext *cx, AbstractFramePtr frame)
          * |this| slot. If we lazily wrap a primitive |this| in an eval function frame, the
          * eval's frame will get the wrapper, but the function's frame will not. To prevent
          * this, we always wrap a function's |this| before pushing an eval frame, and should
-         * thus never see an unwrapped primitive in a non-strict eval function frame.
+         * thus never see an unwrapped primitive in a non-strict eval function frame. Null
+         * and undefined |this| values will unwrap to the same object in the function and
+         * eval frames, so are not required to be wrapped.
          */
-        JS_ASSERT(!frame.isEvalFrame());
+        JS_ASSERT_IF(frame.isEvalFrame(), thisv.isUndefined() || thisv.isNull());
     }
     bool modified;
     if (!BoxNonStrictThis(cx, &thisv, &modified))
@@ -122,7 +124,6 @@ ComputeThis(JSContext *cx, AbstractFramePtr frame)
 static inline bool
 IsOptimizedArguments(AbstractFramePtr frame, Value *vp)
 {
-    AutoAssertNoGC nogc;
     if (vp->isMagic(JS_OPTIMIZED_ARGUMENTS) && frame.script()->needsArgsObj())
         *vp = ObjectValue(frame.argsObj());
     return vp->isMagic(JS_OPTIMIZED_ARGUMENTS);
@@ -152,7 +153,6 @@ GuardFunApplyArgumentsOptimization(JSContext *cx, AbstractFramePtr frame, Handle
 static inline bool
 GuardFunApplyArgumentsOptimization(JSContext *cx)
 {
-    AssertCanGC();
     FrameRegs &regs = cx->regs();
     CallArgs args = CallArgsFromSp(GET_ARGC(regs.pc), regs.sp);
     return GuardFunApplyArgumentsOptimization(cx, cx->fp(), args.calleev(), args.array(),
@@ -748,7 +748,7 @@ GetObjectElementOperation(JSContext *cx, JSOp op, JSObject *objArg, bool wasObje
 
         uint32_t index;
         if (IsDefinitelyIndex(rref, &index)) {
-            if (analyze && !objArg->isNative()) {
+            if (analyze && !objArg->isNative() && !objArg->isTypedArray()) {
                 JSScript *script = NULL;
                 jsbytecode *pc = NULL;
                 types::TypeScript::GetPcScript(cx, &script, &pc);
@@ -775,7 +775,7 @@ GetObjectElementOperation(JSContext *cx, JSOp op, JSObject *objArg, bool wasObje
             if (script->hasAnalysis()) {
                 script->analysis()->getCode(pc).getStringElement = true;
 
-                if (!objArg->isArray() && !objArg->isNative())
+                if (!objArg->isArray() && !objArg->isNative() && !objArg->isTypedArray())
                     script->analysis()->getCode(pc).nonNativeGetElement = true;
             }
         }
@@ -863,7 +863,6 @@ static JS_ALWAYS_INLINE bool
 GetElementOperation(JSContext *cx, JSOp op, MutableHandleValue lref, HandleValue rref,
                     MutableHandleValue res)
 {
-    AssertCanGC();
     JS_ASSERT(op == JSOP_GETELEM || op == JSOP_CALLELEM);
 
     uint32_t index;
@@ -1119,7 +1118,9 @@ class FastInvokeGuard
     RootedFunction fun_;
     RootedScript script_;
 #ifdef JS_ION
-    ion::IonContext ictx_;
+    // Constructing an IonContext is pretty expensive due to the TLS access,
+    // so only do this if we have to.
+    mozilla::Maybe<ion::IonContext> ictx_;
     bool useIon_;
 #endif
 
@@ -1128,7 +1129,6 @@ class FastInvokeGuard
       : fun_(cx)
       , script_(cx)
 #ifdef JS_ION
-      , ictx_(cx, cx->compartment, NULL)
       , useIon_(ion::IsEnabled(cx))
 #endif
     {
@@ -1153,6 +1153,8 @@ class FastInvokeGuard
     bool invoke(JSContext *cx) {
 #ifdef JS_ION
         if (useIon_ && fun_) {
+            if (ictx_.empty())
+                ictx_.construct(cx, (js::ion::TempAllocator *)NULL);
             JS_ASSERT(fun_->nonLazyScript() == script_);
 
             ion::MethodStatus status = ion::CanEnterUsingFastInvoke(cx, script_, args_.length());

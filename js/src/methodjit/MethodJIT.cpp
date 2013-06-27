@@ -1020,7 +1020,7 @@ mjit::EnterMethodJIT(JSContext *cx, StackFrame *fp, void *code, Value *stackLimi
 {
 #ifdef JS_METHODJIT_SPEW
     JaegerSpew(JSpew_Prof, "%s jaeger script, line %d\n",
-               fp->script()->filename, fp->script()->lineno);
+               fp->script()->filename(), fp->script()->lineno);
     Profiler prof;
     prof.start();
 #endif
@@ -1032,7 +1032,7 @@ mjit::EnterMethodJIT(JSContext *cx, StackFrame *fp, void *code, Value *stackLimi
         AssertCompartmentUnchanged pcc(cx);
 
 #ifdef JS_ION
-        ion::IonContext ictx(cx, cx->compartment, NULL);
+        ion::IonContext ictx(cx, NULL);
         ion::IonActivation activation(cx, NULL);
         ion::AutoFlushInhibitor afi(cx->compartment->ionCompartment());
 #endif
@@ -1403,12 +1403,12 @@ GetPIC(JSContext *cx, JSScript *script, jsbytecode *pc, bool constructing)
     return NULL;
 }
 
-UnrootedShape
+RawShape
 mjit::GetPICSingleShape(JSContext *cx, JSScript *script, jsbytecode *pc, bool constructing)
 {
     ic::PICInfo *pic = GetPIC(cx, script, pc, constructing);
     if (!pic)
-        return UnrootedShape(NULL);
+        return NULL;
     return pic->getSingleShape();
 }
 

@@ -86,6 +86,7 @@ def checkout(git_dir, tag):
                                cwd=git_dir)
     process.communicate()
 
+
 ### hg functions
 
 def untracked_files(hg_dir):
@@ -153,6 +154,18 @@ def setup(**kwargs):
     assert current_package
     current_package_info[current_package] = kwargs
 
+def checkout_tag(src, directory, version):
+    """
+    front end to checkout + version_tag;
+    if version is None, checkout HEAD
+    """
+
+    if version is None:
+        tag = 'master'
+    else:
+        tag = version_tag(directory, version)
+    checkout(src, tag)
+
 def check_consistency(*package_info):
     """checks consistency between a set of packages"""
 
@@ -213,6 +226,12 @@ def main(args=sys.argv[1:]):
                                    formatter=PlainDescriptionFormatter())
     parser.add_option('-o', '--output', dest='output',
                       help="specify the output file; otherwise will be in the current directory with a name based on the hash")
+    parser.add_option('--develop', dest='develop',
+                      action='store_true', default=False,
+                      help="use development (master) version of packages")
+    parser.add_option('--no-check', dest='check',
+                      action='store_false', default=True,
+                      help="Do not check current repository state")
     parser.add_option('--packages', dest='output_packages',
                       default=False, action='store_true',
                       help="generate packages.txt and exit")
@@ -253,12 +272,12 @@ def main(args=sys.argv[1:]):
     # ensure there are no outstanding changes to m-c
     process = subprocess.Popen(['hg', 'diff'], cwd=here, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdout, stderr = process.communicate()
-    if stdout.strip():
+    if stdout.strip() and options.check:
         error("Outstanding changes in %s; aborting" % hg_root)
 
     # ensure that there are no untracked files in testing/mozbase
     untracked = untracked_files(hg_root)
-    if untracked:
+    if untracked and options.check:
         error("Untracked files in %s:\n %s\naborting" % (hg_root, '\n'.join([' %s' % i for i in untracked])))
 
     tempdir = tempfile.mkdtemp()
@@ -277,10 +296,17 @@ def main(args=sys.argv[1:]):
 
         # ensure all directories and tags are available
         for index, (directory, version) in enumerate(versions):
+
+            setup_py = os.path.join(src, directory, 'setup.py')
+            assert os.path.exists(setup_py), "'%s' not found" % setup_py
+
             if not version:
+
+                if options.develop:
+                    # use master of package; keep version=None
+                    continue
+
                 # choose maximum version from setup.py
-                setup_py = os.path.join(src, directory, 'setup.py')
-                assert os.path.exists(setup_py), "'%s' not found" % setup_py
                 with file(setup_py) as f:
                     for line in f.readlines():
                         line = line.strip()
@@ -305,8 +331,7 @@ def main(args=sys.argv[1:]):
             for directory, version in versions:
 
                 # checkout appropriate revision of mozbase
-                tag = version_tag(directory, version)
-                checkout(src, tag)
+                checkout_tag(src, directory, version)
 
                 # update the package information
                 setup_py = os.path.join(src, directory, 'setup.py')
@@ -317,15 +342,14 @@ def main(args=sys.argv[1:]):
             sys.modules.pop('setuptools')
             if setuptools:
                 sys.modules['setuptools'] = setuptools
-        checkout(src, 'HEAD')
+        checkout(src, 'master')
         check_consistency(*current_package_info.values())
 
         # copy mozbase directories to m-c
         for directory, version in versions:
 
             # checkout appropriate revision of mozbase
-            tag = version_tag(directory, version)
-            checkout(src, tag)
+            checkout_tag(src, directory, version)
 
             # replace the directory
             remove(os.path.join(here, directory))
@@ -335,7 +359,9 @@ def main(args=sys.argv[1:]):
         generate_packages_txt()
 
         # generate the diff and write to output file
-        call(['hg', 'addremove'], cwd=hg_root)
+        command = ['hg', 'addremove']
+        # TODO: don't add untracked files via `hg addremove --exclude...`
+        call(command, cwd=hg_root)
         process = subprocess.Popen(['hg', 'diff'],
                                    stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE,

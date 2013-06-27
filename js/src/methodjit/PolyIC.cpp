@@ -115,9 +115,8 @@ class PICStubCompiler : public BaseCompiler
   protected:
     void spew(const char *event, const char *op) {
 #ifdef JS_METHODJIT_SPEW
-        AutoAssertNoGC nogc;
         JaegerSpew(JSpew_PICs, "%s %s: %s (%s: %d)\n",
-                   type, event, op, f.script()->filename, CurrentLine(cx));
+                   type, event, op, f.script()->filename(), CurrentLine(cx));
 #endif
     }
 };
@@ -193,7 +192,7 @@ class SetPropCompiler : public PICStubCompiler
         repatcher.relink(pic.slowPathCall, target);
     }
 
-    LookupStatus patchInline(UnrootedShape shape)
+    LookupStatus patchInline(RawShape shape)
     {
         JS_ASSERT(!pic.inlinePathPatched);
         JaegerSpew(JSpew_PICs, "patch setprop inline at %p\n", pic.fastPathStart.executableAddress());
@@ -678,8 +677,20 @@ struct GetPropHelper {
 
     LookupStatus lookup() {
         RootedObject aobj(cx, obj);
-        if (IsCacheableListBase(obj))
+        if (IsCacheableListBase(obj)) {
+            Value expandoValue = obj->getFixedSlot(GetListBaseExpandoSlot());
+
+            // Expando objects just hold any extra properties the object has been given by a
+            // script, and have no prototype or anything else that will complicate property
+            // lookups on them.
+            JS_ASSERT_IF(expandoValue.isObject(),
+                         expandoValue.toObject().isNative() && !expandoValue.toObject().getProto());
+
+            if (expandoValue.isObject() && expandoValue.toObject().nativeContains(cx, name))
+                return Lookup_Uncacheable;
+
             aobj = obj->getTaggedProto().toObjectOrNull();
+        }
 
         if (!aobj->isNative())
             return ic.disable(f, "non-native");
@@ -729,7 +740,6 @@ struct GetPropHelper {
     }
 
     LookupStatus testForGet() {
-        AutoAssertNoGC nogc;
         if (!shape->hasDefaultGetter()) {
             if (shape->hasGetterValue()) {
                 JSObject *getterObj = shape->getterObject();
@@ -770,7 +780,7 @@ namespace js {
 namespace mjit {
 
 inline void
-MarkNotIdempotent(UnrootedScript script, jsbytecode *pc)
+MarkNotIdempotent(RawScript script, jsbytecode *pc)
 {
     if (!script->hasAnalysis())
         return;
@@ -896,8 +906,6 @@ class GetPropCompiler : public PICStubCompiler
 
     LookupStatus generateStringPropertyStub()
     {
-        AssertCanGC();
-
         if (!f.fp()->script()->compileAndGo)
             return disable("String.prototype without compile-and-go global");
 
@@ -1014,7 +1022,7 @@ class GetPropCompiler : public PICStubCompiler
         return Lookup_Cacheable;
     }
 
-    LookupStatus patchInline(JSObject *holder, UnrootedShape shape)
+    LookupStatus patchInline(JSObject *holder, RawShape shape)
     {
         spew("patch", "inline");
         Repatcher repatcher(f.chunk());
@@ -1049,11 +1057,9 @@ class GetPropCompiler : public PICStubCompiler
     }
 
     /* For JSPropertyOp getters. */
-    void generateGetterStub(Assembler &masm, UnrootedShape shape, jsid userid,
+    void generateGetterStub(Assembler &masm, RawShape shape, jsid userid,
                             Label start, Vector<Jump, 8> &shapeMismatches)
     {
-        AutoAssertNoGC nogc;
-
         /*
          * Getter hook needs to be called from the stub. The state is fully
          * synced and no registers are live except the result registers.
@@ -1161,12 +1167,10 @@ class GetPropCompiler : public PICStubCompiler
     }
 
     /* For getters backed by a JSNative. */
-    void generateNativeGetterStub(Assembler &masm, UnrootedShape shape,
+    void generateNativeGetterStub(Assembler &masm, RawShape shape,
                                   Label start, Vector<Jump, 8> &shapeMismatches)
     {
-        AutoAssertNoGC nogc;
-
-        /*
+       /*
          * Getter hook needs to be called from the stub. The state is fully
          * synced and no registers are live except the result registers.
          */
@@ -1256,7 +1260,6 @@ class GetPropCompiler : public PICStubCompiler
 
     LookupStatus generateStub(HandleObject holder, HandleShape shape)
     {
-        AssertCanGC();
         Vector<Jump, 8> shapeMismatches(cx);
 
         MJITInstrumentation sps(&f.cx->runtime->spsProfiler);
@@ -1302,14 +1305,11 @@ class GetPropCompiler : public PICStubCompiler
             Address expandoAddress(pic.objReg, JSObject::getFixedSlotOffset(GetListBaseExpandoSlot()));
 
             Value expandoValue = obj->getFixedSlot(GetListBaseExpandoSlot());
-            JSObject *expando = expandoValue.isObject() ? &expandoValue.toObject() : NULL;
+            if (expandoValue.isObject()) {
+                JS_ASSERT(!expandoValue.toObject().nativeContains(cx, name));
 
-            // Expando objects just hold any extra properties the object has
-            // been given by a script, and have no prototype or anything else
-            // that will complicate property lookups on them.
-            JS_ASSERT_IF(expando, expando->isNative() && expando->getProto() == NULL);
-
-            if (expando && expando->nativeLookup(cx, name) == NULL) {
+                // Reference object has an expando object that doesn't define the name. Check that
+                // the incoming object has an expando object with the same shape.
                 Jump expandoGuard = masm.testObject(Assembler::NotEqual, expandoAddress);
                 if (!shapeMismatches.append(expandoGuard))
                     return error();
@@ -1319,10 +1319,12 @@ class GetPropCompiler : public PICStubCompiler
 
                 Jump shapeGuard = masm.branchPtr(Assembler::NotEqual,
                                                  Address(pic.shapeReg, JSObject::offsetOfShape()),
-                                                 ImmPtr(expando->lastProperty()));
+                                                 ImmPtr(expandoValue.toObject().lastProperty()));
                 if (!shapeMismatches.append(shapeGuard))
                     return error();
             } else {
+                // If the incoming object does not have an expando object then
+                // we're sure we're not shadowing.
                 Jump expandoGuard = masm.testUndefined(Assembler::NotEqual, expandoAddress);
                 if (!shapeMismatches.append(expandoGuard))
                     return error();
@@ -1680,7 +1682,7 @@ class ScopeNameCompiler : public PICStubCompiler
         JS_ASSERT(obj == getprop.holder);
         JS_ASSERT(getprop.holder != &scopeChain->global());
 
-        UnrootedShape shape = getprop.shape;
+        RawShape shape = getprop.shape;
         if (!shape->hasDefaultGetter())
             return disable("unhandled callobj sprop getter");
 
@@ -2171,10 +2173,9 @@ void
 BaseIC::spew(VMFrame &f, const char *event, const char *message)
 {
 #ifdef JS_METHODJIT_SPEW
-    AutoAssertNoGC nogc;
     JaegerSpew(JSpew_PICs, "%s %s: %s (%s: %d)\n",
                js_CodeName[JSOp(*f.pc())], event, message,
-               f.cx->fp()->script()->filename, CurrentLine(f.cx));
+               f.cx->fp()->script()->filename(), CurrentLine(f.cx));
 #endif
 }
 
@@ -2182,8 +2183,6 @@ BaseIC::spew(VMFrame &f, const char *event, const char *message)
 inline uint32_t
 frameCountersOffset(VMFrame &f)
 {
-    AutoAssertNoGC nogc;
-
     JSContext *cx = f.cx;
 
     uint32_t offset = 0;
@@ -2196,7 +2195,7 @@ frameCountersOffset(VMFrame &f)
     }
 
     jsbytecode *pc;
-    UnrootedScript script = cx->stack.currentScript(&pc);
+    RawScript script = cx->stack.currentScript(&pc);
     offset += pc - script->code;
 
     return offset;
@@ -2418,7 +2417,7 @@ GetElementIC::attachGetProp(VMFrame &f, HandleObject obj, HandleValue v, HandleP
     Latin1CharsZ latin1 = LossyTwoByteCharsToNewLatin1CharsZ(cx, v.toString()->ensureLinear(cx)->range());
     JaegerSpew(JSpew_PICs, "generated %s stub at %p for atom %p (\"%s\") shape %p (%s: %d)\n",
                js_CodeName[JSOp(*f.pc())], cs.executableAddress(), (void*)name, latin1.get(),
-               (void*)holder->lastProperty(), cx->fp()->script()->filename,
+               (void*)holder->lastProperty(), cx->fp()->script()->filename(),
                CurrentLine(cx));
     JS_free(latin1);
 #endif

@@ -13,6 +13,7 @@
 #include "ion/IonSpewer.h"
 #include "ion/Bailouts.h"
 #include "ion/VMFunctions.h"
+#include "ion/ExecutionModeInlines.h"
 
 #include "jsscriptinlines.h"
 
@@ -157,7 +158,7 @@ IonRuntime::generateEnterJIT(JSContext *cx)
     masm.ret();
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 IonCode *
@@ -205,13 +206,13 @@ IonRuntime::generateInvalidator(JSContext *cx)
     masm.generateBailoutTail(edx);
 
     Linker linker(masm);
-    IonCode *code = linker.newCode(cx);
+    IonCode *code = linker.newCode(cx, JSC::OTHER_CODE);
     IonSpew(IonSpew_Invalidate, "   invalidation thunk created at %p", (void *) code->raw());
     return code;
 }
 
 IonCode *
-IonRuntime::generateArgumentsRectifier(JSContext *cx)
+IonRuntime::generateArgumentsRectifier(JSContext *cx, ExecutionMode mode)
 {
     MacroAssembler masm(cx);
 
@@ -282,7 +283,7 @@ IonRuntime::generateArgumentsRectifier(JSContext *cx)
     // Call the target function.
     // Note that this assumes the function is JITted.
     masm.movl(Operand(eax, offsetof(JSFunction, u.i.script_)), eax);
-    masm.movl(Operand(eax, offsetof(JSScript, ion)), eax);
+    masm.movl(Operand(eax, OffsetOfIonInJSScript(mode)), eax);
     masm.movl(Operand(eax, IonScript::offsetOfMethod()), eax);
     masm.movl(Operand(eax, IonCode::offsetOfCode()), eax);
     masm.call(eax);
@@ -301,7 +302,7 @@ IonRuntime::generateArgumentsRectifier(JSContext *cx)
     masm.ret();
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 static void
@@ -369,7 +370,7 @@ IonRuntime::generateBailoutTable(JSContext *cx, uint32_t frameClass)
     GenerateBailoutThunk(cx, masm, frameClass);
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 IonCode *
@@ -380,13 +381,12 @@ IonRuntime::generateBailoutHandler(JSContext *cx)
     GenerateBailoutThunk(cx, masm, NO_FRAME_SIZE_CLASS_ID);
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 IonCode *
 IonRuntime::generateVMWrapper(JSContext *cx, const VMFunction &f)
 {
-    AssertCanGC();
     typedef MoveResolver::MoveOperand MoveOperand;
 
     JS_ASSERT(!StackKeptAligned);
@@ -531,7 +531,7 @@ IonRuntime::generateVMWrapper(JSContext *cx, const VMFunction &f)
     masm.handleException();
 
     Linker linker(masm);
-    IonCode *wrapper = linker.newCode(cx);
+    IonCode *wrapper = linker.newCode(cx, JSC::OTHER_CODE);
     if (!wrapper)
         return NULL;
 
@@ -570,6 +570,6 @@ IonRuntime::generatePreBarrier(JSContext *cx, MIRType type)
     masm.ret();
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 

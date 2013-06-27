@@ -24,6 +24,25 @@ SCRIPT_DIR = os.path.abspath(os.path.realpath(os.path.dirname(sys.argv[0])))
 sys.path.insert(0, SCRIPT_DIR)
 import automationutils
 
+# --------------------------------------------------------------
+# TODO: this is a hack for mozbase without virtualenv, remove with bug 849900
+#
+here = os.path.dirname(__file__)
+mozbase = os.path.realpath(os.path.join(os.path.dirname(here), 'mozbase'))
+
+try:
+    import mozcrash
+except:
+    deps = ['mozcrash',
+            'mozfile',
+            'mozlog']
+    for dep in deps:
+        module = os.path.join(mozbase, dep)
+        if module not in sys.path:
+            sys.path.append(module)
+    import mozcrash
+# ---------------------------------------------------------------
+
 _DEFAULT_WEB_SERVER = "127.0.0.1"
 _DEFAULT_HTTP_PORT = 8888
 _DEFAULT_SSL_PORT = 4443
@@ -433,6 +452,10 @@ class Automation(object):
     self.setupPermissionsDatabase(profileDir,
       {'allowXULXBL':[(l.host, 'noxul' not in l.options) for l in locations]});
 
+    # NOTE: For refactoring purposes we are temporarily storing these prefs
+    #       in two locations. If you update a pref below, please also update
+    #       it in source/testing/profiles/prefs_general.js.
+    #       See bug 830430 for more details.
     part = """\
 user_pref("browser.console.showInPanel", true);
 user_pref("browser.dom.window.dump.enabled", true);
@@ -443,7 +466,6 @@ user_pref("browser.ui.layout.tablet", 0); // force tablet UI off
 user_pref("dom.allow_scripts_to_close_windows", true);
 user_pref("dom.disable_open_during_load", false);
 user_pref("dom.experimental_forms", true); // on for testing
-user_pref("dom.experimental_forms_range", true); // on for testing
 user_pref("dom.max_script_run_time", 0); // no slow script dialogs
 user_pref("hangmonitor.timeout", 0); // no hang monitor
 user_pref("dom.max_chrome_script_run_time", 0);
@@ -468,12 +490,14 @@ user_pref("test.mousescroll", true);
 user_pref("security.default_personal_cert", "Select Automatically"); // Need to client auth test be w/o any dialogs
 user_pref("network.http.prompt-temp-redirect", false);
 user_pref("media.cache_size", 100);
+user_pref("media.volume_scale", "0.01");
 user_pref("security.warn_viewing_mixed", false);
 user_pref("app.update.enabled", false);
 user_pref("app.update.staging.enabled", false);
 user_pref("browser.panorama.experienced_first_run", true); // Assume experienced
 user_pref("dom.w3c_touch_events.enabled", 1);
 user_pref("dom.undo_manager.enabled", true);
+user_pref("dom.webcomponents.enabled", true);
 // Set a future policy version to avoid the telemetry prompt.
 user_pref("toolkit.telemetry.prompted", 999);
 user_pref("toolkit.telemetry.notifiedOptOut", 999);
@@ -833,6 +857,15 @@ user_pref("camino.use_system_proxy_settings", false); // Camino-only, harmless t
     env['XRE_NO_WINDOWS_CRASH_DIALOG'] = '1'
     env['NS_TRACE_MALLOC_DISABLE_STACKS'] = '1'
 
+    # Additional temporary logging while we try to debug some intermittent
+    # WebRTC conditions. This is necessary to troubleshoot bugs 841496,
+    # 841150, and 839677 (at least)
+    if 'NSPR_LOG_MODULES' not in env:
+      env['NSPR_LOG_MODULES'] = 'signaling:5,mtransport:3'
+    env['R_LOG_LEVEL'] = '5'
+    env['R_LOG_DESTINATION'] = 'stderr'
+    env['R_LOG_VERBOSE'] = '1'
+
     # ASan specific environment stuff
     if self.IS_ASAN and (self.IS_LINUX or self.IS_MAC):
       try:
@@ -1013,7 +1046,7 @@ user_pref("camino.use_system_proxy_settings", false); // Camino-only, harmless t
     else:
       logsource = proc.stdout
 
-      if self.IS_DEBUG_BUILD and (self.IS_MAC or self.IS_LINUX) and symbolsPath and os.path.exists(symbolsPath):
+      if self.IS_DEBUG_BUILD and symbolsPath and os.path.exists(symbolsPath):
         # Run each line through a function in fix_stack_using_bpsyms.py (uses breakpad symbol files)
         # This method is preferred for Tinderbox builds, since native symbols may have been stripped.
         sys.path.insert(0, utilityPath)
@@ -1109,7 +1142,7 @@ user_pref("camino.use_system_proxy_settings", false); // Camino-only, harmless t
       return True
 
     foundZombie = False
-    self.log.info('INFO | automation.py | Reading PID log: %s', processLog)
+    self.log.info('INFO | zombiecheck | Reading PID log: %s', processLog)
     processList = []
     pidRE = re.compile(r'launched child process (\d+)$')
     processLogFD = open(processLog)
@@ -1121,15 +1154,15 @@ user_pref("camino.use_system_proxy_settings", false); // Camino-only, harmless t
     processLogFD.close()
 
     for processPID in processList:
-      self.log.info("INFO | automation.py | Checking for orphan process with PID: %d", processPID)
+      self.log.info("INFO | zombiecheck | Checking for orphan process with PID: %d", processPID)
       if self.isPidAlive(processPID):
         foundZombie = True
-        self.log.info("TEST-UNEXPECTED-FAIL | automation.py | child process %d still alive after shutdown", processPID)
+        self.log.info("TEST-UNEXPECTED-FAIL | zombiecheck | child process %d still alive after shutdown", processPID)
         self.killPid(processPID)
     return foundZombie
 
   def checkForCrashes(self, profileDir, symbolsPath):
-    return automationutils.checkForCrashes(os.path.join(profileDir, "minidumps"), symbolsPath, self.lastTestSeen)
+    return mozcrash.check_for_crashes(os.path.join(profileDir, "minidumps"), symbolsPath, test_name=self.lastTestSeen)
 
   def runApp(self, testURL, env, app, profileDir, extraArgs,
              runSSLTunnel = False, utilityPath = None,

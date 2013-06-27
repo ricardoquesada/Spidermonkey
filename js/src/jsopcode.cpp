@@ -328,14 +328,13 @@ JS_FRIEND_API(JSBool)
 js_DisassembleAtPC(JSContext *cx, JSScript *scriptArg, JSBool lines,
                    jsbytecode *pc, bool showAll, Sprinter *sp)
 {
-    AssertCanGC();
     RootedScript script(cx, scriptArg);
 
     jsbytecode *next, *end;
     unsigned len;
 
     if (showAll)
-        Sprint(sp, "%s:%u\n", script->filename, script->lineno);
+        Sprint(sp, "%s:%u\n", script->filename(), script->lineno);
 
     if (pc != NULL)
         sp->put("    ");
@@ -447,7 +446,6 @@ QuoteString(Sprinter *sp, JSString *str, uint32_t quote);
 static bool
 ToDisassemblySource(JSContext *cx, jsval v, JSAutoByteString *bytes)
 {
-    AssertCanGC();
     if (JSVAL_IS_STRING(v)) {
         Sprinter sprinter(cx);
         if (!sprinter.init())
@@ -477,8 +475,7 @@ ToDisassemblySource(JSContext *cx, jsval v, JSAutoByteString *bytes)
             if (!source)
                 return false;
 
-            Shape::Range r = obj->lastProperty()->all();
-            Shape::Range::AutoRooter root(cx, &r);
+            Shape::Range<CanGC> r(cx, obj->lastProperty());
 
             while (!r.empty()) {
                 Rooted<Shape*> shape(cx, &r.front());
@@ -509,7 +506,7 @@ ToDisassemblySource(JSContext *cx, jsval v, JSAutoByteString *bytes)
             JSString *str = JS_DecompileFunction(cx, obj->toFunction(), JS_DONT_PRETTY_PRINT);
             if (!str)
                 return false;
-            return bytes->encode(cx, str);
+            return bytes->encodeLatin1(cx, str);
         }
 
         if (obj->isRegExp()) {
@@ -517,7 +514,7 @@ ToDisassemblySource(JSContext *cx, jsval v, JSAutoByteString *bytes)
             if (!source)
                 return false;
             JS::Anchor<JSString *> anchor(source);
-            return bytes->encode(cx, source);
+            return bytes->encodeLatin1(cx, source);
         }
     }
 
@@ -528,7 +525,6 @@ unsigned
 js_Disassemble1(JSContext *cx, HandleScript script, jsbytecode *pc,
                 unsigned loc, JSBool lines, Sprinter *sp)
 {
-    AssertCanGC();
     JSOp op = (JSOp)*pc;
     if (op >= JSOP_LIMIT) {
         char numBuf1[12], numBuf2[12];
@@ -1226,9 +1222,6 @@ ExpressionDecompiler::decompilePC(jsbytecode *pc)
 
     JSOp op = (JSOp)*pc;
 
-    // None of these stack-writing ops generates novel values.
-    JS_ASSERT(op != JSOP_CASE && op != JSOP_DUP && op != JSOP_DUP2);
-
     if (const char *token = CodeToken[op]) {
         // Handle simple cases of binary and unary operators.
         switch (js_CodeSpec[op].nuses) {
@@ -1435,7 +1428,7 @@ ExpressionDecompiler::findLetVar(jsbytecode *pc, unsigned depth)
             uint32_t blockDepth = block.stackDepth();
             uint32_t blockCount = block.slotCount();
             if (uint32_t(depth - blockDepth) < uint32_t(blockCount)) {
-                for (Shape::Range r(block.lastProperty()); !r.empty(); r.popFront()) {
+                for (Shape::Range<NoGC> r(block.lastProperty()); !r.empty(); r.popFront()) {
                     const Shape &shape = r.front();
                     if (shape.shortid() == int(depth - blockDepth))
                         return JSID_TO_ATOM(shape.propid());
@@ -1536,7 +1529,6 @@ FindStartPC(JSContext *cx, ScriptFrameIter &iter, int spindex, int skipStackHits
 static bool
 DecompileExpressionFromStack(JSContext *cx, int spindex, int skipStackHits, HandleValue v, char **res)
 {
-    AssertCanGC();
     JS_ASSERT(spindex < 0 ||
               spindex == JSDVG_IGNORE_STACK ||
               spindex == JSDVG_SEARCH_STACK);
@@ -1588,7 +1580,6 @@ char *
 js::DecompileValueGenerator(JSContext *cx, int spindex, HandleValue v,
                             HandleString fallbackArg, int skipStackHits)
 {
-    AssertCanGC();
     RootedString fallback(cx, fallbackArg);
     {
         char *result;
@@ -1642,12 +1633,8 @@ DecompileArgumentFromStack(JSContext *cx, int formalIndex, char **res)
      */
     ++frameIter;
 
-    /*
-     * If this frame isn't a script, we can't decompile. Even if it is a
-     * script but we popped a call frame during the last bump, assume that we
-     * just came from a frameless native and bail conservatively.
-     */
-    if (frameIter.done() || frameIter.poppedCallDuringSettle() || !frameIter.isScript())
+    /* If this frame isn't a script, we can't decompile. */
+    if (frameIter.done() || !frameIter.isScript())
         return true;
 
     RootedScript script(cx, frameIter.script());
@@ -1660,6 +1647,10 @@ DecompileArgumentFromStack(JSContext *cx, int formalIndex, char **res)
     JS_ASSERT(script->code <= current && current < script->code + script->length);
 
     if (current < script->main())
+        return true;
+
+    /* Don't handle getters, setters or calls from fun.call/fun.apply. */
+    if (JSOp(*current) != JSOP_CALL || static_cast<unsigned>(formalIndex) >= GET_ARGC(current))
         return true;
 
     PCStack pcStack;
@@ -1683,7 +1674,6 @@ DecompileArgumentFromStack(JSContext *cx, int formalIndex, char **res)
 char *
 js::DecompileArgument(JSContext *cx, int formalIndex, HandleValue v)
 {
-    AssertCanGC();
     {
         char *result;
         if (!DecompileArgumentFromStack(cx, formalIndex, &result))
@@ -2153,7 +2143,7 @@ js::GetPCCountScriptSummary(JSContext *cx, size_t index)
     buf.append('{');
 
     AppendJSONProperty(buf, "file", NO_COMMA);
-    JSString *str = JS_NewStringCopyZ(cx, script->filename);
+    JSString *str = JS_NewStringCopyZ(cx, script->filename());
     if (!str || !(str = ValueToSource(cx, StringValue(str))))
         return NULL;
     buf.append(str);
@@ -2256,6 +2246,9 @@ GetPCCountJSON(JSContext *cx, const ScriptAndCounts &sac, StringBuffer &buf)
         return false;
 
     buf.append(str);
+
+    AppendJSONProperty(buf, "line");
+    NumberValueToStringBuffer(cx, Int32Value(script->lineno), buf);
 
     AppendJSONProperty(buf, "opcodes");
     buf.append('[');

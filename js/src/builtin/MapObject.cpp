@@ -229,8 +229,18 @@ class OrderedHashTable
      * The effect on live Ranges is the same as removing all entries; in
      * particular, those Ranges are still live and will see any entries added
      * after a successful clear().
+     *
+     * The DoNotCallDestructors specialization is for use during a GC when the
+     * OrderedHashTable contains pointers to GC things in other arenas. Since
+     * it is invalid to touch objects in other arenas during sweeping, we need
+     * to not trigger destructors on the pointers contained in the table in
+     * this case.
      */
-    bool clear() {
+    enum CallDestructors {
+        DoNotCallDtors = false,
+        DoCallDtors = true
+    };
+    bool clear(CallDestructors callDestructors = DoCallDtors) {
         if (dataLength != 0) {
             Data **oldHashTable = hashTable;
             Data *oldData = data;
@@ -244,7 +254,9 @@ class OrderedHashTable
             }
 
             alloc.free_(oldHashTable);
-            freeData(oldData, oldDataLength);
+            if (callDestructors)
+                destroyData(oldData, oldDataLength);
+            alloc.free_(oldData);
             for (Range *r = ranges; r; r = r->next)
                 r->onClear();
         }
@@ -690,7 +702,8 @@ class OrderedHashMap
     Entry *get(const Key &key)                      { return impl.get(key); }
     bool put(const Key &key, const Value &value)    { return impl.put(Entry(key, value)); }
     bool remove(const Key &key, bool *foundp)       { return impl.remove(key, foundp); }
-    bool clear()                                    { return impl.clear(); }
+    bool clear()                                    { return impl.clear(Impl::DoCallDtors); }
+    bool clearWithoutCallingDestructors()           { return impl.clear(Impl::DoNotCallDtors); }
 };
 
 template <class T, class OrderedHashPolicy, class AllocPolicy>
@@ -717,7 +730,8 @@ class OrderedHashSet
     Range all()                                     { return impl.all(); }
     bool put(const T &value)                        { return impl.put(value); }
     bool remove(const T &value, bool *foundp)       { return impl.remove(value, foundp); }
-    bool clear()                                    { return impl.clear(); }
+    bool clear()                                    { return impl.clear(Impl::DoCallDtors); }
+    bool clearWithoutCallingDestructors()           { return impl.clear(Impl::DoNotCallDtors); }
 };
 
 }  // namespace js
@@ -816,7 +830,8 @@ JSObject::asMapIterator()
 
 Class js::MapIteratorClass = {
     "Map Iterator",
-    JSCLASS_IMPLEMENTS_BARRIERS | JSCLASS_HAS_RESERVED_SLOTS(MapIteratorObject::SlotCount),
+    JSCLASS_IMPLEMENTS_BARRIERS |
+    JSCLASS_HAS_RESERVED_SLOTS(MapIteratorObject::SlotCount),
     JS_PropertyStub,         /* addProperty */
     JS_PropertyStub,         /* delProperty */
     JS_PropertyStub,         /* getProperty */
@@ -1058,8 +1073,10 @@ MapObject::mark(JSTracer *trc, RawObject obj)
 void
 MapObject::finalize(FreeOp *fop, RawObject obj)
 {
-    if (ValueMap *map = obj->asMap().getData())
+    if (ValueMap *map = obj->asMap().getData()) {
+        map->clearWithoutCallingDestructors();
         fop->delete_(map);
+    }
 }
 
 JSBool
@@ -1089,11 +1106,11 @@ MapObject::construct(JSContext *cx, unsigned argc, Value *vp)
             RootedValue key(cx);
             if (!JSObject::getElement(cx, pairobj, pairobj, 0, &key))
                 return false;
+
             HashableValue hkey;
+            HashableValue::AutoRooter hkeyRoot(cx, &hkey);
             if (!hkey.setValue(cx, key))
                 return false;
-
-            HashableValue::AutoRooter hkeyRoot(cx, &hkey);
 
             RootedValue val(cx);
             if (!JSObject::getElement(cx, pairobj, pairobj, 1, &val))
@@ -1121,6 +1138,7 @@ MapObject::is(const Value &v)
 
 #define ARG0_KEY(cx, args, key)                                               \
     HashableValue key;                                                        \
+    HashableValue::AutoRooter keyRoot(cx, &key);                              \
     if (args.length() > 0 && !key.setValue(cx, args[0]))                      \
         return false
 
@@ -1348,7 +1366,8 @@ JSObject::asSetIterator()
 
 Class js::SetIteratorClass = {
     "Set Iterator",
-    JSCLASS_IMPLEMENTS_BARRIERS | JSCLASS_HAS_RESERVED_SLOTS(SetIteratorObject::SlotCount),
+    JSCLASS_IMPLEMENTS_BARRIERS |
+    JSCLASS_HAS_RESERVED_SLOTS(SetIteratorObject::SlotCount),
     JS_PropertyStub,         /* addProperty */
     JS_PropertyStub,         /* delProperty */
     JS_PropertyStub,         /* getProperty */
@@ -1509,8 +1528,10 @@ void
 SetObject::finalize(FreeOp *fop, RawObject obj)
 {
     SetObject *setobj = static_cast<SetObject *>(obj);
-    if (ValueSet *set = setobj->getData())
+    if (ValueSet *set = setobj->getData()) {
+        set->clearWithoutCallingDestructors();
         fop->delete_(set);
+    }
 }
 
 JSBool
@@ -1534,6 +1555,7 @@ SetObject::construct(JSContext *cx, unsigned argc, Value *vp)
         ForOfIterator iter(cx, args[0]);
         while (iter.next()) {
             HashableValue key;
+            HashableValue::AutoRooter hkeyRoot(cx, &key);
             if (!key.setValue(cx, iter.value()))
                 return false;
             if (!set->put(key)) {

@@ -194,6 +194,11 @@ CompareStrings(JSContext *cx, JSString *str1, JSString *str2, int32_t *result);
 extern bool
 StringEqualsAscii(JSLinearString *str, const char *asciiBytes);
 
+/* Return true if the string contains a pattern anywhere inside it. */
+extern bool
+StringHasPattern(const jschar *text, uint32_t textlen,
+                 const jschar *pat, uint32_t patlen);
+
 } /* namespace js */
 
 extern size_t
@@ -246,6 +251,16 @@ InflateStringToBuffer(JSContext *cx, const char *bytes, size_t length,
 extern bool
 InflateUTF8StringToBuffer(JSContext *cx, const char *bytes, size_t length,
                           jschar *chars, size_t *charsLength);
+
+/*
+ * The same as InflateUTF8StringToBuffer(), except that any malformed UTF-8
+ * characters will be replaced by \uFFFD. No exception will be thrown for
+ * malformed UTF-8 input.
+ */
+extern bool
+InflateUTF8StringToBufferReplaceInvalid(JSContext *cx, const char *bytes,
+                                        size_t length, jschar *chars,
+                                        size_t *charsLength);
 
 /*
  * Deflate JS chars to bytes into a buffer. 'bytes' must be large enough for

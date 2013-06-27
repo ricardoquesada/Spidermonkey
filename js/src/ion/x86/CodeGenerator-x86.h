@@ -14,28 +14,11 @@
 namespace js {
 namespace ion {
 
+class OutOfLineAsmJSLoadHeapOutOfBounds;
+
 class CodeGeneratorX86 : public CodeGeneratorX86Shared
 {
-    class DeferredDouble : public TempObject
-    {
-        AbsoluteLabel label_;
-        uint32_t index_;
-
-      public:
-        DeferredDouble(uint32_t index) : index_(index)
-        { }
-
-        AbsoluteLabel *label() {
-            return &label_;
-        }
-        uint32_t index() const {
-            return index_;
-        }
-    };
-
   private:
-    js::Vector<DeferredDouble *, 0, SystemAllocPolicy> deferredDoubles_;
-
     CodeGeneratorX86 *thisFromCtor() {
         return this;
     }
@@ -48,11 +31,8 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
     void storeElementTyped(const LAllocation *value, MIRType valueType, MIRType elementType,
                            const Register &elements, const LAllocation *index);
 
-  protected:
-    void linkAbsoluteLabels();
-
   public:
-    CodeGeneratorX86(MIRGenerator *gen, LIRGraph *graph);
+    CodeGeneratorX86(MIRGenerator *gen, LIRGraph *graph, MacroAssembler *masm);
 
   public:
     bool visitBox(LBox *box);
@@ -60,18 +40,27 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
     bool visitUnbox(LUnbox *unbox);
     bool visitValue(LValue *value);
     bool visitOsrValue(LOsrValue *value);
-    bool visitDouble(LDouble *ins);
     bool visitLoadSlotV(LLoadSlotV *load);
     bool visitLoadSlotT(LLoadSlotT *load);
     bool visitStoreSlotT(LStoreSlotT *store);
     bool visitLoadElementT(LLoadElementT *load);
     bool visitImplicitThis(LImplicitThis *lir);
-    bool visitRecompileCheck(LRecompileCheck *lir);
     bool visitInterruptCheck(LInterruptCheck *lir);
     bool visitCompareB(LCompareB *lir);
     bool visitCompareBAndBranch(LCompareBAndBranch *lir);
     bool visitCompareV(LCompareV *lir);
     bool visitCompareVAndBranch(LCompareVAndBranch *lir);
+    bool visitUInt32ToDouble(LUInt32ToDouble *lir);
+    bool visitAsmJSLoadHeap(LAsmJSLoadHeap *ins);
+    bool visitAsmJSStoreHeap(LAsmJSStoreHeap *ins);
+    bool visitAsmJSLoadGlobalVar(LAsmJSLoadGlobalVar *ins);
+    bool visitAsmJSStoreGlobalVar(LAsmJSStoreGlobalVar *ins);
+    bool visitAsmJSLoadFuncPtr(LAsmJSLoadFuncPtr *ins);
+    bool visitAsmJSLoadFFIFunc(LAsmJSLoadFFIFunc *ins);
+
+    bool visitOutOfLineAsmJSLoadHeapOutOfBounds(OutOfLineAsmJSLoadHeapOutOfBounds *ool);
+
+    void postAsmJSCall(LAsmJSCall *lir);
 };
 
 typedef CodeGeneratorX86 CodeGeneratorSpecific;

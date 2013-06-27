@@ -107,6 +107,129 @@ frontend::IsIdentifier(JSLinearString *str)
     return true;
 }
 
+TokenStream::SourceCoords::SourceCoords(JSContext *cx, uint32_t ln)
+  : lineStartOffsets_(cx), initialLineNum_(ln), lastLineIndex_(0)
+{
+    // This is actually necessary!  Removing it causes compile errors on
+    // GCC and clang.  You could try declaring this:
+    //
+    //   const uint32_t TokenStream::SourceCoords::MAX_PTR;
+    //
+    // which fixes the GCC/clang error, but causes bustage on Windows.  Sigh.
+    //
+    uint32_t maxPtr = MAX_PTR;
+
+    // The first line begins at buffer offset 0.  MAX_PTR is the sentinel.  The
+    // appends cannot fail because |lineStartOffsets_| has statically-allocated
+    // elements.
+    JS_ASSERT(lineStartOffsets_.capacity() >= 2);
+    (void)lineStartOffsets_.reserve(2);
+    lineStartOffsets_.infallibleAppend(0);
+    lineStartOffsets_.infallibleAppend(maxPtr);
+}
+
+JS_ALWAYS_INLINE void
+TokenStream::SourceCoords::add(uint32_t lineNum, uint32_t lineStartOffset)
+{
+    uint32_t lineIndex = lineNumToIndex(lineNum);
+    uint32_t sentinelIndex = lineStartOffsets_.length() - 1;
+
+    JS_ASSERT(lineStartOffsets_[0] == 0 && lineStartOffsets_[sentinelIndex] == MAX_PTR);
+
+    if (lineIndex == sentinelIndex) {
+        // We haven't seen this newline before.  Update lineStartOffsets_.
+        // We ignore any failures due to OOM -- because we always have a
+        // sentinel node, it'll just be like the newline wasn't present.  I.e.
+        // the line numbers will be wrong, but the code won't crash or anything
+        // like that.
+        lineStartOffsets_[lineIndex] = lineStartOffset;
+        (void)lineStartOffsets_.append(MAX_PTR);
+
+    } else {
+        // We have seen this newline before (and ungot it).  Do nothing (other
+        // than checking it hasn't mysteriously changed).
+        JS_ASSERT(lineStartOffsets_[lineIndex] == lineStartOffset);
+    }
+}
+
+JS_ALWAYS_INLINE uint32_t
+TokenStream::SourceCoords::lineIndexOf(uint32_t offset) const
+{
+    uint32_t iMin, iMax, iMid;
+
+    if (lineStartOffsets_[lastLineIndex_] <= offset) {
+        // If we reach here, offset is on a line the same as or higher than
+        // last time.  Check first for the +0, +1, +2 cases, because they
+        // typically cover 85--98% of cases.
+        if (offset < lineStartOffsets_[lastLineIndex_ + 1])
+            return lastLineIndex_;      // lineIndex is same as last time
+
+        // If we reach here, there must be at least one more entry (plus the
+        // sentinel).  Try it.
+        lastLineIndex_++;
+        if (offset < lineStartOffsets_[lastLineIndex_ + 1])
+            return lastLineIndex_;      // lineIndex is one higher than last time
+
+        // The same logic applies here.
+        lastLineIndex_++;
+        if (offset < lineStartOffsets_[lastLineIndex_ + 1]) {
+            return lastLineIndex_;      // lineIndex is two higher than last time
+        }
+
+        // No luck.  Oh well, we have a better-than-default starting point for
+        // the binary search.
+        iMin = lastLineIndex_ + 1;
+        JS_ASSERT(iMin < lineStartOffsets_.length() - 1);   // -1 due to the sentinel
+
+    } else {
+        iMin = 0;
+    }
+
+    // This is a binary search with deferred detection of equality, which was
+    // marginally faster in this case than a standard binary search.
+    // The -2 is because |lineStartOffsets_.length() - 1| is the sentinel, and we
+    // want one before that.
+    iMax = lineStartOffsets_.length() - 2;
+    while (iMax > iMin) {
+        iMid = (iMin + iMax) / 2;
+        if (offset >= lineStartOffsets_[iMid + 1])
+            iMin = iMid + 1;    // offset is above lineStartOffsets_[iMid]
+        else
+            iMax = iMid;        // offset is below or within lineStartOffsets_[iMid]
+    }
+    JS_ASSERT(iMax == iMin);
+    JS_ASSERT(lineStartOffsets_[iMin] <= offset && offset < lineStartOffsets_[iMin + 1]);
+    lastLineIndex_ = iMin;
+    return iMin;
+}
+
+uint32_t
+TokenStream::SourceCoords::lineNum(uint32_t offset) const
+{
+    uint32_t lineIndex = lineIndexOf(offset);
+    return lineIndexToNum(lineIndex);
+}
+
+uint32_t
+TokenStream::SourceCoords::columnIndex(uint32_t offset) const
+{
+    uint32_t lineIndex = lineIndexOf(offset);
+    uint32_t lineStartOffset = lineStartOffsets_[lineIndex];
+    JS_ASSERT(offset >= lineStartOffset);
+    return offset - lineStartOffset;
+}
+
+void
+TokenStream::SourceCoords::lineNumAndColumnIndex(uint32_t offset, uint32_t *lineNum,
+                                                 uint32_t *columnIndex) const
+{
+    uint32_t lineIndex = lineIndexOf(offset);
+    *lineNum = lineIndexToNum(lineIndex);
+    uint32_t lineStartOffset = lineStartOffsets_[lineIndex];
+    JS_ASSERT(offset >= lineStartOffset);
+    *columnIndex = offset - lineStartOffset;
+}
+
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable:4351)
@@ -115,14 +238,15 @@ frontend::IsIdentifier(JSLinearString *str)
 /* Initialize members that aren't initialized in |init|. */
 TokenStream::TokenStream(JSContext *cx, const CompileOptions &options,
                          const jschar *base, size_t length, StrictModeGetter *smg)
-  : tokens(),
+  : srcCoords(cx, options.lineno),
+    tokens(),
     cursor(),
     lookahead(),
     lineno(options.lineno),
     flags(),
     linebase(base),
     prevLinebase(NULL),
-    userbuf(base, length),
+    userbuf(cx, base, length),
     filename(options.filename),
     sourceMap(NULL),
     listenerTSData(),
@@ -132,7 +256,9 @@ TokenStream::TokenStream(JSContext *cx, const CompileOptions &options,
     originPrincipals(JSScript::normalizeOriginPrincipals(options.principals,
                                                          options.originPrincipals)),
     strictModeGetter(smg),
-    tokenSkip(cx, &tokens)
+    tokenSkip(cx, &tokens),
+    linebaseSkip(cx, &linebase),
+    prevLinebaseSkip(cx, &prevLinebase)
 {
     if (originPrincipals)
         JS_HoldPrincipals(originPrincipals);
@@ -146,9 +272,9 @@ TokenStream::TokenStream(JSContext *cx, const CompileOptions &options,
     /*
      * This table holds all the token kinds that satisfy these properties:
      * - A single char long.
-     * - Cannot be a prefix of any longer token (eg. '+' is excluded because
+     * - Cannot be a prefix of any longer token (e.g. '+' is excluded because
      *   '+=' is a valid token).
-     * - Doesn't need tp->t_op set (eg. this excludes '~').
+     * - Doesn't need tp->t_op set (e.g. this excludes '~').
      *
      * The few token kinds satisfying these properties cover roughly 35--45%
      * of the tokens seen in practice.
@@ -185,18 +311,6 @@ TokenStream::TokenStream(JSContext *cx, const CompileOptions &options,
     maybeStrSpecial[unsigned(LINE_SEPARATOR & 0xff)] = true;
     maybeStrSpecial[unsigned(PARA_SEPARATOR & 0xff)] = true;
     maybeStrSpecial[unsigned(EOF & 0xff)] = true;
-
-    /*
-     * Set |ln| as the beginning line number of the ungot "current token", so
-     * that js::Parser::statements (and potentially other such methods, in the
-     * future) can create parse nodes with good source coordinates before they
-     * explicitly get any tokens.
-     *
-     * Switching the parser/lexer so we always get the next token ahead of the
-     * parser needing it (the so-called "pump-priming" model) might be a better
-     * way to address the dependency from statements on the current token.
-     */
-    tokens[0].pos.begin.lineno = tokens[0].pos.end.lineno = options.lineno;
 }
 
 #ifdef _MSC_VER
@@ -205,8 +319,6 @@ TokenStream::TokenStream(JSContext *cx, const CompileOptions &options,
 
 TokenStream::~TokenStream()
 {
-    if (flags & TSF_OWNFILENAME)
-        js_free((void *) filename);
     if (sourceMap)
         js_free(sourceMap);
     if (originPrincipals)
@@ -228,6 +340,7 @@ TokenStream::updateLineInfoForEOL()
     prevLinebase = linebase;
     linebase = userbuf.addressOfNextRawChar();
     lineno++;
+    srcCoords.add(lineno, linebase - userbuf.base());
 }
 
 JS_ALWAYS_INLINE void
@@ -383,13 +496,15 @@ TokenStream::TokenBuf::findEOLMax(const jschar *p, size_t max)
 void
 TokenStream::tell(Position *pos)
 {
-    // We don't support saving and restoring state when lookahead is present.
-    JS_ASSERT(lookahead == 0);
     pos->buf = userbuf.addressOfNextRawChar();
     pos->flags = flags;
     pos->lineno = lineno;
     pos->linebase = linebase;
     pos->prevLinebase = prevLinebase;
+    pos->lookahead = lookahead;
+    pos->currentToken = currentToken();
+    for (unsigned i = 0; i < lookahead; i++)
+        pos->lookaheadTokens[i] = tokens[(cursor + 1 + i) & ntokensMask];
 }
 
 void
@@ -400,17 +515,11 @@ TokenStream::seek(const Position &pos)
     lineno = pos.lineno;
     linebase = pos.linebase;
     prevLinebase = pos.prevLinebase;
-    lookahead = 0;
+    lookahead = pos.lookahead;
 
-    // Make the last token look like it it came from here. The parser looks at
-    // the position of currentToken() to calculate line numbers.
-    Token *cur = &tokens[cursor];
-    cur->pos.begin.lineno = lineno;
-    cur->pos.begin.index = pos.buf - linebase;
-
-    // Poison other members.
-    cur->type = TOK_ERROR;
-    cur->ptr = NULL;
+    tokens[cursor] = pos.currentToken;
+    for (unsigned i = 0; i < lookahead; i++)
+        tokens[(cursor + 1 + i) & ntokensMask] = pos.lookaheadTokens[i];
 }
 
 void
@@ -421,7 +530,7 @@ TokenStream::positionAfterLastFunctionKeyword(Position &pos)
 }
 
 bool
-TokenStream::reportStrictModeErrorNumberVA(ParseNode *pn, bool strictMode, unsigned errorNumber,
+TokenStream::reportStrictModeErrorNumberVA(uint32_t offset, bool strictMode, unsigned errorNumber,
                                            va_list args)
 {
     /* In strict mode code, this is an error, not merely a warning. */
@@ -432,8 +541,8 @@ TokenStream::reportStrictModeErrorNumberVA(ParseNode *pn, bool strictMode, unsig
         flags |= JSREPORT_WARNING;
     else
         return true;
- 
-    return reportCompileErrorNumberVA(pn, flags, errorNumber, args);
+
+    return reportCompileErrorNumberVA(offset, flags, errorNumber, args);
 }
 
 void
@@ -489,7 +598,7 @@ CompileError::~CompileError()
 }
 
 bool
-TokenStream::reportCompileErrorNumberVA(ParseNode *pn, unsigned flags, unsigned errorNumber,
+TokenStream::reportCompileErrorNumberVA(uint32_t offset, unsigned flags, unsigned errorNumber,
                                         va_list args)
 {
     bool warning = JSREPORT_IS_WARNING(flags);
@@ -501,13 +610,11 @@ TokenStream::reportCompileErrorNumberVA(ParseNode *pn, unsigned flags, unsigned 
 
     CompileError err(cx);
 
-    const TokenPos *const tp = pn ? &pn->pn_pos : &currentToken().pos;
-
     err.report.flags = flags;
     err.report.errorNumber = errorNumber;
     err.report.filename = filename;
     err.report.originPrincipals = originPrincipals;
-    err.report.lineno = tp->begin.lineno;
+    err.report.lineno = srcCoords.lineNum(offset);
 
     err.argumentsType = (flags & JSREPORT_UC) ? ArgumentsAreUnicode : ArgumentsAreASCII;
 
@@ -524,11 +631,11 @@ TokenStream::reportCompileErrorNumberVA(ParseNode *pn, unsigned flags, unsigned 
      * T's (starting) line for context.
      *
      * So we don't even try, leaving report.linebuf and friends zeroed.  This
-     * means that any error involving a multi-line token (eg. an unterminated
+     * means that any error involving a multi-line token (e.g. an unterminated
      * multi-line string literal) won't have a context printed.
      */
     if (err.report.lineno == lineno) {
-        const jschar *tokptr = linebase + tp->begin.index;
+        const jschar *tokenStart = userbuf.base() + offset;
 
         // We show only a portion (a "window") of the line around the erroneous
         // token -- the first char in the token, plus |windowRadius| chars
@@ -538,14 +645,13 @@ TokenStream::reportCompileErrorNumberVA(ParseNode *pn, unsigned flags, unsigned 
         static const size_t windowRadius = 60;
 
         // Truncate at the front if necessary.
-        const jschar *windowBase = (linebase + windowRadius < tokptr)
-                                 ? tokptr - windowRadius
+        const jschar *windowBase = (linebase + windowRadius < tokenStart)
+                                 ? tokenStart - windowRadius
                                  : linebase;
-        size_t nTrunc = windowBase - linebase;
-        uint32_t windowIndex = tp->begin.index - nTrunc;
+        uint32_t windowOffset = tokenStart - windowBase;
 
         // Find EOL, or truncate at the back if necessary.
-        const jschar *windowLimit = userbuf.findEOLMax(tokptr, windowRadius);
+        const jschar *windowLimit = userbuf.findEOLMax(tokenStart, windowRadius);
         size_t windowLength = windowLimit - windowBase;
         JS_ASSERT(windowLength <= windowRadius * 2);
 
@@ -564,10 +670,8 @@ TokenStream::reportCompileErrorNumberVA(ParseNode *pn, unsigned flags, unsigned 
         if (!err.report.linebuf)
             return false;
 
-        // The lineno check above means we should only see single-line tokens here.
-        JS_ASSERT(tp->begin.lineno == tp->end.lineno);
-        err.report.tokenptr = err.report.linebuf + windowIndex;
-        err.report.uctokenptr = err.report.uclinebuf + windowIndex;
+        err.report.tokenptr = err.report.linebuf + windowOffset;
+        err.report.uctokenptr = err.report.uclinebuf + windowOffset;
     }
 
     err.throwError();
@@ -580,7 +684,8 @@ TokenStream::reportStrictModeError(unsigned errorNumber, ...)
 {
     va_list args;
     va_start(args, errorNumber);
-    bool result = reportStrictModeErrorNumberVA(NULL, strictMode(), errorNumber, args);
+    bool result = reportStrictModeErrorNumberVA(currentToken().pos.begin, strictMode(),
+                                                errorNumber, args);
     va_end(args);
     return result;
 }
@@ -590,7 +695,8 @@ TokenStream::reportError(unsigned errorNumber, ...)
 {
     va_list args;
     va_start(args, errorNumber);
-    bool result = reportCompileErrorNumberVA(NULL, JSREPORT_ERROR, errorNumber, args);
+    bool result = reportCompileErrorNumberVA(currentToken().pos.begin, JSREPORT_ERROR, errorNumber,
+                                             args);
     va_end(args);
     return result;
 }
@@ -600,18 +706,28 @@ TokenStream::reportWarning(unsigned errorNumber, ...)
 {
     va_list args;
     va_start(args, errorNumber);
-    bool result = reportCompileErrorNumberVA(NULL, JSREPORT_WARNING, errorNumber, args);
+    bool result = reportCompileErrorNumberVA(currentToken().pos.begin, JSREPORT_WARNING,
+                                             errorNumber, args);
     va_end(args);
     return result;
 }
 
 bool
-TokenStream::reportStrictWarningErrorNumberVA(ParseNode *pn, unsigned errorNumber, va_list args)
+TokenStream::reportStrictWarningErrorNumberVA(uint32_t offset, unsigned errorNumber, va_list args)
 {
     if (!cx->hasStrictOption())
         return true;
 
-    return reportCompileErrorNumberVA(NULL, JSREPORT_STRICT | JSREPORT_WARNING, errorNumber, args);
+    return reportCompileErrorNumberVA(offset, JSREPORT_STRICT|JSREPORT_WARNING, errorNumber, args);
+}
+
+void
+TokenStream::reportAsmJSError(uint32_t offset, unsigned errorNumber, ...)
+{
+    va_list args;
+    va_start(args, errorNumber);
+    reportCompileErrorNumberVA(offset, JSREPORT_WARNING, errorNumber, args);
+    va_end(args);
 }
 
 /*
@@ -658,31 +774,6 @@ TokenStream::matchUnicodeEscapeIdent(int32_t *cp)
     return false;
 }
 
-size_t
-TokenStream::endOffset(const Token &tok)
-{
-    uint32_t lineno = tok.pos.begin.lineno;
-    JS_ASSERT(lineno <= tok.pos.end.lineno);
-    const jschar *end;
-    if (lineno < tok.pos.end.lineno) {
-        TokenBuf buf(tok.ptr, userbuf.addressOfNextRawChar() - userbuf.base());
-        for (; lineno < tok.pos.end.lineno; lineno++) {
-            jschar c;
-            do {
-                JS_ASSERT(buf.hasRawChars());
-                c = buf.getRawChar();
-            } while (!TokenBuf::isRawEOLChar(c));
-            if (c == '\r' && buf.hasRawChars())
-                buf.matchRawChar('\n');
-        }
-        end = buf.addressOfNextRawChar() + tok.pos.end.index;
-    } else {
-        end = tok.ptr + (tok.pos.end.index - tok.pos.begin.index);
-    }
-    JS_ASSERT(end <= userbuf.addressOfNextRawChar());
-    return end - userbuf.base();
-}
-
 /*
  * Helper function which returns true if the first length(q) characters in p are
  * the same as the characters in q.
@@ -697,82 +788,35 @@ CharsMatch(const jschar *p, const char *q) {
 }
 
 bool
-TokenStream::getAtLine()
+TokenStream::getAtSourceMappingURL(bool isMultiline)
 {
-    int c;
-    jschar cp[5];
-    unsigned i, line, temp;
-    char filenameBuf[1024];
-
-    /*
-     * Hack for source filters such as the Mozilla XUL preprocessor:
-     * "//@line 123\n" sets the number of the *next* line after the
-     * comment to 123.  If we reach here, we've already seen "//".
+    /* Match comments of the form "//@ sourceMappingURL=<url>" or
+     * "/\* //@ sourceMappingURL=<url> *\/"
+     *
+     * To avoid a crashing bug in IE, several JavaScript transpilers
+     * wrap single line comments containing a source mapping URL
+     * inside a multiline comment to avoid a crashing bug in IE. To
+     * avoid potentially expensive lookahead and backtracking, we
+     * only check for this case if we encounter an '@' character.
      */
-    if (peekChars(5, cp) && CharsMatch(cp, "@line")) {
-        skipChars(5);
-        while ((c = getChar()) != '\n' && c != EOF && IsSpaceOrBOM2(c))
-            continue;
-        if (JS7_ISDEC(c)) {
-            line = JS7_UNDEC(c);
-            while ((c = getChar()) != EOF && JS7_ISDEC(c)) {
-                temp = 10 * line + JS7_UNDEC(c);
-                if (temp < line) {
-                    /* Ignore overlarge line numbers. */
-                    return true;
-                }
-                line = temp;
-            }
-            while (c != '\n' && c != EOF && IsSpaceOrBOM2(c))
-                c = getChar();
-            i = 0;
-            if (c == '"') {
-                while ((c = getChar()) != EOF && c != '"') {
-                    if (c == '\n') {
-                        ungetChar(c);
-                        return true;
-                    }
-                    if ((c >> 8) != 0 || i >= sizeof filenameBuf - 1)
-                        return true;
-                    filenameBuf[i++] = (char) c;
-                }
-                if (c == '"') {
-                    while ((c = getChar()) != '\n' && c != EOF && IsSpaceOrBOM2(c))
-                        continue;
-                }
-            }
-            filenameBuf[i] = '\0';
-            if (c == EOF || c == '\n') {
-                if (i > 0) {
-                    if (flags & TSF_OWNFILENAME)
-                        js_free((void *) filename);
-                    filename = JS_strdup(cx, filenameBuf);
-                    if (!filename)
-                        return false;
-                    flags |= TSF_OWNFILENAME;
-                }
-                lineno = line;
-            }
-        }
-        ungetChar(c);
-    }
-    return true;
-}
-
-bool
-TokenStream::getAtSourceMappingURL()
-{
-    /* Match comments of the form "//@ sourceMappingURL=<url>" */
-
-    jschar peeked[19];
+    jschar peeked[18];
     int32_t c;
 
-    if (peekChars(19, peeked) && CharsMatch(peeked, "@ sourceMappingURL=")) {
-        skipChars(19);
+    if (peekChars(18, peeked) && CharsMatch(peeked, " sourceMappingURL=")) {
+        skipChars(18);
         tokenbuf.clear();
 
         while ((c = peekChar()) && c != EOF && !IsSpaceOrBOM2(c)) {
             getChar();
+            /*
+             * Source mapping URLs can occur in both single- and multiline
+             * comments. If we're currently inside a multiline comment, we also
+             * need to recognize multiline comment terminators.
+             */
+            if (isMultiline && c == '*' && peekChar() == '/') {
+                ungetChar('*');
+                break;
+            }
             tokenbuf.append(c);
         }
 
@@ -800,9 +844,11 @@ TokenStream::newToken(ptrdiff_t adjust)
 {
     cursor = (cursor + 1) & ntokensMask;
     Token *tp = &tokens[cursor];
-    tp->ptr = userbuf.addressOfNextRawChar() + adjust;
-    tp->pos.begin.index = tp->ptr - linebase;
-    tp->pos.begin.lineno = tp->pos.end.lineno = lineno;
+    tp->pos.begin = userbuf.addressOfNextRawChar() + adjust - userbuf.base();
+
+    // NOTE: tp->pos.end is not set until the very end of getTokenInternal().
+    MOZ_MAKE_MEM_UNDEFINED(&tp->pos.end, sizeof(tp->pos.end));
+
     return tp;
 }
 
@@ -823,14 +869,9 @@ IsTokenSane(Token *tp)
     if (tp->type < TOK_ERROR || tp->type >= TOK_LIMIT || tp->type == TOK_EOL)
         return false;
 
-    if (tp->pos.begin.lineno == tp->pos.end.lineno) {
-        if (tp->pos.begin.index > tp->pos.end.index)
-            return false;
-    } else {
-        /* Only string tokens can be multi-line. */
-        if (tp->type != TOK_STRING)
-            return false;
-    }
+    if (tp->pos.end < tp->pos.begin)
+        return false;
+
     return true;
 }
 #endif
@@ -1125,6 +1166,8 @@ TokenStream::getTokenInternal()
                 tp->t_op = JSOP_EQ;
                 tt = TOK_EQ;
             }
+        } else if (matchChar('>')) {
+            tt = TOK_ARROW;
         } else {
             tp->t_op = JSOP_NOP;
             tt = TOK_ASSIGN;
@@ -1230,7 +1273,6 @@ TokenStream::getTokenInternal()
         JSAtom *atom = atomize(cx, tokenbuf);
         if (!atom)
             goto error;
-        tp->pos.end.lineno = lineno;
         tp->setAtom(JSOP_STRING, atom);
         tt = TOK_STRING;
         goto out;
@@ -1489,10 +1531,7 @@ TokenStream::getTokenInternal()
          * Look for a single-line comment.
          */
         if (matchChar('/')) {
-            if (cx->hasAtLineOption() && !getAtLine())
-                goto error;
-
-            if (!getAtSourceMappingURL())
+            if (matchChar('@') && !getAtSourceMappingURL(false))
                 goto error;
 
   skipline:
@@ -1518,7 +1557,8 @@ TokenStream::getTokenInternal()
             unsigned linenoBefore = lineno;
             while ((c = getChar()) != EOF &&
                    !(c == '*' && matchChar('/'))) {
-                /* Ignore all characters until comment close. */
+                if (c == '@' && !getAtSourceMappingURL(true))
+                   goto error;
             }
             if (c == EOF) {
                 reportError(JSMSG_UNTERMINATED_COMMENT);
@@ -1581,7 +1621,7 @@ TokenStream::getTokenInternal()
             c = peekChar();
             if (JS7_ISLET(c)) {
                 char buf[2] = { '\0', '\0' };
-                tp->pos.begin.index += length + 1;
+                tp->pos.begin += length + 1;
                 buf[0] = char(c);
                 reportError(JSMSG_BAD_REGEXP_FLAG, buf);
                 (void) getChar();
@@ -1630,20 +1670,14 @@ TokenStream::getTokenInternal()
 
   out:
     flags |= TSF_DIRTYLINE;
-    tp->pos.end.index = userbuf.addressOfNextRawChar() - linebase;
+    tp->pos.end = userbuf.addressOfNextRawChar() - userbuf.base();
     tp->type = tt;
     JS_ASSERT(IsTokenSane(tp));
     return tt;
 
   error:
-    /*
-     * For erroneous multi-line tokens we won't have changed end.lineno (it'll
-     * still be equal to begin.lineno) so we revert end.index to be equal to
-     * begin.index + 1 (as if it's a 1-char token) to avoid having inconsistent
-     * begin/end positions.  end.index isn't used in error messages anyway.
-     */
     flags |= TSF_DIRTYLINE;
-    tp->pos.end.index = tp->pos.begin.index + 1;
+    tp->pos.end = userbuf.addressOfNextRawChar() - userbuf.base();
     tp->type = TOK_ERROR;
     JS_ASSERT(IsTokenSane(tp));
     onError();
@@ -1728,6 +1762,7 @@ TokenKindToString(TokenKind tt)
       case TOK_RC:              return "TOK_RC";
       case TOK_LP:              return "TOK_LP";
       case TOK_RP:              return "TOK_RP";
+      case TOK_ARROW:           return "TOK_ARROW";
       case TOK_NAME:            return "TOK_NAME";
       case TOK_NUMBER:          return "TOK_NUMBER";
       case TOK_STRING:          return "TOK_STRING";

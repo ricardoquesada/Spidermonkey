@@ -253,7 +253,10 @@ GlobalObject::initFunctionAndObjectClasses(JSContext *cx)
             return NULL;
 
         functionProto->initScript(script);
-        functionProto->getType(cx)->interpretedFunction = functionProto;
+        types::TypeObject* protoType = functionProto->getType(cx);
+        if (!protoType)
+            return NULL;
+        protoType->interpretedFunction = functionProto;
         script->setFunction(functionProto);
 
         /*
@@ -373,7 +376,7 @@ GlobalObject::initFunctionAndObjectClasses(JSContext *cx)
                                                   JSFunction::NATIVE_FUN, self, NullPtr()));
     if (!throwTypeError)
         return NULL;
-    if (!throwTypeError->preventExtensions(cx))
+    if (!JSObject::preventExtensions(cx, throwTypeError))
         return NULL;
     self->setThrowTypeError(throwTypeError);
 

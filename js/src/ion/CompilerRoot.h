@@ -9,7 +9,8 @@
 #define jsion_ion_gc_h__
 
 #include "jscntxt.h"
-#include "gc/Root.h"
+
+#include "js/RootingAPI.h"
 
 namespace js {
 namespace ion {
@@ -41,7 +42,6 @@ class CompilerRoot : public CompilerRootNode
 
   public:
     operator T () const { return static_cast<T>(ptr_); }
-    operator Unrooted<T> () const { return static_cast<T>(ptr_); }
     T operator ->() const { return static_cast<T>(ptr_); }
 
   private:

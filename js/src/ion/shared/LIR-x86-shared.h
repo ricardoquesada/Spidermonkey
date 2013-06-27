@@ -49,6 +49,24 @@ class LModI : public LBinaryMath<1>
     }
 };
 
+// This class performs a simple x86 'div', yielding either a quotient or remainder depending on
+// whether this instruction is defined to output eax (quotient) or edx (remainder).
+class LAsmJSDivOrMod : public LBinaryMath<1>
+{
+  public:
+    LIR_HEADER(AsmJSDivOrMod);
+
+    LAsmJSDivOrMod(const LAllocation &lhs, const LAllocation &rhs, const LDefinition &temp) {
+        setOperand(0, lhs);
+        setOperand(1, rhs);
+        setTemp(0, temp);
+    }
+
+    const LDefinition *remainder() {
+        return getTemp(0);
+    }
+};
+
 class LModPowTwoI : public LInstructionHelper<1,1,0>
 {
     const int32_t shift_;
@@ -170,16 +188,6 @@ class LGuardShape : public LInstructionHelper<0, 1, 0>
     }
 };
 
-class LRecompileCheck : public LInstructionHelper<0, 0, 0>
-{
-  public:
-    LIR_HEADER(RecompileCheck)
-
-    const MRecompileCheck *mir() const {
-        return mir_->toRecompileCheck();
-    }
-};
-
 class LInterruptCheck : public LInstructionHelper<0, 0, 0>
 {
   public:
@@ -202,6 +210,23 @@ class LMulI : public LBinaryMath<0, 1>
     }
     const LAllocation *lhsCopy() {
         return this->getOperand(2);
+    }
+};
+
+// Constant double.
+class LDouble : public LInstructionHelper<1, 0, 0>
+{
+    double d_;
+
+  public:
+    LIR_HEADER(Double)
+
+    LDouble(double d)
+      : d_(d)
+    { }
+
+    double getDouble() const {
+        return d_;
     }
 };
 

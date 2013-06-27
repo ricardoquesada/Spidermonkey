@@ -23,13 +23,13 @@ namespace js {
 
 template <AllowGC allowGC>
 static JS_ALWAYS_INLINE JSInlineString *
-NewShortString(JSContext *cx, Latin1Chars chars)
+NewShortString(JSContext *cx, JS::Latin1Chars chars)
 {
     size_t len = chars.length();
     JS_ASSERT(JSShortString::lengthFits(len));
-    UnrootedInlineString str = JSInlineString::lengthFits(len)
-                               ? JSInlineString::new_<allowGC>(cx)
-                               : JSShortString::new_<allowGC>(cx);
+    RawInlineString str = JSInlineString::lengthFits(len)
+                          ? JSInlineString::new_<allowGC>(cx)
+                          : JSShortString::new_<allowGC>(cx);
     if (!str)
         return NULL;
 
@@ -37,13 +37,12 @@ NewShortString(JSContext *cx, Latin1Chars chars)
     for (size_t i = 0; i < len; ++i)
         p[i] = static_cast<jschar>(chars[i]);
     p[len] = '\0';
-    Probes::createString(cx, str, len);
     return str;
 }
 
 template <AllowGC allowGC>
 static JS_ALWAYS_INLINE JSInlineString *
-NewShortString(JSContext *cx, StableTwoByteChars chars)
+NewShortString(JSContext *cx, JS::StableTwoByteChars chars)
 {
     size_t len = chars.length();
 
@@ -61,13 +60,12 @@ NewShortString(JSContext *cx, StableTwoByteChars chars)
     jschar *storage = str->init(len);
     PodCopy(storage, chars.start().get(), len);
     storage[len] = 0;
-    Probes::createString(cx, str, len);
     return str;
 }
 
 template <AllowGC allowGC>
 static JS_ALWAYS_INLINE JSInlineString *
-NewShortString(JSContext *cx, TwoByteChars chars)
+NewShortString(JSContext *cx, JS::TwoByteChars chars)
 {
     size_t len = chars.length();
 
@@ -84,30 +82,23 @@ NewShortString(JSContext *cx, TwoByteChars chars)
             return NULL;
         jschar tmp[JSShortString::MAX_SHORT_LENGTH];
         PodCopy(tmp, chars.start().get(), len);
-        return NewShortString<CanGC>(cx, StableTwoByteChars(tmp, len));
+        return NewShortString<CanGC>(cx, JS::StableTwoByteChars(tmp, len));
     }
 
     jschar *storage = str->init(len);
     PodCopy(storage, chars.start().get(), len);
     storage[len] = 0;
-    Probes::createString(cx, str, len);
     return str;
 }
 
 static inline void
 StringWriteBarrierPost(JSRuntime *rt, JSString **strp)
 {
-#ifdef JSGC_GENERATIONAL
-    rt->gcStoreBuffer.putRelocatableCell(reinterpret_cast<gc::Cell **>(strp));
-#endif
 }
 
 static inline void
 StringWriteBarrierPostRemove(JSRuntime *rt, JSString **strp)
 {
-#ifdef JSGC_GENERATIONAL
-    rt->gcStoreBuffer.removeRelocatableCell(reinterpret_cast<gc::Cell **>(strp));
-#endif
 }
 
 } /* namespace js */
@@ -131,11 +122,6 @@ JSString::writeBarrierPre(JSString *str)
 inline void
 JSString::writeBarrierPost(JSString *str, void *addr)
 {
-#ifdef JSGC_GENERATIONAL
-    if (!str)
-        return;
-    str->runtime()->gcStoreBuffer.putCell((Cell **)addr);
-#endif
 }
 
 inline bool
@@ -244,7 +230,7 @@ JSDependentString::new_(JSContext *cx, JSLinearString *baseArg, const jschar *ch
      * is more efficient to immediately undepend here.
      */
     if (JSShortString::lengthFits(length))
-        return js::NewShortString<js::CanGC>(cx, js::TwoByteChars(chars, length));
+        return js::NewShortString<js::CanGC>(cx, JS::TwoByteChars(chars, length));
 
     JSDependentString *str = (JSDependentString *)js_NewGCString<js::NoGC>(cx);
     if (str) {
@@ -252,7 +238,7 @@ JSDependentString::new_(JSContext *cx, JSLinearString *baseArg, const jschar *ch
         return str;
     }
 
-    js::Rooted<JSLinearString*> base(cx, baseArg);
+    JS::Rooted<JSLinearString*> base(cx, baseArg);
 
     str = (JSDependentString *)js_NewGCString<js::CanGC>(cx);
     if (!str)
@@ -416,7 +402,6 @@ js::StaticStrings::getInt(int32_t i)
 inline JSLinearString *
 js::StaticStrings::getUnitStringForElement(JSContext *cx, JSString *str, size_t index)
 {
-    AssertCanGC();
     JS_ASSERT(index < str->length());
     const jschar *chars = str->getChars(cx);
     if (!chars)

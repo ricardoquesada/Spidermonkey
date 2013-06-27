@@ -13,6 +13,7 @@
 #include "ion/Bailouts.h"
 #include "ion/VMFunctions.h"
 #include "ion/IonSpewer.h"
+#include "ion/ExecutionModeInlines.h"
 
 #include "jsscriptinlines.h"
 
@@ -176,7 +177,7 @@ IonRuntime::generateEnterJIT(JSContext *cx)
     masm.ret();
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 IonCode *
@@ -218,11 +219,11 @@ IonRuntime::generateInvalidator(JSContext *cx)
     masm.generateBailoutTail(rdx);
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 IonCode *
-IonRuntime::generateArgumentsRectifier(JSContext *cx)
+IonRuntime::generateArgumentsRectifier(JSContext *cx, ExecutionMode mode)
 {
     // Do not erase the frame pointer in this function.
 
@@ -289,7 +290,7 @@ IonRuntime::generateArgumentsRectifier(JSContext *cx)
     // Call the target function.
     // Note that this code assumes the function is JITted.
     masm.movq(Operand(rax, offsetof(JSFunction, u.i.script_)), rax);
-    masm.movq(Operand(rax, offsetof(JSScript, ion)), rax);
+    masm.movq(Operand(rax, OffsetOfIonInJSScript(mode)), rax);
     masm.movq(Operand(rax, IonScript::offsetOfMethod()), rax);
     masm.movq(Operand(rax, IonCode::offsetOfCode()), rax);
     masm.call(rax);
@@ -304,7 +305,7 @@ IonRuntime::generateArgumentsRectifier(JSContext *cx)
     masm.ret();
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 static void
@@ -359,7 +360,7 @@ IonRuntime::generateBailoutHandler(JSContext *cx)
     GenerateBailoutThunk(cx, masm, NO_FRAME_SIZE_CLASS_ID);
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 IonCode *
@@ -504,7 +505,7 @@ IonRuntime::generateVMWrapper(JSContext *cx, const VMFunction &f)
     masm.handleException();
 
     Linker linker(masm);
-    IonCode *wrapper = linker.newCode(cx);
+    IonCode *wrapper = linker.newCode(cx, JSC::OTHER_CODE);
     if (!wrapper)
         return NULL;
 
@@ -542,6 +543,6 @@ IonRuntime::generatePreBarrier(JSContext *cx, MIRType type)
     masm.ret();
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 

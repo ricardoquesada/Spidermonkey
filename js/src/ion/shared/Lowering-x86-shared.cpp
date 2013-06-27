@@ -26,13 +26,6 @@ LIRGeneratorX86Shared::newLTableSwitchV(MTableSwitch *tableswitch)
 }
 
 bool
-LIRGeneratorX86Shared::visitRecompileCheck(MRecompileCheck *ins)
-{
-    LRecompileCheck *lir = new LRecompileCheck();
-    return assignSnapshot(lir, Bailout_RecompileCheck) && add(lir, ins);
-}
-
-bool
 LIRGeneratorX86Shared::visitInterruptCheck(MInterruptCheck *ins)
 {
     LInterruptCheck *lir = new LInterruptCheck();
@@ -106,6 +99,34 @@ LIRGeneratorX86Shared::lowerModI(MMod *mod)
 }
 
 bool
+LIRGeneratorX86Shared::visitAsmJSNeg(MAsmJSNeg *ins)
+{
+    if (ins->type() == MIRType_Int32)
+        return defineReuseInput(new LNegI(useRegisterAtStart(ins->input())), ins, 0);
+
+    JS_ASSERT(ins->type() == MIRType_Double);
+    return defineReuseInput(new LNegD(useRegisterAtStart(ins->input())), ins, 0);
+}
+
+bool
+LIRGeneratorX86Shared::visitAsmJSUDiv(MAsmJSUDiv *div)
+{
+    LAsmJSDivOrMod *lir = new LAsmJSDivOrMod(useFixed(div->lhs(), eax),
+                                             useRegister(div->rhs()),
+                                             tempFixed(edx));
+    return defineFixed(lir, div, LAllocation(AnyRegister(eax)));
+}
+
+bool
+LIRGeneratorX86Shared::visitAsmJSUMod(MAsmJSUMod *mod)
+{
+    LAsmJSDivOrMod *lir = new LAsmJSDivOrMod(useFixed(mod->lhs(), eax),
+                                             useRegister(mod->rhs()),
+                                             tempFixed(edx));
+    return defineFixed(lir, mod, LAllocation(AnyRegister(edx)));
+}
+
+bool
 LIRGeneratorX86Shared::lowerUrshD(MUrsh *mir)
 {
     MDefinition *lhs = mir->lhs();
@@ -125,3 +146,23 @@ LIRGeneratorX86Shared::lowerUrshD(MUrsh *mir)
     LUrshD *lir = new LUrshD(lhsUse, rhsAlloc, tempCopy(lhs, 0));
     return define(lir, mir);
 }
+
+bool
+LIRGeneratorX86Shared::lowerConstantDouble(double d, MInstruction *mir)
+{
+    return define(new LDouble(d), mir);
+}
+
+bool
+LIRGeneratorX86Shared::visitConstant(MConstant *ins)
+{
+    if (ins->type() == MIRType_Double)
+        return lowerConstantDouble(ins->value().toDouble(), ins);
+
+    // Emit non-double constants at their uses.
+    if (ins->canEmitAtUses())
+        return emitAtUses(ins);
+
+    return LIRGeneratorShared::visitConstant(ins);
+}
+

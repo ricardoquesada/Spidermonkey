@@ -46,7 +46,7 @@ Wrapper::New(JSContext *cx, JSObject *obj, JSObject *proto, JSObject *parent,
     AutoMarkInDeadZone amd(cx->zone());
 
     return NewProxyObject(cx, handler, ObjectValue(*obj), proto, parent,
-                          obj->isCallable() ? obj : NULL, NULL);
+                          obj->isCallable() ? ProxyIsCallable : ProxyNotCallable);
 }
 
 JSObject *
@@ -68,13 +68,6 @@ Wrapper::wrappedObject(RawObject wrapper)
 {
     JS_ASSERT(wrapper->isWrapper());
     return GetProxyTargetObject(wrapper);
-}
-
-bool
-Wrapper::enter(JSContext *cx, JSObject *wrapper, jsid id, Action act, bool *bp)
-{
-    *bp = true;
-    return true;
 }
 
 JS_FRIEND_API(JSObject *)
@@ -122,17 +115,6 @@ js::IsCrossCompartmentWrapper(RawObject wrapper)
            !!(Wrapper::wrapperHandler(wrapper)->flags() & Wrapper::CROSS_COMPARTMENT);
 }
 
-#define CHECKED(op, act)                                                     \
-    JS_BEGIN_MACRO                                                           \
-        bool status;                                                         \
-        if (!enter(cx, wrapper, id, act, &status))                           \
-            return status;                                                   \
-        return (op);                                                         \
-    JS_END_MACRO
-
-#define SET(action) CHECKED(action, SET)
-#define GET(action) CHECKED(action, GET)
-
 Wrapper::Wrapper(unsigned flags, bool hasPrototype) : DirectProxyHandler(&sWrapperFamily)
                                                     , mFlags(flags)
                                                     , mSafeToUnwrap(true)
@@ -142,62 +124,6 @@ Wrapper::Wrapper(unsigned flags, bool hasPrototype) : DirectProxyHandler(&sWrapp
 
 Wrapper::~Wrapper()
 {
-}
-
-bool
-Wrapper::getPropertyDescriptor(JSContext *cx, JSObject *wrapperArg,
-                               jsid id, PropertyDescriptor *desc, unsigned flags)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    JS_ASSERT(!hasPrototype()); // Should never be called when there's a prototype.
-    desc->obj = NULL; // default result if we refuse to perform this action
-    CHECKED(DirectProxyHandler::getPropertyDescriptor(cx, wrapper, id, desc, flags),
-            (flags & JSRESOLVE_ASSIGNING) ? SET : GET);
-}
-
-bool
-Wrapper::getOwnPropertyDescriptor(JSContext *cx, JSObject *wrapperArg,
-                                  jsid id, PropertyDescriptor *desc, unsigned flags)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    desc->obj = NULL; // default result if we refuse to perform this action
-    CHECKED(DirectProxyHandler::getOwnPropertyDescriptor(cx, wrapper, id, desc, flags), GET);
-}
-
-bool
-Wrapper::defineProperty(JSContext *cx, JSObject *wrapperArg, jsid id,
-                        PropertyDescriptor *desc)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    SET(DirectProxyHandler::defineProperty(cx, wrapper, id, desc));
-}
-
-bool
-Wrapper::getOwnPropertyNames(JSContext *cx, JSObject *wrapperArg,
-                             AutoIdVector &props)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    // if we refuse to perform this action, props remains empty
-    jsid id = JSID_VOID;
-    GET(DirectProxyHandler::getOwnPropertyNames(cx, wrapper, props));
-}
-
-bool
-Wrapper::delete_(JSContext *cx, JSObject *wrapperArg, jsid id, bool *bp)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    *bp = true; // default result if we refuse to perform this action
-    SET(DirectProxyHandler::delete_(cx, wrapper, id, bp));
-}
-
-bool
-Wrapper::enumerate(JSContext *cx, JSObject *wrapperArg, AutoIdVector &props)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    JS_ASSERT(!hasPrototype()); // Should never be called when there's a prototype.
-    // if we refuse to perform this action, props remains empty
-    static jsid id = JSID_VOID;
-    GET(DirectProxyHandler::enumerate(cx, wrapper, props));
 }
 
 /*
@@ -211,17 +137,11 @@ Wrapper::enumerate(JSContext *cx, JSObject *wrapperArg, AutoIdVector &props)
  * algorithm whenever unwrapping is forbidden.
  */
 bool
-Wrapper::defaultValue(JSContext *cx, JSObject *wrapperArg, JSType hint, Value *vp)
+Wrapper::defaultValue(JSContext *cx, HandleObject wrapper, JSType hint, MutableHandleValue vp)
 {
-    RootedObject wrapper(cx, wrapperArg);
+    if (!wrapperHandler(wrapper)->isSafeToUnwrap())
+        return DefaultValue(cx, wrapper, hint, vp);
 
-    if (!wrapperHandler(wrapper)->isSafeToUnwrap()) {
-        RootedValue v(cx);
-        if (!DefaultValue(cx, wrapper, hint, &v))
-            return false;
-        *vp = v;
-        return true;
-    }
     /*
      * We enter the compartment of the wrappee here, even if we're not a cross
      * compartment wrapper. Moreover, cross compartment wrappers do not enter
@@ -232,126 +152,6 @@ Wrapper::defaultValue(JSContext *cx, JSObject *wrapperArg, JSType hint, Value *v
      */
     AutoCompartment call(cx, wrappedObject(wrapper));
     return DirectProxyHandler::defaultValue(cx, wrapper, hint, vp);
-}
-
-bool
-Wrapper::has(JSContext *cx, JSObject *wrapperArg, jsid id, bool *bp)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    JS_ASSERT(!hasPrototype()); // Should never be called when there's a prototype.
-    *bp = false; // default result if we refuse to perform this action
-    GET(DirectProxyHandler::has(cx, wrapper, id, bp));
-}
-
-bool
-Wrapper::hasOwn(JSContext *cx, JSObject *wrapperArg, jsid id, bool *bp)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    *bp = false; // default result if we refuse to perform this action
-    GET(DirectProxyHandler::hasOwn(cx, wrapper, id, bp));
-}
-
-bool
-Wrapper::get(JSContext *cx, JSObject *wrapperArg, JSObject *receiver, jsid id, Value *vp)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    vp->setUndefined(); // default result if we refuse to perform this action
-    GET(DirectProxyHandler::get(cx, wrapper, receiver, id, vp));
-}
-
-bool
-Wrapper::set(JSContext *cx, JSObject *wrapperArg, JSObject *receiver, jsid id, bool strict,
-             Value *vp)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    SET(DirectProxyHandler::set(cx, wrapper, receiver, id, strict, vp));
-}
-
-bool
-Wrapper::keys(JSContext *cx, JSObject *wrapperArg, AutoIdVector &props)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    // if we refuse to perform this action, props remains empty
-    const jsid id = JSID_VOID;
-    GET(DirectProxyHandler::keys(cx, wrapper, props));
-}
-
-bool
-Wrapper::iterate(JSContext *cx, JSObject *wrapperArg, unsigned flags, Value *vp)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    JS_ASSERT(!hasPrototype()); // Should never be called when there's a prototype.
-    vp->setUndefined(); // default result if we refuse to perform this action
-    const jsid id = JSID_VOID;
-    GET(DirectProxyHandler::iterate(cx, wrapper, flags, vp));
-}
-
-bool
-Wrapper::call(JSContext *cx, JSObject *wrapperArg, unsigned argc, Value *vp)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    vp->setUndefined(); // default result if we refuse to perform this action
-    const jsid id = JSID_VOID;
-    CHECKED(DirectProxyHandler::call(cx, wrapper, argc, vp), CALL);
-}
-
-bool
-Wrapper::construct(JSContext *cx, JSObject *wrapperArg, unsigned argc, Value *argv, Value *vp)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    vp->setUndefined(); // default result if we refuse to perform this action
-    const jsid id = JSID_VOID;
-    CHECKED(DirectProxyHandler::construct(cx, wrapper, argc, argv, vp), CALL);
-}
-
-bool
-Wrapper::nativeCall(JSContext *cx, IsAcceptableThis test, NativeImpl impl, CallArgs args)
-{
-    const jsid id = JSID_VOID;
-    RootedObject wrapper(cx, &args.thisv().toObject());
-    CHECKED(DirectProxyHandler::nativeCall(cx, test, impl, args), CALL);
-}
-
-bool
-Wrapper::hasInstance(JSContext *cx, HandleObject wrapper, MutableHandleValue v, bool *bp)
-{
-    *bp = false; // default result if we refuse to perform this action
-    const jsid id = JSID_VOID;
-    GET(DirectProxyHandler::hasInstance(cx, wrapper, v, bp));
-}
-
-JSString *
-Wrapper::obj_toString(JSContext *cx, JSObject *wrapperArg)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    bool status;
-    if (!enter(cx, wrapper, JSID_VOID, GET, &status)) {
-        if (status) {
-            // Perform some default behavior that doesn't leak any information.
-            return JS_NewStringCopyZ(cx, "[object Object]");
-        }
-        return NULL;
-    }
-    JSString *str = DirectProxyHandler::obj_toString(cx, wrapper);
-    return str;
-}
-
-JSString *
-Wrapper::fun_toString(JSContext *cx, JSObject *wrapper, unsigned indent)
-{
-    bool status;
-    if (!enter(cx, wrapper, JSID_VOID, GET, &status)) {
-        if (status) {
-            // Perform some default behavior that doesn't leak any information.
-            if (wrapper->isCallable())
-                return JS_NewStringCopyZ(cx, "function () {\n    [native code]\n}");
-            ReportIsNotFunction(cx, ObjectValue(*wrapper));
-            return NULL;
-        }
-        return NULL;
-    }
-    JSString *str = DirectProxyHandler::fun_toString(cx, wrapper, indent);
-    return str;
 }
 
 Wrapper Wrapper::singleton((unsigned)0);
@@ -400,6 +200,20 @@ CrossCompartmentWrapper::~CrossCompartmentWrapper()
 {
 }
 
+bool CrossCompartmentWrapper::finalizeInBackground(Value priv)
+{
+    if (!priv.isObject())
+        return true;
+
+    /*
+     * Make the 'background-finalized-ness' of the wrapper the same as the
+     * wrapped object, to allow transplanting between them.
+     */
+    if (IsInsideNursery(priv.toObject().runtime(), &priv.toObject()))
+        return false;
+    return IsBackgroundFinalized(priv.toObject().tenuredGetAllocKind());
+}
+
 #define PIERCE(cx, wrapper, pre, op, post)                      \
     JS_BEGIN_MACRO                                              \
         bool ok;                                                \
@@ -413,44 +227,68 @@ CrossCompartmentWrapper::~CrossCompartmentWrapper()
 #define NOTHING (true)
 
 bool
-CrossCompartmentWrapper::getPropertyDescriptor(JSContext *cx, JSObject *wrapperArg, jsid id,
-                                               PropertyDescriptor *desc, unsigned flags)
+CrossCompartmentWrapper::isExtensible(JSObject *wrapper)
 {
-    RootedObject wrapper(cx, wrapperArg);
-    PIERCE(cx, wrapper,
-           cx->compartment->wrapId(cx, &id),
-           Wrapper::getPropertyDescriptor(cx, wrapper, id, desc, flags),
-           cx->compartment->wrap(cx, desc));
+    // The lack of a context to enter a compartment here is troublesome.  We
+    // don't know anything about the wrapped object (it might even be a
+    // proxy!), and embeddings' proxy handlers could theoretically trigger
+    // compartment mismatches here (because isExtensible wouldn't be called in
+    // the wrapped object's compartment.  But that's probably not very likely.
+    // (Famous last words.)
+    //
+    // Given that we're likely going to make this method take a context and
+    // maybe be fallible at some point, punt on the issue for now.
+    return wrappedObject(wrapper)->isExtensible();
 }
 
 bool
-CrossCompartmentWrapper::getOwnPropertyDescriptor(JSContext *cx, JSObject *wrapperArg, jsid id,
-                                                  PropertyDescriptor *desc, unsigned flags)
+CrossCompartmentWrapper::preventExtensions(JSContext *cx, HandleObject wrapper)
 {
-    RootedObject wrapper(cx, wrapperArg);
     PIERCE(cx, wrapper,
-           cx->compartment->wrapId(cx, &id),
-           Wrapper::getOwnPropertyDescriptor(cx, wrapper, id, desc, flags),
-           cx->compartment->wrap(cx, desc));
-}
-
-bool
-CrossCompartmentWrapper::defineProperty(JSContext *cx, JSObject *wrapperArg, jsid id,
-                                        PropertyDescriptor *desc)
-{
-    RootedObject wrapper(cx, wrapperArg);
-    AutoPropertyDescriptorRooter desc2(cx, desc);
-    PIERCE(cx, wrapper,
-           cx->compartment->wrapId(cx, &id) && cx->compartment->wrap(cx, &desc2),
-           Wrapper::defineProperty(cx, wrapper, id, &desc2),
+           NOTHING,
+           Wrapper::preventExtensions(cx, wrapper),
            NOTHING);
 }
 
 bool
-CrossCompartmentWrapper::getOwnPropertyNames(JSContext *cx, JSObject *wrapperArg,
+CrossCompartmentWrapper::getPropertyDescriptor(JSContext *cx, HandleObject wrapper, HandleId id,
+                                               PropertyDescriptor *desc, unsigned flags)
+{
+    RootedId idCopy(cx, id);
+    PIERCE(cx, wrapper,
+           cx->compartment->wrapId(cx, idCopy.address()),
+           Wrapper::getPropertyDescriptor(cx, wrapper, idCopy, desc, flags),
+           cx->compartment->wrap(cx, desc));
+}
+
+bool
+CrossCompartmentWrapper::getOwnPropertyDescriptor(JSContext *cx, HandleObject wrapper,
+                                                  HandleId id, PropertyDescriptor *desc,
+                                                  unsigned flags)
+{
+    RootedId idCopy(cx, id);
+    PIERCE(cx, wrapper,
+           cx->compartment->wrapId(cx, idCopy.address()),
+           Wrapper::getOwnPropertyDescriptor(cx, wrapper, idCopy, desc, flags),
+           cx->compartment->wrap(cx, desc));
+}
+
+bool
+CrossCompartmentWrapper::defineProperty(JSContext *cx, HandleObject wrapper, HandleId id,
+                                        PropertyDescriptor *desc)
+{
+    RootedId idCopy(cx, id);
+    AutoPropertyDescriptorRooter desc2(cx, desc);
+    PIERCE(cx, wrapper,
+           cx->compartment->wrapId(cx, idCopy.address()) && cx->compartment->wrap(cx, &desc2),
+           Wrapper::defineProperty(cx, wrapper, idCopy, &desc2),
+           NOTHING);
+}
+
+bool
+CrossCompartmentWrapper::getOwnPropertyNames(JSContext *cx, HandleObject wrapper,
                                              AutoIdVector &props)
 {
-    RootedObject wrapper(cx, wrapperArg);
     PIERCE(cx, wrapper,
            NOTHING,
            Wrapper::getOwnPropertyNames(cx, wrapper, props),
@@ -458,19 +296,18 @@ CrossCompartmentWrapper::getOwnPropertyNames(JSContext *cx, JSObject *wrapperArg
 }
 
 bool
-CrossCompartmentWrapper::delete_(JSContext *cx, JSObject *wrapperArg, jsid id, bool *bp)
+CrossCompartmentWrapper::delete_(JSContext *cx, HandleObject wrapper, HandleId id, bool *bp)
 {
-    RootedObject wrapper(cx, wrapperArg);
+    RootedId idCopy(cx, id);
     PIERCE(cx, wrapper,
-           cx->compartment->wrapId(cx, &id),
-           Wrapper::delete_(cx, wrapper, id, bp),
+           cx->compartment->wrapId(cx, idCopy.address()),
+           Wrapper::delete_(cx, wrapper, idCopy, bp),
            NOTHING);
 }
 
 bool
-CrossCompartmentWrapper::enumerate(JSContext *cx, JSObject *wrapperArg, AutoIdVector &props)
+CrossCompartmentWrapper::enumerate(JSContext *cx, HandleObject wrapper, AutoIdVector &props)
 {
-    RootedObject wrapper(cx, wrapperArg);
     PIERCE(cx, wrapper,
            NOTHING,
            Wrapper::enumerate(cx, wrapper, props),
@@ -478,68 +315,61 @@ CrossCompartmentWrapper::enumerate(JSContext *cx, JSObject *wrapperArg, AutoIdVe
 }
 
 bool
-CrossCompartmentWrapper::has(JSContext *cx, JSObject *wrapperArg, jsid id, bool *bp)
+CrossCompartmentWrapper::has(JSContext *cx, HandleObject wrapper, HandleId id, bool *bp)
 {
-    RootedObject wrapper(cx, wrapperArg);
+    RootedId idCopy(cx, id);
     PIERCE(cx, wrapper,
-           cx->compartment->wrapId(cx, &id),
-           Wrapper::has(cx, wrapper, id, bp),
+           cx->compartment->wrapId(cx, idCopy.address()),
+           Wrapper::has(cx, wrapper, idCopy, bp),
            NOTHING);
 }
 
 bool
-CrossCompartmentWrapper::hasOwn(JSContext *cx, JSObject *wrapperArg, jsid id, bool *bp)
+CrossCompartmentWrapper::hasOwn(JSContext *cx, HandleObject wrapper, HandleId id, bool *bp)
 {
-    RootedObject wrapper(cx, wrapperArg);
+    RootedId idCopy(cx, id);
     PIERCE(cx, wrapper,
-           cx->compartment->wrapId(cx, &id),
-           Wrapper::hasOwn(cx, wrapper, id, bp),
+           cx->compartment->wrapId(cx, idCopy.address()),
+           Wrapper::hasOwn(cx, wrapper, idCopy, bp),
            NOTHING);
 }
 
 bool
-CrossCompartmentWrapper::get(JSContext *cx, JSObject *wrapperArg, JSObject *receiverArg,
-                             jsid idArg, Value *vpArg)
+CrossCompartmentWrapper::get(JSContext *cx, HandleObject wrapper, HandleObject receiver,
+                             HandleId id, MutableHandleValue vp)
 {
-    RootedObject wrapper(cx, wrapperArg);
-    RootedObject receiver(cx, receiverArg);
-    RootedId id(cx, idArg);
-    RootedValue vp(cx, *vpArg);
-
+    RootedObject receiverCopy(cx, receiver);
+    RootedId idCopy(cx, id);
     {
         AutoCompartment call(cx, wrappedObject(wrapper));
-        if (!cx->compartment->wrap(cx, receiver.address()) ||
-            !cx->compartment->wrapId(cx, id.address()))
+        if (!cx->compartment->wrap(cx, receiverCopy.address()) ||
+            !cx->compartment->wrapId(cx, idCopy.address()))
         {
             return false;
         }
 
-        if (!Wrapper::get(cx, wrapper, receiver, id, vp.address()))
+        if (!Wrapper::get(cx, wrapper, receiverCopy, idCopy, vp))
             return false;
     }
-
-    bool ok = cx->compartment->wrap(cx, &vp);
-    *vpArg = vp.get();
-    return ok;
+    return cx->compartment->wrap(cx, vp);
 }
 
 bool
-CrossCompartmentWrapper::set(JSContext *cx, JSObject *wrapper_, JSObject *receiver_, jsid id_,
-                             bool strict, Value *valueArg)
+CrossCompartmentWrapper::set(JSContext *cx, HandleObject wrapper, HandleObject receiver,
+                             HandleId id, bool strict, MutableHandleValue vp)
 {
-    RootedObject wrapper(cx, wrapper_), receiver(cx, receiver_);
-    RootedId id(cx, id_);
-    RootedValue value(cx, *valueArg);
+    RootedObject receiverCopy(cx, receiver);
+    RootedId idCopy(cx, id);
     PIERCE(cx, wrapper,
-           cx->compartment->wrap(cx, receiver.address()) &&
-           cx->compartment->wrapId(cx, id.address()) &&
-           cx->compartment->wrap(cx, &value),
-           Wrapper::set(cx, wrapper, receiver, id, strict, value.address()),
+           cx->compartment->wrap(cx, receiverCopy.address()) &&
+           cx->compartment->wrapId(cx, idCopy.address()) &&
+           cx->compartment->wrap(cx, vp),
+           Wrapper::set(cx, wrapper, receiverCopy, idCopy, strict, vp),
            NOTHING);
 }
 
 bool
-CrossCompartmentWrapper::keys(JSContext *cx, JSObject *wrapper, AutoIdVector &props)
+CrossCompartmentWrapper::keys(JSContext *cx, HandleObject wrapper, AutoIdVector &props)
 {
     PIERCE(cx, wrapper,
            NOTHING,
@@ -552,11 +382,11 @@ CrossCompartmentWrapper::keys(JSContext *cx, JSObject *wrapper, AutoIdVector &pr
  * allows fast iteration over objects across a compartment boundary.
  */
 static bool
-CanReify(Value *vp)
+CanReify(HandleValue vp)
 {
     JSObject *obj;
-    return vp->isObject() &&
-           (obj = &vp->toObject())->isPropertyIterator() &&
+    return vp.isObject() &&
+           (obj = &vp.toObject())->isPropertyIterator() &&
            (obj->asPropertyIterator().getNativeIterator()->flags & JSITER_ENUMERATE);
 }
 
@@ -622,28 +452,23 @@ Reify(JSContext *cx, JSCompartment *origin, MutableHandleValue vp)
 }
 
 bool
-CrossCompartmentWrapper::iterate(JSContext *cx, JSObject *wrapperArg, unsigned flags, Value *vpArg)
+CrossCompartmentWrapper::iterate(JSContext *cx, HandleObject wrapper, unsigned flags,
+                                 MutableHandleValue vp)
 {
-    RootedObject wrapper(cx, wrapperArg);
-    RootedValue vp(cx, *vpArg);
-
     {
         AutoCompartment call(cx, wrappedObject(wrapper));
-        if (!Wrapper::iterate(cx, wrapper, flags, vp.address()))
+        if (!Wrapper::iterate(cx, wrapper, flags, vp))
             return false;
     }
 
-    bool ok = CanReify(vp.address())
-              ? Reify(cx, cx->compartment, &vp)
-              : cx->compartment->wrap(cx, &vp);
-    *vpArg = vp.get();
-    return ok;
+    if (CanReify(vp))
+        return Reify(cx, cx->compartment, vp);
+    return cx->compartment->wrap(cx, vp);
 }
 
 bool
-CrossCompartmentWrapper::call(JSContext *cx, JSObject *wrapperArg, unsigned argc, Value *vp)
+CrossCompartmentWrapper::call(JSContext *cx, HandleObject wrapper, unsigned argc, Value *vp)
 {
-    RootedObject wrapper(cx, wrapperArg);
     RootedObject wrapped(cx, wrappedObject(wrapper));
 
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -667,11 +492,10 @@ CrossCompartmentWrapper::call(JSContext *cx, JSObject *wrapperArg, unsigned argc
 }
 
 bool
-CrossCompartmentWrapper::construct(JSContext *cx, JSObject *wrapperArg, unsigned argc, Value *argv,
-                                   Value *rvalArg)
+CrossCompartmentWrapper::construct(JSContext *cx, HandleObject wrapper, unsigned argc, Value *argv,
+                                   MutableHandleValue rval)
 {
-    RootedObject wrapper(cx, wrapperArg);
-    JSObject *wrapped = wrappedObject(wrapper);
+    RootedObject wrapped(cx, wrappedObject(wrapper));
     {
         AutoCompartment call(cx, wrapped);
 
@@ -681,13 +505,10 @@ CrossCompartmentWrapper::construct(JSContext *cx, JSObject *wrapperArg, unsigned
                 return false;
             argv[n] = arg;
         }
-        if (!Wrapper::construct(cx, wrapper, argc, argv, rvalArg))
+        if (!Wrapper::construct(cx, wrapper, argc, argv, rval))
             return false;
     }
-    RootedValue rval(cx, *rvalArg);
-    bool ok = cx->compartment->wrap(cx, &rval);
-    *rvalArg = rval;
-    return ok;
+    return cx->compartment->wrap(cx, rval);
 }
 
 bool
@@ -741,7 +562,8 @@ CrossCompartmentWrapper::nativeCall(JSContext *cx, IsAcceptableThis test, Native
 }
 
 bool
-CrossCompartmentWrapper::hasInstance(JSContext *cx, HandleObject wrapper, MutableHandleValue v, bool *bp)
+CrossCompartmentWrapper::hasInstance(JSContext *cx, HandleObject wrapper, MutableHandleValue v,
+                                     bool *bp)
 {
     AutoCompartment call(cx, wrappedObject(wrapper));
     if (!cx->compartment->wrap(cx, v))
@@ -750,9 +572,8 @@ CrossCompartmentWrapper::hasInstance(JSContext *cx, HandleObject wrapper, Mutabl
 }
 
 JSString *
-CrossCompartmentWrapper::obj_toString(JSContext *cx, JSObject *wrapperArg)
+CrossCompartmentWrapper::obj_toString(JSContext *cx, HandleObject wrapper)
 {
-    RootedObject wrapper(cx, wrapperArg);
     RootedString str(cx);
     {
         AutoCompartment call(cx, wrappedObject(wrapper));
@@ -766,9 +587,8 @@ CrossCompartmentWrapper::obj_toString(JSContext *cx, JSObject *wrapperArg)
 }
 
 JSString *
-CrossCompartmentWrapper::fun_toString(JSContext *cx, JSObject *wrapperArg, unsigned indent)
+CrossCompartmentWrapper::fun_toString(JSContext *cx, HandleObject wrapper, unsigned indent)
 {
-    RootedObject wrapper(cx, wrapperArg);
     RootedString str(cx);
     {
         AutoCompartment call(cx, wrappedObject(wrapper));
@@ -782,51 +602,40 @@ CrossCompartmentWrapper::fun_toString(JSContext *cx, JSObject *wrapperArg, unsig
 }
 
 bool
-CrossCompartmentWrapper::regexp_toShared(JSContext *cx, JSObject *wrapperArg, RegExpGuard *g)
+CrossCompartmentWrapper::regexp_toShared(JSContext *cx, HandleObject wrapper, RegExpGuard *g)
 {
-    RootedObject wrapper(cx, wrapperArg);
     AutoCompartment call(cx, wrappedObject(wrapper));
     return Wrapper::regexp_toShared(cx, wrapper, g);
 }
 
 bool
-CrossCompartmentWrapper::defaultValue(JSContext *cx, JSObject *wrapper, JSType hint, Value *vpArg)
+CrossCompartmentWrapper::defaultValue(JSContext *cx, HandleObject wrapper, JSType hint,
+                                      MutableHandleValue vp)
 {
-    if (!Wrapper::defaultValue(cx, wrapper, hint, vpArg))
+    if (!Wrapper::defaultValue(cx, wrapper, hint, vp))
         return false;
-
-    RootedValue vp(cx, *vpArg);
-    bool ok = cx->compartment->wrap(cx, &vp);
-    *vpArg = vp;
-    return ok;
+    return cx->compartment->wrap(cx, vp);
 }
 
 bool
-CrossCompartmentWrapper::getPrototypeOf(JSContext *cx, JSObject *wrapperArg, JSObject **protop)
+CrossCompartmentWrapper::getPrototypeOf(JSContext *cx, HandleObject wrapper,
+                                        MutableHandleObject protop)
 {
-    RootedObject wrapper(cx, wrapperArg);
-    assertSameCompartment(cx, wrapper);
-
     if (!wrapper->getTaggedProto().isLazy()) {
-        *protop = wrapper->getTaggedProto().toObjectOrNull();
+        protop.set(wrapper->getTaggedProto().toObjectOrNull());
         return true;
     }
 
-    RootedObject proto(cx);
     {
         RootedObject wrapped(cx, wrappedObject(wrapper));
         AutoCompartment call(cx, wrapped);
-        if (!JSObject::getProto(cx, wrapped, &proto))
+        if (!JSObject::getProto(cx, wrapped, protop))
             return false;
-        if (proto)
-            proto->setDelegate(cx);
+        if (protop)
+            protop->setDelegate(cx);
     }
 
-    if (!wrapper->compartment()->wrap(cx, proto.address()))
-        return false;
-
-    *protop = proto;
-    return true;
+    return cx->compartment->wrap(cx, protop.address());
 }
 
 CrossCompartmentWrapper CrossCompartmentWrapper::singleton(0u);
@@ -838,11 +647,31 @@ SecurityWrapper<Base>::SecurityWrapper(unsigned flags)
   : Base(flags)
 {
     Base::setSafeToUnwrap(false);
+    BaseProxyHandler::setHasPolicy(true);
 }
 
 template <class Base>
 bool
-SecurityWrapper<Base>::enter(JSContext *cx, JSObject *wrapper, jsid id,
+SecurityWrapper<Base>::isExtensible(JSObject *wrapper)
+{
+    // Just like BaseProxyHandler, SecurityWrappers claim by default to always
+    // be extensible, so as not to leak information about the state of the
+    // underlying wrapped thing.
+    return true;
+}
+
+template <class Base>
+bool
+SecurityWrapper<Base>::preventExtensions(JSContext *cx, HandleObject wrapper)
+{
+    // See above.
+    JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_UNWRAP_DENIED);
+    return false;
+}
+
+template <class Base>
+bool
+SecurityWrapper<Base>::enter(JSContext *cx, HandleObject wrapper, HandleId id,
                              Wrapper::Action act, bool *bp)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_UNWRAP_DENIED);
@@ -850,8 +679,8 @@ SecurityWrapper<Base>::enter(JSContext *cx, JSObject *wrapper, jsid id,
     return false;
 }
 
- template <class Base>
- bool
+template <class Base>
+bool
 SecurityWrapper<Base>::nativeCall(JSContext *cx, IsAcceptableThis test, NativeImpl impl,
                                   CallArgs args)
 {
@@ -861,22 +690,22 @@ SecurityWrapper<Base>::nativeCall(JSContext *cx, IsAcceptableThis test, NativeIm
 
 template <class Base>
 bool
-SecurityWrapper<Base>::objectClassIs(JSObject *obj, ESClassValue classValue, JSContext *cx)
+SecurityWrapper<Base>::objectClassIs(HandleObject obj, ESClassValue classValue, JSContext *cx)
 {
     return false;
 }
 
 template <class Base>
 bool
-SecurityWrapper<Base>::regexp_toShared(JSContext *cx, JSObject *obj, RegExpGuard *g)
+SecurityWrapper<Base>::regexp_toShared(JSContext *cx, HandleObject obj, RegExpGuard *g)
 {
     return Base::regexp_toShared(cx, obj, g);
 }
 
 template <class Base>
 bool
-SecurityWrapper<Base>::defineProperty(JSContext *cx, JSObject *wrapper,
-                                      jsid id, PropertyDescriptor *desc)
+SecurityWrapper<Base>::defineProperty(JSContext *cx, HandleObject wrapper,
+                                      HandleId id, PropertyDescriptor *desc)
 {
     if (desc->getter || desc->setter) {
         JSString *str = IdToString(cx, id);
@@ -898,7 +727,22 @@ DeadObjectProxy::DeadObjectProxy()
 }
 
 bool
-DeadObjectProxy::getPropertyDescriptor(JSContext *cx, JSObject *wrapper, jsid id,
+DeadObjectProxy::isExtensible(JSObject *proxy)
+{
+    // This is kind of meaningless, but dead-object semantics aside,
+    // [[Extensible]] always being true is consistent with other proxy types.
+    return true;
+}
+
+bool
+DeadObjectProxy::preventExtensions(JSContext *cx, HandleObject proxy)
+{
+    JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
+    return false;
+}
+
+bool
+DeadObjectProxy::getPropertyDescriptor(JSContext *cx, HandleObject wrapper, HandleId id,
                                        PropertyDescriptor *desc, unsigned flags)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
@@ -906,7 +750,7 @@ DeadObjectProxy::getPropertyDescriptor(JSContext *cx, JSObject *wrapper, jsid id
 }
 
 bool
-DeadObjectProxy::getOwnPropertyDescriptor(JSContext *cx, JSObject *wrapper, jsid id,
+DeadObjectProxy::getOwnPropertyDescriptor(JSContext *cx, HandleObject wrapper, HandleId id,
                                           PropertyDescriptor *desc, unsigned flags)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
@@ -914,7 +758,7 @@ DeadObjectProxy::getOwnPropertyDescriptor(JSContext *cx, JSObject *wrapper, jsid
 }
 
 bool
-DeadObjectProxy::defineProperty(JSContext *cx, JSObject *wrapper, jsid id,
+DeadObjectProxy::defineProperty(JSContext *cx, HandleObject wrapper, HandleId id,
                                 PropertyDescriptor *desc)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
@@ -922,7 +766,7 @@ DeadObjectProxy::defineProperty(JSContext *cx, JSObject *wrapper, jsid id,
 }
 
 bool
-DeadObjectProxy::getOwnPropertyNames(JSContext *cx, JSObject *wrapper,
+DeadObjectProxy::getOwnPropertyNames(JSContext *cx, HandleObject wrapper,
                                      AutoIdVector &props)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
@@ -930,30 +774,29 @@ DeadObjectProxy::getOwnPropertyNames(JSContext *cx, JSObject *wrapper,
 }
 
 bool
-DeadObjectProxy::delete_(JSContext *cx, JSObject *wrapper, jsid id, bool *bp)
+DeadObjectProxy::delete_(JSContext *cx, HandleObject wrapper, HandleId id, bool *bp)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
 }
 
 bool
-DeadObjectProxy::enumerate(JSContext *cx, JSObject *wrapper,
-                           AutoIdVector &props)
+DeadObjectProxy::enumerate(JSContext *cx, HandleObject wrapper, AutoIdVector &props)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
 }
 
 bool
-DeadObjectProxy::call(JSContext *cx, JSObject *wrapper, unsigned argc, Value *vp)
+DeadObjectProxy::call(JSContext *cx, HandleObject wrapper, unsigned argc, Value *vp)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
 }
 
 bool
-DeadObjectProxy::construct(JSContext *cx, JSObject *wrapper, unsigned argc,
-                           Value *vp, Value *rval)
+DeadObjectProxy::construct(JSContext *cx, HandleObject wrapper, unsigned argc,
+                           Value *vp, MutableHandleValue rval)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
@@ -967,58 +810,57 @@ DeadObjectProxy::nativeCall(JSContext *cx, IsAcceptableThis test, NativeImpl imp
 }
 
 bool
-DeadObjectProxy::hasInstance(JSContext *cx, HandleObject proxy, MutableHandleValue v,
-                             bool *bp)
+DeadObjectProxy::hasInstance(JSContext *cx, HandleObject proxy, MutableHandleValue v, bool *bp)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
 }
 
 bool
-DeadObjectProxy::objectClassIs(JSObject *obj, ESClassValue classValue, JSContext *cx)
+DeadObjectProxy::objectClassIs(HandleObject obj, ESClassValue classValue, JSContext *cx)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
 }
 
 JSString *
-DeadObjectProxy::obj_toString(JSContext *cx, JSObject *wrapper)
+DeadObjectProxy::obj_toString(JSContext *cx, HandleObject wrapper)
 {
     return JS_NewStringCopyZ(cx, "[object DeadObject]");
 }
 
 JSString *
-DeadObjectProxy::fun_toString(JSContext *cx, JSObject *proxy, unsigned indent)
+DeadObjectProxy::fun_toString(JSContext *cx, HandleObject proxy, unsigned indent)
 {
     return NULL;
 }
 
 bool
-DeadObjectProxy::regexp_toShared(JSContext *cx, JSObject *proxy, RegExpGuard *g)
+DeadObjectProxy::regexp_toShared(JSContext *cx, HandleObject proxy, RegExpGuard *g)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
 }
 
 bool
-DeadObjectProxy::defaultValue(JSContext *cx, JSObject *obj, JSType hint, Value *vp)
+DeadObjectProxy::defaultValue(JSContext *cx, HandleObject obj, JSType hint, MutableHandleValue vp)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
 }
 
 bool
-DeadObjectProxy::getElementIfPresent(JSContext *cx, JSObject *obj, JSObject *receiver,
-                                     uint32_t index, Value *vp, bool *present)
+DeadObjectProxy::getElementIfPresent(JSContext *cx, HandleObject obj, HandleObject receiver,
+                                     uint32_t index, MutableHandleValue vp, bool *present)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
 }
 
 bool
-DeadObjectProxy::getPrototypeOf(JSContext *cx, JSObject *proxy, JSObject **protop)
+DeadObjectProxy::getPrototypeOf(JSContext *cx, HandleObject proxy, MutableHandleObject protop)
 {
-    *protop = NULL;
+    protop.set(NULL);
     return true;
 }
 
@@ -1029,7 +871,7 @@ JSObject *
 js::NewDeadProxyObject(JSContext *cx, JSObject *parent)
 {
     return NewProxyObject(cx, &DeadObjectProxy::singleton, NullValue(),
-                          NULL, parent, NULL, NULL);
+                          NULL, parent, ProxyNotCallable);
 }
 
 bool
@@ -1043,8 +885,8 @@ NukeSlot(JSObject *wrapper, uint32_t slot, Value v)
 {
     Value old = wrapper->getSlot(slot);
     if (old.isMarkable()) {
-        Cell *cell = static_cast<Cell *>(old.toGCThing());
-        AutoMarkInDeadZone amd(cell->zone());
+        Zone *zone = ZoneOfValue(old);
+        AutoMarkInDeadZone amd(zone);
         wrapper->setReservedSlot(slot, v);
     } else {
         wrapper->setReservedSlot(slot, v);
@@ -1181,6 +1023,7 @@ js::RemapWrapper(JSContext *cx, JSObject *wobjArg, JSObject *newTargetArg)
 
     // Update the entry in the compartment's wrapper map to point to the old
     // wrapper, which has now been updated (via reuse or swap).
+    JS_ASSERT(wobj->isWrapper());
     wcompartment->putWrapper(ObjectValue(*newTarget), ObjectValue(*wobj));
     return true;
 }
@@ -1195,7 +1038,7 @@ js::RemapAllWrappersForObject(JSContext *cx, JSObject *oldTargetArg,
     RootedObject newTarget(cx, newTargetArg);
 
     AutoWrapperVector toTransplant(cx);
-    if (!toTransplant.reserve(cx->runtime->compartments.length()))
+    if (!toTransplant.reserve(cx->runtime->numCompartments))
         return false;
 
     for (CompartmentsIter c(cx->runtime); !c.done(); c.next()) {
@@ -1236,7 +1079,7 @@ js::RecomputeWrappers(JSContext *cx, const CompartmentFilter &sourceFilter,
                 continue;
 
             // Filter by target compartment.
-            if (!targetFilter.match(k.wrapped->compartment()))
+            if (!targetFilter.match(static_cast<JSObject *>(k.wrapped)->compartment()))
                 continue;
 
             // Add it to the list.

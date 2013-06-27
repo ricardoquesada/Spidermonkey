@@ -27,8 +27,8 @@ using namespace js;
 using namespace js::ion;
 
 // shared
-CodeGeneratorARM::CodeGeneratorARM(MIRGenerator *gen, LIRGraph *graph)
-  : CodeGeneratorShared(gen, graph),
+CodeGeneratorARM::CodeGeneratorARM(MIRGenerator *gen, LIRGraph *graph, MacroAssembler *masm)
+  : CodeGeneratorShared(gen, graph, masm),
     deoptLabel_(NULL)
 {
 }
@@ -106,6 +106,7 @@ CodeGeneratorARM::visitTestIAndBranch(LTestIAndBranch *test)
 bool
 CodeGeneratorARM::visitCompare(LCompare *comp)
 {
+    Assembler::Condition cond = JSOpToCondition(comp->mir()->compareType(), comp->jsop());
     const LAllocation *left = comp->getOperand(0);
     const LAllocation *right = comp->getOperand(1);
     const LDefinition *def = comp->getDef(0);
@@ -115,14 +116,14 @@ CodeGeneratorARM::visitCompare(LCompare *comp)
     else
         masm.ma_cmp(ToRegister(left), ToOperand(right));
     masm.ma_mov(Imm32(0), ToRegister(def));
-    masm.ma_mov(Imm32(1), ToRegister(def), NoSetCond, JSOpToCondition(comp->jsop()));
+    masm.ma_mov(Imm32(1), ToRegister(def), NoSetCond, cond);
     return true;
 }
 
 bool
 CodeGeneratorARM::visitCompareAndBranch(LCompareAndBranch *comp)
 {
-    Assembler::Condition cond = JSOpToCondition(comp->jsop());
+    Assembler::Condition cond = JSOpToCondition(comp->mir()->compareType(), comp->jsop());
     if (comp->right()->isConstant())
         masm.ma_cmp(ToRegister(comp->left()), Imm32(ToInt32(comp->right())));
     else
@@ -187,6 +188,23 @@ bool
 CodeGeneratorARM::bailoutFrom(Label *label, LSnapshot *snapshot)
 {
     JS_ASSERT(label->used() && !label->bound());
+
+    CompileInfo &info = snapshot->mir()->block()->info();
+    switch (info.executionMode()) {
+      case ParallelExecution: {
+        // In parallel mode, make no attempt to recover, just signal an error.
+        Label *ool;
+        if (!ensureOutOfLineParallelAbort(&ool))
+            return false;
+        masm.retarget(label, ool);
+        return true;
+      }
+      case SequentialExecution:
+        break;
+      default:
+        JS_NOT_REACHED("No such execution mode");
+    }
+
     if (!encode(snapshot))
         return false;
 
@@ -1155,26 +1173,6 @@ CodeGeneratorARM::visitUnbox(LUnbox *unbox)
     return true;
 }
 
-void
-CodeGeneratorARM::linkAbsoluteLabels()
-{
-    // arm doesn't have deferred doubles, so this whole thing should be a NOP (right?)
-    // deferred doubles are an x86 mechanism for loading doubles into registers by storing
-    // them after the function body, then referring to them by their absolute address.
-    // On arm, everything should just go in a pool.
-# if 0
-    JS_NOT_REACHED("Absolute Labels NYI");
-    UnrootedScript script = gen->info().script();
-    IonCode *method = script->ion->method();
-
-    for (size_t i = 0; i < deferredDoubles_.length(); i++) {
-        DeferredDouble *d = deferredDoubles_[i];
-        const Value &v = script->ion->getConstant(d->index());
-        MacroAssembler::Bind(method, d->label(), &v);
-    }
-#endif
-}
-
 bool
 CodeGeneratorARM::visitDouble(LDouble *ins)
 {
@@ -1263,7 +1261,7 @@ CodeGeneratorARM::visitCompareB(LCompareB *lir)
             masm.cmp32(lhs.payloadReg(), Imm32(rhs->toConstant()->toBoolean()));
         else
             masm.cmp32(lhs.payloadReg(), ToRegister(rhs));
-        masm.emitSet(JSOpToCondition(mir->jsop()), output);
+        masm.emitSet(JSOpToCondition(mir->compareType(), mir->jsop()), output);
         masm.jump(&done);
     }
 
@@ -1294,7 +1292,7 @@ CodeGeneratorARM::visitCompareBAndBranch(LCompareBAndBranch *lir)
         masm.cmp32(lhs.payloadReg(), Imm32(rhs->toConstant()->toBoolean()));
     else
         masm.cmp32(lhs.payloadReg(), ToRegister(rhs));
-    emitBranch(JSOpToCondition(mir->jsop()), lir->ifTrue(), lir->ifFalse());
+    emitBranch(JSOpToCondition(mir->compareType(), mir->jsop()), lir->ifTrue(), lir->ifFalse());
     return true;
 }
 
@@ -1302,7 +1300,7 @@ bool
 CodeGeneratorARM::visitCompareV(LCompareV *lir)
 {
     MCompare *mir = lir->mir();
-    Assembler::Condition cond = JSOpToCondition(mir->jsop());
+    Assembler::Condition cond = JSOpToCondition(mir->compareType(), mir->jsop());
     const ValueOperand lhs = ToValue(lir, LCompareV::LhsInput);
     const ValueOperand rhs = ToValue(lir, LCompareV::RhsInput);
     const Register output = ToRegister(lir->output());
@@ -1331,7 +1329,7 @@ bool
 CodeGeneratorARM::visitCompareVAndBranch(LCompareVAndBranch *lir)
 {
     MCompare *mir = lir->mir();
-    Assembler::Condition cond = JSOpToCondition(mir->jsop());
+    Assembler::Condition cond = JSOpToCondition(mir->compareType(), mir->jsop());
     const ValueOperand lhs = ToValue(lir, LCompareVAndBranch::LhsInput);
     const ValueOperand rhs = ToValue(lir, LCompareVAndBranch::RhsInput);
 
@@ -1351,6 +1349,14 @@ CodeGeneratorARM::visitCompareVAndBranch(LCompareVAndBranch *lir)
 
     return true;
 }
+
+bool
+CodeGeneratorARM::visitUInt32ToDouble(LUInt32ToDouble *lir)
+{
+    masm.convertUInt32ToDouble(ToRegister(lir->input()), ToFloatRegister(lir->output()));
+    return true;
+}
+
 bool
 CodeGeneratorARM::visitNotI(LNotI *ins)
 {
@@ -1564,26 +1570,6 @@ CodeGeneratorARM::visitImplicitThis(LImplicitThis *lir)
         return false;
 
     masm.moveValue(UndefinedValue(), out);
-    return true;
-}
-
-bool
-CodeGeneratorARM::visitRecompileCheck(LRecompileCheck *lir)
-{
-    Register tmp = ToRegister(lir->tempInt());
-    size_t *addr = gen->info().script()->addressOfUseCount();
-
-    // Bump the script's use count. Note that it's safe to bake in this pointer
-    // since scripts are never nursery allocated and jitcode will be purged before
-    // doing a compacting GC.
-    masm.load32(AbsoluteAddress(addr), tmp);
-    masm.ma_add(Imm32(1), tmp);
-    masm.store32(tmp, AbsoluteAddress(addr));
-
-    // Bailout if the script is hot.
-    masm.ma_cmp(tmp, Imm32(lir->mir()->minUses()));
-    if (!bailoutIf(Assembler::AboveOrEqual, lir->snapshot()))
-        return false;
     return true;
 }
 

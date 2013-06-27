@@ -62,6 +62,7 @@
 #include "frontend/BytecodeCompiler.h"
 #include "gc/Marking.h"
 #include "gc/Memory.h"
+#include "ion/AsmJS.h"
 #include "js/CharacterEncoding.h"
 #include "js/MemoryMetrics.h"
 #include "vm/Debugger.h"
@@ -176,6 +177,11 @@ const jsval JSVAL_ONE   = IMPL_TO_JSVAL(BUILD_JSVAL(JSVAL_TAG_INT32,     1));
 const jsval JSVAL_FALSE = IMPL_TO_JSVAL(BUILD_JSVAL(JSVAL_TAG_BOOLEAN,   JS_FALSE));
 const jsval JSVAL_TRUE  = IMPL_TO_JSVAL(BUILD_JSVAL(JSVAL_TAG_BOOLEAN,   JS_TRUE));
 const jsval JSVAL_VOID  = IMPL_TO_JSVAL(BUILD_JSVAL(JSVAL_TAG_UNDEFINED, 0));
+
+const jsid voidIdValue = JSID_VOID;
+const jsid emptyIdValue = JSID_EMPTY;
+const HandleId JS::JSID_VOIDHANDLE = HandleId::fromMarkedLocation(&voidIdValue);
+const HandleId JS::JSID_EMPTYHANDLE = HandleId::fromMarkedLocation(&emptyIdValue);
 
 /* Make sure that jschar is two bytes unsigned integer */
 JS_STATIC_ASSERT((jschar)-1 > 0);
@@ -666,63 +672,55 @@ static JSBool js_NewRuntimeWasCalled = JS_FALSE;
 mozilla::ThreadLocal<PerThreadData *> js::TlsPerThreadData;
 
 #ifdef DEBUG
-JS_FRIEND_API(void)
-JS::EnterAssertNoGCScope()
-{
-    ++TlsPerThreadData.get()->gcAssertNoGCDepth;
-}
-
-JS_FRIEND_API(void)
-JS::LeaveAssertNoGCScope()
-{
-    --TlsPerThreadData.get()->gcAssertNoGCDepth;
-    JS_ASSERT(TlsPerThreadData.get()->gcAssertNoGCDepth >= 0);
-}
-
-JS_FRIEND_API(bool)
-JS::InNoGCScope()
-{
-    return TlsPerThreadData.get()->gcAssertNoGCDepth > 0;
-}
-
 JS_FRIEND_API(bool)
 JS::isGCEnabled()
 {
     return !TlsPerThreadData.get()->suppressGC;
 }
-
-JS_FRIEND_API(bool)
-JS::NeedRelaxedRootChecks()
-{
-    return TlsPerThreadData.get()->gcRelaxRootChecks;
-}
 #else
-JS_FRIEND_API(void) JS::EnterAssertNoGCScope() {}
-JS_FRIEND_API(void) JS::LeaveAssertNoGCScope() {}
-JS_FRIEND_API(bool) JS::InNoGCScope() { return false; }
 JS_FRIEND_API(bool) JS::isGCEnabled() { return true; }
-JS_FRIEND_API(bool) JS::NeedRelaxedRootChecks() { return false; }
 #endif
 
 static const JSSecurityCallbacks NullSecurityCallbacks = { };
 
-js::PerThreadData::PerThreadData(JSRuntime *runtime)
+PerThreadData::PerThreadData(JSRuntime *runtime)
   : PerThreadDataFriendFields(),
     runtime_(runtime),
-#ifdef DEBUG
-    gcRelaxRootChecks(false),
-    gcAssertNoGCDepth(0),
-#endif
     ionTop(NULL),
     ionJSContext(NULL),
     ionStackLimit(0),
     ionActivation(NULL),
+    asmJSActivationStack_(NULL),
+# ifdef JS_THREADSAFE
+    asmJSActivationStackLock_(NULL),
+# endif
     suppressGC(0)
 {}
+
+bool
+PerThreadData::init()
+{
+#ifdef JS_THREADSAFE
+    asmJSActivationStackLock_ = PR_NewLock();
+    if (!asmJSActivationStackLock_)
+        return false;
+#endif
+    return true;
+}
+
+PerThreadData::~PerThreadData()
+{
+#ifdef JS_THREADSAFE
+    if (asmJSActivationStackLock_)
+        PR_DestroyLock(asmJSActivationStackLock_);
+#endif
+}
 
 JSRuntime::JSRuntime(JSUseHelperThreads useHelperThreads)
   : mainThread(this),
     atomsCompartment(NULL),
+    systemZone(NULL),
+    numCompartments(0),
     localeCallbacks(NULL),
     defaultLocale(NULL),
 #ifdef JS_THREADSAFE
@@ -783,7 +781,7 @@ JSRuntime::JSRuntime(JSUseHelperThreads useHelperThreads)
     gcNumber(0),
     gcStartNumber(0),
     gcIsFull(false),
-    gcTriggerReason(gcreason::NO_REASON),
+    gcTriggerReason(JS::gcreason::NO_REASON),
     gcStrictCompartmentChecking(false),
 #ifdef DEBUG
     gcDisableStrictProxyCheckingCount(0),
@@ -807,13 +805,16 @@ JSRuntime::JSRuntime(JSUseHelperThreads useHelperThreads)
     gcInterFrameGC(0),
     gcSliceBudget(SliceBudget::Unlimited),
     gcIncrementalEnabled(true),
+    gcGenerationalEnabled(true),
     gcManipulatingDeadZones(false),
     gcObjectsMarkedInDeadZones(0),
     gcPoke(false),
     heapState(Idle),
 #ifdef JSGC_GENERATIONAL
-    gcNursery(),
-    gcStoreBuffer(&gcNursery),
+# ifdef JS_GC_ZEAL
+    gcVerifierNursery(),
+# endif
+    gcStoreBuffer(thisFromCtor()),
 #endif
 #ifdef JS_GC_ZEAL
     gcZeal_(0),
@@ -823,6 +824,7 @@ JSRuntime::JSRuntime(JSUseHelperThreads useHelperThreads)
     gcIncrementalLimit(0),
 #endif
     gcValidate(true),
+    gcFullCompartmentChecks(false),
     gcCallback(NULL),
     gcSliceCallback(NULL),
     gcFinalizeCallback(NULL),
@@ -862,9 +864,11 @@ JSRuntime::JSRuntime(JSUseHelperThreads useHelperThreads)
     structuredCloneCallbacks(NULL),
     telemetryCallback(NULL),
     propertyRemovals(0),
+#if !ENABLE_INTL_API
     thousandsSeparator(0),
     decimalSeparator(0),
     numGrouping(0),
+#endif
     mathCache_(NULL),
     dtoaState(NULL),
     trustedPrincipals_(NULL),
@@ -883,6 +887,9 @@ JSRuntime::JSRuntime(JSUseHelperThreads useHelperThreads)
     ionReturnOverride_(MagicValue(JS_ARG_POISON)),
     useHelperThreads_(useHelperThreads),
     requestedHelperThreadCount(-1),
+#ifdef DEBUG
+    enteredPolicy(NULL),
+#endif
     rngNonce(0)
 {
     /* Initialize infallibly first, so we can goto bad and JS_DestroyRuntime. */
@@ -903,6 +910,9 @@ JSRuntime::init(uint32_t maxbytes)
     ownerThread_ = PR_GetCurrentThread();
 #endif
 
+    if (!mainThread.init())
+        return false;
+
     js::TlsPerThreadData.set(&mainThread);
 
 #ifdef JS_METHODJIT_SPEW
@@ -919,16 +929,23 @@ JSRuntime::init(uint32_t maxbytes)
     if (size)
         SetMarkStackLimit(this, atoi(size));
 
-    if (!(atomsCompartment = this->new_<JSCompartment>(this)) ||
-        !atomsCompartment->init(NULL) ||
-        !compartments.append(atomsCompartment))
-    {
-        js_delete(atomsCompartment);
+    ScopedJSDeletePtr<Zone> atomsZone(new_<Zone>(this));
+    if (!atomsZone)
         return false;
-    }
 
-    atomsCompartment->zone()->isSystem = true;
-    atomsCompartment->zone()->setGCLastBytes(8192, GC_NORMAL);
+    ScopedJSDeletePtr<JSCompartment> atomsCompartment(new_<JSCompartment>(atomsZone.get()));
+    if (!atomsCompartment || !atomsCompartment->init(NULL))
+        return false;
+
+    zones.append(atomsZone.get());
+    atomsZone->compartments.append(atomsCompartment.get());
+
+    atomsCompartment->isSystem = true;
+    atomsZone->isSystem = true;
+    atomsZone->setGCLastBytes(8192, GC_NORMAL);
+
+    atomsZone.forget();
+    this->atomsCompartment = atomsCompartment.forget();
 
     if (!InitAtoms(this))
         return false;
@@ -943,9 +960,6 @@ JSRuntime::init(uint32_t maxbytes)
     dateTimeInfo.updateTimeZoneAdjustment();
 
     if (!stackSpace.init())
-        return false;
-
-    if (!scriptFilenameTable.init())
         return false;
 
     if (!scriptDataTable.init())
@@ -976,7 +990,6 @@ JSRuntime::~JSRuntime()
      * Even though all objects in the compartment are dead, we may have keep
      * some filenames around because of gcKeepAtoms.
      */
-    FreeScriptFilenames(this);
     FreeScriptData(this);
 
 #ifdef JS_THREADSAFE
@@ -1003,7 +1016,9 @@ JSRuntime::~JSRuntime()
     }
 #endif
 
+#if !ENABLE_INTL_API
     FinishRuntimeNumberState(this);
+#endif
     FinishAtoms(this);
 
     if (dtoaState)
@@ -1042,6 +1057,9 @@ JSRuntime::setOwnerThread()
     nativeStackBase = GetNativeStackBase();
     if (nativeStackQuota)
         JS_SetNativeStackQuota(this, nativeStackQuota);
+#ifdef XP_MACOSX
+    asmJSMachExceptionHandler.setCurrentThread();
+#endif
 }
 
 void
@@ -1057,6 +1075,9 @@ JSRuntime::clearOwnerThread()
     mainThread.nativeStackLimit = UINTPTR_MAX;
 #else
     mainThread.nativeStackLimit = 0;
+#endif
+#ifdef XP_MACOSX
+    asmJSMachExceptionHandler.clearCurrentThread();
 #endif
 }
 
@@ -1135,14 +1156,12 @@ JS_NewRuntime(uint32_t maxbytes, JSUseHelperThreads useHelperThreads)
         return NULL;
     }
 
-    Probes::createRuntime(rt);
     return rt;
 }
 
 JS_PUBLIC_API(void)
 JS_DestroyRuntime(JSRuntime *rt)
 {
-    Probes::destroyRuntime(rt);
     js_free(rt->defaultLocale);
     js_delete(rt);
 }
@@ -1150,7 +1169,6 @@ JS_DestroyRuntime(JSRuntime *rt)
 JS_PUBLIC_API(void)
 JS_ShutDown(void)
 {
-    Probes::shutdown();
     PRMJ_NowShutdown();
 }
 
@@ -1480,14 +1498,6 @@ JSAutoCompartment::JSAutoCompartment(JSContext *cx, JSScript *target)
     cx_->enterCompartment(target->compartment());
 }
 
-JSAutoCompartment::JSAutoCompartment(JSContext *cx, JSString *target)
-  : cx_(cx),
-    oldCompartment_(cx->compartment)
-{
-    AssertHeapIsIdleOrIterating(cx_);
-    cx_->enterCompartment(target->compartment());
-}
-
 JSAutoCompartment::~JSAutoCompartment()
 {
     cx_->leaveCompartment(oldCompartment_);
@@ -1510,6 +1520,8 @@ JS_WrapObject(JSContext *cx, JSObject **objp)
 {
     AssertHeapIsIdle(cx);
     CHECK_REQUEST(cx);
+    if (*objp)
+        JS::ExposeGCThingToActiveJS(*objp, JSTRACE_OBJECT);
     return cx->compartment->wrap(cx, objp);
 }
 
@@ -1518,6 +1530,8 @@ JS_WrapValue(JSContext *cx, jsval *vp)
 {
     AssertHeapIsIdle(cx);
     CHECK_REQUEST(cx);
+    if (vp)
+        JS::ExposeValueToActiveJS(*vp);
     RootedValue value(cx, *vp);
     bool ok = cx->compartment->wrap(cx, &value);
     *vp = value.get();
@@ -1529,6 +1543,13 @@ JS_WrapId(JSContext *cx, jsid *idp)
 {
   AssertHeapIsIdle(cx);
   CHECK_REQUEST(cx);
+  if (idp) {
+      jsid id = *idp;
+      if (JSID_IS_STRING(id))
+          JS::ExposeGCThingToActiveJS(JSID_TO_STRING(id), JSTRACE_STRING);
+      else if (JSID_IS_OBJECT(id))
+          JS::ExposeGCThingToActiveJS(JSID_TO_OBJECT(id), JSTRACE_OBJECT);
+  }
   return cx->compartment->wrapId(cx, idp);
 }
 
@@ -1802,7 +1823,9 @@ static JSStdName standard_class_atoms[] = {
     {js_InitWeakMapClass,               EAGER_ATOM_AND_CLASP(WeakMap)},
     {js_InitMapClass,                   EAGER_CLASS_ATOM(Map), &js::MapObject::class_},
     {js_InitSetClass,                   EAGER_CLASS_ATOM(Set), &js::SetObject::class_},
+#ifdef ENABLE_PARALLEL_JS
     {js_InitParallelArrayClass,         EAGER_CLASS_ATOM(ParallelArray), &js::ParallelArrayObject::class_},
+#endif
     {js_InitProxyClass,                 EAGER_ATOM_AND_CLASP(Proxy)},
 #if ENABLE_INTL_API
     {js_InitIntlClass,                  EAGER_ATOM_AND_CLASP(Intl)},
@@ -2422,25 +2445,62 @@ JS_AnchorPtr(void *p)
 {
 }
 
-JS_PUBLIC_API(JSBool)
-JS_LockGCThingRT(JSRuntime *rt, void *gcthing)
-{
-    return js_LockThing(rt, gcthing);
-}
-
-JS_PUBLIC_API(JSBool)
-JS_UnlockGCThingRT(JSRuntime *rt, void *gcthing)
-{
-    js_UnlockThing(rt, gcthing);
-    return true;
-}
-
 JS_PUBLIC_API(void)
 JS_SetExtraGCRootsTracer(JSRuntime *rt, JSTraceDataOp traceOp, void *data)
 {
     AssertHeapIsIdle(rt);
     rt->gcBlackRootsTraceOp = traceOp;
     rt->gcBlackRootsData = data;
+}
+
+JS_PUBLIC_API(void)
+JS_CallValueTracer(JSTracer *trc, Value valueArg, const char *name)
+{
+    Value value = valueArg;
+    MarkValueUnbarriered(trc, &value, name);
+    JS_ASSERT(value == valueArg);
+}
+
+JS_PUBLIC_API(void)
+JS_CallIdTracer(JSTracer *trc, jsid idArg, const char *name)
+{
+    jsid id = idArg;
+    MarkIdUnbarriered(trc, &id, name);
+    JS_ASSERT(id == idArg);
+}
+
+JS_PUBLIC_API(void)
+JS_CallObjectTracer(JSTracer *trc, JSObject *objArg, const char *name)
+{
+    JSObject *obj = objArg;
+    MarkObjectUnbarriered(trc, &obj, name);
+    JS_ASSERT(obj == objArg);
+}
+
+JS_PUBLIC_API(void)
+JS_CallStringTracer(JSTracer *trc, JSString *strArg, const char *name)
+{
+    JSString *str = strArg;
+    MarkStringUnbarriered(trc, &str, name);
+    JS_ASSERT(str == strArg);
+}
+
+JS_PUBLIC_API(void)
+JS_CallScriptTracer(JSTracer *trc, JSScript *scriptArg, const char *name)
+{
+    JSScript *script = scriptArg;
+    MarkScriptUnbarriered(trc, &script, name);
+    JS_ASSERT(script == scriptArg);
+}
+
+JS_PUBLIC_API(void)
+JS_CallGenericTracer(JSTracer *trc, void *gcthingArg, const char *name)
+{
+    void *gcthing = gcthingArg;
+    JSGCTraceKind kind = gc::GetGCThingTraceKind(gcthing);
+    JS_SET_TRACING_NAME(trc, name);
+    MarkKind(trc, &gcthing, kind);
+    JS_ASSERT(gcthing == gcthingArg);
 }
 
 JS_PUBLIC_API(void)
@@ -2460,12 +2520,6 @@ JS_PUBLIC_API(void)
 JS_TraceChildren(JSTracer *trc, void *thing, JSGCTraceKind kind)
 {
     js::TraceChildren(trc, thing, kind);
-}
-
-JS_PUBLIC_API(void)
-JS_CallTracer(JSTracer *trc, void *thing, JSGCTraceKind kind)
-{
-    js::CallTracer(trc, thing, kind);
 }
 
 JS_PUBLIC_API(void)
@@ -2562,7 +2616,7 @@ JS_GetTraceThingInfo(char *buf, size_t bufsize, JSTracer *trc, void *thing,
           case JSTRACE_SCRIPT:
           {
             JSScript *script = static_cast<JSScript *>(thing);
-            JS_snprintf(buf, bufsize, " %s:%u", script->filename, unsigned(script->lineno));
+            JS_snprintf(buf, bufsize, " %s:%u", script->filename(), unsigned(script->lineno));
             break;
           }
 
@@ -2832,8 +2886,8 @@ JS_PUBLIC_API(void)
 JS_GC(JSRuntime *rt)
 {
     AssertHeapIsIdle(rt);
-    PrepareForFullGC(rt);
-    GC(rt, GC_NORMAL, gcreason::API);
+    JS::PrepareForFullGC(rt);
+    GC(rt, GC_NORMAL, JS::gcreason::API);
 }
 
 JS_PUBLIC_API(void)
@@ -2857,12 +2911,9 @@ JS_SetFinalizeCallback(JSRuntime *rt, JSFinalizeCallback cb)
 }
 
 JS_PUBLIC_API(JSBool)
-JS_IsAboutToBeFinalized(void *thing)
+JS_IsAboutToBeFinalized(JSObject **obj)
 {
-    gc::Cell *t = static_cast<gc::Cell *>(thing);
-    bool isDying = IsCellAboutToBeFinalized(&t);
-    JS_ASSERT(t == thing);
-    return isDying;
+    return IsObjectAboutToBeFinalized(obj);
 }
 
 JS_PUBLIC_API(void)
@@ -2912,9 +2963,6 @@ JS_SetGCParameter(JSRuntime *rt, JSGCParamKey key, uint32_t value)
         break;
       case JSGC_ALLOCATION_THRESHOLD:
         rt->gcAllocationThreshold = value * 1024 * 1024;
-        break;
-      case JSGC_ENABLE_GENERATIONAL:
-        rt->gcGenerationalEnabled = bool(value);
         break;
       default:
         JS_ASSERT(key == JSGC_MODE);
@@ -2992,7 +3040,6 @@ JS_NewExternalString(JSContext *cx, const jschar *chars, size_t length,
     AssertHeapIsIdle(cx);
     CHECK_REQUEST(cx);
     JSString *s = JSExternalString::new_(cx, chars, length, fin);
-    Probes::createString(cx, s, length);
     return s;
 }
 
@@ -3285,17 +3332,18 @@ JS_GetObjectId(JSContext *cx, JSRawObject obj, jsid *idp)
     return JS_TRUE;
 }
 
-class AutoHoldCompartment {
+class AutoHoldZone
+{
   public:
-    explicit AutoHoldCompartment(JSCompartment *compartment
-                                 MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : holdp(&compartment->hold)
+    explicit AutoHoldZone(Zone *zone
+                          MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+      : holdp(&zone->hold)
     {
         MOZ_GUARD_OBJECT_NOTIFIER_INIT;
         *holdp = true;
     }
 
-    ~AutoHoldCompartment() {
+    ~AutoHoldZone() {
         *holdp = false;
     }
 
@@ -3305,17 +3353,32 @@ class AutoHoldCompartment {
 };
 
 JS_PUBLIC_API(JSObject *)
-JS_NewGlobalObject(JSContext *cx, JSClass *clasp, JSPrincipals *principals)
+JS_NewGlobalObject(JSContext *cx, JSClass *clasp, JSPrincipals *principals, JS::ZoneSpecifier zoneSpec)
 {
     AssertHeapIsIdle(cx);
     CHECK_REQUEST(cx);
     JS_THREADSAFE_ASSERT(cx->compartment != cx->runtime->atomsCompartment);
 
-    JSCompartment *compartment = NewCompartment(cx, principals);
+    JSRuntime *rt = cx->runtime;
+
+    Zone *zone;
+    if (zoneSpec == JS::SystemZone)
+        zone = rt->systemZone;
+    else if (zoneSpec == JS::FreshZone)
+        zone = NULL;
+    else
+        zone = ((JSObject *)zoneSpec)->zone();
+
+    JSCompartment *compartment = NewCompartment(cx, zone, principals);
     if (!compartment)
         return NULL;
 
-    AutoHoldCompartment hold(compartment);
+    if (zoneSpec == JS::SystemZone) {
+        rt->systemZone = compartment->zone();
+        rt->systemZone->isSystem = true;
+    }
+
+    AutoHoldZone hold(compartment->zone());
 
     JSCompartment *saved = cx->compartment;
     cx->setCompartment(compartment);
@@ -3348,7 +3411,6 @@ JS_NewObject(JSContext *cx, JSClass *jsclasp, JSObject *protoArg, JSObject *pare
     JS_ASSERT(!(clasp->flags & JSCLASS_IS_GLOBAL));
 
     JSObject *obj = NewObjectWithClassProto(cx, clasp, proto, parent);
-    AutoAssertNoGC nogc;
     if (obj) {
         TypeObjectFlags flags = 0;
         if (clasp->emulatesUndefined())
@@ -3379,7 +3441,6 @@ JS_NewObjectWithGivenProto(JSContext *cx, JSClass *jsclasp, JSObject *protoArg, 
     JS_ASSERT(!(clasp->flags & JSCLASS_IS_GLOBAL));
 
     JSObject *obj = NewObjectWithGivenProto(cx, clasp, proto, parent);
-    AutoAssertNoGC nogc;
     if (obj)
         MarkTypeObjectUnknownProperties(cx, obj->type());
     return obj;
@@ -3468,7 +3529,7 @@ LookupPropertyById(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
 #define AUTO_NAMELEN(s,n)   (((n) == (size_t)-1) ? js_strlen(s) : (n))
 
 static JSBool
-LookupResult(JSContext *cx, HandleObject obj, HandleObject obj2, jsid id,
+LookupResult(JSContext *cx, HandleObject obj, HandleObject obj2, HandleId id,
              HandleShape shape, Value *vp)
 {
     if (!shape) {
@@ -4420,15 +4481,15 @@ JS_DeleteProperty(JSContext *cx, JSObject *objArg, const char *name)
     return JS_DeleteProperty2(cx, objArg, name, &junk);
 }
 
-static UnrootedShape
+static RawShape
 LastConfigurableShape(JSObject *obj)
 {
-    for (Shape::Range r(obj->lastProperty()->all()); !r.empty(); r.popFront()) {
-        UnrootedShape shape = &r.front();
+    for (Shape::Range<NoGC> r(obj->lastProperty()); !r.empty(); r.popFront()) {
+        Shape *shape = &r.front();
         if (shape->configurable())
             return shape;
     }
-    return UnrootedShape(NULL);
+    return NULL;
 }
 
 JS_PUBLIC_API(void)
@@ -4452,8 +4513,8 @@ JS_ClearNonGlobalObject(JSContext *cx, JSObject *objArg)
     }
 
     /* Set all remaining writable plain data properties to undefined. */
-    for (Shape::Range r(obj->lastProperty()->all()); !r.empty(); r.popFront()) {
-        UnrootedShape shape = &r.front();
+    for (Shape::Range<NoGC> r(obj->lastProperty()); !r.empty(); r.popFront()) {
+        Shape *shape = &r.front();
         if (shape->isDataDescriptor() &&
             shape->writable() &&
             shape->hasDefaultSetter() &&
@@ -4533,7 +4594,7 @@ prop_iter_trace(JSTracer *trc, RawObject obj)
          * barrier here because the pointer is updated via setPrivate, which
          * always takes a barrier.
          */
-        UnrootedShape tmp = static_cast<RawShape>(pdata);
+        RawShape tmp = static_cast<RawShape>(pdata);
         MarkShapeUnbarriered(trc, &tmp, "prop iter shape");
         obj->setPrivateUnbarriered(tmp);
     } else {
@@ -4597,7 +4658,6 @@ JS_PUBLIC_API(JSBool)
 JS_NextProperty(JSContext *cx, JSObject *iterobjArg, jsid *idp)
 {
     RootedObject iterobj(cx, iterobjArg);
-    AutoAssertNoGC nogc;
 
     AssertHeapIsIdle(cx);
     CHECK_REQUEST(cx);
@@ -4606,7 +4666,7 @@ JS_NextProperty(JSContext *cx, JSObject *iterobjArg, jsid *idp)
     if (i < 0) {
         /* Native case: private data is a property tree node pointer. */
         JS_ASSERT(iterobj->getParent()->isNative());
-        UnrootedShape shape = static_cast<RawShape>(iterobj->getPrivate());
+        RawShape shape = static_cast<RawShape>(iterobj->getPrivate());
 
         while (shape->previous() && !shape->enumerable())
             shape = shape->previous();
@@ -4804,12 +4864,14 @@ JS_CloneFunctionObject(JSContext *cx, JSObject *funobjArg, JSRawObject parentArg
     RootedObject parent(cx, parentArg);
     AssertHeapIsIdle(cx);
     CHECK_REQUEST(cx);
-    assertSameCompartment(cx, parent);  // XXX no funobj for now
+    assertSameCompartment(cx, parent);
+    // Note that funobj can be in a different compartment.
 
     if (!parent)
         parent = cx->global();
 
     if (!funobj->isFunction()) {
+        AutoCompartment ac(cx, funobj);
         ReportIsNotFunction(cx, ObjectValue(*funobj));
         return NULL;
     }
@@ -4827,6 +4889,11 @@ JS_CloneFunctionObject(JSContext *cx, JSObject *funobjArg, JSRawObject parentArg
     }
 
     if (fun->isBoundFunction()) {
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_CANT_CLONE_OBJECT);
+        return NULL;
+    }
+
+    if (fun->isNative() && IsAsmJSModuleNative(fun->native())) {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_CANT_CLONE_OBJECT);
         return NULL;
     }
@@ -4967,22 +5034,22 @@ JS_DefineFunctions(JSContext *cx, JSObject *objArg, JSFunctionSpec *fs)
         }
 
         /*
-         * During creation of the self-hosting global, we ignore all
-         * self-hosted functions, as that means we're currently setting up
-         * the global object that that the self-hosted code is then compiled
-         * in. Self-hosted functions can access each other via their names,
-         * but not via the builtin classes they get installed into.
-         */
-        if (fs->selfHostedName && cx->runtime->isSelfHostingGlobal(cx->global()))
-            return JS_TRUE;
-
-        /*
          * Delay cloning self-hosted functions until they are called. This is
          * achieved by passing DefineFunction a NULL JSNative which
          * produces an interpreted JSFunction where !hasScript. Interpreted
          * call paths then call InitializeLazyFunctionScript if !hasScript.
          */
         if (fs->selfHostedName) {
+            /*
+             * During creation of the self-hosting global, we ignore all
+             * self-hosted functions, as that means we're currently setting up
+             * the global object that the self-hosted code is then compiled
+             * in. Self-hosted functions can access each other via their names,
+             * but not via the builtin classes they get installed into.
+             */
+            if (cx->runtime->isSelfHostingGlobal(cx->global()))
+                continue;
+
             RootedFunction fun(cx, DefineFunction(cx, obj, id, /* native = */ NULL, fs->nargs, 0,
                                                   JSFunction::ExtendedFinalizeKind, SingletonObject));
             if (!fun)
@@ -5193,7 +5260,7 @@ JS::Compile(JSContext *cx, HandleObject obj, CompileOptions options,
     JS_ASSERT_IF(options.principals, cx->compartment->principals == options.principals);
     AutoLastFrameCheck lfc(cx);
 
-    return frontend::CompileScript(cx, obj, NullFramePtr(), options, chars, length);
+    return frontend::CompileScript(cx, obj, NullPtr(), options, chars, length);
 }
 
 JSScript *
@@ -5308,7 +5375,8 @@ JS_BufferIsCompilableUnit(JSContext *cx, JSObject *objArg, const char *utf8, siz
     {
         CompileOptions options(cx);
         options.setCompileAndGo(false);
-        Parser parser(cx, options, chars, length, /* foldConstants = */ true);
+        Parser<frontend::FullParseHandler> parser(cx, options, chars, length,
+                                                  /* foldConstants = */ true);
         if (parser.init()) {
             older = JS_SetErrorReporter(cx, NULL);
             if (!parser.parse(obj) &&
@@ -5372,7 +5440,7 @@ JS::CompileFunction(JSContext *cx, HandleObject obj, CompileOptions options,
     if (!fun)
         return NULL;
 
-    if (!frontend::CompileFunctionBody(cx, fun, options, formals, chars, length))
+    if (!frontend::CompileFunctionBody(cx, &fun, options, formals, chars, length))
         return NULL;
 
     if (obj && funAtom) {
@@ -5525,6 +5593,8 @@ JS_ExecuteScriptVersion(JSContext *cx, JSObject *objArg, JSScript *script, jsval
     return JS_ExecuteScript(cx, obj, script, rval);
 }
 
+static const unsigned LARGE_SCRIPT_LENGTH = 500*1024;
+
 extern JS_PUBLIC_API(bool)
 JS::Evaluate(JSContext *cx, HandleObject obj, CompileOptions options,
              const jschar *chars, size_t length, jsval *rval)
@@ -5547,7 +5617,7 @@ JS::Evaluate(JSContext *cx, HandleObject obj, CompileOptions options,
     options.setCompileAndGo(true);
     options.setNoScriptRval(!rval);
     SourceCompressionToken sct(cx);
-    RootedScript script(cx, frontend::CompileScript(cx, obj, NullFramePtr(), options,
+    RootedScript script(cx, frontend::CompileScript(cx, obj, NullPtr(), options,
                                                     chars, length, NULL, 0, &sct));
     if (!script)
         return false;
@@ -5557,6 +5627,18 @@ JS::Evaluate(JSContext *cx, HandleObject obj, CompileOptions options,
     bool result = Execute(cx, script, *obj, rval);
     if (!sct.complete())
         result = false;
+
+    // After evaluation, the compiled script will not be run again.
+    // script->ensureRanAnalysis allocated 1 analyze::Bytecode for every opcode
+    // which for large scripts means significant memory. Perform a GC eagerly
+    // to clear out this analysis data before anything happens to inhibit the
+    // flushing of this memory (such as setting requestAnimationFrame).
+    if (script->length > LARGE_SCRIPT_LENGTH) {
+        script = NULL;
+        PrepareZoneForGC(cx->zone());
+        GC(cx->runtime, GC_NORMAL, gcreason::FINISH_LARGE_EVALUTE);
+    }
+
     return result;
 }
 
@@ -5976,22 +6058,20 @@ JS_GetStringLength(JSString *str)
 JS_PUBLIC_API(const jschar *)
 JS_GetStringCharsZ(JSContext *cx, JSString *str)
 {
-    AssertHeapIsIdleOrStringIsFlat(cx, str);
-    CHECK_REQUEST(cx);
-    assertSameCompartment(cx, str);
-    JSFlatString *flat = str->ensureFlat(cx);
-    if (!flat)
-        return NULL;
-    return flat->chars();
+    size_t dummy;
+    return JS_GetStringCharsZAndLength(cx, str, &dummy);
 }
 
 JS_PUBLIC_API(const jschar *)
 JS_GetStringCharsZAndLength(JSContext *cx, JSString *str, size_t *plength)
 {
+    /*
+     * Don't require |cx->compartment| to be |str|'s compartment. We don't need
+     * it, and it's annoying for callers.
+     */
     JS_ASSERT(plength);
     AssertHeapIsIdleOrStringIsFlat(cx, str);
     CHECK_REQUEST(cx);
-    assertSameCompartment(cx, str);
     JSFlatString *flat = str->ensureFlat(cx);
     if (!flat)
         return NULL;
@@ -6141,7 +6221,6 @@ JS_DecodeBytes(JSContext *cx, const char *src, size_t srclen, jschar *dst, size_
 JS_PUBLIC_API(char *)
 JS_EncodeString(JSContext *cx, JSRawString str)
 {
-    AutoAssertNoGC nogc;
     AssertHeapIsIdle(cx);
     CHECK_REQUEST(cx);
 
@@ -6150,6 +6229,19 @@ JS_EncodeString(JSContext *cx, JSRawString str)
         return NULL;
 
     return LossyTwoByteCharsToNewLatin1CharsZ(cx, linear->range()).c_str();
+}
+
+JS_PUBLIC_API(char *)
+JS_EncodeStringToUTF8(JSContext *cx, JSRawString str)
+{
+    AssertHeapIsIdle(cx);
+    CHECK_REQUEST(cx);
+
+    JSLinearString *linear = str->ensureLinear(cx);
+    if (!linear)
+        return NULL;
+
+    return TwoByteCharsToNewUTF8CharsZ(cx, linear->range()).c_str();
 }
 
 JS_PUBLIC_API(size_t)
@@ -6219,7 +6311,7 @@ JS_ParseJSON(JSContext *cx, const jschar *chars, uint32_t len, jsval *vp)
     CHECK_REQUEST(cx);
 
     RootedValue reviver(cx, NullValue()), value(cx);
-    if (!ParseJSONWithReviver(cx, StableCharPtr(chars, len), len, reviver, &value))
+    if (!ParseJSONWithReviver(cx, JS::StableCharPtr(chars, len), len, reviver, &value))
         return false;
 
     *vp = value;
@@ -7030,8 +7122,6 @@ JS_IsIdentifier(JSContext *cx, JSString *str, JSBool *isIdentifier)
 JS_PUBLIC_API(JSBool)
 JS_DescribeScriptedCaller(JSContext *cx, JSScript **script, unsigned *lineno)
 {
-    AutoAssertNoGC nogc;
-
     if (script)
         *script = NULL;
     if (lineno)
