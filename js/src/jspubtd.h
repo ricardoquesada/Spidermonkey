@@ -44,6 +44,10 @@ struct Zone;
  * oblivious to the change. This feature can be explicitly disabled in debug
  * builds by defining JS_NO_JSVAL_JSID_STRUCT_TYPES.
  */
+
+// Needed for cocos2d-js
+#define JS_NO_JSVAL_JSID_STRUCT_TYPES 
+
 # if defined(DEBUG) && !defined(JS_NO_JSVAL_JSID_STRUCT_TYPES)
 #  define JS_USE_JSID_STRUCT_TYPES
 # endif
