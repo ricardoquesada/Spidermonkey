@@ -21,6 +21,7 @@
 
 #ifdef __APPLE__
 #include "devtools/sharkctl.h"
+#include "devtools/Instruments.h"
 #endif
 
 using namespace js;
@@ -51,15 +52,37 @@ JS_UnsafeGetLastProfilingError()
     return gLastError;
 }
 
+#ifdef __APPLE__
+static bool
+StartOSXProfiling(const char *profileName = NULL)
+{
+    bool ok = true;
+    const char* profiler = NULL;
+#ifdef MOZ_SHARK
+    ok = Shark::Start();
+    profiler = "Shark";
+#endif
+#ifdef MOZ_INSTRUMENTS
+    ok = Instruments::Start();
+    profiler = "Instruments";
+#endif
+    if (!ok) {
+        if (profileName)
+            UnsafeError("Failed to start %s for %s", profiler, profileName);
+        else
+            UnsafeError("Failed to start %s", profiler);
+        return false;
+    }
+    return true;
+}
+#endif
+
 JS_PUBLIC_API(JSBool)
 JS_StartProfiling(const char *profileName)
 {
     JSBool ok = JS_TRUE;
-#if defined(MOZ_SHARK) && defined(__APPLE__)
-    if (!Shark::Start()) {
-        UnsafeError("Failed to start Shark for %s", profileName);
-        ok = JS_FALSE;
-    }
+#ifdef __APPLE__
+    ok = StartOSXProfiling(profileName);
 #endif
 #ifdef __linux__
     if (!js_StartPerf())
@@ -72,8 +95,13 @@ JS_PUBLIC_API(JSBool)
 JS_StopProfiling(const char *profileName)
 {
     JSBool ok = JS_TRUE;
-#if defined(MOZ_SHARK) && defined(__APPLE__)
+#ifdef __APPLE__
+#ifdef MOZ_SHARK
     Shark::Stop();
+#endif
+#ifdef MOZ_INSTRUMENTS
+    Instruments::Stop(profileName);
+#endif
 #endif
 #ifdef __linux__
     if (!js_StopPerf())
@@ -92,11 +120,21 @@ ControlProfilers(bool toState)
     JSBool ok = JS_TRUE;
 
     if (! Probes::ProfilingActive && toState) {
-#if defined(MOZ_SHARK) && defined(__APPLE__)
-        if (!Shark::Start()) {
-            UnsafeError("Failed to start Shark");
-            ok = JS_FALSE;
+#ifdef __APPLE__
+#if defined(MOZ_SHARK) || defined(MOZ_INSTRUMENTS)
+        const char* profiler;
+#ifdef MOZ_SHARK
+        ok = Shark::Start();
+        profiler = "Shark";
+#endif
+#ifdef MOZ_INSTRUMENTS
+        ok = Instruments::Resume();
+        profiler = "Instruments";
+#endif
+        if (!ok) {
+            UnsafeError("Failed to start %s", profiler);
         }
+#endif
 #endif
 #ifdef MOZ_CALLGRIND
         if (! js_StartCallgrind()) {
@@ -105,8 +143,13 @@ ControlProfilers(bool toState)
         }
 #endif
     } else if (Probes::ProfilingActive && ! toState) {
-#if defined(MOZ_SHARK) && defined(__APPLE__)
+#ifdef __APPLE__
+#ifdef MOZ_SHARK
         Shark::Stop();
+#endif
+#ifdef MOZ_INSTRUMENTS
+        Instruments::Pause();
+#endif
 #endif
 #ifdef MOZ_CALLGRIND
         if (! js_StopCallgrind()) {
@@ -156,15 +199,15 @@ JS_DumpProfile(const char *outfile, const char *profileName)
 struct RequiredStringArg {
     JSContext *mCx;
     char *mBytes;
-    RequiredStringArg(JSContext *cx, unsigned argc, jsval *vp, size_t argi, const char *caller)
+    RequiredStringArg(JSContext *cx, const CallArgs &args, size_t argi, const char *caller)
         : mCx(cx), mBytes(NULL)
     {
-        if (argc <= argi) {
+        if (args.length() <= argi) {
             JS_ReportError(cx, "%s: not enough arguments", caller);
-        } else if (!JSVAL_IS_STRING(JS_ARGV(cx, vp)[argi])) {
+        } else if (!args[argi].isString()) {
             JS_ReportError(cx, "%s: invalid arguments (string expected)", caller);
         } else {
-            mBytes = JS_EncodeString(cx, JSVAL_TO_STRING(JS_ARGV(cx, vp)[argi]));
+            mBytes = JS_EncodeString(cx, args[argi].toString());
         }
     }
     operator void*() {
@@ -179,60 +222,64 @@ struct RequiredStringArg {
 static JSBool
 StartProfiling(JSContext *cx, unsigned argc, jsval *vp)
 {
-    if (argc == 0) {
-        JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_StartProfiling(NULL)));
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() == 0) {
+        args.rval().setBoolean(JS_StartProfiling(NULL));
         return JS_TRUE;
     }
 
-    RequiredStringArg profileName(cx, argc, vp, 0, "startProfiling");
+    RequiredStringArg profileName(cx, args, 0, "startProfiling");
     if (!profileName)
         return JS_FALSE;
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_StartProfiling(profileName.mBytes)));
+    args.rval().setBoolean(JS_StartProfiling(profileName.mBytes));
     return JS_TRUE;
 }
 
 static JSBool
 StopProfiling(JSContext *cx, unsigned argc, jsval *vp)
 {
-    if (argc == 0) {
-        JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_StopProfiling(NULL)));
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() == 0) {
+        args.rval().setBoolean(JS_StopProfiling(NULL));
         return JS_TRUE;
     }
 
-    RequiredStringArg profileName(cx, argc, vp, 0, "stopProfiling");
+    RequiredStringArg profileName(cx, args, 0, "stopProfiling");
     if (!profileName)
         return JS_FALSE;
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_StopProfiling(profileName.mBytes)));
+    args.rval().setBoolean(JS_StopProfiling(profileName.mBytes));
     return JS_TRUE;
 }
 
 static JSBool
 PauseProfilers(JSContext *cx, unsigned argc, jsval *vp)
 {
-    if (argc == 0) {
-        JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_PauseProfilers(NULL)));
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() == 0) {
+        args.rval().setBoolean(JS_PauseProfilers(NULL));
         return JS_TRUE;
     }
 
-    RequiredStringArg profileName(cx, argc, vp, 0, "pauseProfiling");
+    RequiredStringArg profileName(cx, args, 0, "pauseProfiling");
     if (!profileName)
         return JS_FALSE;
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_PauseProfilers(profileName.mBytes)));
+    args.rval().setBoolean(JS_PauseProfilers(profileName.mBytes));
     return JS_TRUE;
 }
 
 static JSBool
 ResumeProfilers(JSContext *cx, unsigned argc, jsval *vp)
 {
-    if (argc == 0) {
-        JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_ResumeProfilers(NULL)));
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() == 0) {
+        args.rval().setBoolean(JS_ResumeProfilers(NULL));
         return JS_TRUE;
     }
 
-    RequiredStringArg profileName(cx, argc, vp, 0, "resumeProfiling");
+    RequiredStringArg profileName(cx, args, 0, "resumeProfiling");
     if (!profileName)
         return JS_FALSE;
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(JS_ResumeProfilers(profileName.mBytes)));
+    args.rval().setBoolean(JS_ResumeProfilers(profileName.mBytes));
     return JS_TRUE;
 }
 
@@ -241,17 +288,18 @@ static JSBool
 DumpProfile(JSContext *cx, unsigned argc, jsval *vp)
 {
     bool ret;
-    if (argc == 0) {
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() == 0) {
         ret = JS_DumpProfile(NULL, NULL);
     } else {
-        RequiredStringArg filename(cx, argc, vp, 0, "dumpProfile");
+        RequiredStringArg filename(cx, args, 0, "dumpProfile");
         if (!filename)
             return JS_FALSE;
 
-        if (argc == 1) {
+        if (args.length() == 1) {
             ret = JS_DumpProfile(filename.mBytes, NULL);
         } else {
-            RequiredStringArg profileName(cx, argc, vp, 1, "dumpProfile");
+            RequiredStringArg profileName(cx, args, 1, "dumpProfile");
             if (!profileName)
                 return JS_FALSE;
 
@@ -259,16 +307,17 @@ DumpProfile(JSContext *cx, unsigned argc, jsval *vp)
         }
     }
 
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(ret));
+    args.rval().setBoolean(ret);
     return true;
 }
 
-#ifdef MOZ_SHARK
+#if defined(MOZ_SHARK) || defined(MOZ_INSTRUMENTS)
 
 static JSBool
 IgnoreAndReturnTrue(JSContext *cx, unsigned argc, jsval *vp)
 {
-    JS_SET_RVAL(cx, vp, JSVAL_TRUE);
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setBoolean(true);
     return true;
 }
 
@@ -278,30 +327,33 @@ IgnoreAndReturnTrue(JSContext *cx, unsigned argc, jsval *vp)
 static JSBool
 StartCallgrind(JSContext *cx, unsigned argc, jsval *vp)
 {
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_StartCallgrind()));
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setBoolean(js_StartCallgrind());
     return JS_TRUE;
 }
 
 static JSBool
 StopCallgrind(JSContext *cx, unsigned argc, jsval *vp)
 {
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_StopCallgrind()));
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setBoolean(js_StopCallgrind());
     return JS_TRUE;
 }
 
 static JSBool
 DumpCallgrind(JSContext *cx, unsigned argc, jsval *vp)
 {
-    if (argc == 0) {
-        JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_DumpCallgrind(NULL)));
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() == 0) {
+        args.rval().setBoolean(js_DumpCallgrind(NULL));
         return JS_TRUE;
     }
 
-    RequiredStringArg outFile(cx, argc, vp, 0, "dumpCallgrind");
+    RequiredStringArg outFile(cx, args, 0, "dumpCallgrind");
     if (!outFile)
         return JS_FALSE;
 
-    JS_SET_RVAL(cx, vp, BOOLEAN_TO_JSVAL(js_DumpCallgrind(outFile.mBytes)));
+    args.rval().setBoolean(js_DumpCallgrind(outFile.mBytes));
     return JS_TRUE;
 }
 #endif
@@ -312,7 +364,7 @@ static JSFunctionSpec profiling_functions[] = {
     JS_FN("pauseProfilers",  PauseProfilers,      1,0),
     JS_FN("resumeProfilers", ResumeProfilers,     1,0),
     JS_FN("dumpProfile",     DumpProfile,         2,0),
-#ifdef MOZ_SHARK
+#if defined(MOZ_SHARK) || defined(MOZ_INSTRUMENTS)
     /* Keep users of the old shark API happy. */
     JS_FN("connectShark",    IgnoreAndReturnTrue, 0,0),
     JS_FN("disconnectShark", IgnoreAndReturnTrue, 0,0),

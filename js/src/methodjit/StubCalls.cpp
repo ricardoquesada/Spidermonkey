@@ -18,6 +18,7 @@
 #include "jstypes.h"
 
 #include "gc/Marking.h"
+#include "ion/AsmJS.h"
 #include "vm/Debugger.h"
 #include "vm/NumericConversions.h"
 #include "vm/Shape.h"
@@ -77,7 +78,6 @@ stubs::BindGlobalName(VMFrame &f)
 void JS_FASTCALL
 stubs::SetName(VMFrame &f, PropertyName *name)
 {
-    AssertCanGC();
     JSContext *cx = f.cx;
     RootedObject scope(cx, &f.regs.sp[-2].toObject());
     HandleValue value = HandleValue::fromMarkedLocation(&f.regs.sp[-1]);
@@ -318,7 +318,7 @@ stubs::DefFun(VMFrame &f, JSFunction *funArg)
      * requests in server-side JS.
      */
     HandleObject scopeChain = f.fp()->scopeChain();
-    if (fun->environment() != scopeChain) {
+    if (fun->isNative() || fun->environment() != scopeChain) {
         fun = CloneFunctionObjectIfNotSingleton(cx, fun, scopeChain);
         if (!fun)
             THROW();
@@ -729,7 +729,6 @@ stubs::Mod(VMFrame &f)
 void JS_FASTCALL
 stubs::DebuggerStatement(VMFrame &f, jsbytecode *pc)
 {
-    AssertCanGC();
     JSDebuggerHandler handler = f.cx->runtime->debugHooks.debuggerHandler;
     if (handler || !f.cx->compartment->getDebuggees().empty()) {
         JSTrapStatus st = JSTRAP_CONTINUE;
@@ -775,17 +774,16 @@ stubs::Interrupt(VMFrame &f, jsbytecode *pc)
 void JS_FASTCALL
 stubs::TriggerIonCompile(VMFrame &f)
 {
-    AssertCanGC();
     RootedScript script(f.cx, f.script());
 
-    if (ion::js_IonOptions.parallelCompilation) {
+    if (ion::js_IonOptions.parallelCompilation && !f.cx->runtime->profilingScripts) {
         if (script->hasIonScript()) {
             /*
              * Normally TriggerIonCompile is not called if !script->ion, but the
              * latter jump can be bypassed if DisableScriptCodeForIon wants this
              * code to be destroyed so that the Ion code can start running.
              */
-            ExpandInlineFrames(f.cx->compartment);
+            ExpandInlineFrames(f.cx->zone());
             Recompiler::clearStackReferences(f.cx->runtime->defaultFreeOp(), script);
             f.jit()->destroyChunk(f.cx->runtime->defaultFreeOp(), f.chunkIndex(),
                                   /* resetUses = */ false);
@@ -808,8 +806,7 @@ stubs::TriggerIonCompile(VMFrame &f)
             compileStatus = ion::CanEnterAtBranch(f.cx, script, f.cx->fp(), osrPC,
                                                   f.fp()->isConstructing());
         } else {
-            compileStatus = ion::CanEnter(f.cx, script, f.cx->fp(), f.fp()->isConstructing(),
-                                          /* newType = */ false);
+            compileStatus = ion::CanEnter(f.cx, script, f.cx->fp(), f.fp()->isConstructing());
         }
 
         if (compileStatus != ion::Method_Compiled) {
@@ -820,7 +817,7 @@ stubs::TriggerIonCompile(VMFrame &f)
         return;
     }
 
-    ExpandInlineFrames(f.cx->compartment);
+    ExpandInlineFrames(f.cx->zone());
     Recompiler::clearStackReferences(f.cx->runtime->defaultFreeOp(), script);
 
     if (ion::IsEnabled(f.cx) && f.jit()->nchunks == 1 &&
@@ -842,8 +839,7 @@ stubs::TriggerIonCompile(VMFrame &f)
 void JS_FASTCALL
 stubs::RecompileForInline(VMFrame &f)
 {
-    AutoAssertNoGC nogc;
-    ExpandInlineFrames(f.cx->compartment);
+    ExpandInlineFrames(f.cx->zone());
     Recompiler::clearStackReferences(f.cx->runtime->defaultFreeOp(), f.script());
     f.jit()->destroyChunk(f.cx->runtime->defaultFreeOp(), f.chunkIndex(), /* resetUses = */ false);
 }
@@ -1021,11 +1017,11 @@ JSObject * JS_FASTCALL
 stubs::Lambda(VMFrame &f, JSFunction *fun_)
 {
     RootedFunction fun(f.cx, fun_);
-    fun = CloneFunctionObjectIfNotSingleton(f.cx, fun, f.fp()->scopeChain());
-    if (!fun)
+    JSObject *clone = Lambda(f.cx, fun, f.fp()->scopeChain());
+    if (!clone)
         THROWV(NULL);
 
-    return fun;
+    return clone;
 }
 
 void JS_FASTCALL
@@ -1557,10 +1553,9 @@ stubs::CheckArgumentTypes(VMFrame &f)
 void JS_FASTCALL
 stubs::AssertArgumentTypes(VMFrame &f)
 {
-    AutoAssertNoGC nogc;
     StackFrame *fp = f.fp();
     JSFunction *fun = fp->fun();
-    UnrootedScript script = fun->nonLazyScript();
+    RawScript script = fun->nonLazyScript();
 
     /*
      * Don't check the type of 'this' for constructor frames, the 'this' value
@@ -1590,7 +1585,6 @@ void JS_FASTCALL stubs::MissedBoundsCheckHead(VMFrame &f) {}
 void * JS_FASTCALL
 stubs::InvariantFailure(VMFrame &f, void *rval)
 {
-    AutoAssertNoGC nogc;
     /*
      * Patch this call to the return site of the call triggering the invariant
      * failure (or a MissedBoundsCheck* function if the failure occurred on
@@ -1605,11 +1599,11 @@ stubs::InvariantFailure(VMFrame &f, void *rval)
     *frameAddr = repatchCode;
 
     /* Recompile the outermost script, and don't hoist any bounds checks. */
-    UnrootedScript script = f.fp()->script();
+    RawScript script = f.fp()->script();
     JS_ASSERT(!script->failedBoundsCheck);
     script->failedBoundsCheck = true;
 
-    ExpandInlineFrames(f.cx->compartment);
+    ExpandInlineFrames(f.cx->zone());
 
     mjit::Recompiler::clearStackReferences(f.cx->runtime->defaultFreeOp(), script);
     mjit::ReleaseScriptCode(f.cx->runtime->defaultFreeOp(), script);

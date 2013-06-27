@@ -66,20 +66,33 @@ class LUnboxDouble : public LUnboxBase {
     { }
 };
 
-// Constant double.
-class LDouble : public LInstructionHelper<1, 0, 0>
+// Convert a 32-bit unsigned integer to a double.
+class LUInt32ToDouble : public LInstructionHelper<1, 1, 0>
 {
-    double d_;
-
   public:
-    LIR_HEADER(Double)
+    LIR_HEADER(UInt32ToDouble)
 
-    LDouble(double d)
-      : d_(d)
-    { }
+    LUInt32ToDouble(const LAllocation &input) {
+        setOperand(0, input);
+    }
+};
 
-    double getDouble() const {
-        return d_;
+class LAsmJSLoadFuncPtr : public LInstructionHelper<1, 1, 1>
+{
+  public:
+    LIR_HEADER(AsmJSLoadFuncPtr);
+    LAsmJSLoadFuncPtr(const LAllocation &index, const LDefinition &temp) {
+        setOperand(0, index);
+        setTemp(0, temp);
+    }
+    MAsmJSLoadFuncPtr *mir() const {
+        return mir_->toAsmJSLoadFuncPtr();
+    }
+    const LAllocation *index() {
+        return getOperand(0);
+    }
+    const LDefinition *temp() {
+        return getTemp(0);
     }
 };
 

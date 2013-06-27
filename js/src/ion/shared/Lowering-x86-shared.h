@@ -24,14 +24,18 @@ class LIRGeneratorX86Shared : public LIRGeneratorShared
                                   MTableSwitch *ins);
     LTableSwitchV *newLTableSwitchV(MTableSwitch *ins);
 
-    bool visitRecompileCheck(MRecompileCheck *ins);
     bool visitInterruptCheck(MInterruptCheck *ins);
     bool visitGuardShape(MGuardShape *ins);
     bool visitPowHalf(MPowHalf *ins);
+    bool visitConstant(MConstant *ins);
+    bool visitAsmJSNeg(MAsmJSNeg *ins);
+    bool visitAsmJSUDiv(MAsmJSUDiv *ins);
+    bool visitAsmJSUMod(MAsmJSUMod *ins);
     bool lowerMulI(MMul *mul, MDefinition *lhs, MDefinition *rhs);
     bool lowerDivI(MDiv *div);
     bool lowerModI(MMod *mod);
     bool lowerUrshD(MUrsh *mir);
+    bool lowerConstantDouble(double d, MInstruction *ins);
 };
 
 } // namespace ion

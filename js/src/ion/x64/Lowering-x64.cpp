@@ -37,25 +37,6 @@ LIRGeneratorX64::useBoxFixed(LInstruction *lir, size_t n, MDefinition *mir, Regi
 }
 
 bool
-LIRGeneratorX64::lowerConstantDouble(double d, MInstruction *mir)
-{
-    return define(new LDouble(d), mir);
-}
-
-bool
-LIRGeneratorX64::visitConstant(MConstant *ins)
-{
-    if (ins->type() == MIRType_Double)
-        return lowerConstantDouble(ins->value().toDouble(), ins);
-
-    // Emit non-double constants at their uses.
-    if (ins->canEmitAtUses())
-        return emitAtUses(ins);
-
-    return LIRGeneratorShared::visitConstant(ins);
-}
-
-bool
 LIRGeneratorX64::visitBox(MBox *box)
 {
     MDefinition *opd = box->getOperand(0);
@@ -164,3 +145,40 @@ LIRGeneratorX64::visitStoreTypedArrayElement(MStoreTypedArrayElement *ins)
     LAllocation value = useRegisterOrNonDoubleConstant(ins->value());
     return add(new LStoreTypedArrayElement(elements, index, value), ins);
 }
+
+bool
+LIRGeneratorX64::visitAsmJSUnsignedToDouble(MAsmJSUnsignedToDouble *ins)
+{
+    JS_ASSERT(ins->input()->type() == MIRType_Int32);
+    LUInt32ToDouble *lir = new LUInt32ToDouble(useRegisterAtStart(ins->input()));
+    return define(lir, ins);
+}
+
+bool
+LIRGeneratorX64::visitAsmJSStoreHeap(MAsmJSStoreHeap *ins)
+{
+    LAsmJSStoreHeap *lir;
+    switch (ins->viewType()) {
+      case ArrayBufferView::TYPE_INT8: case ArrayBufferView::TYPE_UINT8:
+      case ArrayBufferView::TYPE_INT16: case ArrayBufferView::TYPE_UINT16:
+      case ArrayBufferView::TYPE_INT32: case ArrayBufferView::TYPE_UINT32:
+        lir = new LAsmJSStoreHeap(useRegisterAtStart(ins->ptr()),
+                                  useRegisterOrConstantAtStart(ins->value()));
+        break;
+      case ArrayBufferView::TYPE_FLOAT32:
+      case ArrayBufferView::TYPE_FLOAT64:
+        lir = new LAsmJSStoreHeap(useRegisterAtStart(ins->ptr()),
+                                  useRegisterAtStart(ins->value()));
+        break;
+      default: JS_NOT_REACHED("unexpected array type");
+    }
+
+    return add(lir, ins);
+}
+
+bool
+LIRGeneratorX64::visitAsmJSLoadFuncPtr(MAsmJSLoadFuncPtr *ins)
+{
+    return define(new LAsmJSLoadFuncPtr(useRegister(ins->index()), temp()), ins);
+}
+

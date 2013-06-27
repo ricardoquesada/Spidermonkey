@@ -1,0 +1,134 @@
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+<!DOCTYPE html>
+
+<html>
+<head>
+<title>Marionette Test</title>
+</head>
+<body>
+  <h1 id="testh1">Test Page</h1>
+  <!-- "mozLink" and "mozLinkPos" work together to perform touchdown on mozLink, vertical move and then touchup on mozLinkPos-->
+  <button id="mozLink" style="position:absolute;left:0px;top:55px;" type="button" allowevents=true>Button1</button>
+  <button id="mozLinkPos" style="position:absolute;left:0px;top:355px;" type="button" allowevents=true>Button2</button>
+  <!-- "mozLinkCopy" listens for a touchdown and touchup -->
+  <button id="mozLinkCopy" style="position:absolute;left:0px;top:455px;" type="button" allowevents=true>Button3</button>
+  <!-- "mozLinkStart" and "mozLinkEnd" work together to perform touchdown on mozLinkStart, horizontal move and then touchup on mozLinkEnd -->  
+  <button id="mozLinkStart" style="position:absolute;left:10px;top:200px;" type="button" allowevents=true>Press</button>
+  <button id="mozLinkEnd" style="position:absolute;left:140px;top:200px;" type="button" allowevents=true>Release</button>
+  <!-- "mozLinkCopy2" listens for a touchdown and touchup. It shows the time when it's fired-->
+  <button id="mozLinkCopy2" style="position:absolute;left:80px;top:455px;" type="button" allowevents=true>Button4</button>
+  <!-- "mozLinkCancel" listens for a touchdown and touchcancel -->
+  <button id="mozLinkCancel" style="position:absolute;left:0px;top:255px;" type="button" allowevents=true>Button5</button>
+  <script type="text/javascript">
+    window.ready = true;
+    var press = document.getElementById("mozLink");
+    var second = document.getElementById("mozLinkCopy");
+    var third = document.getElementById("mozLinkStart");
+    var fourth = document.getElementById("mozLinkCopy2");
+    var fifth = document.getElementById("mozLinkCancel");
+    // touchmove and touchend must be performed on the same element as touchstart
+    // here is press for vertical move
+    press.addEventListener("touchstart", function(){changePressText("mozLink")}, false);
+    press.addEventListener("touchmove", changeMoveText, false);
+    press.addEventListener("touchend", changeReleaseText, false);
+    // here is second for a tap
+    second.addEventListener("touchstart", function(){changePressText("mozLinkCopy")}, false);
+    second.addEventListener("touchend", function(){changeClickText("mozLinkCopy")}, false);
+    // here is third for horizontal move
+    third.addEventListener("touchstart", function(){changePressText("mozLinkStart")}, false);
+    third.addEventListener("touchmove", changeHorizontalMove, false);
+    third.addEventListener("touchend", changeHorizontalRelease, false);
+    // here is fourth for touch up and down with time shown
+    fourth.addEventListener("touchstart", changeTimePress, false);
+    fourth.addEventListener("touchend", changeTimeRelease, false);
+    // here is fifth for a cancel
+    fifth.addEventListener("touchstart", function(){changePressText("mozLinkCancel")}, false);
+    fifth.addEventListener("touchcancel", function(){changeClickText("mozLinkCancel")}, false);
+    function changePressText(strId) {
+      var press = document.getElementById(strId);
+      press.innerHTML = "Start";
+    }
+
+    function changeMoveText() {
+      var move = document.getElementById("mozLink");
+      move.innerHTML = "Move";
+    }
+
+    function checkPosition(event, ele) {
+      var touches = event.changedTouches;
+      var clientX = touches[0].clientX;
+      var clientY = touches[0].clientY;
+      var release = document.getElementById(ele);
+      var boxr = release.getBoundingClientRect();
+      return (clientY >= boxr.top &&
+              clientY <= boxr.bottom &&
+              clientX >= boxr.left &&
+              clientX <= boxr.right);
+    }
+
+    function changeReleaseText(event) {
+      if (checkPosition(event, "mozLinkPos")) {
+        document.getElementById("mozLinkPos").innerHTML = "End";
+      }
+    }
+
+    function changeHorizontalMove() {
+      var press = document.getElementById("mozLinkStart");
+      if (press.innerHTML == "Start") {
+        var d = new Date();
+        press.innerHTML = d.getTime();
+      }
+    }
+
+    function changeHorizontalRelease(event) {
+      if (checkPosition(event, "mozLinkEnd")) {
+        var press = document.getElementById("mozLinkStart");
+        var d = new Date();
+        var timeDiff = d.getTime() - press.innerHTML;
+        document.getElementById("mozLinkEnd").innerHTML = timeDiff;
+        
+      }
+    }
+
+    function changeClickText(strId) {
+      var second = document.getElementById(strId);
+      if (second.innerHTML == "Start") {
+        second.innerHTML = "End";
+      }
+      else {
+        second.innerHTML = "Error";
+      }
+    }
+
+    function changeTimePress() {
+      var fourth = document.getElementById("mozLinkCopy2");
+      var d = new Date();
+      fourth.innerHTML = d.getTime();
+      var newButton = document.createElement("button");
+      newButton.id = "delayed";
+      newButton.setAttribute("style", "position:absolute;left:80px;top:105px;");
+      var content = document.createTextNode("Button6");
+      newButton.appendChild(content);
+      document.body.appendChild(newButton);
+    }
+
+    function changeTimeRelease(event) {
+      var fourth = document.getElementById("mozLinkCopy2");
+      if (fourth.innerHTML != "Button4") {
+        var d = new Date();
+        var timeDiff = d.getTime() - fourth.innerHTML;
+        fourth.innerHTML = timeDiff;
+      }
+      else {
+        fourth.innerHTML = "Error";
+      }
+      if (checkPosition(event, "delayed")) {
+        document.getElementById("delayed").innerHTML = "End";
+      }
+    }
+  </script>
+</body>
+</html>

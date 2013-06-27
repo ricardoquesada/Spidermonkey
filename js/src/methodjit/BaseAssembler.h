@@ -148,7 +148,6 @@ class Assembler : public ValueAssembler
         vmframe(vmframe),
         pc(NULL)
     {
-        AutoAssertNoGC nogc;
         startLabel = label();
         if (vmframe)
             sps->setPushed(vmframe->script());
@@ -200,7 +199,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
         loadPtr(Address(obj, JSObject::offsetOfShape()), shape);
     }
 
-    Jump guardShape(RegisterID objReg, UnrootedShape shape) {
+    Jump guardShape(RegisterID objReg, RawShape shape) {
         return branchPtr(NotEqual, Address(objReg, JSObject::offsetOfShape()), ImmPtr(shape));
     }
 
@@ -984,7 +983,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
     }
 
     void loadObjProp(JSObject *obj, RegisterID objReg,
-                     js::UnrootedShape shape,
+                     js::RawShape shape,
                      RegisterID typeReg, RegisterID dataReg)
     {
         if (obj->isFixedSlot(shape->slot()))
@@ -1148,6 +1147,9 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
     }
 
     template <typename T>
+#if defined(__GNUC__) && __GNUC__ == 4 && __GNUC_MINOR__ == 7 && defined(JS_CPU_ARM)
+    __attribute__((optimize("-O1")))
+#endif
     void storeToTypedArray(int atype, ValueRemat vr, T address)
     {
         if (atype == js::TypedArray::TYPE_FLOAT32 || atype == js::TypedArray::TYPE_FLOAT64) {
@@ -1345,8 +1347,7 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
      */
     Jump getNewObject(JSContext *cx, RegisterID result, JSObject *templateObject)
     {
-        AutoAssertNoGC nogc;
-        gc::AllocKind allocKind = templateObject->getAllocKind();
+        gc::AllocKind allocKind = templateObject->tenuredGetAllocKind();
 
         JS_ASSERT(allocKind >= gc::FINALIZE_OBJECT0 && allocKind <= gc::FINALIZE_OBJECT_LAST);
         int thingSize = (int)gc::Arena::thingSize(allocKind);
@@ -1412,8 +1413,10 @@ static const JSC::MacroAssembler::RegisterID JSParamReg_Argc  = JSC::MIPSRegiste
                     Address(result, elementsOffset + ObjectElements::offsetOfInitializedLength()));
             store32(Imm32(templateObject->getArrayLength()),
                     Address(result, elementsOffset + ObjectElements::offsetOfLength()));
-            store32(Imm32(templateObject->shouldConvertDoubleElements() ? 1 : 0),
-                    Address(result, elementsOffset + ObjectElements::offsetOfConvertDoubleElements()));
+            store32(Imm32(templateObject->shouldConvertDoubleElements()
+                          ? ObjectElements::CONVERT_DOUBLE_ELEMENTS
+                          : 0),
+                    Address(result, elementsOffset + ObjectElements::offsetOfFlags()));
         } else {
             /*
              * Fixed slots of non-array objects are required to be initialized;

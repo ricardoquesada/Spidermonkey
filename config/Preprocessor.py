@@ -12,6 +12,7 @@ import os
 import os.path
 import re
 from optparse import OptionParser
+import errno
 
 # hack around win32 mangling our line endings
 # http://aspn.activestate.com/ASPN/Cookbook/Python/Recipe/65443
@@ -77,9 +78,9 @@ class Preprocessor:
   
   def warnUnused(self, file):
     if self.actionLevel == 0:
-      sys.stderr.write('%s: WARNING: no preprocessor directives found\n' % file)
+      sys.stderr.write('{0}: WARNING: no preprocessor directives found\n'.format(file))
     elif self.actionLevel == 1:
-      sys.stderr.write('%s: WARNING: no useful preprocessor directives found\n' % file)
+      sys.stderr.write('{0}: WARNING: no useful preprocessor directives found\n'.format(file))
     pass
 
   def setLineEndings(self, aLE):
@@ -96,7 +97,9 @@ class Preprocessor:
     """
     self.marker = aMarker
     if aMarker:
-      self.instruction = re.compile('%s(?P<cmd>[a-z]+)(?:\s(?P<args>.*))?$'%aMarker, re.U)
+      self.instruction = re.compile('{0}(?P<cmd>[a-z]+)(?:\s(?P<args>.*))?$'
+                                    .format(aMarker), 
+                                    re.U)
       self.comment = re.compile(aMarker, re.U)
     else:
       class NoMatch(object):
@@ -129,9 +132,9 @@ class Preprocessor:
       self.writtenLines += 1
       ln = self.context['LINE']
       if self.writtenLines != ln:
-        self.out.write('//@line %(line)d "%(file)s"%(le)s'%{'line': ln,
-                                                            'file': self.context['FILE'],
-                                                            'le': self.LE})
+        self.out.write('//@line {line} "{file}"{le}'.format(line=ln,
+                                                            file=self.context['FILE'],
+                                                            le=self.LE))
         self.writtenLines = ln
     filteredLine = self.applyFilters(aLine)
     if filteredLine != aLine:
@@ -149,6 +152,15 @@ class Preprocessor:
     p = self.getCommandLineParser()
     (options, args) = p.parse_args(args=args)
     includes = options.I
+    if options.output:
+      dir = os.path.dirname(options.output)
+      if dir and not os.path.exists(dir):
+        try:
+          os.makedirs(dir)
+        except OSError as error:
+          if error.errno != errno.EEXIST:
+            raise
+      self.out = open(options.output, 'w')
     if defaultToStdin and len(args) == 0:
       args = [sys.stdin]
     includes.extend(args)
@@ -193,6 +205,9 @@ class Preprocessor:
                  metavar="VAR", help='Undefine a variable')
     p.add_option('-F', action='callback', callback=handleF, type="string",
                  metavar="FILTER", help='Enable the specified filter')
+    p.add_option('-o', '--output', type="string", default=None,
+                 metavar="FILENAME", help='Output to the specified file '+
+                 'instead of stdout')
     p.add_option('--line-endings', action='callback', callback=handleLE,
                  type="string", metavar="[cr|lr|crlf]",
                  help='Use the specified line endings [Default: OS dependent]')

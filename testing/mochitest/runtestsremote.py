@@ -10,6 +10,7 @@ import re
 import traceback
 import shutil
 import math
+import base64
 
 sys.path.insert(0, os.path.abspath(os.path.realpath(os.path.dirname(sys.argv[0]))))
 
@@ -431,6 +432,16 @@ class MochiRemote(Mochitest):
             return 1
         return 0
 
+    def printScreenshot(self):
+        try:
+            image = self._dm.pullFile("/mnt/sdcard/Robotium-Screenshots/robocop-screenshot.jpg")
+            encoded = base64.b64encode(image)
+            print "SCREENSHOT: data:image/jpg;base64,%s" % encoded
+        except:
+            # If the test passes, no screenshot will be generated and
+            # pullFile will fail -- continue silently.
+            pass
+
     def printDeviceInfo(self):
         try:
             logcat = self._dm.getLogcat(filterOutRegexps=fennecLogcatFilters)
@@ -543,6 +554,8 @@ def main():
         options.extraPrefs.append('robocop.logfile="%s/robocop.log"' % deviceRoot)
         options.extraPrefs.append('browser.search.suggest.enabled=true')
         options.extraPrefs.append('browser.search.suggest.prompted=true')
+        options.extraPrefs.append('browser.viewport.scaleRatio=100')
+        options.extraPrefs.append('browser.chrome.dynamictoolbar=false')
 
         if (options.dm_trans == 'adb' and options.robocopPath):
           dm._checkCmd(["install", "-r", os.path.join(options.robocopPath, "robocop.apk")])
@@ -561,6 +574,7 @@ def main():
             options.browserArgs.append("org.mozilla.roboexample.test/%s.FennecInstrumentationTestRunner" % options.remoteappname)
 
             try:
+                dm.removeDir("/mnt/sdcard/Robotium-Screenshots")
                 dm.recordLogcat()
                 result = mochitest.runTests(options)
                 if result != 0:
@@ -568,6 +582,7 @@ def main():
                 log_result = mochitest.addLogData()
                 if result != 0 or log_result != 0:
                     mochitest.printDeviceInfo()
+                    mochitest.printScreenshot()
                 # Ensure earlier failures aren't overwritten by success on this run
                 if retVal is None or retVal == 0:
                     retVal = result

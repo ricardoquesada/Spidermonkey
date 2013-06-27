@@ -72,7 +72,7 @@ SPSProfiler::enable(bool enabled)
 
 /* Lookup the string for the function/script, creating one if necessary */
 const char*
-SPSProfiler::profileString(JSContext *cx, UnrootedScript script, UnrootedFunction maybeFun)
+SPSProfiler::profileString(JSContext *cx, RawScript script, RawFunction maybeFun)
 {
     JS_ASSERT(strings.initialized());
     ProfileStringMap::AddPtr s = strings.lookupForAdd(script);
@@ -89,7 +89,7 @@ SPSProfiler::profileString(JSContext *cx, UnrootedScript script, UnrootedFunctio
 }
 
 void
-SPSProfiler::onScriptFinalized(UnrootedScript script)
+SPSProfiler::onScriptFinalized(RawScript script)
 {
     /*
      * This function is called whenever a script is destroyed, regardless of
@@ -108,7 +108,7 @@ SPSProfiler::onScriptFinalized(UnrootedScript script)
 }
 
 bool
-SPSProfiler::enter(JSContext *cx, UnrootedScript script, UnrootedFunction maybeFun)
+SPSProfiler::enter(JSContext *cx, RawScript script, RawFunction maybeFun)
 {
     const char *str = profileString(cx, script, maybeFun);
     if (str == NULL)
@@ -121,7 +121,7 @@ SPSProfiler::enter(JSContext *cx, UnrootedScript script, UnrootedFunction maybeF
 }
 
 void
-SPSProfiler::exit(JSContext *cx, UnrootedScript script, UnrootedFunction maybeFun)
+SPSProfiler::exit(JSContext *cx, RawScript script, RawFunction maybeFun)
 {
     pop();
 
@@ -154,7 +154,25 @@ SPSProfiler::exit(JSContext *cx, UnrootedScript script, UnrootedFunction maybeFu
 }
 
 void
-SPSProfiler::push(const char *string, void *sp, UnrootedScript script, jsbytecode *pc)
+SPSProfiler::enterNative(const char *string, void *sp)
+{
+    /* these operations cannot be re-ordered, so volatile-ize operations */
+    volatile ProfileEntry *stack = stack_;
+    volatile uint32_t *size = size_;
+    uint32_t current = *size;
+
+    JS_ASSERT(enabled());
+    if (current < max_) {
+        stack[current].setLabel(string);
+        stack[current].setStackAddress(sp);
+        stack[current].setScript(NULL);
+        stack[current].setLine(0);
+    }
+    *size = current + 1;
+}
+
+void
+SPSProfiler::push(const char *string, void *sp, RawScript script, jsbytecode *pc)
 {
     /* these operations cannot be re-ordered, so volatile-ize operations */
     volatile ProfileEntry *stack = stack_;
@@ -186,7 +204,7 @@ SPSProfiler::pop()
  * AddPtr held while invoking allocProfileString.
  */
 const char*
-SPSProfiler::allocProfileString(JSContext *cx, UnrootedScript script, UnrootedFunction maybeFun)
+SPSProfiler::allocProfileString(JSContext *cx, RawScript script, RawFunction maybeFun)
 {
     DebugOnly<uint64_t> gcBefore = cx->runtime->gcNumber;
     StringBuffer buf(cx);
@@ -197,8 +215,8 @@ SPSProfiler::allocProfileString(JSContext *cx, UnrootedScript script, UnrootedFu
         if (!buf.append(" ("))
             return NULL;
     }
-    if (script->filename) {
-        if (!buf.appendInflated(script->filename, strlen(script->filename)))
+    if (script->filename()) {
+        if (!buf.appendInflated(script->filename(), strlen(script->filename())))
             return NULL;
     } else if (!buf.append("<unknown>")) {
         return NULL;
@@ -238,8 +256,6 @@ JMChunkInfo::JMChunkInfo(mjit::JSActiveFrame *frame,
     chunk(chunk)
 {}
 
-// Use RawScript instead of UnrootedScript because this may be called from a
-// signal handler.
 jsbytecode*
 SPSProfiler::ipToPC(RawScript script, size_t ip)
 {
@@ -268,8 +284,6 @@ SPSProfiler::ipToPC(RawScript script, size_t ip)
     return NULL;
 }
 
-// Use RawScript instead of UnrootedScript because this may be called from a
-// signal handler.
 jsbytecode*
 JMChunkInfo::convert(RawScript script, size_t ip)
 {
@@ -369,7 +383,7 @@ SPSProfiler::registerScript(mjit::JSActiveFrame *frame,
 
 bool
 SPSProfiler::registerICCode(mjit::JITChunk *chunk,
-                            UnrootedScript script, jsbytecode *pc,
+                            RawScript script, jsbytecode *pc,
                             void *base, size_t size)
 {
     JS_ASSERT(jminfo.initialized());
@@ -382,7 +396,6 @@ void
 SPSProfiler::discardMJITCode(mjit::JITScript *jscr,
                              mjit::JITChunk *chunk, void* address)
 {
-    AutoAssertNoGC nogc;
     if (!jminfo.initialized())
         return;
 
@@ -392,7 +405,7 @@ SPSProfiler::discardMJITCode(mjit::JITScript *jscr,
 }
 
 void
-SPSProfiler::unregisterScript(UnrootedScript script, mjit::JITChunk *chunk)
+SPSProfiler::unregisterScript(RawScript script, mjit::JITChunk *chunk)
 {
     JITInfoMap::Ptr ptr = jminfo.lookup(script);
     if (!ptr)

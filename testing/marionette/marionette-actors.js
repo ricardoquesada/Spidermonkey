@@ -185,7 +185,11 @@ MarionetteDriverActor.prototype = {
   switchToGlobalMessageManager: function MDA_switchToGlobalMM() {
     if (this.currentRemoteFrame !== null) {
       this.removeMessageManagerListeners(this.messageManager);
-      this.sendAsync("sleepSession");
+      try {
+        // this can fail if the frame is already gone
+        this.sendAsync("sleepSession");
+      }
+      catch(e) {}
     }
     this.messageManager = this.globalMessageManager;
     this.currentRemoteFrame = null;
@@ -266,11 +270,20 @@ MarionetteDriverActor.prototype = {
       logger.warn("got a response with no command_id");
       return;
     }
-    else if (this.command_id && command_id != -1 &&
-             this.command_id != command_id) {
-      // a command_id of -1 is used for emulator callbacks
-      logger.warn("ignoring out-of-sync response");
-      return;
+    else if (command_id != -1) {
+      // A command_id of -1 is used for emulator callbacks, and those
+      // don't use this.command_id.
+      if (!this.command_id) {
+        // A null value for this.command_id means we've already processed
+        // a message for the previous value, and so the current message is a
+        // duplicate.
+        logger.warn("ignoring duplicate response for command_id " + command_id);
+        return;
+      }
+      else if (this.command_id != command_id) {
+        logger.warn("ignoring out-of-sync response");
+        return;
+      }
     }
     this.conn.send(msg);
     if (command_id != -1) {
@@ -1205,7 +1218,7 @@ MarionetteDriverActor.prototype = {
       }
     }
     else {
-      if ((aRequest.value == null) && (aRequest.element == null) &&
+      if ((!aRequest.value) && (!aRequest.element) &&
           (this.currentRemoteFrame !== null)) {
         // We're currently using a ChromeMessageSender for a remote frame, so this
         // request indicates we need to switch back to the top-level (parent) frame.
@@ -1327,10 +1340,35 @@ MarionetteDriverActor.prototype = {
     let element = aRequest.element;
     let x = aRequest.x;
     let y = aRequest.y;
-    this.sendAsync("press", {value: element,
-                             corx: x,
-                             cory: y,
-                             command_id: this.command_id});
+    if (this.context == "chrome") {
+      this.sendError("Not in Chrome", 500, null, this.command_id);
+    }
+    else {
+      this.sendAsync("press", {value: element,
+                               corx: x,
+                               cory: y,
+                               command_id: this.command_id});
+    }
+  },
+
+  /**
+   * Cancel touch
+   *
+   * @param object aRequest
+   *        'element' represents the ID of the element to touch
+   */
+  cancelTouch: function MDA_cancelTouch(aRequest) {
+    this.command_id = this.getCommandId();
+    let element = aRequest.element;
+    let touchId = aRequest.touchId;
+    if (this.context == "chrome") {
+      this.sendError("Not in Chrome", 500, null, this.command_id);
+    }
+    else {
+      this.sendAsync("cancelTouch", {value: element,
+                                     touchId: touchId,
+                                     command_id: this.command_id});
+    }
   },
 
   /**
@@ -1345,12 +1383,56 @@ MarionetteDriverActor.prototype = {
     let touchId = aRequest.touchId;
     let x = aRequest.x;
     let y = aRequest.y;
-    this.sendAsync("release", {value: element,
-                               touchId: touchId,
-                               corx: x,
-                               cory: y,
-                               command_id: this.command_id});
+    if (this.context == "chrome") {
+      this.sendError("Not in Chrome", 500, null, this.command_id);
+    }
+    else {
+      this.sendAsync("release", {value: element,
+                                 touchId: touchId,
+                                 corx: x,
+                                 cory: y,
+                                 command_id: this.command_id});
+    }
   },
+
+  /**
+   * actionChain
+   *
+   * @param object aRequest
+   *        'value' represents a nested array: inner array represents each event; outer array represents collection of events
+   */
+  actionChain: function MDA_actionChain(aRequest) {
+    this.command_id = this.getCommandId();
+    if (this.context == "chrome") {
+      this.sendError("Not in Chrome", 500, null, this.command_id);
+    }
+    else {
+      this.sendAsync("actionChain", {chain: aRequest.chain,
+                                     nextId: aRequest.nextId,
+                                     command_id: this.command_id});
+    }
+  },
+
+  /**
+   * multiAction
+   *
+   * @param object aRequest
+   *        'value' represents a nested array: inner array represents each event;
+   *        middle array represents collection of events for each finger
+   *        outer array represents all the fingers
+   */
+
+  multiAction: function MDA_multiAction(aRequest) {
+    this.command_id = this.getCommandId();
+    if (this.context == "chrome") {
+       this.sendError("Not in Chrome", 500, null, this.command_id);
+    }
+    else {
+      this.sendAsync("multiAction", {value: aRequest.value,
+                                     maxlen: aRequest.max_length,
+                                     command_id: this.command_id});
+   }
+ },
 
   /**
    * Find an element using the indicated search strategy.
@@ -1941,9 +2023,10 @@ MarionetteDriverActor.prototype = {
    * of the window will be taken.
    */
   screenShot: function MDA_saveScreenshot(aRequest) {
+    this.command_id = this.getCommandId();
     this.sendAsync("screenShot", {element: aRequest.element,
                                   highlights: aRequest.highlights,
-                                  command_id: this.getCommandId()});
+                                  command_id: this.command_id});
   },
 
   /**
@@ -2095,6 +2178,9 @@ MarionetteDriverActor.prototype.requestTypes = {
   "doubleTap": MarionetteDriverActor.prototype.doubleTap,
   "press": MarionetteDriverActor.prototype.press,
   "release": MarionetteDriverActor.prototype.release,
+  "cancelTouch": MarionetteDriverActor.prototype.cancelTouch,
+  "actionChain": MarionetteDriverActor.prototype.actionChain,
+  "multiAction": MarionetteDriverActor.prototype.multiAction,
   "executeAsyncScript": MarionetteDriverActor.prototype.executeWithCallback,
   "executeJSScript": MarionetteDriverActor.prototype.executeJSScript,
   "setSearchTimeout": MarionetteDriverActor.prototype.setSearchTimeout,

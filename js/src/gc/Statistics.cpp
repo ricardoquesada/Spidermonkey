@@ -241,14 +241,14 @@ class gcstats::StatisticsSerializer
  * larger-numbered reasons to pile up in the last telemetry bucket, or switch
  * to GC_REASON_3 and bump the max value.
  */
-JS_STATIC_ASSERT(gcreason::NUM_TELEMETRY_REASONS >= gcreason::NUM_REASONS);
+JS_STATIC_ASSERT(JS::gcreason::NUM_TELEMETRY_REASONS >= JS::gcreason::NUM_REASONS);
 
 static const char *
-ExplainReason(gcreason::Reason reason)
+ExplainReason(JS::gcreason::Reason reason)
 {
     switch (reason) {
 #define SWITCH_REASON(name)                     \
-        case gcreason::name:                    \
+        case JS::gcreason::name:                    \
           return #name;
         GCREASONS(SWITCH_REASON)
 
@@ -529,14 +529,11 @@ Statistics::beginGC()
     nonincrementalReason = NULL;
 
     preBytes = runtime->gcBytes;
-
-    Probes::GCStart();
 }
 
 void
 Statistics::endGC()
 {
-    Probes::GCEnd();
     crash::SnapshotGCStack();
 
     for (int i = 0; i < PHASE_LIMIT; i++)
@@ -571,7 +568,7 @@ Statistics::endGC()
 
 void
 Statistics::beginSlice(int collectedCount, int zoneCount, int compartmentCount,
-                       gcreason::Reason reason)
+                       JS::gcreason::Reason reason)
 {
     this->collectedCount = collectedCount;
     this->zoneCount = zoneCount;
@@ -590,8 +587,9 @@ Statistics::beginSlice(int collectedCount, int zoneCount, int compartmentCount,
     // Slice callbacks should only fire for the outermost level
     if (++gcDepth == 1) {
         bool wasFullGC = collectedCount == zoneCount;
-        if (GCSliceCallback cb = runtime->gcSliceCallback)
-            (*cb)(runtime, first ? GC_CYCLE_BEGIN : GC_SLICE_BEGIN, GCDescription(!wasFullGC));
+        if (JS::GCSliceCallback cb = runtime->gcSliceCallback)
+            (*cb)(runtime, first ? JS::GC_CYCLE_BEGIN : JS::GC_SLICE_BEGIN,
+                  JS::GCDescription(!wasFullGC));
     }
 }
 
@@ -613,8 +611,9 @@ Statistics::endSlice()
     // Slice callbacks should only fire for the outermost level
     if (--gcDepth == 0) {
         bool wasFullGC = collectedCount == zoneCount;
-        if (GCSliceCallback cb = runtime->gcSliceCallback)
-            (*cb)(runtime, last ? GC_CYCLE_END : GC_SLICE_END, GCDescription(!wasFullGC));
+        if (JS::GCSliceCallback cb = runtime->gcSliceCallback)
+            (*cb)(runtime, last ? JS::GC_CYCLE_END : JS::GC_SLICE_END,
+                  JS::GCDescription(!wasFullGC));
     }
 
     /* Do this after the slice callback since it uses these values. */
@@ -638,11 +637,6 @@ Statistics::beginPhase(Phase phase)
 #endif
 
     phaseStartTimes[phase] = PRMJ_Now();
-
-    if (phase == gcstats::PHASE_MARK)
-        Probes::GCStartMarkPhase();
-    else if (phase == gcstats::PHASE_SWEEP)
-        Probes::GCStartSweepPhase();
 }
 
 void
@@ -654,11 +648,6 @@ Statistics::endPhase(Phase phase)
     slices.back().phaseTimes[phase] += t;
     phaseTimes[phase] += t;
     phaseStartTimes[phase] = 0;
-
-    if (phase == gcstats::PHASE_MARK)
-        Probes::GCEndMarkPhase();
-    else if (phase == gcstats::PHASE_SWEEP)
-        Probes::GCEndSweepPhase();
 }
 
 int64_t

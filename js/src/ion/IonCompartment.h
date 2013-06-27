@@ -13,6 +13,7 @@
 #include "js/Value.h"
 #include "vm/Stack.h"
 #include "IonFrames.h"
+#include "CompileInfo.h"
 
 namespace js {
 namespace ion {
@@ -44,8 +45,11 @@ class IonRuntime
     IonCode *bailoutHandler_;
 
     // Argument-rectifying thunk, in the case of insufficient arguments passed
-    // to a function call site. Pads with |undefined|.
+    // to a function call site.
     IonCode *argumentsRectifier_;
+
+    // Arguments-rectifying thunk which loads |parallelIon| instead of |ion|.
+    IonCode *parallelArgumentsRectifier_;
 
     // Thunk that invalides an (Ion compiled) caller on the Ion stack.
     IonCode *invalidator_;
@@ -58,9 +62,12 @@ class IonRuntime
     typedef WeakCache<const VMFunction *, IonCode *> VMWrapperMap;
     VMWrapperMap *functionWrappers_;
 
+    // Keep track of memoryregions that are going to be flushed.
+    AutoFlushCache *flusher_;
+
   private:
     IonCode *generateEnterJIT(JSContext *cx);
-    IonCode *generateArgumentsRectifier(JSContext *cx);
+    IonCode *generateArgumentsRectifier(JSContext *cx, ExecutionMode mode);
     IonCode *generateBailoutTable(JSContext *cx, uint32_t frameClass);
     IonCode *generateBailoutHandler(JSContext *cx);
     IonCode *generateInvalidator(JSContext *cx);
@@ -73,6 +80,14 @@ class IonRuntime
     bool initialize(JSContext *cx);
 
     static void Mark(JSTracer *trc);
+
+    AutoFlushCache *flusher() {
+        return flusher_;
+    }
+    void setFlusher(AutoFlushCache *fl) {
+        if (!flusher_ || !fl)
+            flusher_ = fl;
+    }
 };
 
 class IonCompartment
@@ -87,9 +102,6 @@ class IonCompartment
     // will eventually appear in this list asynchronously. Protected by the
     // runtime's analysis lock.
     OffThreadCompilationVector finishedOffThreadCompilations_;
-
-    // Keep track of memoryregions that are going to be flushed.
-    AutoFlushCache *flusher_;
 
   public:
     IonCode *getVMWrapper(const VMFunction &f);
@@ -116,8 +128,12 @@ class IonCompartment
 
     IonCode *getBailoutTable(const FrameSizeClass &frameClass);
 
-    IonCode *getArgumentsRectifier() {
-        return rt->argumentsRectifier_;
+    IonCode *getArgumentsRectifier(ExecutionMode mode) {
+        switch (mode) {
+          case SequentialExecution: return rt->argumentsRectifier_;
+          case ParallelExecution:   return rt->parallelArgumentsRectifier_;
+          default:                  JS_NOT_REACHED("No such execution mode");
+        }
     }
 
     IonCode *getInvalidationThunk() {
@@ -131,19 +147,17 @@ class IonCompartment
     IonCode *valuePreBarrier() {
         return rt->valuePreBarrier_;
     }
-    
+
     IonCode *shapePreBarrier() {
         return rt->shapePreBarrier_;
     }
 
     AutoFlushCache *flusher() {
-        return flusher_;
+        return rt->flusher();
     }
     void setFlusher(AutoFlushCache *fl) {
-        if (!flusher_ || !fl)
-            flusher_ = fl;
+        rt->setFlusher(fl);
     }
-
 };
 
 class BailoutClosure;
@@ -224,8 +238,8 @@ class IonActivation
 };
 
 // Called from JSCompartment::discardJitCode().
-void InvalidateAll(FreeOp *fop, JSCompartment *comp);
-void FinishInvalidation(FreeOp *fop, UnrootedScript script);
+void InvalidateAll(FreeOp *fop, JS::Zone *zone);
+void FinishInvalidation(FreeOp *fop, RawScript script);
 
 } // namespace ion
 } // namespace js

@@ -29,12 +29,24 @@
 #include "js/Vector.h"
 #include "js/TemplateLib.h"
 
+struct JSAtom;
 struct JSCompartment;
+struct JSFunction;
+struct JSFlatString;
+struct JSLinearString;
 
 namespace js {
 
+class ArgumentsObject;
+class ArrayBufferObject;
+class BaseShape;
+class DebugScopeObject;
 class GCHelperThread;
+class GlobalObject;
+class PropertyName;
+class ScopeObject;
 class Shape;
+class UnownedBaseShape;
 struct SliceBudget;
 
 enum HeapState {
@@ -117,6 +129,26 @@ MapAllocToTraceKind(AllocKind kind)
     return map[kind];
 }
 
+template <typename T> struct MapTypeToTraceKind {};
+template <> struct MapTypeToTraceKind<JSObject>         { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<JSFunction>       { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<ArgumentsObject>  { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<ArrayBufferObject>{ const static JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<DebugScopeObject> { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<GlobalObject>     { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<ScopeObject>      { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<JSScript>         { const static JSGCTraceKind kind = JSTRACE_SCRIPT; };
+template <> struct MapTypeToTraceKind<Shape>            { const static JSGCTraceKind kind = JSTRACE_SHAPE; };
+template <> struct MapTypeToTraceKind<BaseShape>        { const static JSGCTraceKind kind = JSTRACE_BASE_SHAPE; };
+template <> struct MapTypeToTraceKind<UnownedBaseShape> { const static JSGCTraceKind kind = JSTRACE_BASE_SHAPE; };
+template <> struct MapTypeToTraceKind<types::TypeObject>{ const static JSGCTraceKind kind = JSTRACE_TYPE_OBJECT; };
+template <> struct MapTypeToTraceKind<JSAtom>           { const static JSGCTraceKind kind = JSTRACE_STRING; };
+template <> struct MapTypeToTraceKind<JSString>         { const static JSGCTraceKind kind = JSTRACE_STRING; };
+template <> struct MapTypeToTraceKind<JSFlatString>     { const static JSGCTraceKind kind = JSTRACE_STRING; };
+template <> struct MapTypeToTraceKind<JSLinearString>   { const static JSGCTraceKind kind = JSTRACE_STRING; };
+template <> struct MapTypeToTraceKind<PropertyName>     { const static JSGCTraceKind kind = JSTRACE_STRING; };
+template <> struct MapTypeToTraceKind<ion::IonCode>     { const static JSGCTraceKind kind = JSTRACE_IONCODE; };
+
 #ifdef JSGC_GENERATIONAL
 static inline bool
 IsNurseryAllocable(AllocKind kind)
@@ -139,8 +171,8 @@ IsNurseryAllocable(AllocKind kind)
         false,     /* FINALIZE_SHAPE */
         false,     /* FINALIZE_BASE_SHAPE */
         false,     /* FINALIZE_TYPE_OBJECT */
-        true,      /* FINALIZE_SHORT_STRING */
-        true,      /* FINALIZE_STRING */
+        false,     /* FINALIZE_SHORT_STRING */
+        false,     /* FINALIZE_STRING */
         false,     /* FINALIZE_EXTERNAL_STRING */
         false,     /* FINALIZE_IONCODE */
     };
@@ -480,19 +512,6 @@ const size_t MAX_EMPTY_CHUNK_AGE = 4;
 
 } /* namespace gc */
 
-struct GCPtrHasher
-{
-    typedef void *Lookup;
-
-    static HashNumber hash(void *key) {
-        return HashNumber(uintptr_t(key) >> JS_GCTHING_ZEROBITS);
-    }
-
-    static bool match(void *l, void *k) { return l == k; }
-};
-
-typedef HashMap<void *, uint32_t, GCPtrHasher, SystemAllocPolicy> GCLocks;
-
 typedef enum JSGCRootType {
     JS_GC_ROOT_VALUE_PTR,
     JS_GC_ROOT_STRING_PTR,
@@ -535,18 +554,6 @@ js_InitGC(JSRuntime *rt, uint32_t maxbytes);
 extern void
 js_FinishGC(JSRuntime *rt);
 
-/* Table of pointers with count valid members. */
-typedef struct JSPtrTable {
-    size_t      count;
-    void        **array;
-} JSPtrTable;
-
-extern JSBool
-js_LockThing(JSRuntime *rt, void *thing);
-
-extern void
-js_UnlockThing(JSRuntime *rt, void *thing);
-
 namespace js {
 
 extern void
@@ -557,11 +564,11 @@ TraceRuntime(JSTracer *trc);
 
 /* Must be called with GC lock taken. */
 extern void
-TriggerGC(JSRuntime *rt, js::gcreason::Reason reason);
+TriggerGC(JSRuntime *rt, JS::gcreason::Reason reason);
 
 /* Must be called with GC lock taken. */
 extern void
-TriggerZoneGC(Zone *zone, js::gcreason::Reason reason);
+TriggerZoneGC(Zone *zone, JS::gcreason::Reason reason);
 
 extern void
 MaybeGC(JSContext *cx);
@@ -581,13 +588,13 @@ typedef enum JSGCInvocationKind {
 } JSGCInvocationKind;
 
 extern void
-GC(JSRuntime *rt, JSGCInvocationKind gckind, js::gcreason::Reason reason);
+GC(JSRuntime *rt, JSGCInvocationKind gckind, JS::gcreason::Reason reason);
 
 extern void
-GCSlice(JSRuntime *rt, JSGCInvocationKind gckind, js::gcreason::Reason reason, int64_t millis = 0);
+GCSlice(JSRuntime *rt, JSGCInvocationKind gckind, JS::gcreason::Reason reason, int64_t millis = 0);
 
 extern void
-GCFinalSlice(JSRuntime *rt, JSGCInvocationKind gckind, js::gcreason::Reason reason);
+GCFinalSlice(JSRuntime *rt, JSGCInvocationKind gckind, JS::gcreason::Reason reason);
 
 extern void
 GCDebugSlice(JSRuntime *rt, bool limit, int64_t objCount);
@@ -1134,6 +1141,7 @@ void
 MarkStackRangeConservatively(JSTracer *trc, Value *begin, Value *end);
 
 typedef void (*IterateChunkCallback)(JSRuntime *rt, void *data, gc::Chunk *chunk);
+typedef void (*IterateZoneCallback)(JSRuntime *rt, void *data, JS::Zone *zone);
 typedef void (*IterateArenaCallback)(JSRuntime *rt, void *data, gc::Arena *arena,
                                      JSGCTraceKind traceKind, size_t thingSize);
 typedef void (*IterateCellCallback)(JSRuntime *rt, void *data, void *thing,
@@ -1145,10 +1153,11 @@ typedef void (*IterateCellCallback)(JSRuntime *rt, void *data, void *thing,
  * cell in the GC heap.
  */
 extern void
-IterateCompartmentsArenasCells(JSRuntime *rt, void *data,
-                               JSIterateCompartmentCallback compartmentCallback,
-                               IterateArenaCallback arenaCallback,
-                               IterateCellCallback cellCallback);
+IterateZonesCompartmentsArenasCells(JSRuntime *rt, void *data,
+                                    IterateZoneCallback zoneCallback,
+                                    JSIterateCompartmentCallback compartmentCallback,
+                                    IterateArenaCallback arenaCallback,
+                                    IterateCellCallback cellCallback);
 
 /*
  * Invoke chunkCallback on every in-use chunk.
@@ -1156,13 +1165,15 @@ IterateCompartmentsArenasCells(JSRuntime *rt, void *data,
 extern void
 IterateChunks(JSRuntime *rt, void *data, IterateChunkCallback chunkCallback);
 
+typedef void (*IterateScriptCallback)(JSRuntime *rt, void *data, JSScript *script);
+
 /*
- * Invoke cellCallback on every in-use object of the specified thing kind for
+ * Invoke scriptCallback on every in-use script for
  * the given compartment or for all compartments if it is null.
  */
 extern void
-IterateCells(JSRuntime *rt, JSCompartment *compartment, gc::AllocKind thingKind,
-             void *data, IterateCellCallback cellCallback);
+IterateScripts(JSRuntime *rt, JSCompartment *compartment,
+               void *data, IterateScriptCallback scriptCallback);
 
 } /* namespace js */
 
@@ -1176,10 +1187,11 @@ js_FinalizeStringRT(JSRuntime *rt, JSString *str);
     ((trc)->callback == NULL || (trc)->callback == GCMarker::GrayCallback)
 
 namespace js {
-namespace gc {
 
 JSCompartment *
-NewCompartment(JSContext *cx, JSPrincipals *principals);
+NewCompartment(JSContext *cx, JS::Zone *zone, JSPrincipals *principals);
+
+namespace gc {
 
 /* Tries to run a GC no matter what (used for GC zeal). */
 void
@@ -1190,6 +1202,9 @@ SetDeterministicGC(JSContext *cx, bool enabled);
 
 void
 SetValidateGC(JSContext *cx, bool enabled);
+
+void
+SetFullCompartmentChecks(JSContext *cx, bool enabled);
 
 /* Wait for the background thread to finish sweeping if it is running. */
 void
@@ -1242,9 +1257,6 @@ MaybeVerifyBarriers(JSContext *cx, bool always = false)
 
 } /* namespace gc */
 
-void
-PurgeJITCaches(JSCompartment *c);
-
 #ifdef DEBUG
 /* Use this to avoid assertions when manipulating the wrapper map. */
 struct AutoDisableProxyCheck
@@ -1253,7 +1265,7 @@ struct AutoDisableProxyCheck
 
     AutoDisableProxyCheck(JSRuntime *rt);
 
-   ~AutoDisableProxyCheck() {
+    ~AutoDisableProxyCheck() {
         count--;
     }
 };
@@ -1263,6 +1275,9 @@ struct AutoDisableProxyCheck
     AutoDisableProxyCheck(JSRuntime *rt) {}
 };
 #endif
+
+void
+PurgeJITCaches(JS::Zone *zone);
 
 } /* namespace js */
 

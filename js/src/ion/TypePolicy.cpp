@@ -160,13 +160,17 @@ ComparePolicy::adjustInputs(MInstruction *def)
         return true;
     }
 
+    if (compare->compareType() == MCompare::Compare_Undefined ||
+        compare->compareType() == MCompare::Compare_Null)
+    {
+        // Nothing to do for undefined and null, lowering handles all types.
+        return true;
+    }
+
     // Convert all inputs to the right input type
     MIRType type = compare->inputType();
-
-    // Nothing to do for undefined and null, lowering handles all types.
-    if (type == MIRType_Undefined || type == MIRType_Null)
-        return true;
-
+    JS_ASSERT(type == MIRType_Int32 || type == MIRType_Double ||
+              type == MIRType_Object || type == MIRType_String);
     for (size_t i = 0; i < 2; i++) {
         MDefinition *in = def->getOperand(i);
         if (in->type() == type)
@@ -175,8 +179,11 @@ ComparePolicy::adjustInputs(MInstruction *def)
         MInstruction *replace;
 
         // See BinaryArithPolicy::adjustInputs for an explanation of the following
-        if (in->type() == MIRType_Object || in->type() == MIRType_String)
+        if (in->type() == MIRType_Object || in->type() == MIRType_String ||
+            in->type() == MIRType_Undefined)
+        {
             in = boxAt(def, in);
+        }
 
         switch (type) {
           case MIRType_Double:
@@ -274,10 +281,11 @@ PowPolicy::adjustInputs(MInstruction *ins)
     return IntPolicy<1>::staticAdjustInputs(ins);
 }
 
+template <unsigned Op>
 bool
-StringPolicy::staticAdjustInputs(MInstruction *def)
+StringPolicy<Op>::staticAdjustInputs(MInstruction *def)
 {
-    MDefinition *in = def->getOperand(0);
+    MDefinition *in = def->getOperand(Op);
     if (in->type() == MIRType_String)
         return true;
 
@@ -291,9 +299,12 @@ StringPolicy::staticAdjustInputs(MInstruction *def)
     }
 
     def->block()->insertBefore(def, replace);
-    def->replaceOperand(0, replace);
+    def->replaceOperand(Op, replace);
     return true;
 }
+
+template bool StringPolicy<0>::staticAdjustInputs(MInstruction *ins);
+template bool StringPolicy<1>::staticAdjustInputs(MInstruction *ins);
 
 template <unsigned Op>
 bool

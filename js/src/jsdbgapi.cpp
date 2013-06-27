@@ -74,9 +74,7 @@ JS_SetRuntimeDebugMode(JSRuntime *rt, JSBool debug)
 static bool
 IsTopFrameConstructing(JSContext *cx, AbstractFramePtr frame)
 {
-    ScriptFrameIter iter(cx);
-    JS_ASSERT(iter.abstractFramePtr() == frame);
-    return iter.isConstructing();
+    return frame.asStackFrame()->isConstructing();
 }
 
 JSTrapStatus
@@ -296,11 +294,12 @@ JS_ClearInterrupt(JSRuntime *rt, JSInterruptHook *hoop, void **closurep)
 /************************************************************************/
 
 JS_PUBLIC_API(JSBool)
-JS_SetWatchPoint(JSContext *cx, JSObject *obj_, jsid id,
+JS_SetWatchPoint(JSContext *cx, JSObject *obj_, jsid id_,
                  JSWatchPointHandler handler, JSObject *closure_)
 {
     assertSameCompartment(cx, obj_);
 
+    RootedId id(cx, id_);
     RootedObject origobj(cx, obj_), closure(cx, closure_);
     RootedObject obj(cx, GetInnerObject(cx, origobj));
     if (!obj)
@@ -518,7 +517,7 @@ JS_GetFunctionScript(JSContext *cx, JSFunction *fun)
     if (fun->isInterpretedLazy()) {
         RootedFunction rootedFun(cx, fun);
         AutoCompartment funCompartment(cx, rootedFun);
-        UnrootedScript script = rootedFun->getOrCreateScript(cx);
+        RawScript script = rootedFun->getOrCreateScript(cx);
         if (!script)
             MOZ_CRASH();
         return script;
@@ -571,7 +570,7 @@ JS_GetDebugClassName(JSObject *obj)
 JS_PUBLIC_API(const char *)
 JS_GetScriptFilename(JSContext *cx, JSScript *script)
 {
-    return script->filename;
+    return script->filename();
 }
 
 JS_PUBLIC_API(const jschar *)
@@ -737,8 +736,7 @@ JS_GetPropertyDescArray(JSContext *cx, JSObject *obj_, JSPropertyDescArray *pda)
         return false;
 
     {
-        Shape::Range r(obj->lastProperty()->all());
-        Shape::Range::AutoRooter rooter(cx, &r);
+        Shape::Range<CanGC> r(cx, obj->lastProperty());
         RootedShape shape(cx);
         for (; !r.empty(); r.popFront()) {
             pd[i].id = JSVAL_NULL;
@@ -839,90 +837,6 @@ JS_SetDebugErrorHook(JSRuntime *rt, JSDebugErrorHook hook, void *closure)
 
 /************************************************************************/
 
-JS_PUBLIC_API(size_t)
-JS_GetObjectTotalSize(JSContext *cx, JSObject *obj)
-{
-    return obj->computedSizeOfThisSlotsElements();
-}
-
-static size_t
-GetAtomTotalSize(JSContext *cx, JSAtom *atom)
-{
-    return sizeof(AtomStateEntry) + sizeof(HashNumber) +
-           sizeof(JSString) +
-           (atom->length() + 1) * sizeof(jschar);
-}
-
-JS_PUBLIC_API(size_t)
-JS_GetFunctionTotalSize(JSContext *cx, JSFunction *fun)
-{
-    AutoAssertNoGC nogc;
-    size_t nbytes = sizeof *fun;
-    nbytes += JS_GetObjectTotalSize(cx, fun);
-    if (fun->isInterpreted())
-        nbytes += JS_GetScriptTotalSize(cx, fun->nonLazyScript());
-    if (fun->displayAtom())
-        nbytes += GetAtomTotalSize(cx, fun->displayAtom());
-    return nbytes;
-}
-
-JS_PUBLIC_API(size_t)
-JS_GetScriptTotalSize(JSContext *cx, JSScript *script)
-{
-    size_t nbytes, pbytes;
-    jssrcnote *sn, *notes;
-    ObjectArray *objarray;
-    JSPrincipals *principals;
-
-    nbytes = sizeof *script;
-    nbytes += script->length * sizeof script->code[0];
-    nbytes += script->natoms * sizeof script->atoms[0];
-    for (size_t i = 0; i < script->natoms; i++)
-        nbytes += GetAtomTotalSize(cx, script->atoms[i]);
-
-    if (script->filename)
-        nbytes += strlen(script->filename) + 1;
-
-    notes = script->notes();
-    for (sn = notes; !SN_IS_TERMINATOR(sn); sn = SN_NEXT(sn))
-        continue;
-    nbytes += (sn - notes + 1) * sizeof *sn;
-
-    if (script->hasObjects()) {
-        objarray = script->objects();
-        size_t i = objarray->length;
-        nbytes += sizeof *objarray + i * sizeof objarray->vector[0];
-        do {
-            nbytes += JS_GetObjectTotalSize(cx, objarray->vector[--i]);
-        } while (i != 0);
-    }
-
-    if (script->hasRegexps()) {
-        objarray = script->regexps();
-        size_t i = objarray->length;
-        nbytes += sizeof *objarray + i * sizeof objarray->vector[0];
-        do {
-            nbytes += JS_GetObjectTotalSize(cx, objarray->vector[--i]);
-        } while (i != 0);
-    }
-
-    if (script->hasTrynotes())
-        nbytes += sizeof(TryNoteArray) + script->trynotes()->length * sizeof(JSTryNote);
-
-    principals = script->principals();
-    if (principals) {
-        JS_ASSERT(principals->refcount);
-        pbytes = sizeof *principals;
-        if (principals->refcount > 1)
-            pbytes = JS_HOWMANY(pbytes, principals->refcount);
-        nbytes += pbytes;
-    }
-
-    return nbytes;
-}
-
-/************************************************************************/
-
 JS_FRIEND_API(void)
 js_RevertVersion(JSContext *cx)
 {
@@ -947,10 +861,10 @@ JS_DumpBytecode(JSContext *cx, JSScript *scriptArg)
     if (!sprinter.init())
         return;
 
-    fprintf(stdout, "--- SCRIPT %s:%d ---\n", script->filename, script->lineno);
+    fprintf(stdout, "--- SCRIPT %s:%d ---\n", script->filename(), script->lineno);
     js_Disassemble(cx, script, true, &sprinter);
     fputs(sprinter.string(), stdout);
-    fprintf(stdout, "--- END SCRIPT %s:%d ---\n", script->filename, script->lineno);
+    fprintf(stdout, "--- END SCRIPT %s:%d ---\n", script->filename(), script->lineno);
 #endif
 }
 
@@ -965,10 +879,10 @@ JS_DumpPCCounts(JSContext *cx, JSScript *scriptArg)
     if (!sprinter.init())
         return;
 
-    fprintf(stdout, "--- SCRIPT %s:%d ---\n", script->filename, script->lineno);
+    fprintf(stdout, "--- SCRIPT %s:%d ---\n", script->filename(), script->lineno);
     js_DumpPCCounts(cx, script, &sprinter);
     fputs(sprinter.string(), stdout);
-    fprintf(stdout, "--- END SCRIPT %s:%d ---\n", script->filename, script->lineno);
+    fprintf(stdout, "--- END SCRIPT %s:%d ---\n", script->filename(), script->lineno);
 #endif
 }
 
@@ -977,11 +891,8 @@ namespace {
 typedef Vector<JSScript *, 0, SystemAllocPolicy> ScriptsToDump;
 
 static void
-DumpBytecodeScriptCallback(JSRuntime *rt, void *data, void *thing,
-                           JSGCTraceKind traceKind, size_t thingSize)
+DumpBytecodeScriptCallback(JSRuntime *rt, void *data, JSScript *script)
 {
-    JS_ASSERT(traceKind == JSTRACE_SCRIPT);
-    JSScript *script = static_cast<JSScript *>(thing);
     static_cast<ScriptsToDump *>(data)->append(script);
 }
 
@@ -991,7 +902,7 @@ JS_PUBLIC_API(void)
 JS_DumpCompartmentBytecode(JSContext *cx)
 {
     ScriptsToDump scripts;
-    IterateCells(cx->runtime, cx->compartment, gc::FINALIZE_SCRIPT, &scripts, DumpBytecodeScriptCallback);
+    IterateScripts(cx->runtime, cx->compartment, &scripts, DumpBytecodeScriptCallback);
 
     for (size_t i = 0; i < scripts.length(); i++) {
         if (scripts[i]->enclosingScriptsCompiledSuccessfully())
@@ -1002,8 +913,11 @@ JS_DumpCompartmentBytecode(JSContext *cx)
 JS_PUBLIC_API(void)
 JS_DumpCompartmentPCCounts(JSContext *cx)
 {
-    for (CellIter i(cx->compartment, gc::FINALIZE_SCRIPT); !i.done(); i.next()) {
+    for (CellIter i(cx->zone(), gc::FINALIZE_SCRIPT); !i.done(); i.next()) {
         JSScript *script = i.get<JSScript>();
+        if (script->compartment() != cx->compartment)
+            continue;
+
         if (script->hasScriptCounts && script->enclosingScriptsCompiledSuccessfully())
             JS_DumpPCCounts(cx, script);
     }
@@ -1024,7 +938,6 @@ JS_UnwrapObjectAndInnerize(JSObject *obj)
 JS_FRIEND_API(JSBool)
 js_CallContextDebugHandler(JSContext *cx)
 {
-    AssertCanGC();
     NonBuiltinScriptFrameIter iter(cx);
     JS_ASSERT(!iter.done());
 
@@ -1044,10 +957,9 @@ js_CallContextDebugHandler(JSContext *cx)
     }
 }
 
-JS_PUBLIC_API(StackDescription *)
+JS_PUBLIC_API(JS::StackDescription *)
 JS::DescribeStack(JSContext *cx, unsigned maxFrames)
 {
-    AutoAssertNoGC nogc;
     Vector<FrameDescription> frames(cx);
 
     for (NonBuiltinScriptFrameIter i(cx); !i.done(); ++i) {
@@ -1061,7 +973,7 @@ JS::DescribeStack(JSContext *cx, unsigned maxFrames)
             break;
     }
 
-    StackDescription *desc = js_new<StackDescription>();
+    JS::StackDescription *desc = js_new<JS::StackDescription>();
     if (!desc)
         return NULL;
 
@@ -1071,7 +983,7 @@ JS::DescribeStack(JSContext *cx, unsigned maxFrames)
 }
 
 JS_PUBLIC_API(void)
-JS::FreeStackDescription(JSContext *cx, StackDescription *desc)
+JS::FreeStackDescription(JSContext *cx, JS::StackDescription *desc)
 {
     js_delete(desc->frames);
     js_delete(desc);
@@ -1111,7 +1023,7 @@ FormatValue(JSContext *cx, const Value &v, JSAutoByteString &bytes)
     JSString *str = ToString<CanGC>(cx, v);
     if (!str)
         return NULL;
-    const char *buf = bytes.encode(cx, str);
+    const char *buf = bytes.encodeLatin1(cx, str);
     if (!buf)
         return NULL;
     const char *found = strstr(buf, "function ");
@@ -1124,15 +1036,13 @@ static char *
 FormatFrame(JSContext *cx, const NonBuiltinScriptFrameIter &iter, char *buf, int num,
             JSBool showArgs, JSBool showLocals, JSBool showThisProps)
 {
-    AssertCanGC();
-
     RootedScript script(cx, iter.script());
     jsbytecode* pc = iter.pc();
 
     RootedObject scopeChain(cx, iter.scopeChain());
     JSAutoCompartment ac(cx, scopeChain);
 
-    const char *filename = script->filename;
+    const char *filename = script->filename();
     unsigned lineno = PCToLineNumber(script, pc);
     RootedFunction fun(cx, iter.maybeCallee());
     RootedString funname(cx);
@@ -1160,7 +1070,7 @@ FormatFrame(JSContext *cx, const NonBuiltinScriptFrameIter &iter, char *buf, int
     // print the frame number and function name
     if (funname) {
         JSAutoByteString funbytes;
-        buf = JS_sprintf_append(buf, "%d %s(", num, funbytes.encode(cx, funname));
+        buf = JS_sprintf_append(buf, "%d %s(", num, funbytes.encodeLatin1(cx, funname));
     } else if (fun) {
         buf = JS_sprintf_append(buf, "%d anonymous(", num);
     } else {
@@ -1258,7 +1168,7 @@ FormatFrame(JSContext *cx, const NonBuiltinScriptFrameIter &iter, char *buf, int
             JSAutoByteString thisValBytes;
             RootedString thisValStr(cx, ToString<CanGC>(cx, thisVal));
             if (thisValStr) {
-                if (const char *str = thisValBytes.encode(cx, thisValStr)) {
+                if (const char *str = thisValBytes.encodeLatin1(cx, thisValStr)) {
                     buf = JS_sprintf_append(buf, "    this = %s\n", str);
                     if (!buf)
                         return buf;

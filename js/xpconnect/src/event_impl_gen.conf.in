@@ -26,7 +26,6 @@ simple_events = [
     'SmartCardEvent',
 #ifdef MOZ_B2G_BT
     'BluetoothDeviceEvent',
-    'BluetoothDeviceAddressEvent',
 #endif
 #ifdef MOZ_B2G_RIL
     'CallEvent',
@@ -39,10 +38,21 @@ simple_events = [
     'MozVoicemailEvent',
     'USSDReceivedEvent',
 #endif
+    'ElementReplaceEvent',
     'MozSmsEvent',
+    'MozMmsEvent',
     'DeviceStorageChangeEvent',
     'PopupBlockedEvent',
-    'BlobEvent'
+    'BlobEvent',
+#ifdef MOZ_GAMEPAD
+    'GamepadEvent',
+    'GamepadButtonEvent',
+    'GamepadAxisMoveEvent',
+#endif
+#ifdef MOZ_WEBSPEECH
+    'SpeechRecognitionEvent',
+    'SpeechRecognitionError',
+#endif
   ]
 
 """ include file names """

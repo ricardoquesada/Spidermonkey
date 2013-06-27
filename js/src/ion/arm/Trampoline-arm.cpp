@@ -14,6 +14,7 @@
 #include "ion/IonSpewer.h"
 #include "ion/Bailouts.h"
 #include "ion/VMFunctions.h"
+#include "ion/ExecutionModeInlines.h"
 
 using namespace js;
 using namespace js::ion;
@@ -85,7 +86,7 @@ IonRuntime::generateEnterJIT(JSContext *cx)
     JS_ASSERT(OsrFrameReg == reg_frame);
 
     MacroAssembler masm(cx);
-    AutoFlushCache afc("GenerateEnterJIT", cx->compartment->ionCompartment());
+    AutoFlushCache afc("GenerateEnterJIT", cx->runtime->ionRuntime());
     Assembler *aasm = &masm;
 
     // Save non-volatile registers. These must be saved by the trampoline,
@@ -196,7 +197,7 @@ IonRuntime::generateEnterJIT(JSContext *cx)
     GenerateReturn(masm, JS_TRUE);
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 IonCode *
@@ -242,13 +243,13 @@ IonRuntime::generateInvalidator(JSContext *cx)
     masm.ma_add(sp, r1, sp);
     masm.generateBailoutTail(r1);
     Linker linker(masm);
-    IonCode *code = linker.newCode(cx);
+    IonCode *code = linker.newCode(cx, JSC::OTHER_CODE);
     IonSpew(IonSpew_Invalidate, "   invalidation thunk created at %p", (void *) code->raw());
     return code;
 }
 
 IonCode *
-IonRuntime::generateArgumentsRectifier(JSContext *cx)
+IonRuntime::generateArgumentsRectifier(JSContext *cx, ExecutionMode mode)
 {
     MacroAssembler masm(cx);
     // ArgumentsRectifierReg contains the |nargs| pushed onto the current frame.
@@ -310,7 +311,7 @@ IonRuntime::generateArgumentsRectifier(JSContext *cx)
     // Call the target function.
     // Note that this code assumes the function is JITted.
     masm.ma_ldr(DTRAddr(r1, DtrOffImm(offsetof(JSFunction, u.i.script_))), r3);
-    masm.ma_ldr(DTRAddr(r3, DtrOffImm(offsetof(JSScript, ion))), r3);
+    masm.ma_ldr(DTRAddr(r3, DtrOffImm(OffsetOfIonInJSScript(mode))), r3);
     masm.ma_ldr(DTRAddr(r3, DtrOffImm(IonScript::offsetOfMethod())), r3);
     masm.ma_ldr(DTRAddr(r3, DtrOffImm(IonCode::offsetOfCode())), r3);
     masm.ma_callIonHalfPush(r3);
@@ -339,7 +340,7 @@ IonRuntime::generateArgumentsRectifier(JSContext *cx)
 
     masm.ret();
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 static void
@@ -447,7 +448,7 @@ IonRuntime::generateBailoutTable(JSContext *cx, uint32_t frameClass)
     GenerateBailoutThunk(masm, frameClass);
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 IonCode *
@@ -457,7 +458,7 @@ IonRuntime::generateBailoutHandler(JSContext *cx)
     GenerateBailoutThunk(masm, NO_FRAME_SIZE_CLASS_ID);
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 
 IonCode *
@@ -596,7 +597,7 @@ IonRuntime::generateVMWrapper(JSContext *cx, const VMFunction &f)
     masm.handleException();
 
     Linker linker(masm);
-    IonCode *wrapper = linker.newCode(cx);
+    IonCode *wrapper = linker.newCode(cx, JSC::OTHER_CODE);
     if (!wrapper)
         return NULL;
 
@@ -634,6 +635,6 @@ IonRuntime::generatePreBarrier(JSContext *cx, MIRType type)
     masm.ret();
 
     Linker linker(masm);
-    return linker.newCode(cx);
+    return linker.newCode(cx, JSC::OTHER_CODE);
 }
 

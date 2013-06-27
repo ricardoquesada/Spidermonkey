@@ -10,12 +10,9 @@ relativesrcdir = @relativesrcdir@
 
 include $(DEPTH)/config/autoconf.mk
 
-MODULE = jsdebugger
 MODULE_NAME = jsdebugger
-GRE_MODULE = 1
 
 LIBRARY_NAME = jsdebugger
-XPIDL_MODULE = jsdebugger
 LIBXUL_LIBRARY = 1
 EXPORT_LIBRARY = 1
 IS_COMPONENT = 1
@@ -31,10 +28,6 @@ EXTRA_DSO_LDOPTS += \
 
 EXTRA_JS_MODULES = \
   jsdebugger.jsm \
-  $(NULL)
-
-XPIDLSRCS = \
-  IJSDebugger.idl \
   $(NULL)
 
 XPCSHELL_TESTS = tests

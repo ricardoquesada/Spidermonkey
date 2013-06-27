@@ -11,19 +11,6 @@ relativesrcdir  = @relativesrcdir@
 
 include $(DEPTH)/config/autoconf.mk
 
-DIRS = \
-  MochiKit \
-  static \
-  dynamic \
-  tests \
-  chrome \
-  ssltunnel \
-  $(NULL)
-
-ifeq ($(MOZ_BUILD_APP),mobile/android)
-DIRS += roboextender
-endif
-
 NO_JS_MANIFEST = 1
 MOZ_CHROME_FILE_FORMAT = jar
 DIST_FILES = install.rdf
@@ -77,7 +64,10 @@ _SERV_FILES = 	\
 		$(NULL)	
 
 ifeq ($(MOZ_BUILD_APP),mobile/android)
-_SERV_FILES += $(topsrcdir)/mobile/android/base/tests/robocop.ini
+_SERV_FILES += \
+  $(topsrcdir)/mobile/android/base/tests/robocop.ini \
+  $(topsrcdir)/mobile/android/base/tests/robocop_autophone.ini \
+  $(NULL)
 endif
 
 _PYWEBSOCKET_FILES = \
@@ -157,6 +147,9 @@ endif
 
 ifeq (windows,$(MOZ_WIDGET_TOOLKIT))
 TEST_HARNESS_BINS += screenshot$(BIN_SUFFIX)
+ifdef MOZ_METRO
+TEST_HARNESS_BINS += metrotestharness$(BIN_SUFFIX)
+endif
 endif
 
 # Components / typelibs that don't get packaged with
@@ -187,6 +180,9 @@ stage-chromejar:
 	$(NSINSTALL) -D $(PKG_CHROMEJAR)
 	cp -RL $(DEPTH)/_tests/testing/mochitest/browser $(PKG_CHROMEJAR)
 	cp -RL $(DEPTH)/_tests/testing/mochitest/chrome $(PKG_CHROMEJAR)
+ifdef MOZ_METRO
+	cp -RL $(DEPTH)/_tests/testing/mochitest/metro $(PKG_CHROMEJAR)
+endif
 ifdef ACCESSIBILITY
 	cp -RL $(DEPTH)/_tests/testing/mochitest/a11y $(PKG_CHROMEJAR)
 endif

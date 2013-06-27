@@ -37,9 +37,6 @@ enum BailoutKind
     // A bailout required to monitor the result of a VM call.
     Bailout_Monitor,
 
-    // A bailout to trigger recompilation to inline calls when the script is hot.
-    Bailout_RecompileCheck,
-
     // A bailout triggered by a bounds-check failure.
     Bailout_BoundsCheck,
 
@@ -67,7 +64,7 @@ enum MIRType
     MIRType_None,         // Invalid, used as a placeholder.
     MIRType_Slots,        // A slots vector
     MIRType_Elements,     // An elements vector
-    MIRType_StackFrame,   // StackFrame pointer for OSR.
+    MIRType_Pointer,      // An opaque pointer that receives no special treatment
     MIRType_Shape,        // A Shape pointer.
     MIRType_ForkJoinSlice // js::ForkJoinSlice*
 };

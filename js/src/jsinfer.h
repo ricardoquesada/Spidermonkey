@@ -439,7 +439,7 @@ class TypeSet
 
     void print();
 
-    inline void sweep(JSCompartment *compartment);
+    inline void sweep(JS::Zone *zone);
 
     /* Whether this set contains a specific type. */
     inline bool hasType(Type type) const;
@@ -514,6 +514,7 @@ class TypeSet
      */
     bool isSubset(TypeSet *other);
     bool isSubsetIgnorePrimitives(TypeSet *other);
+    bool intersectionEmpty(TypeSet *other);
 
     inline StackTypeSet *toStackTypeSet();
     inline HeapTypeSet *toHeapTypeSet();
@@ -1054,7 +1055,7 @@ struct TypeObject : gc::Cell
     /* Helpers */
 
     bool addProperty(JSContext *cx, RawId id, Property **pprop);
-    bool addDefiniteProperties(JSContext *cx, HandleObject obj);
+    bool addDefiniteProperties(JSContext *cx, JSObject *obj);
     bool matchDefiniteProperties(HandleObject obj);
     void addPrototype(JSContext *cx, TypeObject *proto);
     void addPropertyType(JSContext *cx, jsid id, Type type);
@@ -1081,6 +1082,8 @@ struct TypeObject : gc::Cell
      * from all the compartment's type objects.
      */
     void finalize(FreeOp *fop) {}
+
+    JS::Zone *zone() const { return tenuredZone(); }
 
     static inline void writeBarrierPre(TypeObject *type);
     static inline void writeBarrierPost(TypeObject *type, void *addr);
@@ -1153,7 +1156,7 @@ struct TypeCallsite
     /* Type set receiving the return value of this call. */
     StackTypeSet *returnTypes;
 
-    inline TypeCallsite(JSContext *cx, UnrootedScript script, jsbytecode *pc,
+    inline TypeCallsite(JSContext *cx, RawScript script, jsbytecode *pc,
                         bool isNew, unsigned argumentCount);
 };
 
@@ -1179,7 +1182,7 @@ class TypeScript
     /* Array of type type sets for variables and JOF_TYPESET ops. */
     TypeSet *typeArray() { return (TypeSet *) (uintptr_t(this) + sizeof(TypeScript)); }
 
-    static inline unsigned NumTypeSets(UnrootedScript script);
+    static inline unsigned NumTypeSets(RawScript script);
 
     static inline HeapTypeSet  *ReturnTypes(RawScript script);
     static inline StackTypeSet *ThisTypes(RawScript script);
@@ -1341,15 +1344,6 @@ struct TypeCompartment
     /* Whether we are currently resolving the pending worklist. */
     bool resolving;
 
-    /* Whether type inference is enabled in this compartment. */
-    bool inferenceEnabled;
-
-    /*
-     * Bit set if all current types must be marked as unknown, and all scripts
-     * recompiled. Caused by OOM failure within inference operations.
-     */
-    bool pendingNukeTypes;
-
     /* Number of scripts in this compartment. */
     unsigned scriptCount;
 
@@ -1382,8 +1376,10 @@ struct TypeCompartment
     ArrayTypeTable *arrayTypeTable;
     ObjectTypeTable *objectTypeTable;
 
-    void fixArrayType(JSContext *cx, HandleObject obj);
-    void fixObjectType(JSContext *cx, HandleObject obj);
+    void fixArrayType(JSContext *cx, JSObject *obj);
+    void fixObjectType(JSContext *cx, JSObject *obj);
+
+    JSObject *newTypedObject(JSContext *cx, IdValuePair *properties, size_t nproperties);
 
     /* Logging fields */
 
@@ -1392,7 +1388,7 @@ struct TypeCompartment
     unsigned typeCounts[TYPE_COUNT_LIMIT];
     unsigned typeCountOver;
 
-    void init(JSContext *cx);
+    TypeCompartment();
     ~TypeCompartment();
 
     inline JSCompartment *compartment();
@@ -1419,16 +1415,14 @@ struct TypeCompartment
     /* Get or make an object for an allocation site, and add to the allocation site table. */
     TypeObject *addAllocationSiteTypeObject(JSContext *cx, AllocationSiteKey key);
 
-    void nukeTypes(FreeOp *fop);
     void processPendingRecompiles(FreeOp *fop);
 
     /* Mark all types as needing destruction once inference has 'finished'. */
     void setPendingNukeTypes(JSContext *cx);
-    void setPendingNukeTypesNoReport();
 
     /* Mark a script as needing recompilation once inference has finished. */
     void addPendingRecompile(JSContext *cx, const RecompileInfo &info);
-    void addPendingRecompile(JSContext *cx, UnrootedScript script, jsbytecode *pc);
+    void addPendingRecompile(JSContext *cx, RawScript script, jsbytecode *pc);
 
     /* Monitor future effects on a bytecode. */
     void monitorBytecode(JSContext *cx, JSScript *script, uint32_t offset,
@@ -1438,11 +1432,43 @@ struct TypeCompartment
     void markSetsUnknown(JSContext *cx, TypeObject *obj);
 
     void sweep(FreeOp *fop);
+    void sweepShapes(FreeOp *fop);
     void sweepCompilerOutputs(FreeOp *fop, bool discardConstraints);
 
     void maybePurgeAnalysis(JSContext *cx, bool force = false);
 
     void finalizeObjects();
+};
+
+struct TypeZone
+{
+    JS::Zone                     *zone_;
+
+    /* Pool for type information in this zone. */
+    static const size_t TYPE_LIFO_ALLOC_PRIMARY_CHUNK_SIZE = 8 * 1024;
+    js::LifoAlloc                typeLifoAlloc;
+
+    /*
+     * Bit set if all current types must be marked as unknown, and all scripts
+     * recompiled. Caused by OOM failure within inference operations.
+     */
+    bool                         pendingNukeTypes;
+
+    /* Whether type inference is enabled in this compartment. */
+    bool                         inferenceEnabled;
+
+    TypeZone(JS::Zone *zone);
+    ~TypeZone();
+    void init(JSContext *cx);
+
+    JS::Zone *zone() const { return zone_; }
+
+    void sweep(FreeOp *fop, bool releaseTypes);
+
+    /* Mark all types as needing destruction once inference has 'finished'. */
+    void setPendingNukeTypes();
+
+    void nukeTypes(FreeOp *fop);
 };
 
 enum SpewChannel {

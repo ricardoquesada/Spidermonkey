@@ -7,8 +7,10 @@ from __future__ import unicode_literals
 import os
 
 from .data import (
-    DirectoryTraversal,
     ConfigFileSubstitution,
+    DirectoryTraversal,
+    VariablePassthru,
+    ReaderSummary,
 )
 
 from .reader import MozbuildSandbox
@@ -31,12 +33,22 @@ class TreeMetadataEmitter(object):
         The return value from BuildReader.read_topsrcdir() (a generator) is
         typically fed into this function.
         """
+        file_count = 0
+        execution_time = 0.0
+
         for out in output:
             if isinstance(out, MozbuildSandbox):
                 for o in self.emit_from_sandbox(out):
                     yield o
+
+                # Update the stats.
+                file_count += len(out.all_paths)
+                execution_time += out.execution_time
+
             else:
                 raise Exception('Unhandled output type: %s' % out)
+
+        yield ReaderSummary(file_count, execution_time)
 
     def emit_from_sandbox(self, sandbox):
         """Convert a MozbuildSandbox to tree metadata objects.
@@ -55,7 +67,24 @@ class TreeMetadataEmitter(object):
             sub = ConfigFileSubstitution(sandbox)
             sub.input_path = os.path.join(sandbox['SRCDIR'], '%s.in' % path)
             sub.output_path = os.path.join(sandbox['OBJDIR'], path)
+            sub.relpath = path
             yield sub
+
+        # Proxy some variables as-is until we have richer classes to represent
+        # them. We should aim to keep this set small because it violates the
+        # desired abstraction of the build definition away from makefiles.
+        passthru = VariablePassthru(sandbox)
+        if sandbox['MODULE']:
+            passthru.variables['MODULE'] = sandbox['MODULE']
+        if sandbox['XPIDL_SOURCES']:
+            passthru.variables['XPIDLSRCS'] = sandbox['XPIDL_SOURCES']
+        if sandbox['XPIDL_MODULE']:
+            passthru.variables['XPIDL_MODULE'] = sandbox['XPIDL_MODULE']
+        if sandbox['XPIDL_FLAGS']:
+            passthru.variables['XPIDL_FLAGS'] = sandbox['XPIDL_FLAGS']
+
+        if passthru.variables:
+            yield passthru
 
     def _emit_directory_traversal_from_sandbox(self, sandbox):
         o = DirectoryTraversal(sandbox)

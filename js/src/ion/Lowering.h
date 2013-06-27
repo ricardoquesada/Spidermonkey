@@ -38,6 +38,12 @@ class LIRGenerator : public LIRGeneratorSpecific
     // The maximum depth, for framesizeclass determination.
     uint32_t maxargslots_;
 
+#ifdef DEBUG
+    // In debug builds, check MPrepareCall and MCall are properly
+    // nested. The argslots_ mechanism relies on this.
+    Vector<MPrepareCall *, 4, SystemAllocPolicy> prepareCallStack_;
+#endif
+
   public:
     LIRGenerator(MIRGenerator *gen, MIRGraph &graph, LIRGraph &lirGraph)
       : LIRGeneratorSpecific(gen, graph, lirGraph),
@@ -102,7 +108,12 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitReturnFromCtor(MReturnFromCtor *ins);
     bool visitCall(MCall *call);
     bool visitApplyArgs(MApplyArgs *apply);
+    bool visitGetDynamicName(MGetDynamicName *ins);
+    bool visitFilterArguments(MFilterArguments *ins);
+    bool visitCallDirectEval(MCallDirectEval *ins);
     bool visitTest(MTest *test);
+    bool visitFunctionDispatch(MFunctionDispatch *ins);
+    bool visitTypeObjectDispatch(MTypeObjectDispatch *ins);
     bool visitPolyInlineDispatch(MPolyInlineDispatch *ins);
     bool visitCompare(MCompare *comp);
     bool visitTypeOf(MTypeOf *ins);
@@ -169,6 +180,7 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitLoadElementHole(MLoadElementHole *ins);
     bool visitStoreElement(MStoreElement *ins);
     bool visitStoreElementHole(MStoreElementHole *ins);
+    bool visitEffectiveAddress(MEffectiveAddress *ins);
     bool visitArrayPopShift(MArrayPopShift *ins);
     bool visitArrayPush(MArrayPush *ins);
     bool visitArrayConcat(MArrayConcat *ins);
@@ -205,6 +217,16 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitInstanceOf(MInstanceOf *ins);
     bool visitCallInstanceOf(MCallInstanceOf *ins);
     bool visitFunctionBoundary(MFunctionBoundary *ins);
+    bool visitAsmJSLoadHeap(MAsmJSLoadHeap *ins);
+    bool visitAsmJSLoadGlobalVar(MAsmJSLoadGlobalVar *ins);
+    bool visitAsmJSStoreGlobalVar(MAsmJSStoreGlobalVar *ins);
+    bool visitAsmJSLoadFFIFunc(MAsmJSLoadFFIFunc *ins);
+    bool visitAsmJSParameter(MAsmJSParameter *ins);
+    bool visitAsmJSReturn(MAsmJSReturn *ins);
+    bool visitAsmJSVoidReturn(MAsmJSVoidReturn *ins);
+    bool visitAsmJSPassStackArg(MAsmJSPassStackArg *ins);
+    bool visitAsmJSCall(MAsmJSCall *ins);
+    bool visitAsmJSCheckOverRecursed(MAsmJSCheckOverRecursed *ins);
     bool visitSetDOMProperty(MSetDOMProperty *ins);
     bool visitGetDOMProperty(MGetDOMProperty *ins);
 };

@@ -10,7 +10,9 @@
 #include "AccessCheck.h"
 
 #include "nsJSPrincipals.h"
+#include "nsIDocument.h"
 #include "nsIDOMWindow.h"
+#include "nsPIDOMWindow.h"
 #include "nsIDOMWindowCollection.h"
 #include "nsContentUtils.h"
 #include "nsJSUtils.h"
@@ -166,7 +168,10 @@ IsPermitted(const char *name, JSFlatString *prop, bool set)
 static bool
 IsFrameId(JSContext *cx, JSObject *obj, jsid id)
 {
-    XPCWrappedNative *wn = XPCWrappedNative::GetWrappedNativeOfJSObject(cx, obj);
+    obj = JS_ObjectToInnerObject(cx, obj);
+    MOZ_ASSERT(!js::IsWrapper(obj));
+    XPCWrappedNative *wn = IS_WN_WRAPPER(obj) ? XPCWrappedNative::Get(obj)
+                                              : nullptr;
     if (!wn) {
         return false;
     }
@@ -201,7 +206,7 @@ IsWindow(const char *name)
 }
 
 bool
-AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapper, jsid id,
+AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapperArg, jsid idArg,
                                           Wrapper::Action act)
 {
     if (!XPCWrapper::GetSecurityManager())
@@ -210,7 +215,9 @@ AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapper, jsid
     if (act == Wrapper::CALL)
         return true;
 
-    JSObject *obj = Wrapper::wrappedObject(wrapper);
+    RootedId id(cx, idArg);
+    RootedObject wrapper(cx, wrapperArg);
+    RootedObject obj(cx, Wrapper::wrappedObject(wrapper));
 
     const char *name;
     js::Class *clasp = js::GetObjectClass(obj);
@@ -225,7 +232,20 @@ AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapper, jsid
             return true;
     }
 
-    return IsWindow(name) && IsFrameId(cx, obj, id);
+    // Check for frame IDs. If we're resolving named frames, make sure to only
+    // resolve ones that don't shadow native properties. See bug 860494.
+    if (IsWindow(name)) {
+        if (JSID_IS_STRING(id) && !XrayUtils::IsXrayResolving(cx, wrapper, id)) {
+            bool wouldShadow = false;
+            if (!XrayUtils::HasNativeProperty(cx, wrapper, id, &wouldShadow) ||
+                wouldShadow)
+            {
+                return false;
+            }
+        }
+        return IsFrameId(cx, obj, id);
+    }
+    return false;
 }
 
 bool
@@ -267,33 +287,22 @@ AccessCheck::isScriptAccessOnly(JSContext *cx, JSObject *wrapper)
     return false;
 }
 
-void
-AccessCheck::deny(JSContext *cx, jsid id)
+bool
+OnlyIfSubjectIsSystem::isSafeToUnwrap()
 {
-    if (id == JSID_VOID) {
-        JS_ReportError(cx, "Permission denied to access object");
-    } else {
-        jsval idval;
-        if (!JS_IdToValue(cx, id, &idval))
-            return;
-        JSString *str = JS_ValueToString(cx, idval);
-        if (!str)
-            return;
-        const jschar *chars = JS_GetStringCharsZ(cx, str);
-        if (chars)
-            JS_ReportError(cx, "Permission denied to access property '%hs'", chars);
-    }
+    // It's nasty to use the context stack here, but the alternative is passing cx all
+    // the way down through UnwrapObjectChecked, which we just undid in a 100k patch. :-(
+    JSContext *cx = nsContentUtils::GetCurrentJSContext();
+    if (!cx)
+        return true;
+    // If XBL scopes are enabled for this compartment, this hook doesn't need to
+    // be dynamic at all, since SOWs can be opaque.
+    if (xpc::AllowXBLScope(js::GetContextCompartment(cx)))
+        return false;
+    return AccessCheck::isSystemOnlyAccessPermitted(cx);
 }
 
 enum Access { READ = (1<<0), WRITE = (1<<1), NO_ACCESS = 0 };
-
-static bool
-IsInSandbox(JSContext *cx, JSObject *obj)
-{
-    JSAutoCompartment ac(cx, obj);
-    JSObject *global = JS_GetGlobalForObject(cx, obj);
-    return !strcmp(js::GetObjectJSClass(global)->name, "Sandbox");
-}
 
 static void
 EnterAndThrow(JSContext *cx, JSObject *wrapper, const char *msg)
@@ -332,27 +341,6 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapper, jsid id, Wrapper:
 
     // If no __exposedProps__ existed, deny access.
     if (!found) {
-        // Everything below here needs to be done in the wrapper's compartment.
-        JSAutoCompartment wrapperAC(cx, wrapper);
-        // Make a temporary exception for objects in a chrome sandbox to help
-        // out jetpack. See bug 784233.
-        if (!JS_ObjectIsFunction(cx, wrappedObject) &&
-            IsInSandbox(cx, wrappedObject))
-        {
-            // This little loop hole will go away soon! See bug 553102.
-            nsCOMPtr<nsPIDOMWindow> win =
-                do_QueryInterface(nsJSUtils::GetStaticScriptGlobal(wrapper));
-            if (win) {
-                nsCOMPtr<nsIDocument> doc =
-                    do_QueryInterface(win->GetExtantDocument());
-                if (doc) {
-                    doc->WarnOnceAbout(nsIDocument::eNoExposedProps,
-                                       /* asError = */ true);
-                }
-            }
-
-            return true;
-        }
         return false;
     }
 

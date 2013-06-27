@@ -11,8 +11,6 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/GuardObjects.h"
 
-#include "js/CharacterEncoding.h"
-
 #include "jsapi.h"
 #include "jsatom.h"
 #include "jsfriendapi.h"
@@ -20,7 +18,8 @@
 
 #include "gc/Barrier.h"
 #include "gc/Heap.h"
-#include "gc/Root.h"
+#include "js/CharacterEncoding.h"
+#include "js/RootingAPI.h"
 
 ForwardDeclareJS(String);
 class JSDependentString;
@@ -415,6 +414,9 @@ class JSString : public js::gc::Cell
         return offsetof(JSString, d.u1.chars);
     }
 
+    JS::Zone *zone() const { return tenuredZone(); }
+    js::gc::AllocKind getAllocKind() const { return tenuredGetAllocKind(); }
+
     static inline void writeBarrierPre(JSString *str);
     static inline void writeBarrierPost(JSString *str, void *addr);
     static inline bool needWriteBarrierPre(JS::Zone *zone);
@@ -578,7 +580,7 @@ class JSStableString : public JSFlatString
 JS_STATIC_ASSERT(sizeof(JSStableString) == sizeof(JSString));
 
 #if !(defined(JSGC_ROOT_ANALYSIS) || defined(JSGC_USE_EXACT_ROOTING))
-namespace js {
+namespace JS {
 /*
  * Specialization of Rooted<T> to explicitly root the string rather than
  * relying on conservative stack scanning.
@@ -616,7 +618,7 @@ class Rooted<JSStableString *>
 
     Rooted & operator =(JSStableString *value)
     {
-        JS_ASSERT(!RootMethods<JSStableString *>::poisoned(value));
+        JS_ASSERT(!js::RootMethods<JSStableString *>::poisoned(value));
         rooter.setString(value);
         return *this;
     }
@@ -877,7 +879,6 @@ class AutoNameVector : public AutoVectorRooter<PropertyName *>
 JS_ALWAYS_INLINE const jschar *
 JSString::getChars(JSContext *cx)
 {
-    JS::AutoAssertNoGC nogc;
     if (JSLinearString *str = ensureLinear(cx))
         return str->chars();
     return NULL;
@@ -886,7 +887,6 @@ JSString::getChars(JSContext *cx)
 JS_ALWAYS_INLINE const jschar *
 JSString::getCharsZ(JSContext *cx)
 {
-    JS::AutoAssertNoGC nogc;
     if (JSFlatString *str = ensureFlat(cx))
         return str->chars();
     return NULL;
@@ -895,7 +895,6 @@ JSString::getCharsZ(JSContext *cx)
 JS_ALWAYS_INLINE JSLinearString *
 JSString::ensureLinear(JSContext *cx)
 {
-    JS::AutoAssertNoGC nogc;
     return isLinear()
            ? &asLinear()
            : asRope().flatten(cx);
@@ -904,7 +903,6 @@ JSString::ensureLinear(JSContext *cx)
 JS_ALWAYS_INLINE JSFlatString *
 JSString::ensureFlat(JSContext *cx)
 {
-    JS::AutoAssertNoGC nogc;
     return isFlat()
            ? &asFlat()
            : isDependent()
@@ -915,7 +913,6 @@ JSString::ensureFlat(JSContext *cx)
 JS_ALWAYS_INLINE JSStableString *
 JSString::ensureStable(JSContext *maybecx)
 {
-    JS::AutoAssertNoGC nogc;
     if (isRope()) {
         JSFlatString *flat = asRope().flatten(maybecx);
         if (!flat)

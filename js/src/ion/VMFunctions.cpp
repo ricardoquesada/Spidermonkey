@@ -15,6 +15,8 @@
 
 #include "builtin/ParallelArray.h"
 
+#include "frontend/TokenStream.h"
+
 #include "jsboolinlines.h"
 #include "jsinterpinlines.h"
 
@@ -51,15 +53,13 @@ ShouldMonitorReturnType(JSFunction *fun)
 bool
 InvokeFunction(JSContext *cx, HandleFunction fun0, uint32_t argc, Value *argv, Value *rval)
 {
-    AssertCanGC();
-
     RootedFunction fun(cx, fun0);
     if (fun->isInterpreted()) {
         if (fun->isInterpretedLazy() && !fun->getOrCreateScript(cx))
             return false;
 
         // Clone function at call site if needed.
-        if (fun->isCloneAtCallsite()) {
+        if (fun->nonLazyScript()->shouldCloneAtCallsite) {
             RootedScript script(cx);
             jsbytecode *pc;
             types::TypeScript::GetPcScript(cx, script.address(), &pc);
@@ -71,7 +71,7 @@ InvokeFunction(JSContext *cx, HandleFunction fun0, uint32_t argc, Value *argv, V
         // In order to prevent massive bouncing between Ion and JM, see if we keep
         // hitting functions that are uncompilable.
         if (cx->methodJitEnabled && !fun->nonLazyScript()->canIonCompile()) {
-            UnrootedScript script = GetTopIonJSScript(cx);
+            RawScript script = GetTopIonJSScript(cx);
             if (script->hasIonScript() &&
                 ++script->ion->slowCallCount >= js_IonOptions.slowCallLimit)
             {
@@ -252,7 +252,6 @@ template bool StringsEqual<false>(JSContext *cx, HandleString lhs, HandleString 
 JSBool
 ObjectEmulatesUndefined(RawObject obj)
 {
-    AutoAssertNoGC nogc;
     return EmulatesUndefined(obj);
 }
 
@@ -265,6 +264,21 @@ IteratorMore(JSContext *cx, HandleObject obj, JSBool *res)
 
     *res = tmp.toBoolean();
     return true;
+}
+
+JSObject *
+NewInitParallelArray(JSContext *cx, HandleObject templateObject)
+{
+    JS_ASSERT(templateObject->getClass() == &ParallelArrayObject::class_);
+    JS_ASSERT(!templateObject->hasSingletonType());
+
+    RootedObject obj(cx, ParallelArrayObject::newInstance(cx));
+    if (!obj)
+        return NULL;
+
+    obj->setType(templateObject->type());
+
+    return obj;
 }
 
 JSObject*
@@ -511,6 +525,73 @@ CreateThis(JSContext *cx, HandleObject callee, MutableHandleValue rval)
 
     return true;
 }
+
+void
+GetDynamicName(JSContext *cx, JSObject *scopeChain, JSString *str, Value *vp)
+{
+    // Lookup a string on the scope chain, returning either the value found or
+    // undefined through rval. This function is infallible, and cannot GC or
+    // invalidate.
+
+    JSAtom *atom;
+    if (str->isAtom()) {
+        atom = &str->asAtom();
+    } else {
+        atom = AtomizeString<NoGC>(cx, str);
+        if (!atom) {
+            vp->setUndefined();
+            return;
+        }
+    }
+
+    if (!frontend::IsIdentifier(atom) || frontend::FindKeyword(atom->chars(), atom->length())) {
+        vp->setUndefined();
+        return;
+    }
+
+    Shape *shape = NULL;
+    JSObject *scope = NULL, *pobj = NULL;
+    if (LookupNameNoGC(cx, atom->asPropertyName(), scopeChain, &scope, &pobj, &shape)) {
+        if (FetchNameNoGC(pobj, shape, MutableHandleValue::fromMarkedLocation(vp)))
+            return;
+    }
+
+    vp->setUndefined();
+}
+
+JSBool
+FilterArguments(JSContext *cx, JSString *str)
+{
+    // getChars() is fallible, but cannot GC: it can only allocate a character
+    // for the flattened string. If this call fails then the calling Ion code
+    // will bailout, resume in the interpreter and likely fail again when
+    // trying to flatten the string and unwind the stack.
+    const jschar *chars = str->getChars(cx);
+    if (!chars)
+        return false;
+
+    static jschar arguments[] = {'a', 'r', 'g', 'u', 'm', 'e', 'n', 't', 's'};
+    return !StringHasPattern(chars, str->length(), arguments, mozilla::ArrayLength(arguments));
+}
+
+uint32_t
+GetIndexFromString(JSString *str)
+{
+    // Masks the return value UINT32_MAX as failure to get the index.
+    // I.e. it is impossible to distinguish between failing to get the index
+    // or the actual index UINT32_MAX.
+
+    if (!str->isAtom())
+        return UINT32_MAX;
+
+    uint32_t index;
+    JSAtom *atom = &str->asAtom();
+    if (!atom->isIndex(&index))
+        return UINT32_MAX;
+
+    return index;
+}
+
 
 } // namespace ion
 } // namespace js

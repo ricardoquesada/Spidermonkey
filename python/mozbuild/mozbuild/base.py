@@ -5,6 +5,7 @@
 from __future__ import print_function, unicode_literals
 
 import logging
+import mozpack.path
 import multiprocessing
 import os
 import subprocess
@@ -16,6 +17,7 @@ from mach.mixin.process import ProcessExecutionMixin
 
 from mozfile.mozfile import rmtree
 
+from .backend.configenvironment import ConfigEnvironment
 from .config import BuildConfig
 from .mozconfig import (
     MozconfigFindException,
@@ -50,15 +52,14 @@ class MozbuildObject(ProcessExecutionMixin):
         self._topobjdir = topobjdir
         self._mozconfig = None
         self._config_guess_output = None
+        self._config_environment = None
 
     @property
     def topobjdir(self):
         if self._topobjdir is None:
-            if self.mozconfig['topobjdir'] is None:
-                self._topobjdir = 'obj-%s' % self._config_guess
-            else:
-                self._topobjdir = self.mozconfig['topobjdir']
-
+            topobj = self.mozconfig['topobjdir'] or 'obj-@CONFIG_GUESS@'
+            self._topobjdir = topobj.replace("@CONFIG_GUESS@",
+                                             self._config_guess)
         return self._topobjdir
 
     @property
@@ -72,6 +73,35 @@ class MozbuildObject(ProcessExecutionMixin):
             self._mozconfig = loader.read_mozconfig()
 
         return self._mozconfig
+
+    @property
+    def config_environment(self):
+        """Returns the ConfigEnvironment for the current build configuration.
+
+        This property is only available once configure has executed.
+
+        If configure's output is not available, this will raise.
+        """
+        if self._config_environment:
+            return self._config_environment
+
+        config_status = os.path.join(self.topobjdir, 'config.status')
+
+        if not os.path.exists(config_status):
+            raise Exception('config.status not available. Run configure.')
+
+        self._config_environment = \
+            ConfigEnvironment.from_config_status(config_status)
+
+        return self._config_environment
+
+    @property
+    def defines(self):
+        return self.config_environment.defines
+
+    @property
+    def substs(self):
+        return self.config_environment.substs
 
     @property
     def distdir(self):
@@ -91,6 +121,44 @@ class MozbuildObject(ProcessExecutionMixin):
         # We use mozfile because it is faster than shutil.rmtree().
         # mozfile doesn't like unicode arguments (bug 818783).
         rmtree(self.topobjdir.encode('utf-8'))
+
+    def get_binary_path(self, what='app', validate_exists=True):
+        """Obtain the path to a compiled binary for this build configuration.
+
+        The what argument is the program or tool being sought after. See the
+        code implementation for supported values.
+
+        If validate_exists is True (the default), we will ensure the found path
+        exists before returning, raising an exception if it doesn't.
+
+        If no arguments are specified, we will return the main binary for the
+        configured XUL application.
+        """
+
+        substs = self.substs
+
+        stem = self.distdir
+        if substs['OS_ARCH'] == 'Darwin':
+            stem = os.path.join(stem, substs['MOZ_MACBUNDLE_NAME'], 'Contents',
+                'MacOS')
+        else:
+            stem = os.path.join(stem, 'bin')
+
+        leaf = None
+
+        if what == 'app':
+            leaf = substs['MOZ_APP_NAME'] + substs['BIN_SUFFIX']
+        elif what == 'xpcshell':
+            leaf = 'xpcshell'
+        else:
+            raise Exception("Don't know how to locate binary: %s" % what)
+
+        path = os.path.join(stem, leaf)
+
+        if validate_exists and not os.path.exists(path):
+            raise Exception('Binary expected at %s does not exist.' % path)
+
+        return path
 
     @property
     def _config_guess(self):
@@ -125,13 +193,8 @@ class MozbuildObject(ProcessExecutionMixin):
 
         return os.path.join(path, filename)
 
-    def _get_srcdir_path(self, path):
-        """Convert a relative path in the source directory to a full path."""
-        return os.path.join(self.topsrcdir, path)
-
-    def _get_objdir_path(self, path):
-        """Convert a relative path in the object directory to a full path."""
-        return os.path.join(self.topobjdir, path)
+    def _wrap_path_argument(self, arg):
+        return PathArgument(arg, self.topsrcdir, self.topobjdir)
 
     def _run_make(self, directory=None, filename=None, target=None, log=True,
             srcdir=False, allow_parallel=True, line_handler=None,
@@ -282,3 +345,35 @@ class MachCommandBase(MozbuildObject):
 
             sys.exit(1)
 
+
+class PathArgument(object):
+    """Parse a filesystem path argument and transform it in various ways."""
+
+    def __init__(self, arg, topsrcdir, topobjdir, cwd=None):
+        self.arg = arg
+        self.topsrcdir = topsrcdir
+        self.topobjdir = topobjdir
+        self.cwd = os.getcwd() if cwd is None else cwd
+
+    def relpath(self):
+        """Return a path relative to the topsrcdir or topobjdir.
+
+        If the argument is a path to a location in one of the base directories
+        (topsrcdir or topobjdir), then strip off the base directory part and
+        just return the path within the base directory."""
+
+        abspath = os.path.abspath(os.path.join(self.cwd, self.arg))
+
+        # If that path is within topsrcdir or topobjdir, return an equivalent
+        # path relative to that base directory.
+        for base_dir in [self.topobjdir, self.topsrcdir]:
+            if abspath.startswith(os.path.abspath(base_dir)):
+                return mozpack.path.relpath(abspath, base_dir)
+
+        return mozpack.path.normsep(self.arg)
+
+    def srcdir_path(self):
+        return mozpack.path.join(self.topsrcdir, self.relpath())
+
+    def objdir_path(self):
+        return mozpack.path.join(self.topobjdir, self.relpath())

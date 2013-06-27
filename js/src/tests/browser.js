@@ -189,7 +189,6 @@ function optionsInit() {
   options.currvalues = {
     strict:     true,
     werror:     true,
-    atline:     true,
     methodjit:  true,
     methodjit_always: true,
     strict_mode: true
@@ -367,7 +366,7 @@ function outputscripttag(src, properties)
     return;
   }
 
-  var s = '<script src="' +  src + '" ';
+  var s = '<script src="' +  src + '" charset="utf-8" ';
 
   if (properties.language != 'type')
   {
