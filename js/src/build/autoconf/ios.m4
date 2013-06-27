@@ -49,8 +49,6 @@ iPhoneOS|iPhoneSimulator)
         target_name=arm
         target=arm-darwin
         TARGET_CPU=armv7
-        DISABLE_YARR_JIT=1
-        AC_SUBST(DISABLE_YARR_JIT)
     fi
     target_os=darwin
 
