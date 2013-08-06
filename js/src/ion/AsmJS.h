@@ -109,16 +109,31 @@ class AsmJSMachExceptionHandler
     pthread_t thread_;
     mach_port_t port_;
 
-    void release();
-
   public:
-    AsmJSMachExceptionHandler();
+
     ~AsmJSMachExceptionHandler() { release(); }
     mach_port_t port() const { return port_; }
     bool installed() const { return installed_; }
+
+#ifdef JS_ASMJS
+private:
+    void release();
+public:
+    AsmJSMachExceptionHandler();
     bool install(JSRuntime *rt);
     void clearCurrentThread();
     void setCurrentThread();
+#else
+    // Empty implementation for iOS
+private:
+    void release() {}
+public:
+    AsmJSMachExceptionHandler() {}
+    bool install(JSRuntime *rt) { return false; }
+    void clearCurrentThread() {}
+    void setCurrentThread() {}
+#endif
+
 };
 #endif
 
