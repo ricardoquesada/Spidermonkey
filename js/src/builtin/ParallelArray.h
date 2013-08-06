@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=99 ft=cpp:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,7 +20,7 @@ namespace js {
 class ParallelArrayObject : public JSObject
 {
     static Class protoClass;
-    static JSFunctionSpec methods[];
+    static const JSFunctionSpec methods[];
     static const uint32_t NumFixedSlots = 4;
     static const uint32_t NumCtors = 4;
     static FixedHeapPtr<PropertyName> ctorNames[NumCtors];
@@ -44,7 +43,7 @@ class ParallelArrayObject : public JSObject
     // object for you, since ParallelArray type objects must be setup
     // in a rather particular way to interact well with the
     // self-hosted code.  See constructHelper() for details.
-    static JSObject *newInstance(JSContext *cx);
+    static JSObject *newInstance(JSContext *cx, NewObjectKind newKind = GenericObject);
 
     // Get the constructor function for argc number of arguments.
     static JSFunction *getConstructor(JSContext *cx, unsigned argc);

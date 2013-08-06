@@ -1,5 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -70,27 +70,10 @@ XDRState<mode>::codeChars(jschar *chars, size_t nchars)
         uint8_t *ptr = buf.write(nbytes);
         if (!ptr)
             return false;
-#ifdef IS_LITTLE_ENDIAN
-        memcpy(ptr, chars, nbytes);
-#else
-        for (size_t i = 0; i != nchars; i++) {
-            uint16_t tmp = NormalizeByteOrder16(chars[i]);
-            memcpy(ptr, &tmp, sizeof tmp);
-            ptr += sizeof tmp;
-        }
-#endif
+        mozilla::NativeEndian::copyAndSwapToLittleEndian(ptr, chars, nchars);
     } else {
         const uint8_t *ptr = buf.read(nbytes);
-#ifdef IS_LITTLE_ENDIAN
-        memcpy(chars, ptr, nbytes);
-#else
-        for (size_t i = 0; i != nchars; i++) {
-            uint16_t tmp;
-            memcpy(&tmp, ptr, sizeof tmp);
-            chars[i] = NormalizeByteOrder16(tmp);
-            ptr += sizeof tmp;
-        }
-#endif
+        mozilla::NativeEndian::copyAndSwapFromLittleEndian(chars, ptr, nchars);
     }
     return true;
 }
@@ -117,7 +100,7 @@ VersionCheck(XDRState<mode> *xdr)
 
 template<XDRMode mode>
 bool
-XDRState<mode>::codeFunction(JSMutableHandleObject objp)
+XDRState<mode>::codeFunction(MutableHandleObject objp)
 {
     if (mode == XDR_DECODE)
         objp.set(NULL);

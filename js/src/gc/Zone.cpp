@@ -1,6 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=78:
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,6 +13,7 @@
 #include "gc/GCInternals.h"
 
 #ifdef JS_ION
+#include "ion/BaselineJIT.h"
 #include "ion/IonCompartment.h"
 #include "ion/Ion.h"
 #endif
@@ -28,10 +28,6 @@ JS::Zone::Zone(JSRuntime *rt)
   : rt(rt),
     allocator(this),
     hold(false),
-#ifdef JSGC_GENERATIONAL
-    gcNursery(),
-    gcStoreBuffer(rt),
-#endif
     ionUsingBarriers_(false),
     active(false),
     gcScheduled(false),
@@ -175,6 +171,18 @@ Zone::discardJitCode(FreeOp *fop, bool discardConstraints)
         PurgeJITCaches(this);
     } else {
 # ifdef JS_ION
+
+#  ifdef DEBUG
+        /* Assert no baseline scripts are marked as active. */
+        for (CellIterUnderGC i(this, FINALIZE_SCRIPT); !i.done(); i.next()) {
+            JSScript *script = i.get<JSScript>();
+            JS_ASSERT_IF(script->hasBaselineScript(), !script->baselineScript()->active());
+        }
+#  endif
+
+        /* Mark baseline scripts on the stack as active. */
+        ion::MarkActiveBaselineScripts(this);
+
         /* Only mark OSI points if code is being discarded. */
         ion::InvalidateAll(fop, this);
 # endif
@@ -184,6 +192,12 @@ Zone::discardJitCode(FreeOp *fop, bool discardConstraints)
             mjit::ReleaseScriptCode(fop, script);
 # ifdef JS_ION
             ion::FinishInvalidation(fop, script);
+
+            /*
+             * Discard baseline script if it's not marked as active. Note that
+             * this also resets the active flag.
+             */
+            ion::FinishDiscardBaselineScript(fop, script);
 # endif
 
             /*
@@ -194,8 +208,15 @@ Zone::discardJitCode(FreeOp *fop, bool discardConstraints)
             script->resetUseCount();
         }
 
-        for (CompartmentsInZoneIter comp(this); !comp.done(); comp.next())
+        for (CompartmentsInZoneIter comp(this); !comp.done(); comp.next()) {
+#ifdef JS_ION
+            /* Free optimized baseline stubs. */
+            if (comp->ionCompartment())
+                comp->ionCompartment()->optimizedStubSpace()->free();
+#endif
+
             comp->types.sweepCompilerOutputs(fop, discardConstraints);
+        }
     }
 #endif /* JS_METHODJIT */
 }

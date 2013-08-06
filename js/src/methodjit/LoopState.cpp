@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -849,7 +848,7 @@ LoopState::invariantLength(const CrossSSAValue &obj)
 }
 
 FrameEntry *
-LoopState::invariantProperty(const CrossSSAValue &obj, RawId id)
+LoopState::invariantProperty(const CrossSSAValue &obj, jsid id)
 {
     if (skipAnalysis)
         return NULL;
@@ -1599,7 +1598,7 @@ LoopState::analyzeLoopBody(unsigned frame)
 
           case JSOP_SETPROP: {
             PropertyName *name = script->getName(GET_UINT32_INDEX(pc));
-            RawId id = IdToTypeId(NameToId(name));
+            jsid id = IdToTypeId(NameToId(name));
 
             TypeSet *objTypes = analysis->poppedTypes(pc, 1);
             if (objTypes->unknownObject()) {

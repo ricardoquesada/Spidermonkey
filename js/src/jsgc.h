@@ -1,5 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -43,6 +43,7 @@ class BaseShape;
 class DebugScopeObject;
 class GCHelperThread;
 class GlobalObject;
+class Nursery;
 class PropertyName;
 class ScopeObject;
 class Shape;
@@ -50,9 +51,10 @@ class UnownedBaseShape;
 struct SliceBudget;
 
 enum HeapState {
-    Idle,       // doing nothing with the GC heap
-    Tracing,    // tracing the GC heap without collecting, e.g. IterateCompartments()
-    Collecting  // doing a GC of the heap
+    Idle,             // doing nothing with the GC heap
+    Tracing,          // tracing the GC heap without collecting, e.g. IterateCompartments()
+    MajorCollecting,  // doing a GC of the major heap
+    MinorCollecting   // doing a GC of the minor heap (nursery)
 };
 
 namespace ion {
@@ -241,8 +243,8 @@ struct ArenaList {
     void insert(ArenaHeader *arena);
 };
 
-struct ArenaLists {
-
+struct ArenaLists
+{
   private:
     /*
      * For each arena kind its free list is represented as the first span with
@@ -497,7 +499,10 @@ struct ArenaLists {
     inline void queueForForegroundSweep(FreeOp *fop, AllocKind thingKind);
     inline void queueForBackgroundSweep(FreeOp *fop, AllocKind thingKind);
 
-    inline void *allocateFromArena(JS::Zone *zone, AllocKind thingKind);
+    void *allocateFromArena(JS::Zone *zone, AllocKind thingKind);
+    inline void *allocateFromArenaInline(JS::Zone *zone, AllocKind thingKind);
+
+    friend class js::Nursery;
 };
 
 /*
@@ -602,6 +607,9 @@ GCDebugSlice(JSRuntime *rt, bool limit, int64_t objCount);
 extern void
 PrepareForDebugGC(JSRuntime *rt);
 
+extern void
+MinorGC(JSRuntime *rt, JS::gcreason::Reason reason);
+
 #ifdef JS_GC_ZEAL
 extern void
 SetGCZeal(JSRuntime *rt, uint8_t zeal, uint32_t frequency);
@@ -610,16 +618,16 @@ SetGCZeal(JSRuntime *rt, uint8_t zeal, uint32_t frequency);
 /* Functions for managing cross compartment gray pointers. */
 
 extern void
-DelayCrossCompartmentGrayMarking(RawObject src);
+DelayCrossCompartmentGrayMarking(JSObject *src);
 
 extern void
-NotifyGCNukeWrapper(RawObject o);
+NotifyGCNukeWrapper(JSObject *o);
 
 extern unsigned
-NotifyGCPreSwap(RawObject a, RawObject b);
+NotifyGCPreSwap(JSObject *a, JSObject *b);
 
 extern void
-NotifyGCPostSwap(RawObject a, RawObject b, unsigned preResult);
+NotifyGCPostSwap(JSObject *a, JSObject *b, unsigned preResult);
 
 void
 InitTracer(JSTracer *trc, JSRuntime *rt, JSTraceCallback callback);
@@ -1255,15 +1263,38 @@ MaybeVerifyBarriers(JSContext *cx, bool always = false)
 
 #endif
 
+/*
+ * Instances of this class set the |JSRuntime::suppressGC| flag for the duration
+ * that they are live. Use of this class is highly discouraged. Please carefully
+ * read the comment in jscntxt.h above |suppressGC| and take all appropriate
+ * precautions before instantiating this class.
+ */
+class AutoSuppressGC
+{
+    int32_t &suppressGC_;
+
+  public:
+    AutoSuppressGC(JSContext *cx);
+    AutoSuppressGC(JSCompartment *comp);
+
+    ~AutoSuppressGC()
+    {
+        suppressGC_--;
+    }
+};
+
 } /* namespace gc */
 
 #ifdef DEBUG
 /* Use this to avoid assertions when manipulating the wrapper map. */
-struct AutoDisableProxyCheck
+class AutoDisableProxyCheck
 {
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER;
     uintptr_t &count;
 
-    AutoDisableProxyCheck(JSRuntime *rt);
+  public:
+    AutoDisableProxyCheck(JSRuntime *rt
+                          MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
 
     ~AutoDisableProxyCheck() {
         count--;

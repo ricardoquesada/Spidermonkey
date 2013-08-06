@@ -1,14 +1,15 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=78:
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef NumericConversions_h___
 #define NumericConversions_h___
 
 #include "mozilla/FloatingPoint.h"
+
+#include "jscpucfg.h"
 
 #include <math.h>
 
@@ -21,7 +22,7 @@ namespace detail {
 
 union DoublePun {
     struct {
-#if defined(IS_LITTLE_ENDIAN) && !defined(FPU_IS_ARM_FPA)
+#if defined(IS_LITTLE_ENDIAN)
         uint32_t lo, hi;
 #else
         uint32_t hi, lo;
@@ -134,7 +135,7 @@ ToIntWidth(double d)
 #else
     double twoWidth, twoWidthMin1;
 
-    if (!MOZ_DOUBLE_IS_FINITE(d))
+    if (!mozilla::IsFinite(d))
         return 0;
 
     /* FIXME: This relies on undefined behavior; see bug 667739. */
@@ -154,7 +155,7 @@ ToIntWidth(double d)
 inline int32_t
 ToInt32(double d)
 {
-#if defined (__arm__) && defined (__GNUC__) && !defined(__clang__)
+#if defined (__arm__) && defined (__GNUC__)
     int32_t i;
     uint32_t    tmp0;
     uint32_t    tmp1;
@@ -308,8 +309,8 @@ ToInteger(double d)
     if (d == 0)
         return d;
 
-    if (!MOZ_DOUBLE_IS_FINITE(d)) {
-        if (MOZ_DOUBLE_IS_NaN(d))
+    if (!mozilla::IsFinite(d)) {
+        if (mozilla::IsNaN(d))
             return 0;
         return d;
     }

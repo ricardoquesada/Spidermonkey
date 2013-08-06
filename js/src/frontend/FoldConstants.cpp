@@ -1,6 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=99:
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,6 +20,9 @@
 
 using namespace js;
 using namespace js::frontend;
+
+using mozilla::IsNaN;
+using mozilla::IsNegative;
 
 static ParseNode *
 ContainsVarOrConst(ParseNode *pn)
@@ -148,13 +150,13 @@ FoldBinaryNumeric(JSContext *cx, JSOp op, ParseNode *pn1, ParseNode *pn2,
         if (d2 == 0) {
 #if defined(XP_WIN)
             /* XXX MSVC miscompiles such that (NaN == 0) */
-            if (MOZ_DOUBLE_IS_NaN(d2))
+            if (IsNaN(d2))
                 d = js_NaN;
             else
 #endif
-            if (d == 0 || MOZ_DOUBLE_IS_NaN(d))
+            if (d == 0 || IsNaN(d))
                 d = js_NaN;
-            else if (MOZ_DOUBLE_IS_NEGATIVE(d) != MOZ_DOUBLE_IS_NEGATIVE(d2))
+            else if (IsNegative(d) != IsNegative(d2))
                 d = js_NegativeInfinity;
             else
                 d = js_PositiveInfinity;
@@ -203,7 +205,7 @@ Boolish(ParseNode *pn)
 {
     switch (pn->getOp()) {
       case JSOP_DOUBLE:
-        return (pn->pn_dval != 0 && !MOZ_DOUBLE_IS_NaN(pn->pn_dval)) ? Truthy : Falsy;
+        return (pn->pn_dval != 0 && !IsNaN(pn->pn_dval)) ? Truthy : Falsy;
 
       case JSOP_STRING:
         return (pn->pn_atom->length() > 0) ? Truthy : Falsy;
@@ -264,8 +266,9 @@ FoldConstants<FullParseHandler>(JSContext *cx, ParseNode **pnp,
 
     switch (pn->getArity()) {
       case PN_CODE:
-        if (pn->pn_funbox->useAsmOrInsideUseAsm())
+        if (pn->isKind(PNK_FUNCTION) && pn->pn_funbox->useAsmOrInsideUseAsm()) {
             return true;
+        }
         if (pn->getKind() == PNK_MODULE) {
             if (!FoldConstants(cx, &pn->pn_body, parser))
                 return false;
@@ -397,7 +400,7 @@ FoldConstants<FullParseHandler>(JSContext *cx, ParseNode **pnp,
         /* Reduce 'if (C) T; else E' into T for true C, E for false. */
         switch (pn1->getKind()) {
           case PNK_NUMBER:
-            if (pn1->pn_dval == 0 || MOZ_DOUBLE_IS_NaN(pn1->pn_dval))
+            if (pn1->pn_dval == 0 || IsNaN(pn1->pn_dval))
                 pn2 = pn3;
             break;
           case PNK_STRING:
@@ -679,7 +682,7 @@ FoldConstants<FullParseHandler>(JSContext *cx, ParseNode **pnp,
                 break;
 
               case JSOP_NOT:
-                if (d == 0 || MOZ_DOUBLE_IS_NaN(d)) {
+                if (d == 0 || IsNaN(d)) {
                     pn->setKind(PNK_TRUE);
                     pn->setOp(JSOP_TRUE);
                 } else {

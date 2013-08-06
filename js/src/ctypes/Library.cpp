@@ -1,5 +1,6 @@
-/* -*-  Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
-/* This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+ * vim: set ts=2 sw=2 et tw=99:
+ * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -28,17 +29,19 @@ namespace Library
 ** JSObject implementation
 *******************************************************************************/
 
+typedef Rooted<JSFlatString*>    RootedFlatString;
+
 static JSClass sLibraryClass = {
   "Library",
   JSCLASS_HAS_RESERVED_SLOTS(LIBRARY_SLOTS),
-  JS_PropertyStub, JS_PropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
+  JS_PropertyStub, JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
   JS_EnumerateStub,JS_ResolveStub, JS_ConvertStub, Library::Finalize
 };
 
 #define CTYPESFN_FLAGS \
   (JSPROP_ENUMERATE | JSPROP_READONLY | JSPROP_PERMANENT)
 
-static JSFunctionSpec sLibraryFunctions[] = {
+static const JSFunctionSpec sLibraryFunctions[] = {
   JS_FN("close",   Library::Close,   0, CTYPESFN_FLAGS),
   JS_FN("declare", Library::Declare, 0, CTYPESFN_FLAGS),
   JS_FS_END
@@ -77,8 +80,9 @@ Library::Name(JSContext* cx, unsigned argc, jsval *vp)
 }
 
 JSObject*
-Library::Create(JSContext* cx, jsval path, JSCTypesCallbacks* callbacks)
+Library::Create(JSContext* cx, jsval path_, JSCTypesCallbacks* callbacks)
 {
+  RootedValue path(cx, path_);
   RootedObject libraryObj(cx, JS_NewObject(cx, &sLibraryClass, NULL, NULL));
   if (!libraryObj)
     return NULL;
@@ -96,7 +100,7 @@ Library::Create(JSContext* cx, jsval path, JSCTypesCallbacks* callbacks)
   }
 
   PRLibSpec libSpec;
-  JSFlatString* pathStr = JS_FlattenString(cx, JSVAL_TO_STRING(path));
+  RootedFlatString pathStr(cx, JS_FlattenString(cx, JSVAL_TO_STRING(path)));
   if (!pathStr)
     return NULL;
 #ifdef XP_WIN

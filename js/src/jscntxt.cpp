@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=80:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,10 +8,10 @@
  * JS execution context.
  */
 
-#include <limits.h>
+#include "jscntxt.h"
+
 #include <locale.h>
 #include <stdarg.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "mozilla/DebugOnly.h"
@@ -26,12 +25,8 @@
 #include "mozilla/Util.h"
 
 #include "jstypes.h"
-#include "jsutil.h"
-#include "jsclist.h"
 #include "jsprf.h"
 #include "jsatom.h"
-#include "jscntxt.h"
-#include "jsversion.h"
 #include "jsdbgapi.h"
 #include "jsexn.h"
 #include "jsfun.h"
@@ -39,7 +34,6 @@
 #include "jsiter.h"
 #include "jslock.h"
 #include "jsmath.h"
-#include "jsnum.h"
 #include "jsobj.h"
 #include "jsopcode.h"
 #include "jspubtd.h"
@@ -48,22 +42,18 @@
 #include "jsworkers.h"
 #ifdef JS_ION
 #include "ion/Ion.h"
-#include "ion/IonFrames.h"
 #endif
 
 #ifdef JS_METHODJIT
-# include "assembler/assembler/MacroAssembler.h"
 # include "methodjit/MethodJIT.h"
 #endif
 #include "gc/Marking.h"
 #include "js/CharacterEncoding.h"
 #include "js/MemoryMetrics.h"
-#include "frontend/TokenStream.h"
 #include "frontend/ParseMaps.h"
 #include "vm/Shape.h"
 #include "yarr/BumpPointerAllocator.h"
 
-#include "jsatominlines.h"
 #include "jscntxtinlines.h"
 #include "jscompartment.h"
 #include "jsobjinlines.h"
@@ -72,6 +62,8 @@ using namespace js;
 using namespace js::gc;
 
 using mozilla::DebugOnly;
+using mozilla::PodArrayZero;
+using mozilla::PodZero;
 using mozilla::PointerRangeSize;
 
 bool
@@ -141,34 +133,18 @@ JSRuntime::sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf, JS::RuntimeSizes 
         rtSizes->scriptData += mallocSizeOf(r.front());
 }
 
-size_t
-JSRuntime::sizeOfExplicitNonHeap()
-{
-    size_t n = stackSpace.sizeOf();
-
-    if (execAlloc_) {
-        JS::CodeSizes sizes;
-        execAlloc_->sizeOfCode(&sizes);
-        n += sizes.jaeger + sizes.ion + sizes.baseline + sizes.asmJS +
-            sizes.regexp + sizes.other + sizes.unused;
-    }
-
-    if (bumpAlloc_)
-        n += bumpAlloc_->sizeOfNonHeapData();
-
-    return n;
-}
-
 void
 JSRuntime::triggerOperationCallback()
 {
+    AutoLockForOperationCallback lock(this);
+
     /*
      * Invalidate ionTop to trigger its over-recursion check. Note this must be
      * set before interrupt, to avoid racing with js_InvokeOperationCallback,
      * into a weird state where interrupt is stuck at 0 but ionStackLimit is
      * MAXADDR.
      */
-    mainThread.ionStackLimit = -1;
+    mainThread.setIonStackLimit(-1);
 
     /*
      * Use JS_ATOMIC_SET in the hope that it ensures the write will become
@@ -264,7 +240,7 @@ JSCompartment::sweepCallsiteClones()
     }
 }
 
-RawFunction
+JSFunction *
 js::CloneFunctionAtCallsite(JSContext *cx, HandleFunction fun, HandleScript script, jsbytecode *pc)
 {
     JS_ASSERT(cx->typeInferenceEnabled());
@@ -279,13 +255,13 @@ js::CloneFunctionAtCallsite(JSContext *cx, HandleFunction fun, HandleScript scri
     if (!table.initialized() && !table.init())
         return NULL;
 
-    Key key;
-    SkipRoot skipKey(cx, &key); /* Stop the analysis complaining about unrooted key. */
-    key.script = script;
-    key.offset = pc - script->code;
-    key.original = fun;
+    uint32_t offset = pc - script->code;
+    void* originalScript = script;
+    void* originalFun = fun;
+    SkipRoot skipScript(cx, &originalScript);
+    SkipRoot skipFun(cx, &originalFun);
 
-    Table::AddPtr p = table.lookupForAdd(key);
+    Table::AddPtr p = table.lookupForAdd(Key(fun, script, offset));
     SkipRoot skipHash(cx, &p); /* Prevent the hash from being poisoned. */
     if (p)
         return p->value;
@@ -303,11 +279,11 @@ js::CloneFunctionAtCallsite(JSContext *cx, HandleFunction fun, HandleScript scri
     clone->nonLazyScript()->isCallsiteClone = true;
     clone->nonLazyScript()->setOriginalFunctionObject(fun);
 
+    Key key(fun, script, offset);
+
     /* Recalculate the hash if script or fun have been moved. */
-    if (key.script != script && key.original != fun) {
-        key.script = script;
-        key.original = fun;
-        Table::AddPtr p = table.lookupForAdd(key);
+    if (script != originalScript || fun != originalFun) {
+        p = table.lookupForAdd(key);
         JS_ASSERT(!p);
     }
 
@@ -433,7 +409,7 @@ js::DestroyContext(JSContext *cx, DestroyContextMode mode)
         JS::PrepareForFullGC(rt);
         GC(rt, GC_NORMAL, JS::gcreason::DESTROY_CONTEXT);
     }
-    js_delete(cx);
+    js_delete_poison(cx);
 }
 
 bool
@@ -511,37 +487,38 @@ PopulateReportBlame(JSContext *cx, JSErrorReport *report)
 }
 
 /*
- * We don't post an exception in this case, since doing so runs into
- * complications of pre-allocating an exception object which required
- * running the Exception class initializer early etc.
- * Instead we just invoke the errorReporter with an "Out Of Memory"
- * type message, and then hope the process ends swiftly.
+ * Since memory has been exhausted, avoid the normal error-handling path which
+ * allocates an error object, report and callstack. If code is running, simply
+ * throw the static atom "out of memory". If code is not running, call the
+ * error reporter directly.
+ *
+ * Furthermore, callers of js_ReportOutOfMemory (viz., malloc) assume a GC does
+ * not occur, so GC must be avoided or suppressed.
  */
 void
 js_ReportOutOfMemory(JSContext *cx)
 {
     cx->runtime->hadOutOfMemory = true;
 
-    JSErrorReport report;
-    JSErrorReporter onError = cx->errorReporter;
+    if (JS_IsRunning(cx)) {
+        cx->setPendingException(StringValue(cx->names().outOfMemory));
+        return;
+    }
 
-    /* Get the message for this error, but we won't expand any arguments. */
+    /* Get the message for this error, but we don't expand any arguments. */
     const JSErrorFormatString *efs =
         js_GetLocalizedErrorMessage(cx, NULL, NULL, JSMSG_OUT_OF_MEMORY);
     const char *msg = efs ? efs->format : "Out of memory";
 
     /* Fill out the report, but don't do anything that requires allocation. */
+    JSErrorReport report;
     PodZero(&report);
     report.flags = JSREPORT_ERROR;
     report.errorNumber = JSMSG_OUT_OF_MEMORY;
     PopulateReportBlame(cx, &report);
 
-    /*
-     * We clear a pending exception, if any, now so the hook can replace the
-     * out-of-memory error by a script-catchable exception.
-     */
-    cx->clearPendingException();
-    if (onError) {
+    /* Report the error. */
+    if (JSErrorReporter onError = cx->errorReporter) {
         AutoSuppressGC suppressGC(cx);
         onError(cx, msg, &report);
     }
@@ -589,7 +566,7 @@ checkReportFlags(JSContext *cx, unsigned *flags)
          * We assume that if the top frame is a native, then it is strict if
          * the nearest scripted frame is strict, see bug 536306.
          */
-        RawScript script = cx->stack.currentScript();
+        JSScript *script = cx->stack.currentScript();
         if (script && script->strict)
             *flags &= ~JSREPORT_WARNING;
         else if (cx->hasStrictOption())
@@ -647,7 +624,7 @@ js::ReportUsageError(JSContext *cx, HandleObject callee, const char *msg)
     const char *usageStr = "usage";
     PropertyName *usageAtom = Atomize(cx, usageStr, strlen(usageStr))->asPropertyName();
     RootedId id(cx, NameToId(usageAtom));
-    DebugOnly<RawShape> shape = static_cast<RawShape>(callee->nativeLookup(cx, id));
+    DebugOnly<Shape *> shape = static_cast<Shape *>(callee->nativeLookup(cx, id));
     JS_ASSERT(!shape->configurable());
     JS_ASSERT(!shape->writable());
     JS_ASSERT(shape->hasDefaultGetter());
@@ -1132,6 +1109,11 @@ js_InvokeOperationCallback(JSContext *cx)
     if (rt->gcIsNeeded)
         GCSlice(rt, GC_NORMAL, rt->gcTriggerReason);
 
+#ifdef JSGC_GENERATIONAL
+    if (rt->gcStoreBuffer.isAboutToOverflow())
+        MinorGC(rt, JS::gcreason::FULL_STORE_BUFFER);
+#endif
+
 #ifdef JS_ION
     /*
      * A worker thread may have set the callback after finishing an Ion
@@ -1156,12 +1138,6 @@ js_HandleExecutionInterrupt(JSContext *cx)
     if (cx->runtime->interrupt)
         result = js_InvokeOperationCallback(cx) && result;
     return result;
-}
-
-jsbytecode*
-js_GetCurrentBytecodePC(JSContext* cx)
-{
-    return cx->hasfp() ? cx->regs().pc : NULL;
 }
 
 JSContext::JSContext(JSRuntime *rt)
@@ -1191,6 +1167,7 @@ JSContext::JSContext(JSRuntime *rt)
     iterValue(MagicValue(JS_NO_ITER_VALUE)),
 #ifdef JS_METHODJIT
     methodJitEnabled(false),
+    jitIsBroken(false),
 #endif
 #ifdef MOZ_TRACE_JSCALLS
     functionCallback(NULL),
@@ -1492,7 +1469,8 @@ void
 JSContext::updateJITEnabled()
 {
 #ifdef JS_METHODJIT
-    methodJitEnabled = (options_ & JSOPTION_METHODJIT) && !IsJITBrokenHere();
+    jitIsBroken = IsJITBrokenHere();
+    methodJitEnabled = (options_ & JSOPTION_METHODJIT) && !jitIsBroken;
 #endif
 }
 

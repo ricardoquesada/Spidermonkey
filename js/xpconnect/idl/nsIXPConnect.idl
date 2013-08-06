@@ -45,6 +45,7 @@ class nsWrapperCache;
 [ptr] native nsAXPCNativeCallContextPtr(nsAXPCNativeCallContext);
 [ptr] native nsWrapperCachePtr(nsWrapperCache);
       native ZoneSpecifier(uintptr_t);
+[ref] native JSCallArgsRef(const JS::CallArgs);
 
 /***************************************************************************/
 
@@ -290,7 +291,7 @@ interface nsIXPCFunctionThisTranslator : nsISupports
     { 0xbd, 0xd6, 0x0, 0x0, 0x64, 0x65, 0x73, 0x74 } }
 %}
 
-[uuid(7e7a9a90-4607-4e3a-8ef1-b0f4b8de1c27)]
+[uuid(4d292c29-9d18-403b-b98e-2056e550a3b4)]
 interface nsIXPConnect : nsISupports
 {
 %{ C++
@@ -464,10 +465,9 @@ interface nsIXPConnect : nsISupports
                              in int32_t        aLineNumber,
                              in nsIStackFrame  aCaller);
 
-    /**
-    * @deprecated do-nothing function.
-    */
-    [deprecated] void syncJSContexts();
+
+    [noscript,notxpcom,nostdcall] JSContextPtr getCurrentJSContext();
+    [noscript,notxpcom,nostdcall] JSContextPtr getSafeJSContext();
 
     readonly attribute nsIStackFrame                CurrentJSStack;
     readonly attribute nsAXPCNativeCallContextPtr   CurrentNativeCallContext;

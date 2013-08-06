@@ -1,7 +1,8 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-/* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Profiling-related API */
 
@@ -358,7 +359,7 @@ DumpCallgrind(JSContext *cx, unsigned argc, jsval *vp)
 }
 #endif
 
-static JSFunctionSpec profiling_functions[] = {
+static const JSFunctionSpec profiling_functions[] = {
     JS_FN("startProfiling",  StartProfiling,      1,0),
     JS_FN("stopProfiling",   StopProfiling,       1,0),
     JS_FN("pauseProfilers",  PauseProfilers,      1,0),

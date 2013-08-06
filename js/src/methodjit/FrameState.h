@@ -1,12 +1,13 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #if !defined jsjaeger_framestate_h__ && defined JS_METHODJIT
 #define jsjaeger_framestate_h__
+
+#include "mozilla/PodOperations.h"
 
 #include "jsanalyze.h"
 #include "jsapi.h"
@@ -699,7 +700,7 @@ class FrameState
         JSObject *initObject;
         types::StackTypeSet *types;
         JSAtom *name;
-        void reset() { PodZero(this); }
+        void reset() { mozilla::PodZero(this); }
     };
     StackEntryExtra& extra(const FrameEntry *fe) {
         JS_ASSERT(fe >= a->args && fe < a->sp);
@@ -1042,7 +1043,7 @@ class FrameState
     /* State for the active stack frame. */
 
     struct ActiveFrame {
-        ActiveFrame() { PodZero(this); }
+        ActiveFrame() { mozilla::PodZero(this); }
 
         ActiveFrame *parent;
 

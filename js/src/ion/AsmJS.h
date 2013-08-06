@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,11 +12,7 @@
 # include <mach/mach.h>
 #endif
 
-// asm.js compilation is only available on desktop x86/x64 at the moment.
-// Don't panic, mobile support is coming soon.
-#if defined(JS_ION) && \
-    !defined(ANDROID) && \
-    (defined(JS_CPU_X86) || defined(JS_CPU_X64))
+#if defined(JS_ION)
 # define JS_ASMJS
 #endif
 
@@ -28,11 +23,6 @@ class SPSProfiler;
 class AsmJSModule;
 namespace frontend { struct TokenStream; struct ParseNode; }
 namespace ion { class MIRGenerator; class LIRGraph; }
-
-// Return whether asm.js optimization is inhibitted by the platform or
-// dynamically disabled. (Exposed as JSNative for shell testing.)
-extern JSBool
-IsAsmJSCompilationAvailable(JSContext *cx, unsigned argc, Value *vp);
 
 // Called after parsing a function 'fn' which contains the "use asm" directive.
 // This function performs type-checking and code-generation. If type-checking
@@ -55,6 +45,11 @@ CompileAsmJS(JSContext *cx, frontend::TokenStream &ts, frontend::ParseNode *fn,
 // exception thrown when executing GetProperty on the arguments) is pending.
 extern JSBool
 LinkAsmJS(JSContext *cx, unsigned argc, JS::Value *vp);
+
+// The js::Native for the functions nested in an asm.js module. Calling this
+// native will trampoline into generated code.
+extern JSBool
+CallAsmJS(JSContext *cx, unsigned argc, JS::Value *vp);
 
 // Force any currently-executing asm.js code to call
 // js_HandleExecutionInterrupt.
@@ -114,31 +109,16 @@ class AsmJSMachExceptionHandler
     pthread_t thread_;
     mach_port_t port_;
 
-  public:
+    void release();
 
+  public:
+    AsmJSMachExceptionHandler();
     ~AsmJSMachExceptionHandler() { release(); }
     mach_port_t port() const { return port_; }
     bool installed() const { return installed_; }
-
-#ifdef JS_ASMJS
-private:
-    void release();
-public:
-    AsmJSMachExceptionHandler();
     bool install(JSRuntime *rt);
     void clearCurrentThread();
     void setCurrentThread();
-#else
-    // Empty implementation for iOS
-private:
-    void release() {}
-public:
-    AsmJSMachExceptionHandler() {}
-    bool install(JSRuntime *rt) { return false; }
-    void clearCurrentThread() {}
-    void setCurrentThread() {}
-#endif
-
 };
 #endif
 
@@ -176,6 +156,23 @@ IsAsmJSModuleNative(js::Native native)
     return false;
 }
 #endif
+
+// Exposed for shell testing:
+
+// Return whether asm.js optimization is inhibitted by the platform or
+// dynamically disabled:
+extern JSBool
+IsAsmJSCompilationAvailable(JSContext *cx, unsigned argc, Value *vp);
+
+// Return whether the given value is a function containing "use asm" that has
+// been validated according to the asm.js spec.
+extern JSBool
+IsAsmJSModule(JSContext *cx, unsigned argc, Value *vp);
+
+// Return whether the given value is a nested function in an asm.js module that
+// has been both compile- and link-time validated.
+extern JSBool
+IsAsmJSFunction(JSContext *cx, unsigned argc, Value *vp);
 
 } // namespace js
 

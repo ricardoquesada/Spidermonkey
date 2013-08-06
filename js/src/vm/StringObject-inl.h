@@ -1,6 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=78:
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -40,9 +39,9 @@ StringObject::init(JSContext *cx, HandleString str)
 }
 
 inline StringObject *
-StringObject::create(JSContext *cx, HandleString str)
+StringObject::create(JSContext *cx, HandleString str, NewObjectKind newKind)
 {
-    JSObject *obj = NewBuiltinClassInstance(cx, &StringClass);
+    JSObject *obj = NewBuiltinClassInstance(cx, &StringClass, newKind);
     if (!obj)
         return NULL;
     Rooted<StringObject*> strobj(cx, &obj->asString());

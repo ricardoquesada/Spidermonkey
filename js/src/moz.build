@@ -1,3 +1,4 @@
+# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -22,6 +23,64 @@ if CONFIG['OS_ARCH'] != 'ANDROID':
 TEST_DIRS += ['tests', 'gdb']
 
 MODULE = 'js'
-
+if CONFIG['JS_STANDALONE']:
+    MODULE = 'js-%s.%s%s' % (CONFIG['MOZJS_MAJOR_VERSION'], CONFIG['MOZJS_MINOR_VERSION'],
+                             CONFIG['MOZJS_ALPHA'])
 
 CONFIGURE_SUBST_FILES += ['devtools/rootAnalysis/Makefile']
+
+# Changes to internal header files, used externally, massively slow down
+# browser builds.  Don't add new files here unless you know what you're
+# doing!
+EXPORTS += [
+    'js-config.h',
+    'js.msg',
+    'jsalloc.h',
+    'jsapi.h',
+    'jsclass.h',
+    'jsclist.h',
+    'jscpucfg.h',
+    'jsdbgapi.h',
+    'jsdhash.h',
+    'jsfriendapi.h',
+    'jslock.h',
+    'json.h',
+    'jsperf.h',
+    'jsprf.h',
+    'jsprototypes.h',
+    'jsproxy.h',
+    'jsprvtd.h',
+    'jspubtd.h',
+    'jstypes.h',
+    'jsutil.h',
+    'jsversion.h',
+    'jswrapper.h',
+]
+
+if CONFIG['HAVE_DTRACE']:
+    EXPORTS += [
+        '$(CURDIR)/javascript-trace.h',
+    ]
+
+# If you add a header here, add it to js/src/jsapi-tests/testIntTypesABI.cpp so
+# that we ensure we don't over-expose our internal integer typedefs.  Note that
+# LegacyIntTypes.h below is deliberately exempted from this requirement.
+EXPORTS.js += [
+    'Anchor.h',
+    'CallArgs.h',
+    'CharacterEncoding.h',
+    'Date.h',
+    'GCAPI.h',
+    'HashTable.h',
+    'HeapAPI.h',
+    'LegacyIntTypes.h',
+    'MemoryMetrics.h',
+    'PropertyKey.h',
+    'RequiredDefines.h',
+    'RootingAPI.h',
+    'TemplateLib.h',
+    'Utility.h',
+    'Value.h',
+    'Vector.h',
+]
+

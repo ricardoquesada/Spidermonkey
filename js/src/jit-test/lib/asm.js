@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const ASM_OK_STRING = "Successfully compiled asm.js code";
+const ASM_OK_STRING = "successfully compiled asm.js code";
 const ASM_TYPE_FAIL_STRING = "asm.js type error:";
 
 const USE_ASM = "'use asm';";
@@ -14,32 +14,9 @@ const BUF_64KB = new ArrayBuffer(64 * 1024);
 
 function asmCompile()
 {
-    if (!isAsmJSCompilationAvailable())
-        return Function.apply(null, arguments);
-
-    // asm.js emits a warning on successful compilation
-
-    // Turn on warnings-as-errors
-    var oldOpts = options("werror");
-    assertEq(oldOpts.indexOf("werror"), -1);
-
-    // Verify that the code is succesfully compiled
-    var caught = false;
-    try {
-        Function.apply(null, arguments);
-    } catch (e) {
-        if ((''+e).indexOf(ASM_OK_STRING) == -1)
-            throw new Error("Didn't catch the expected success error; instead caught: " + e);
-        caught = true;
-    }
-    if (!caught)
-        throw new Error("Didn't catch the success error");
-
-    // Turn warnings-as-errors back off
-    options("werror");
-
-    // Compile for real
-    return Function.apply(null, arguments);
+    var f = Function.apply(null, arguments);
+    assertEq(!isAsmJSCompilationAvailable() || isAsmJSModule(f), true);
+    return f;
 }
 
 function assertAsmTypeFail()

@@ -1,5 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,8 +16,6 @@
 #include "jsstr.h"
 
 #include "gc/Barrier.h"
-
-ForwardDeclareJS(Atom);
 
 namespace js { class FunctionExtended; }
 
@@ -44,6 +42,7 @@ class JSFunction : public JSObject
         HAS_DEFAULTS     = 0x0800,  /* function has at least one default parameter */
         INTERPRETED_LAZY = 0x1000,  /* function is interpreted but doesn't have a script yet */
         ARROW            = 0x2000,  /* ES6 '(args) => body' syntax */
+        SH_WRAPPABLE     = 0x4000,  /* self-hosted function is wrappable, doesn't need to be cloned */
 
         /* Derived Flags values for convenience: */
         NATIVE_FUN = 0,
@@ -100,6 +99,10 @@ class JSFunction : public JSObject
     bool isSelfHostedConstructor()  const { return flags & SELF_HOSTED_CTOR; }
     bool hasRest()                  const { return flags & HAS_REST; }
     bool hasDefaults()              const { return flags & HAS_DEFAULTS; }
+    bool isWrappable()              const {
+        JS_ASSERT_IF(flags & SH_WRAPPABLE, isSelfHostedBuiltin());
+        return flags & SH_WRAPPABLE;
+    }
 
     // Arrow functions are a little weird.
     //
@@ -155,6 +158,12 @@ class JSFunction : public JSObject
         flags |= SELF_HOSTED_CTOR;
     }
 
+    void makeWrappable() {
+        JS_ASSERT(isSelfHostedBuiltin());
+        JS_ASSERT(!isWrappable());
+        flags |= SH_WRAPPABLE;
+    }
+
     void setIsFunctionPrototype() {
         JS_ASSERT(!isFunctionPrototype());
         flags |= IS_FUN_PROTO;
@@ -181,7 +190,7 @@ class JSFunction : public JSObject
     inline void initAtom(JSAtom *atom);
     JSAtom *displayAtom() const { return atom_; }
 
-    inline void setGuessedAtom(js::RawAtom atom);
+    inline void setGuessedAtom(JSAtom *atom);
 
     /* uint16_t representation bounds number of call object dynamic slots. */
     enum { MAX_ARGS_AND_VARS = 2 * ((1U << 16) - 1) };
@@ -199,9 +208,9 @@ class JSFunction : public JSObject
 
     bool initializeLazyScript(JSContext *cx);
 
-    js::RawScript getOrCreateScript(JSContext *cx) {
+    JSScript *getOrCreateScript(JSContext *cx) {
         JS_ASSERT(isInterpreted());
-				JS_ASSERT(cx);
+        JS_ASSERT(cx);
         if (isInterpretedLazy()) {
             JS::RootedFunction self(cx, this);
             js::MaybeCheckStackRoots(cx);
@@ -224,12 +233,12 @@ class JSFunction : public JSObject
         return fun->hasScript();
     }
 
-    js::RawScript nonLazyScript() const {
+    JSScript *nonLazyScript() const {
         JS_ASSERT(hasScript());
         return JS::HandleScript::fromMarkedLocation(&u.i.script_);
     }
 
-    js::RawScript maybeNonLazyScript() const {
+    JSScript *maybeNonLazyScript() const {
         return isInterpreted() ? nonLazyScript() : NULL;
     }
 
@@ -429,7 +438,7 @@ ReportIncompatible(JSContext *cx, CallReceiver call);
 JSBool
 CallOrConstructBoundFunction(JSContext *, unsigned, js::Value *);
 
-extern JSFunctionSpec function_methods[];
+extern const JSFunctionSpec function_methods[];
 
 } /* namespace js */
 

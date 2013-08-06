@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -83,6 +82,7 @@ static const Register CallTempReg2 = rbx;
 static const Register CallTempReg3 = rcx;
 static const Register CallTempReg4 = rsi;
 static const Register CallTempReg5 = rdx;
+static const Register CallTempReg6 = rbp;
 
 // Different argument registers for WIN64
 #if defined(_WIN64)
@@ -160,8 +160,10 @@ static const Register PreBarrierReg = rdx;
 // jitted code.
 static const uint32_t StackAlignment = 16;
 static const bool StackKeptAligned = false;
+static const uint32_t CodeAlignment = 8;
 static const uint32_t NativeFrameSize = sizeof(void*);
 static const uint32_t AlignmentAtPrologue = sizeof(void*);
+static const uint32_t AlignmentMidPrologue = AlignmentAtPrologue;
 
 static const Scale ScalePointer = TimesEight;
 
@@ -178,8 +180,8 @@ class Operand
     Kind kind_ : 3;
     int32_t base_ : 5;
     Scale scale_ : 3;
-    int32_t disp_;
     int32_t index_ : 5;
+    int32_t disp_;
 
   public:
     explicit Operand(Register reg)
@@ -199,15 +201,15 @@ class Operand
       : kind_(SCALE),
         base_(address.base.code()),
         scale_(address.scale),
-        disp_(address.offset),
-        index_(address.index.code())
+        index_(address.index.code()),
+        disp_(address.offset)
     { }
     Operand(Register base, Register index, Scale scale, int32_t disp = 0)
       : kind_(SCALE),
         base_(base.code()),
         scale_(scale),
-        disp_(disp),
-        index_(index.code())
+        index_(index.code()),
+        disp_(disp)
     { }
     Operand(Register reg, int32_t disp)
       : kind_(REG_DISP),
@@ -215,12 +217,12 @@ class Operand
         disp_(disp)
     { }
 
-    Address toAddress() {
+    Address toAddress() const {
         JS_ASSERT(kind() == REG_DISP);
         return Address(Register::FromCode(base()), disp());
     }
 
-    BaseIndex toBaseIndex() {
+    BaseIndex toBaseIndex() const {
         JS_ASSERT(kind() == SCALE);
         return BaseIndex(Register::FromCode(base()), Register::FromCode(index()), scale(), disp());
     }
@@ -348,10 +350,14 @@ class Assembler : public AssemblerX86Shared
         movsd(src, Operand(StackPointer, 0));
     }
     CodeOffsetLabel pushWithPatch(const ImmWord &word) {
-        movq(word, ScratchReg);
-        CodeOffsetLabel label = masm.currentOffset();
+        CodeOffsetLabel label = movWithPatch(word, ScratchReg);
         push(ScratchReg);
         return label;
+    }
+
+    CodeOffsetLabel movWithPatch(const ImmWord &word, const Register &dest) {
+        movq(word, dest);
+        return masm.currentOffset();
     }
 
     void movq(ImmWord word, const Register &dest) {
@@ -478,6 +484,9 @@ class Assembler : public AssemblerX86Shared
     void shrq(Imm32 imm, const Register &dest) {
         masm.shrq_i8r(imm.value, dest.code());
     }
+    void sarq(Imm32 imm, const Register &dest) {
+        masm.sarq_i8r(imm.value, dest.code());
+    }
     void orq(Imm32 imm, const Register &dest) {
         masm.orq_ir(imm.value, dest.code());
     }
@@ -504,7 +513,16 @@ class Assembler : public AssemblerX86Shared
     }
 
     void mov(ImmWord word, const Register &dest) {
-        movq(word, dest);
+        // If the word value is in [0,UINT32_MAX], we can use the more compact
+        // movl instruction, which has a 32-bit immediate field which it
+        // zero-extends into the 64-bit register.
+        if (word.value <= UINT32_MAX) {
+            uint32_t value32 = static_cast<uint32_t>(word.value);
+            Imm32 imm32(static_cast<int32_t>(value32));
+            movl(imm32, dest);
+        } else {
+            movq(word, dest);
+        }
     }
     void mov(const Imm32 &imm32, const Register &dest) {
         movl(imm32, dest);
@@ -612,6 +630,19 @@ class Assembler : public AssemblerX86Shared
     void testq(const Register &lhs, const Register &rhs) {
         masm.testq_rr(rhs.code(), lhs.code());
     }
+    void testq(const Operand &lhs, Imm32 rhs) {
+        switch (lhs.kind()) {
+          case Operand::REG:
+            masm.testq_i32r(rhs.value, lhs.reg());
+            break;
+          case Operand::REG_DISP:
+            masm.testq_i32m(rhs.value, lhs.disp(), lhs.base());
+            break;
+          default:
+            JS_NOT_REACHED("unexpected operand kind");
+            break;
+        }
+    }
 
     void jmp(void *target, Relocation::Kind reloc = Relocation::HARDCODED) {
         JmpSrc src = masm.jmp();
@@ -640,14 +671,20 @@ class Assembler : public AssemblerX86Shared
         CodeOffsetLabel offset(size());
         JmpSrc src = enabled ? masm.call() : masm.cmp_eax();
         addPendingJump(src, target->raw(), Relocation::IONCODE);
+        JS_ASSERT(size() - offset.offset() == ToggledCallSize());
         return offset;
+    }
+
+    static size_t ToggledCallSize() {
+        // Size of a call instruction.
+        return 5;
     }
 
     // Do not mask shared implementations.
     using AssemblerX86Shared::call;
 
-    void cvttsd2si(const FloatRegister &src, const Register &dest) {
-        masm.cvttsd2si_rr(src.code(), dest.code());
+    void cvttsd2sq(const FloatRegister &src, const Register &dest) {
+        masm.cvttsd2sq_rr(src.code(), dest.code());
     }
     void cvtsq2sd(const Register &src, const FloatRegister &dest) {
         masm.cvtsq2sd_rr(src.code(), dest.code());

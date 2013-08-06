@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -86,7 +85,11 @@ MoveEmitterARM::tempReg()
 
     // For now, just pick r12/ip as the eviction point. This is totally
     // random, and if it ends up being bad, we can use actual heuristics later.
-    spilledReg_ = r12;
+    // r12 is actually a bad choice.  it is the scratch register, which is frequently
+    // used for address computations, such as those found when we attempt to access
+    // values more than 4096 off of the stack pointer.
+    // instead, use lr, the LinkRegister.
+    spilledReg_ = r14;
     if (pushedAtSpill_ == -1) {
         masm.Push(spilledReg_);
         pushedAtSpill_ = masm.framePushed();

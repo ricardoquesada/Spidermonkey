@@ -11,7 +11,6 @@ VPATH		= @srcdir@
 
 include $(DEPTH)/config/autoconf.mk
 
-PROGRAM         = js$(BIN_SUFFIX)
 CPPSRCS		= \
   js.cpp \
   jsoptparse.cpp \
@@ -58,6 +57,15 @@ SHELL_INSTALL_AUTOLOAD_FILES := $(CURDIR)/js-gdb.py
 SHELL_INSTALL_AUTOLOAD_DEST := $(DIST)/bin
 
 include $(topsrcdir)/config/rules.mk
+
+ifdef MOZ_VTUNE
+ifeq ($(OS_ARCH), WINNT)
+EXTRA_DSO_LDOPTS += $(VTUNE_LIBRARIES)
+LIBS += $(VTUNE_LIBRARIES)
+else
+SHARED_LIBRARY_LIBS += $(VTUNE_LIBRARIES)
+endif # WINNT
+endif # MOZ_VTUNE
 
 # People expect the js shell to wind up in the top-level JS dir.
 libs::
