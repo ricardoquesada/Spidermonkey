@@ -29,7 +29,6 @@ class CommonTestCase(unittest.TestCase):
     def __init__(self, methodName):
         unittest.TestCase.__init__(self, methodName)
         self.loglines = None
-        self.perfdata = None
         self.duration = 0
 
     @classmethod
@@ -93,7 +92,6 @@ permissions.forEach(function (perm) {
         self.duration = time.time() - self.start_time
         if self.marionette.session is not None:
             self.loglines = self.marionette.get_logs()
-            self.perfdata = self.marionette.get_perf_data()
             self.marionette.delete_session()
         self.marionette = None
 
@@ -112,7 +110,7 @@ class MarionetteTestCase(CommonTestCase):
         CommonTestCase.__init__(self, methodName, **kwargs)
 
     @classmethod
-    def add_tests_to_suite(cls, mod_name, filepath, suite, testloader, marionette, testvars):
+    def add_tests_to_suite(cls, mod_name, filepath, suite, testloader, marionette, testvars, **kwargs):
         test_mod = imp.load_source(mod_name, filepath)
 
         for name in dir(test_mod):
@@ -124,7 +122,8 @@ class MarionetteTestCase(CommonTestCase):
                     suite.addTest(obj(weakref.ref(marionette),
                                   methodName=testname,
                                   filepath=filepath,
-                                  testvars=testvars))
+                                  testvars=testvars,
+                                  **kwargs))
 
     def setUp(self):
         CommonTestCase.setUp(self)
@@ -227,9 +226,8 @@ class MarionetteJSTestCase(CommonTestCase):
                 self.assertEqual(0, results['failed'],
                                  '%d tests failed:\n%s' % (results['failed'], '\n'.join(fails)))
 
-            if not self.perfdata:
-                self.assertTrue(results['passed'] + results['failed'] > 0,
-                                'no tests run')
+            self.assertTrue(results['passed'] + results['failed'] > 0,
+                            'no tests run')
 
         except ScriptTimeoutException:
             if 'timeout' in self.jsFile:

@@ -40,6 +40,7 @@ _SERV_FILES = 	\
 		$(topsrcdir)/testing/mozbase/mozdevice/mozdevice/devicemanager.py \
 		$(topsrcdir)/testing/mozbase/mozdevice/mozdevice/devicemanagerADB.py \
 		$(topsrcdir)/testing/mozbase/mozdevice/mozdevice/devicemanagerSUT.py \
+		$(topsrcdir)/testing/mozbase/mozdevice/mozdevice/droid.py \
 		$(topsrcdir)/testing/mozbase/mozdevice/mozdevice/Zeroconf.py \
 		$(topsrcdir)/build/automationutils.py \
 		$(topsrcdir)/build/manifestparser.py \
@@ -61,6 +62,8 @@ _SERV_FILES = 	\
  	 	plain-loop.html \
 		android.json \
 		b2g.json \
+		root-ev-tester.crl \
+		intermediate-ev-tester.crl \
 		$(NULL)	
 
 ifeq ($(MOZ_BUILD_APP),mobile/android)
