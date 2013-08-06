@@ -1,9 +1,10 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=99:
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#include "json.h"
 
 #include "mozilla/FloatingPoint.h"
 
@@ -11,41 +12,33 @@
 #include "jsapi.h"
 #include "jsarray.h"
 #include "jsatom.h"
-#include "jsbool.h"
 #include "jscntxt.h"
-#include "jsfun.h"
 #include "jsinterp.h"
-#include "jsiter.h"
 #include "jsnum.h"
 #include "jsobj.h"
-#include "json.h"
 #include "jsonparser.h"
-#include "jsprf.h"
 #include "jsstr.h"
 #include "jstypes.h"
 #include "jsutil.h"
 
-#include "frontend/TokenStream.h"
 #include "vm/StringBuffer.h"
 
 #include "jsatominlines.h"
 #include "jsboolinlines.h"
-#include "jsinferinlines.h"
 #include "jsobjinlines.h"
-
-#include "vm/Stack-inl.h"
 
 using namespace js;
 using namespace js::gc;
 using namespace js::types;
 
+using mozilla::IsFinite;
 using mozilla::Maybe;
 
 Class js::JSONClass = {
     js_JSON_str,
     JSCLASS_HAS_CACHED_PROTO(JSProto_JSON),
     JS_PropertyStub,        /* addProperty */
-    JS_PropertyStub,        /* delProperty */
+    JS_DeletePropertyStub,  /* delProperty */
     JS_PropertyStub,        /* getProperty */
     JS_StrictPropertyStub,  /* setProperty */
     JS_EnumerateStub,
@@ -277,11 +270,10 @@ PreprocessValue(JSContext *cx, HandleObject holder, KeyType key, MutableHandleVa
     RootedString keyStr(cx);
 
     /* Step 2. */
-    if (vp.get().isObject()) {
+    if (vp.isObject()) {
         RootedValue toJSON(cx);
-        RootedId id(cx, NameToId(cx->names().toJSON));
-        Rooted<JSObject*> obj(cx, &vp.get().toObject());
-        if (!GetMethod(cx, obj, id, 0, &toJSON))
+        RootedObject obj(cx, &vp.toObject());
+        if (!JSObject::getProperty(cx, obj, obj, cx->names().toJSON, &toJSON))
             return false;
 
         if (js_IsCallable(toJSON)) {
@@ -554,7 +546,7 @@ Str(JSContext *cx, const Value &v, StringifyContext *scx)
     /* Step 9. */
     if (v.isNumber()) {
         if (v.isDouble()) {
-            if (!MOZ_DOUBLE_IS_FINITE(v.toDouble()))
+            if (!IsFinite(v.toDouble()))
                 return scx->sb.append("null");
         }
 
@@ -776,7 +768,8 @@ Walk(JSContext *cx, HandleObject holder, HandleId name, HandleValue reviver, Mut
 
                 if (newElement.isUndefined()) {
                     /* Step 2a(iii)(2). */
-                    if (!JSObject::deleteByValue(cx, obj, IdToValue(id), &newElement, false))
+                    JSBool succeeded;
+                    if (!JSObject::deleteByValue(cx, obj, IdToValue(id), &succeeded))
                         return false;
                 } else {
                     /* Step 2a(iii)(3). */
@@ -804,7 +797,8 @@ Walk(JSContext *cx, HandleObject holder, HandleId name, HandleValue reviver, Mut
 
                 if (newElement.isUndefined()) {
                     /* Step 2b(ii)(2). */
-                    if (!JSObject::deleteByValue(cx, obj, IdToValue(id), &newElement, false))
+                    JSBool succeeded;
+                    if (!JSObject::deleteByValue(cx, obj, IdToValue(id), &succeeded))
                         return false;
                 } else {
                     /* Step 2b(ii)(3). */
@@ -878,7 +872,7 @@ json_toSource(JSContext *cx, unsigned argc, Value *vp)
 }
 #endif
 
-static JSFunctionSpec json_static_methods[] = {
+static const JSFunctionSpec json_static_methods[] = {
 #if JS_HAS_TOSOURCE
     JS_FN(js_toSource_str,  json_toSource,      0, 0),
 #endif

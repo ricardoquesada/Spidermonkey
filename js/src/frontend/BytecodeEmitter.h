@@ -1,6 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=79:
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -125,6 +124,9 @@ struct BytecodeEmitter
     bool            emittingRunOnceLambda:1; /* true while emitting a lambda which is only
                                                 expected to run once. */
 
+    bool            insideEval:1;       /* True if compiling an eval-expression or a function
+                                           nested inside an eval. */
+
     const bool      hasGlobalScope:1;   /* frontend::CompileScript's scope chain is the
                                            global object */
 
@@ -140,8 +142,8 @@ struct BytecodeEmitter
      * destruction.
      */
     BytecodeEmitter(BytecodeEmitter *parent, Parser<FullParseHandler> *parser, SharedContext *sc,
-                    HandleScript script, HandleScript evalCaller, bool hasGlobalScope,
-                    uint32_t lineNum, bool selfHostingMode = false);
+                    HandleScript script, bool insideEval, HandleScript evalCaller,
+                    bool hasGlobalScope, uint32_t lineNum, bool selfHostingMode = false);
     bool init();
 
     bool isAliasedName(ParseNode *pn);

@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -95,6 +94,7 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitParNewCallObject(MParNewCallObject *ins);
     bool visitParNewDenseArray(MParNewDenseArray *ins);
     bool visitParBailout(MParBailout *ins);
+    bool visitInitElem(MInitElem *ins);
     bool visitInitProp(MInitProp *ins);
     bool visitCheckOverRecursed(MCheckOverRecursed *ins);
     bool visitParCheckOverRecursed(MParCheckOverRecursed *ins);
@@ -105,6 +105,9 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitCreateThisWithTemplate(MCreateThisWithTemplate *ins);
     bool visitCreateThisWithProto(MCreateThisWithProto *ins);
     bool visitCreateThis(MCreateThis *ins);
+    bool visitCreateArgumentsObject(MCreateArgumentsObject *ins);
+    bool visitGetArgumentsObjectArg(MGetArgumentsObjectArg *ins);
+    bool visitSetArgumentsObjectArg(MSetArgumentsObjectArg *ins);
     bool visitReturnFromCtor(MReturnFromCtor *ins);
     bool visitCall(MCall *call);
     bool visitApplyArgs(MApplyArgs *apply);
@@ -186,10 +189,13 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitArrayConcat(MArrayConcat *ins);
     bool visitLoadTypedArrayElement(MLoadTypedArrayElement *ins);
     bool visitLoadTypedArrayElementHole(MLoadTypedArrayElementHole *ins);
+    bool visitLoadTypedArrayElementStatic(MLoadTypedArrayElementStatic *ins);
     bool visitClampToUint8(MClampToUint8 *ins);
     bool visitLoadFixedSlot(MLoadFixedSlot *ins);
     bool visitStoreFixedSlot(MStoreFixedSlot *ins);
     bool visitGetPropertyCache(MGetPropertyCache *ins);
+    bool visitGetPropertyPolymorphic(MGetPropertyPolymorphic *ins);
+    bool visitSetPropertyPolymorphic(MSetPropertyPolymorphic *ins);
     bool visitGetElementCache(MGetElementCache *ins);
     bool visitBindNameCache(MBindNameCache *ins);
     bool visitGuardClass(MGuardClass *ins);
@@ -202,6 +208,7 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitCallsiteCloneCache(MCallsiteCloneCache *ins);
     bool visitCallGetElement(MCallGetElement *ins);
     bool visitCallSetElement(MCallSetElement *ins);
+    bool visitCallInitElementArray(MCallInitElementArray *ins);
     bool visitSetPropertyCache(MSetPropertyCache *ins);
     bool visitCallSetProperty(MCallSetProperty *ins);
     bool visitIteratorStart(MIteratorStart *ins);
@@ -217,6 +224,7 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitInstanceOf(MInstanceOf *ins);
     bool visitCallInstanceOf(MCallInstanceOf *ins);
     bool visitFunctionBoundary(MFunctionBoundary *ins);
+    bool visitIsCallable(MIsCallable *ins);
     bool visitAsmJSLoadHeap(MAsmJSLoadHeap *ins);
     bool visitAsmJSLoadGlobalVar(MAsmJSLoadGlobalVar *ins);
     bool visitAsmJSStoreGlobalVar(MAsmJSStoreGlobalVar *ins);

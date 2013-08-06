@@ -1,4 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -110,8 +111,9 @@ struct JSStructuredCloneReader {
 
     bool checkDouble(double d);
     JSString *readString(uint32_t nchars);
-    bool readTypedArray(uint32_t tag, uint32_t nelems, js::Value *vp);
+    bool readTypedArray(uint32_t arrayType, uint32_t nelems, js::Value *vp, bool v1Read = false);
     bool readArrayBuffer(uint32_t nbytes, js::Value *vp);
+    bool readV1ArrayBuffer(uint32_t arrayType, uint32_t nelems, js::Value *vp);
     bool readId(jsid *idp);
     bool startRead(js::Value *vp);
 

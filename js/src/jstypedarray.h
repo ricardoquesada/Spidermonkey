@@ -1,6 +1,6 @@
-/* -*- Mode: C++; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil -*- */
-/* vim: set ts=4 sw=4 et tw=99: */
-/* This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
+ * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -34,7 +34,7 @@ class ArrayBufferObject : public JSObject
 
   public:
     static Class protoClass;
-    static JSFunctionSpec jsfuncs[];
+    static const JSFunctionSpec jsfuncs[];
 
     static JSBool byteLengthGetter(JSContext *cx, unsigned argc, Value *vp);
 
@@ -56,7 +56,7 @@ class ArrayBufferObject : public JSObject
     template<typename T>
     static JSBool createTypedArrayFromBuffer(JSContext *cx, unsigned argc, Value *vp);
 
-    static void obj_trace(JSTracer *trc, RawObject obj);
+    static void obj_trace(JSTracer *trc, JSObject *obj);
 
     static JSBool obj_lookupGeneric(JSContext *cx, HandleObject obj, HandleId id,
                                     MutableHandleObject objp, MutableHandleShape propp);
@@ -119,15 +119,12 @@ class ArrayBufferObject : public JSObject
     static JSBool obj_setSpecialAttributes(JSContext *cx, HandleObject obj,
                                            HandleSpecialId sid, unsigned *attrsp);
 
-    static JSBool obj_deleteProperty(JSContext *cx, HandleObject obj,
-                                     HandlePropertyName name, MutableHandleValue rval,
-                                     JSBool strict);
-    static JSBool obj_deleteElement(JSContext *cx, HandleObject obj,
-                                    uint32_t index, MutableHandleValue rval,
-                                    JSBool strict);
-    static JSBool obj_deleteSpecial(JSContext *cx, HandleObject obj,
-                                    HandleSpecialId sid, MutableHandleValue rval,
-                                    JSBool strict);
+    static JSBool obj_deleteProperty(JSContext *cx, HandleObject obj, HandlePropertyName name,
+                                     JSBool *succeeded);
+    static JSBool obj_deleteElement(JSContext *cx, HandleObject obj, uint32_t index,
+                                    JSBool *succeeded);
+    static JSBool obj_deleteSpecial(JSContext *cx, HandleObject obj, HandleSpecialId sid,
+                                    JSBool *succeeded);
 
     static JSBool obj_enumerate(JSContext *cx, HandleObject obj, JSIterateOp enum_op,
                                 MutableHandleValue statep, MutableHandleId idp);
@@ -143,7 +140,7 @@ class ArrayBufferObject : public JSObject
 
     static inline void setElementsHeader(js::ObjectElements *header, uint32_t bytes);
 
-    void addView(RawObject view);
+    void addView(JSObject *view);
 
     bool allocateSlots(JSContext *cx, uint32_t size, uint8_t *contents = NULL);
     void changeContents(JSContext *cx, ObjectElements *newHeader);
@@ -167,7 +164,7 @@ class ArrayBufferObject : public JSObject
     inline bool isAsmJSArrayBuffer() const;
     static bool prepareForAsmJS(JSContext *cx, Handle<ArrayBufferObject*> buffer);
     static void neuterAsmJSArrayBuffer(ArrayBufferObject &buffer);
-    static void releaseAsmJSArrayBuffer(FreeOp *fop, RawObject obj);
+    static void releaseAsmJSArrayBuffer(FreeOp *fop, JSObject *obj);
 };
 
 /*
@@ -283,7 +280,7 @@ struct TypedArray : public BufferView {
   public:
     static bool isArrayIndex(JSObject *obj, jsid id, uint32_t *ip = NULL);
 
-    static void neuter(RawObject tarray);
+    static void neuter(JSObject *tarray);
 
     static inline uint32_t slotWidth(int atype);
     static inline int slotWidth(JSObject *obj);
@@ -324,6 +321,7 @@ TypedArrayShift(ArrayBufferView::ViewType viewType)
     switch (viewType) {
       case ArrayBufferView::TYPE_INT8:
       case ArrayBufferView::TYPE_UINT8:
+      case ArrayBufferView::TYPE_UINT8_CLAMPED:
         return 0;
       case ArrayBufferView::TYPE_INT16:
       case ArrayBufferView::TYPE_UINT16:
@@ -441,7 +439,7 @@ private:
     static bool write(JSContext *cx, Handle<DataViewObject*> obj,
                       CallArgs &args, const char *method);
   private:
-    static JSFunctionSpec jsfuncs[];
+    static const JSFunctionSpec jsfuncs[];
 };
 
 bool

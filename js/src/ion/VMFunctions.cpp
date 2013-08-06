@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,10 +7,13 @@
 #include "Ion.h"
 #include "IonCompartment.h"
 #include "jsinterp.h"
+#include "ion/BaselineFrame-inl.h"
+#include "ion/BaselineIC.h"
 #include "ion/IonFrames.h"
 #include "ion/IonFrames-inl.h" // for GetTopIonJSScript
 
 #include "vm/StringObject-inl.h"
+#include "vm/Debugger.h"
 
 #include "builtin/ParallelArray.h"
 
@@ -67,26 +69,6 @@ InvokeFunction(JSContext *cx, HandleFunction fun0, uint32_t argc, Value *argv, V
             if (!fun)
                 return false;
         }
-
-        // In order to prevent massive bouncing between Ion and JM, see if we keep
-        // hitting functions that are uncompilable.
-        if (cx->methodJitEnabled && !fun->nonLazyScript()->canIonCompile()) {
-            RawScript script = GetTopIonJSScript(cx);
-            if (script->hasIonScript() &&
-                ++script->ion->slowCallCount >= js_IonOptions.slowCallLimit)
-            {
-                AutoFlushCache afc("InvokeFunction");
-
-                // Poison the script so we don't try to run it again. This will
-                // trigger invalidation.
-                ForbidCompilation(cx, script);
-            }
-        }
-
-        // When caller runs in IM, but callee not, we take a slow path to the interpreter.
-        // This has a significant overhead. In order to decrease the number of times this happens,
-        // the useCount gets incremented faster to compile this function in IM and use the fastpath.
-        fun->nonLazyScript()->incUseCount(js_IonOptions.slowCallIncUseCount);
     }
 
     // TI will return false for monitorReturnTypes, meaning there is no
@@ -153,6 +135,17 @@ DefVarOrConst(JSContext *cx, HandlePropertyName dn, unsigned attrs, HandleObject
         obj = obj->enclosingScope();
 
     return DefVarOrConstOperation(cx, obj, dn, attrs);
+}
+
+bool
+SetConst(JSContext *cx, HandlePropertyName name, HandleObject scopeChain, HandleValue rval)
+{
+    // Given the ScopeChain, extract the VarObj.
+    RootedObject obj(cx, scopeChain);
+    while (!obj->isVarObj())
+        obj = obj->enclosingScope();
+
+    return SetConstOperation(cx, obj, name, rval);
 }
 
 bool
@@ -250,7 +243,7 @@ template bool StringsEqual<true>(JSContext *cx, HandleString lhs, HandleString r
 template bool StringsEqual<false>(JSContext *cx, HandleString lhs, HandleString rhs, JSBool *res);
 
 JSBool
-ObjectEmulatesUndefined(RawObject obj)
+ObjectEmulatesUndefined(JSObject *obj)
 {
     return EmulatesUndefined(obj);
 }
@@ -272,7 +265,7 @@ NewInitParallelArray(JSContext *cx, HandleObject templateObject)
     JS_ASSERT(templateObject->getClass() == &ParallelArrayObject::class_);
     JS_ASSERT(!templateObject->hasSingletonType());
 
-    RootedObject obj(cx, ParallelArrayObject::newInstance(cx));
+    RootedObject obj(cx, ParallelArrayObject::newInstance(cx, TenuredObject));
     if (!obj)
         return NULL;
 
@@ -481,9 +474,8 @@ SPSExit(JSContext *cx, HandleScript script)
 bool
 OperatorIn(JSContext *cx, HandleValue key, HandleObject obj, JSBool *out)
 {
-    RootedValue dummy(cx); // Disregards atomization changes: no way to propagate.
     RootedId id(cx);
-    if (!FetchElementId(cx, obj, key, &id, &dummy))
+    if (!ValueToId<CanGC>(cx, key, &id))
         return false;
 
     RootedObject obj2(cx);
@@ -505,7 +497,17 @@ OperatorInI(JSContext *cx, uint32_t index, HandleObject obj, JSBool *out)
 bool
 GetIntrinsicValue(JSContext *cx, HandlePropertyName name, MutableHandleValue rval)
 {
-    return cx->global()->getIntrinsicValue(cx, name, rval);
+    if (!cx->global()->getIntrinsicValue(cx, name, rval))
+        return false;
+
+    // This function is called when we try to compile a cold getintrinsic
+    // op. MCallGetIntrinsicValue has an AliasSet of None for optimization
+    // purposes, as its side effect is not observable from JS. We are
+    // guaranteed to bail out after this function, but because of its AliasSet,
+    // type info will not be reflowed. Manually monitor here.
+    types::TypeScript::Monitor(cx, rval);
+
+    return true;
 }
 
 bool
@@ -519,7 +521,10 @@ CreateThis(JSContext *cx, HandleObject callee, MutableHandleValue rval)
             JSScript *script = fun->getOrCreateScript(cx);
             if (!script || !script->ensureHasTypes(cx))
                 return false;
-            rval.set(ObjectValue(*CreateThisForFunction(cx, callee, false)));
+            JSObject *thisObj = CreateThisForFunction(cx, callee, false);
+            if (!thisObj)
+                return false;
+            rval.set(ObjectValue(*thisObj));
         }
     }
 
@@ -592,6 +597,196 @@ GetIndexFromString(JSString *str)
     return index;
 }
 
+bool
+DebugPrologue(JSContext *cx, BaselineFrame *frame, JSBool *mustReturn)
+{
+    *mustReturn = false;
+
+    JSTrapStatus status = ScriptDebugPrologue(cx, frame);
+    switch (status) {
+      case JSTRAP_CONTINUE:
+        return true;
+
+      case JSTRAP_RETURN:
+        // The script is going to return immediately, so we have to call the
+        // debug epilogue handler as well.
+        JS_ASSERT(frame->hasReturnValue());
+        *mustReturn = true;
+        return ion::DebugEpilogue(cx, frame, true);
+
+      case JSTRAP_THROW:
+      case JSTRAP_ERROR:
+        return false;
+
+      default:
+        JS_NOT_REACHED("Invalid trap status");
+    }
+}
+
+bool
+DebugEpilogue(JSContext *cx, BaselineFrame *frame, JSBool ok)
+{
+    // Unwind scope chain to stack depth 0.
+    UnwindScope(cx, frame, 0);
+
+    // If ScriptDebugEpilogue returns |true| we have to return the frame's
+    // return value. If it returns |false|, the debugger threw an exception.
+    // In both cases we have to pop debug scopes.
+    ok = ScriptDebugEpilogue(cx, frame, ok);
+
+    if (frame->isNonEvalFunctionFrame()) {
+        JS_ASSERT_IF(ok, frame->hasReturnValue());
+        DebugScopes::onPopCall(frame, cx);
+    } else if (frame->isStrictEvalFrame()) {
+        JS_ASSERT_IF(frame->hasCallObj(), frame->scopeChain()->asCall().isForEval());
+        DebugScopes::onPopStrictEvalScope(frame);
+    }
+
+    // If the frame has a pushed SPS frame, make sure to pop it.
+    if (frame->hasPushedSPSFrame()) {
+        cx->runtime->spsProfiler.exit(cx, frame->script(), frame->maybeFun());
+        // Unset the pushedSPSFrame flag because DebugEpilogue may get called before
+        // Probes::exitScript in baseline during exception handling, and we don't
+        // want to double-pop SPS frames.
+        frame->unsetPushedSPSFrame();
+    }
+
+    if (!ok) {
+        // Pop this frame by updating ionTop, so that the exception handling
+        // code will start at the previous frame.
+
+        IonJSFrameLayout *prefix = frame->framePrefix();
+        EnsureExitFrame(prefix);
+        cx->mainThread().ionTop = (uint8_t *)prefix;
+    }
+
+    return ok;
+}
+
+bool
+StrictEvalPrologue(JSContext *cx, BaselineFrame *frame)
+{
+    return frame->strictEvalPrologue(cx);
+}
+
+bool
+HeavyweightFunPrologue(JSContext *cx, BaselineFrame *frame)
+{
+    return frame->heavyweightFunPrologue(cx);
+}
+
+bool
+NewArgumentsObject(JSContext *cx, BaselineFrame *frame, MutableHandleValue res)
+{
+    ArgumentsObject *obj = ArgumentsObject::createExpected(cx, frame);
+    if (!obj)
+        return false;
+    res.setObject(*obj);
+    return true;
+}
+
+bool
+HandleDebugTrap(JSContext *cx, BaselineFrame *frame, uint8_t *retAddr, JSBool *mustReturn)
+{
+    *mustReturn = false;
+
+    RootedScript script(cx, frame->script());
+    jsbytecode *pc = script->baselineScript()->icEntryFromReturnAddress(retAddr).pc(script);
+
+    JS_ASSERT(cx->compartment->debugMode());
+    JS_ASSERT(script->stepModeEnabled() || script->hasBreakpointsAt(pc));
+
+    RootedValue rval(cx);
+    JSTrapStatus status = JSTRAP_CONTINUE;
+    JSInterruptHook hook = cx->runtime->debugHooks.interruptHook;
+
+    if (hook || script->stepModeEnabled()) {
+        if (hook)
+            status = hook(cx, script, pc, rval.address(), cx->runtime->debugHooks.interruptHookData);
+        if (status == JSTRAP_CONTINUE && script->stepModeEnabled())
+            status = Debugger::onSingleStep(cx, &rval);
+    }
+
+    if (status == JSTRAP_CONTINUE && script->hasBreakpointsAt(pc))
+        status = Debugger::onTrap(cx, &rval);
+
+    switch (status) {
+      case JSTRAP_CONTINUE:
+        break;
+
+      case JSTRAP_ERROR:
+        return false;
+
+      case JSTRAP_RETURN:
+        *mustReturn = true;
+        frame->setReturnValue(rval);
+        return ion::DebugEpilogue(cx, frame, true);
+
+      case JSTRAP_THROW:
+        cx->setPendingException(rval);
+        return false;
+
+      default:
+        JS_NOT_REACHED("Invalid trap status");
+    }
+
+    return true;
+}
+
+bool
+OnDebuggerStatement(JSContext *cx, BaselineFrame *frame, jsbytecode *pc, JSBool *mustReturn)
+{
+    *mustReturn = false;
+
+    RootedScript script(cx, frame->script());
+    JSTrapStatus status = JSTRAP_CONTINUE;
+    RootedValue rval(cx);
+
+    if (JSDebuggerHandler handler = cx->runtime->debugHooks.debuggerHandler)
+        status = handler(cx, script, pc, rval.address(), cx->runtime->debugHooks.debuggerHandlerData);
+
+    if (status == JSTRAP_CONTINUE)
+        status = Debugger::onDebuggerStatement(cx, &rval);
+
+    switch (status) {
+      case JSTRAP_ERROR:
+        return false;
+
+      case JSTRAP_CONTINUE:
+        return true;
+
+      case JSTRAP_RETURN:
+        frame->setReturnValue(rval);
+        *mustReturn = true;
+        return ion::DebugEpilogue(cx, frame, true);
+
+      case JSTRAP_THROW:
+        cx->setPendingException(rval);
+        return false;
+
+      default:
+        JS_NOT_REACHED("Invalid trap status");
+    }
+}
+
+bool
+EnterBlock(JSContext *cx, BaselineFrame *frame, Handle<StaticBlockObject *> block)
+{
+    return frame->pushBlock(cx, block);
+}
+
+bool
+LeaveBlock(JSContext *cx, BaselineFrame *frame)
+{
+    frame->popBlock(cx);
+    return true;
+}
+
+bool
+InitBaselineFrameForOsr(BaselineFrame *frame, StackFrame *interpFrame, uint32_t numStackValues)
+{
+    return frame->initForOsr(interpFrame, numStackValues);
+}
 
 } // namespace ion
 } // namespace js

@@ -8,7 +8,6 @@
 #include "jsapi.h"
 #include "mozilla/ModuleLoader.h"
 #include "nsIJSRuntimeService.h"
-#include "nsIJSContextStack.h"
 #include "nsISupports.h"
 #include "nsIXPConnect.h"
 #include "nsIFile.h"
@@ -50,11 +49,12 @@ class mozJSComponentLoader : public mozilla::ModuleLoader,
     // ModuleLoader
     const mozilla::Module* LoadModule(mozilla::FileLocation &aFile);
 
-    nsresult FindTargetObject(JSContext* aCx, JSObject** aTargetObject);
+    nsresult FindTargetObject(JSContext* aCx,
+                              JS::MutableHandleObject aTargetObject);
 
     static mozJSComponentLoader* Get() { return sSelf; }
 
-    void NoteSubScript(JSScript* aScript, JSObject* aThisObject);
+    void NoteSubScript(JS::HandleScript aScript, JS::HandleObject aThisObject);
 
  protected:
     static mozJSComponentLoader* sSelf;
@@ -72,16 +72,16 @@ class mozJSComponentLoader : public mozilla::ModuleLoader,
                                nsIURI *aComponent,
                                JSObject **aObject,
                                char **location,
-                               jsval *exception);
+                               bool aCatchException,
+                               JS::MutableHandleValue aException);
 
-    nsresult ImportInto(const nsACString & aLocation,
-                        JSObject * targetObj,
-                        JSContext * callercx,
-                        JSObject * *_retval);
+    nsresult ImportInto(const nsACString &aLocation,
+                        JS::HandleObject targetObj,
+                        JSContext *callercx,
+                        JS::MutableHandleObject vp);
 
     nsCOMPtr<nsIComponentManager> mCompMgr;
     nsCOMPtr<nsIJSRuntimeService> mRuntimeService;
-    nsCOMPtr<nsIThreadJSContextStack> mContextStack;
     nsCOMPtr<nsIPrincipal> mSystemPrincipal;
     nsCOMPtr<nsIXPConnectJSObjectHolder> mLoaderGlobal;
     JSRuntime *mRuntime;

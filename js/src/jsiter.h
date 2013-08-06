@@ -1,6 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=78:
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -106,7 +105,7 @@ struct NativeIterator
     static NativeIterator *allocateSentinel(JSContext *cx);
     static NativeIterator *allocateIterator(JSContext *cx, uint32_t slength,
                                             const js::AutoIdVector &props);
-    void init(RawObject obj, RawObject iterObj, unsigned flags, uint32_t slength, uint32_t key);
+    void init(JSObject *obj, JSObject *iterObj, unsigned flags, uint32_t slength, uint32_t key);
 
     void mark(JSTracer *trc);
 
@@ -126,8 +125,8 @@ class PropertyIteratorObject : public JSObject
     size_t sizeOfMisc(JSMallocSizeOfFun mallocSizeOf) const;
 
   private:
-    static void trace(JSTracer *trc, RawObject obj);
-    static void finalize(FreeOp *fop, RawObject obj);
+    static void trace(JSTracer *trc, JSObject *obj);
+    static void finalize(FreeOp *fop, JSObject *obj);
 };
 
 /*
@@ -145,7 +144,7 @@ class ElementIteratorObject : public JSObject
 {
   public:
     static JSObject *create(JSContext *cx, Handle<Value> target);
-    static JSFunctionSpec methods[];
+    static const JSFunctionSpec methods[];
 
     enum {
         TargetSlot,
@@ -198,7 +197,7 @@ bool
 UnwindIteratorForException(JSContext *cx, js::HandleObject obj);
 
 void
-UnwindIteratorForUncatchableException(JSContext *cx, RawObject obj);
+UnwindIteratorForUncatchableException(JSContext *cx, JSObject *obj);
 
 JSBool
 IteratorConstructor(JSContext *cx, unsigned argc, Value *vp);

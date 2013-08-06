@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -29,7 +28,7 @@ class LIRGeneratorARM : public LIRGeneratorShared
 
     void lowerUntypedPhiInput(MPhi *phi, uint32_t inputPosition, LBlock *block, size_t lirIndex);
     bool defineUntypedPhi(MPhi *phi, size_t lirIndex);
-    bool lowerForShift(LInstructionHelper<1, 2, 0> *ins, MDefinition *mir, MDefinition *lhs, 
+    bool lowerForShift(LInstructionHelper<1, 2, 0> *ins, MDefinition *mir, MDefinition *lhs,
                        MDefinition *rhs);
     bool lowerUrshD(MUrsh *mir);
 
@@ -43,15 +42,21 @@ class LIRGeneratorARM : public LIRGeneratorShared
     bool lowerForFPU(LInstructionHelper<1, 2, 0> *ins, MDefinition *mir,
                      MDefinition *lhs, MDefinition *rhs);
 
+    bool lowerTruncateDToInt32(MTruncateToInt32 *ins);
+
     bool lowerConstantDouble(double d, MInstruction *ins);
     bool lowerDivI(MDiv *div);
     bool lowerModI(MMod *mod);
     bool lowerMulI(MMul *mul, MDefinition *lhs, MDefinition *rhs);
     bool visitPowHalf(MPowHalf *ins);
+    bool visitAsmJSNeg(MAsmJSNeg *ins);
+    bool visitAsmJSUDiv(MAsmJSUDiv *ins);
+    bool visitAsmJSUMod(MAsmJSUMod *ins);
 
     LTableSwitch *newLTableSwitch(const LAllocation &in, const LDefinition &inputCopy,
                                   MTableSwitch *ins);
     LTableSwitchV *newLTableSwitchV(MTableSwitch *ins);
+    LGetPropertyCacheT *newLGetPropertyCacheT(MGetPropertyCache *ins);
 
   public:
     bool visitConstant(MConstant *ins);
@@ -60,8 +65,14 @@ class LIRGeneratorARM : public LIRGeneratorShared
     bool visitReturn(MReturn *ret);
     bool lowerPhi(MPhi *phi);
     bool visitGuardShape(MGuardShape *ins);
+    bool visitGuardObjectType(MGuardObjectType *ins);
     bool visitStoreTypedArrayElement(MStoreTypedArrayElement *ins);
+    bool visitStoreTypedArrayElementHole(MStoreTypedArrayElementHole *ins);
+    bool visitAsmJSUnsignedToDouble(MAsmJSUnsignedToDouble *ins);
+    bool visitAsmJSStoreHeap(MAsmJSStoreHeap *ins);
+    bool visitAsmJSLoadFuncPtr(MAsmJSLoadFuncPtr *ins);
     bool visitInterruptCheck(MInterruptCheck *ins);
+    bool visitStoreTypedArrayElementStatic(MStoreTypedArrayElementStatic *ins);
 };
 
 typedef LIRGeneratorARM LIRGeneratorSpecific;
@@ -70,4 +81,3 @@ typedef LIRGeneratorARM LIRGeneratorSpecific;
 } // namespace js
 
 #endif // jsion_ion_lowering_arm_h__
-

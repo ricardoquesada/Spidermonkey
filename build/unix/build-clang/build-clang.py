@@ -15,7 +15,8 @@ import tarfile
 import subprocess
 import platform
 import sys
-import simplejson
+import json
+import collections
 
 def check_run(args):
     r = subprocess.call(args)
@@ -74,26 +75,16 @@ def build_one_stage(env, stage_dir, is_stage_one):
     with_env(env, f)
 
 def build_tooltool_manifest():
-    def key_sort(item):
-        item = item[0]
-        if item == 'size':
-            return 0
-        if item == 'digest':
-            return 1
-        if item == 'algorithm':
-            return 3
-        return 4
-
     basedir = os.path.split(os.path.realpath(sys.argv[0]))[0]
     tooltool = basedir + '/tooltool.py'
     setup = basedir + '/setup.sh'
     manifest = 'clang.manifest'
     check_run(['python', tooltool, '-m', manifest, 'add',
                setup, 'clang.tar.bz2'])
-    data = simplejson.load(file(manifest))
+    data = json.load(file(manifest), object_pairs_hook=collections.OrderedDict)
     data = [{'clang_version' : 'r%s' % llvm_revision }] + data
     out = file(manifest,'w')
-    simplejson.dump(data, out, indent=0, item_sort_key=key_sort)
+    json.dump(data, out, indent=0)
     out.write('\n')
 
     assert data[2]['filename'] == 'clang.tar.bz2'
@@ -107,8 +98,16 @@ def build_one_stage_aux(stage_dir, is_stage_one):
     build_dir = stage_dir + "/build"
     inst_dir = stage_dir + "/clang"
 
+    targets = ["x86", "x86_64"]
+    # The Darwin equivalents of binutils appear to have intermittent problems
+    # with objects in compiler-rt that are compiled for arm.  Since the arm
+    # support is only necessary for iOS (which we don't support), only enable
+    # arm support on Linux.
+    if not isDarwin:
+        targets.append("arm")
+
     configure_opts = ["--enable-optimized",
-                      "--enable-targets=x86,x86_64,arm",
+                      "--enable-targets=" + ",".join(targets),
                       "--disable-assertions",
                       "--prefix=%s" % inst_dir,
                       "--with-gcc-toolchain=/tools/gcc-4.7.2-0moz1"]

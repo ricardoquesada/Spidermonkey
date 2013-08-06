@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,8 +16,8 @@
 #include "jsobj.h"
 #include "jsscript.h"
 
+#include "ion/BaselineJIT.h"
 #include "ion/Ion.h"
-#include "ion/IonCode.h"
 #include "vm/Shape.h"
 
 #include "jsobjinlines.h"
@@ -119,7 +118,8 @@ StatsCompartmentCallback(JSRuntime *rt, void *data, JSCompartment *compartment)
                                      &cStats.shapesCompartmentTables,
                                      &cStats.crossCompartmentWrappersTable,
                                      &cStats.regexpCompartment,
-                                     &cStats.debuggeesSet);
+                                     &cStats.debuggeesSet,
+                                     &cStats.baselineStubsOptimized);
 }
 
 static void
@@ -221,7 +221,7 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
       }
 
       case JSTRACE_SHAPE: {
-        RawShape shape = static_cast<RawShape>(thing);
+        Shape *shape = static_cast<Shape *>(thing);
         CompartmentStats *cStats = GetCompartmentStats(shape->compartment());
         size_t propTableSize, kidsSize;
         shape->sizeOfExcludingThis(rtStats->mallocSizeOf_, &propTableSize, &kidsSize);
@@ -242,7 +242,7 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
       }
 
       case JSTRACE_BASE_SHAPE: {
-        RawBaseShape base = static_cast<RawBaseShape>(thing);
+        BaseShape *base = static_cast<BaseShape *>(thing);
         CompartmentStats *cStats = GetCompartmentStats(base->compartment());
         cStats->gcHeapShapesBase += thingSize;
         break;
@@ -256,7 +256,12 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
 #ifdef JS_METHODJIT
         cStats->jaegerData += script->sizeOfJitScripts(rtStats->mallocSizeOf_);
 # ifdef JS_ION
-        cStats->ionData += ion::MemoryUsed(script, rtStats->mallocSizeOf_);
+        size_t baselineData = 0, baselineStubsFallback = 0;
+        ion::SizeOfBaselineData(script, rtStats->mallocSizeOf_, &baselineData,
+                                &baselineStubsFallback);
+        cStats->baselineData += baselineData;
+        cStats->baselineStubsFallback += baselineStubsFallback;
+        cStats->ionData += ion::SizeOfIonData(script, rtStats->mallocSizeOf_);
 # endif
 #endif
 
@@ -366,26 +371,6 @@ JS::CollectRuntimeStats(JSRuntime *rt, RuntimeStats *rtStats, ObjectPrivateVisit
                                   rtStats->zTotals.gcHeapArenaAdmin -
                                   rtStats->gcHeapGcThings;
     return true;
-}
-
-JS_PUBLIC_API(int64_t)
-JS::GetExplicitNonHeapForRuntime(JSRuntime *rt, JSMallocSizeOfFun mallocSizeOf)
-{
-    // explicit/*/gc-heap/*
-    size_t n = size_t(JS_GetGCParameter(rt, JSGC_TOTAL_CHUNKS)) * gc::ChunkSize;
-
-    // Subtract decommitted arenas, which aren't included in "explicit".
-    size_t decommittedArenas = 0;
-    IterateChunks(rt, &decommittedArenas, DecommittedArenasChunkCallback);
-    n -= decommittedArenas;
-
-    // explicit/runtime/mjit-code
-    // explicit/runtime/regexp-code
-    // explicit/runtime/stack-committed
-    // explicit/runtime/unused-code-memory
-    n += rt->sizeOfExplicitNonHeap();
-
-    return int64_t(n);
 }
 
 JS_PUBLIC_API(size_t)

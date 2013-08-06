@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,8 +13,6 @@
 #include "IonSpewer.h"
 #include "UnreachableCodeElimination.h"
 #include "IonAnalysis.h"
-
-#include "vm/ParallelDo.h"
 
 #include "vm/Stack.h"
 
@@ -94,15 +91,11 @@ class ParallelArrayVisitor : public MInstructionVisitor
     }
 
   public:
-    AutoObjectVector callTargets;
-
-    ParallelArrayVisitor(JSContext *cx,
-                         MIRGraph &graph)
+    ParallelArrayVisitor(JSContext *cx, MIRGraph &graph)
       : cx_(cx),
         graph_(graph),
         unsafe_(false),
-        parSlice_(NULL),
-        callTargets(cx)
+        parSlice_(NULL)
     { }
 
     void clearUnsafe() { unsafe_ = false; }
@@ -124,7 +117,7 @@ class ParallelArrayVisitor : public MInstructionVisitor
     SAFE_OP(TableSwitch)
     SAFE_OP(Goto)
     CUSTOM_OP(Test)
-    CUSTOM_OP(Compare)
+    SAFE_OP(Compare)
     SAFE_OP(Phi)
     SAFE_OP(Beta)
     UNSAFE_OP(OsrValue)
@@ -136,6 +129,9 @@ class ParallelArrayVisitor : public MInstructionVisitor
     UNSAFE_OP(CreateThis)
     UNSAFE_OP(CreateThisWithTemplate)
     UNSAFE_OP(CreateThisWithProto)
+    UNSAFE_OP(CreateArgumentsObject)
+    UNSAFE_OP(GetArgumentsObjectArg)
+    UNSAFE_OP(SetArgumentsObjectArg)
     SAFE_OP(PrepareCall)
     SAFE_OP(PassArg)
     CUSTOM_OP(Call)
@@ -178,6 +174,7 @@ class ParallelArrayVisitor : public MInstructionVisitor
     CUSTOM_OP(NewObject)
     CUSTOM_OP(NewCallObject)
     CUSTOM_OP(NewParallelArray)
+    UNSAFE_OP(InitElem)
     UNSAFE_OP(InitProp)
     SAFE_OP(Start)
     UNSAFE_OP(OsrEntry)
@@ -193,10 +190,13 @@ class ParallelArrayVisitor : public MInstructionVisitor
     SAFE_OP(FunctionEnvironment) // just a load of func env ptr
     SAFE_OP(TypeBarrier) // causes a bailout if the type is not found: a-ok with us
     SAFE_OP(MonitorTypes) // causes a bailout if the type is not found: a-ok with us
-    UNSAFE_OP(GetPropertyCache)
+    SAFE_OP(GetPropertyCache)
+    SAFE_OP(GetPropertyPolymorphic)
+    UNSAFE_OP(SetPropertyPolymorphic)
     UNSAFE_OP(GetElementCache)
     UNSAFE_OP(BindNameCache)
     SAFE_OP(GuardShape)
+    SAFE_OP(GuardObjectType)
     SAFE_OP(GuardClass)
     SAFE_OP(ArrayLength)
     SAFE_OP(TypedArrayLength)
@@ -214,7 +214,10 @@ class ParallelArrayVisitor : public MInstructionVisitor
     UNSAFE_OP(ArrayPush)
     SAFE_OP(LoadTypedArrayElement)
     SAFE_OP(LoadTypedArrayElementHole)
+    SAFE_OP(LoadTypedArrayElementStatic)
     MAYBE_WRITE_GUARDED_OP(StoreTypedArrayElement, elements)
+    WRITE_GUARDED_OP(StoreTypedArrayElementHole, elements)
+    UNSAFE_OP(StoreTypedArrayElementStatic)
     UNSAFE_OP(ClampToUint8)
     SAFE_OP(LoadFixedSlot)
     WRITE_GUARDED_OP(StoreFixedSlot, object)
@@ -224,6 +227,7 @@ class ParallelArrayVisitor : public MInstructionVisitor
     UNSAFE_OP(CallsiteCloneCache)
     UNSAFE_OP(CallGetElement)
     UNSAFE_OP(CallSetElement)
+    UNSAFE_OP(CallInitElementArray)
     UNSAFE_OP(CallSetProperty)
     UNSAFE_OP(DeleteProperty)
     UNSAFE_OP(SetPropertyCache)
@@ -265,6 +269,7 @@ class ParallelArrayVisitor : public MInstructionVisitor
     SAFE_OP(PolyInlineDispatch)
     SAFE_OP(FunctionDispatch)
     SAFE_OP(TypeObjectDispatch)
+    SAFE_OP(IsCallable)
     UNSAFE_OP(EffectiveAddress)
     UNSAFE_OP(AsmJSUnsignedToDouble)
     UNSAFE_OP(AsmJSNeg)
@@ -288,33 +293,28 @@ class ParallelArrayVisitor : public MInstructionVisitor
 };
 
 bool
-ParallelCompileContext::appendToWorklist(HandleFunction fun)
+ParallelCompileContext::appendToWorklist(HandleScript script)
 {
-    JS_ASSERT(fun);
-
-    if (!fun->isInterpreted())
-        return true;
-
-    RootedScript script(cx_, fun->nonLazyScript());
+    JS_ASSERT(script);
 
     // Skip if we're disabled.
     if (!script->canParallelIonCompile()) {
         Spew(SpewCompile, "Skipping %p:%s:%u, canParallelIonCompile() is false",
-             fun.get(), script->filename(), script->lineno);
+             script.get(), script->filename(), script->lineno);
         return true;
     }
 
     // Skip if we're compiling off thread.
-    if (script->parallelIon == ION_COMPILING_SCRIPT) {
+    if (script->isParallelIonCompilingOffThread()) {
         Spew(SpewCompile, "Skipping %p:%s:%u, off-main-thread compilation in progress",
-             fun.get(), script->filename(), script->lineno);
+             script.get(), script->filename(), script->lineno);
         return true;
     }
 
     // Skip if the code is expected to result in a bailout.
-    if (script->parallelIon && script->parallelIon->bailoutExpected()) {
+    if (script->hasParallelIonScript() && script->parallelIonScript()->bailoutExpected()) {
         Spew(SpewCompile, "Skipping %p:%s:%u, bailout expected",
-             fun.get(), script->filename(), script->lineno);
+             script.get(), script->filename(), script->lineno);
         return true;
     }
 
@@ -323,13 +323,13 @@ ParallelCompileContext::appendToWorklist(HandleFunction fun)
     // this threshold is usually very low (1).
     if (script->getUseCount() < js_IonOptions.usesBeforeCompileParallel) {
         Spew(SpewCompile, "Skipping %p:%s:%u, use count %u < %u",
-             fun.get(), script->filename(), script->lineno,
+             script.get(), script->filename(), script->lineno,
              script->getUseCount(), js_IonOptions.usesBeforeCompileParallel);
         return true;
     }
 
     for (uint32_t i = 0; i < worklist_.length(); i++) {
-        if (worklist_[i]->toFunction() == fun)
+        if (worklist_[i] == script)
             return true;
     }
 
@@ -337,7 +337,7 @@ ParallelCompileContext::appendToWorklist(HandleFunction fun)
     // even if they're already compiled. This is so that we can return
     // Method_Compiled and not Method_Skipped if we have a worklist full of
     // already-compiled functions.
-    return worklist_.append(fun);
+    return worklist_.append(script);
 }
 
 bool
@@ -375,8 +375,10 @@ ParallelCompileContext::analyzeAndGrowWorklist(MIRGenerator *mir, MIRGraph &grap
                 // prove unsafe.
                 instr = *ins++;
 
-                if (!instr->accept(&visitor))
+                if (!instr->accept(&visitor)) {
+                    SpewMIR(instr, "Unaccepted");
                     return false;
+                }
             }
 
             if (!visitor.unsafe()) {
@@ -408,10 +410,10 @@ ParallelCompileContext::analyzeAndGrowWorklist(MIRGenerator *mir, MIRGraph &grap
     }
 
     // Append newly discovered outgoing callgraph edges to the worklist.
-    RootedFunction target(cx_);
-    for (uint32_t i = 0; i < visitor.callTargets.length(); i++) {
-        target = visitor.callTargets[i]->toFunction();
-        appendToWorklist(target);
+    RootedScript scriptRoot(cx_);
+    for (uint32_t i = 0; i < graph.numCallTargets(); i++) {
+        scriptRoot = graph.callTargets()[i];
+        appendToWorklist(scriptRoot);
     }
 
     Spew(SpewCompile, "Safe");
@@ -491,15 +493,6 @@ ParallelArrayVisitor::visitTest(MTest *)
 }
 
 bool
-ParallelArrayVisitor::visitCompare(MCompare *compare)
-{
-    MCompare::CompareType type = compare->compareType();
-    return type == MCompare::Compare_Int32 ||
-           type == MCompare::Compare_Double ||
-           type == MCompare::Compare_String;
-}
-
-bool
 ParallelArrayVisitor::convertToBailout(MBasicBlock *block, MInstruction *ins)
 {
     JS_ASSERT(unsafe()); // `block` must have contained unsafe items
@@ -510,11 +503,6 @@ ParallelArrayVisitor::convertToBailout(MBasicBlock *block, MInstruction *ins)
 
     // This block is no longer reachable.
     block->unmark();
-
-    // Determine the best PC to use for the bailouts we'll be creating.
-    jsbytecode *pc = block->pc();
-    if (!pc)
-        pc = block->pc();
 
     // Create a bailout block for each predecessor.  In principle, we
     // only need one bailout block--in fact, only one per graph! But I
@@ -531,7 +519,8 @@ ParallelArrayVisitor::convertToBailout(MBasicBlock *block, MInstruction *ins)
             continue;
 
         // create bailout block to insert on this edge
-        MBasicBlock *bailBlock = MBasicBlock::NewParBailout(graph_, pred->info(), pred, pc);
+        MBasicBlock *bailBlock = MBasicBlock::NewParBailout(graph_, block->info(), pred,
+                                                            block->pc(), block->entryResumePoint());
         if (!bailBlock)
             return false;
 
@@ -728,16 +717,14 @@ ParallelArrayVisitor::insertWriteGuard(MInstruction *writeInstruction,
 // Calls
 //
 // We only support calls to interpreted functions that that have already been
-// Ion compiled. If a function has no IonScript, we bail out. The compilation
-// is done during warmup of the parallel kernel, see js::RunScript.
+// Ion compiled. If a function has no IonScript, we bail out. The transitive
+// compilation is done by asking TI for all possible callees at callsites.
 
 static bool
 GetPossibleCallees(JSContext *cx, HandleScript script, jsbytecode *pc,
-                   types::StackTypeSet *calleeTypes, AutoObjectVector &targets)
+                   types::StackTypeSet *calleeTypes, MIRGraph &graph)
 {
-    JS_ASSERT(calleeTypes);
-
-    if (calleeTypes->baseFlags() != 0)
+    if (!calleeTypes || calleeTypes->baseFlags() != 0)
         return true;
 
     unsigned objCount = calleeTypes->getObjectCount();
@@ -747,7 +734,7 @@ GetPossibleCallees(JSContext *cx, HandleScript script, jsbytecode *pc,
 
     RootedFunction fun(cx);
     for (unsigned i = 0; i < objCount; i++) {
-        RawObject obj = calleeTypes->getSingleObject(i);
+        JSObject *obj = calleeTypes->getSingleObject(i);
         if (obj && obj->isFunction()) {
             fun = obj->toFunction();
         } else {
@@ -759,13 +746,16 @@ GetPossibleCallees(JSContext *cx, HandleScript script, jsbytecode *pc,
                 continue;
         }
 
-        if (fun->isInterpreted() && fun->nonLazyScript()->shouldCloneAtCallsite) {
+        if (!fun->isInterpreted())
+            continue;
+
+        if (fun->nonLazyScript()->shouldCloneAtCallsite) {
             fun = CloneFunctionAtCallsite(cx, fun, script, pc);
             if (!fun)
                 return false;
         }
 
-        if (!targets.append(fun))
+        if (!graph.addCallTarget(fun->nonLazyScript()))
             return false;
     }
 
@@ -775,8 +765,6 @@ GetPossibleCallees(JSContext *cx, HandleScript script, jsbytecode *pc,
 bool
 ParallelArrayVisitor::visitCall(MCall *ins)
 {
-    JS_ASSERT(ins->getSingleTarget() || ins->calleeTypes());
-
     // DOM? Scary.
     if (ins->isDOMFunction()) {
         SpewMIR(ins, "call to dom function");
@@ -790,7 +778,7 @@ ParallelArrayVisitor::visitCall(MCall *ins)
             SpewMIR(ins, "call to native function");
             return markUnsafe();
         }
-        return callTargets.append(target);
+        return graph_.addCallTarget(target->nonLazyScript());
     }
 
     if (ins->isConstructing()) {
@@ -798,9 +786,11 @@ ParallelArrayVisitor::visitCall(MCall *ins)
         return markUnsafe();
     }
 
+    types::StackTypeSet *calleeTypes = ins->getFunction()->resultTypeSet();
+
     RootedScript script(cx_, ins->block()->info().script());
     return GetPossibleCallees(cx_, script, ins->resumePoint()->pc(),
-                              ins->calleeTypes(), callTargets);
+                              calleeTypes, graph_);
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -864,4 +854,3 @@ ParallelArrayVisitor::visitThrow(MThrow *thr)
 
 }
 }
-

@@ -22,15 +22,16 @@ class ConfigEnvironment(ConfigStatus.ConfigEnvironment):
 
 class TestEnvironment(unittest.TestCase):
     def test_auto_substs(self):
-        '''Test the automatically set values of ACDEFINES, ALLDEFINES
-        and ALLSUBSTS.
+        '''Test the automatically set values of ACDEFINES, ALLDEFINES,
+        ALLSUBSTS and ALLEMPTYSUBSTS.
         '''
         env = ConfigEnvironment('.', '.',
                   defines = [ ('foo', 'bar'), ('baz', 'qux 42'),
                               ('abc', 'def'), ('extra', 'foobar') ],
                   non_global_defines = ['extra', 'ignore'],
-                  substs = [ ('FOO', 'bar'), ('ABC', 'def'),
-                             ('bar', 'baz qux'), ('zzz', '"abc def"') ])
+                  substs = [ ('FOO', 'bar'), ('FOOBAR', ''), ('ABC', 'def'),
+                             ('bar', 'baz qux'), ('zzz', '"abc def"'),
+                             ('qux', '') ])
         # non_global_defines should be filtered out in ACDEFINES and
         # ALLDEFINES.
         # Original order of the defines need to be respected in ACDEFINES
@@ -46,6 +47,9 @@ ACDEFINES = -Dfoo=bar -Dbaz=qux\ 42 -Dabc=def
 FOO = bar
 bar = baz qux
 zzz = "abc def"''')
+        # ALLEMPTYSUBSTS contains all substs with no value.
+        self.assertEqual(env.substs['ALLEMPTYSUBSTS'], '''FOOBAR =
+qux =''')
 
     def test_config_file(self):
         '''Test the creation of config files.

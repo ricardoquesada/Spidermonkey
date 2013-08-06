@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -26,7 +25,7 @@ class ParallelCompileContext
     JSContext *cx_;
 
     // Compilation is transitive from some set of root(s).
-    AutoObjectVector worklist_;
+    AutoScriptVector worklist_;
 
     // Is a function compilable for parallel execution?
     bool analyzeAndGrowWorklist(MIRGenerator *mir, MIRGraph &graph);
@@ -40,15 +39,15 @@ class ParallelCompileContext
         worklist_(cx)
     { }
 
-    // Should we append a function to the worklist?
-    bool appendToWorklist(HandleFunction fun);
+    // Should we append a script to the worklist?
+    bool appendToWorklist(HandleScript script);
 
     ExecutionMode executionMode() {
         return ParallelExecution;
     }
 
     // Defined in Ion.cpp, so that they can make use of static fns defined there
-    MethodStatus checkScriptSize(JSContext *cx, RawScript script);
+    MethodStatus checkScriptSize(JSContext *cx, JSScript *script);
     MethodStatus compileTransitively();
     AbortReason compile(IonBuilder *builder, MIRGraph *graph,
                         ScopedJSDeletePtr<LifoAlloc> &autoDelete);

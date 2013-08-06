@@ -18,6 +18,7 @@ the Sandbox consists of, you've come to the right place.
 from __future__ import unicode_literals
 
 from collections import OrderedDict
+from mozbuild.util import HierarchicalStringList
 
 
 def doc_to_paragraphs(doc):
@@ -151,6 +152,29 @@ VARIABLES = {
         in the future.
         """),
 
+    'EXPORTS': (HierarchicalStringList, HierarchicalStringList(),
+        """List of files to be exported, and in which subdirectories.
+
+        EXPORTS is generally used to list the include files to be exported to
+        dist/include, but it can be used for other files as well. This variable
+        behaves as a list when appending filenames for export in the top-level
+        directory. Files can also be appended to a field to indicate which
+        subdirectory they should be exported to. For example, to export 'foo.h'
+        to the top-level directory, and 'bar.h' to mozilla/dom/, append to
+        EXPORTS like so:
+
+        EXPORTS += ['foo.h']
+        EXPORTS.mozilla.dom += ['bar.h']
+        """),
+
+    'PROGRAM' : (unicode, "",
+        """Compiled executable name.
+
+        If the configuration token 'BIN_SUFFIX' is set, its value will be
+        automatically appended to PROGRAM. If PROGRAM already ends with
+        BIN_SUFFIX, PROGRAM will remain unchanged.
+        """),
+
     # IDL Generation.
     'XPIDL_SOURCES': (list, [],
         """XPCOM Interface Definition Files (xpidl).
@@ -174,6 +198,14 @@ VARIABLES = {
         This is a list of extra flags that are passed to the IDL compiler.
         Typically this is a set of -I flags that denote extra include
         directories to search for included .idl files.
+        """),
+
+#     'EXPORTS': (HierarchicalStringList, HierarchicalStringList(),
+    'XPCSHELL_TESTS_MANIFESTS': (list, [],
+        """XPCSHELL Test Manifest list
+
+        This is a list of xpcshell.ini manifest files.
+        Formerly XPCSHELL_TESTS=
         """),
 }
 

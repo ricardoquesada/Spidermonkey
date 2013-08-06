@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -111,12 +110,21 @@ class MIRGenerator
         JS_ASSERT(compilingAsmJS());
         return performsAsmJSCall_;
     }
+#ifndef JS_CPU_ARM
     bool noteHeapAccess(AsmJSHeapAccess heapAccess) {
         return asmJSHeapAccesses_.append(heapAccess);
     }
     const Vector<AsmJSHeapAccess, 0, IonAllocPolicy> &heapAccesses() const {
         return asmJSHeapAccesses_;
     }
+#else
+    bool noteBoundsCheck(uint32_t offsetBefore) {
+        return asmJSBoundsChecks_.append(AsmJSBoundsCheck(offsetBefore));
+    }
+    const Vector<AsmJSBoundsCheck, 0, IonAllocPolicy> &asmBoundsChecks() const {
+        return asmJSBoundsChecks_;
+    }
+#endif
     bool noteGlobalAccess(unsigned offset, unsigned globalDataOffset) {
         return asmJSGlobalAccesses_.append(AsmJSGlobalAccess(offset, globalDataOffset));
     }
@@ -138,7 +146,11 @@ class MIRGenerator
 
     uint32_t maxAsmJSStackArgBytes_;
     bool performsAsmJSCall_;
+#ifdef JS_CPU_ARM
+    AsmJSBoundsCheckVector asmJSBoundsChecks_;
+#else
     AsmJSHeapAccessVector asmJSHeapAccesses_;
+#endif
     AsmJSGlobalAccessVector asmJSGlobalAccesses_;
 };
 

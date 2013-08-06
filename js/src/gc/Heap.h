@@ -1,17 +1,19 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- */
-/* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef gc_heap_h___
 #define gc_heap_h___
 
 #include "mozilla/Attributes.h"
+#include "mozilla/PodOperations.h"
 #include "mozilla/StandardInteger.h"
 
 #include <stddef.h>
 
+#include "jspubtd.h"
 #include "jstypes.h"
 #include "jsutil.h"
 
@@ -95,7 +97,7 @@ struct Cell
 
 #ifdef DEBUG
     inline bool isAligned() const;
-    bool isTenured() const;
+    inline bool isTenured() const;
 #endif
 
   protected:
@@ -665,6 +667,13 @@ struct ChunkBitmap
 {
     volatile uintptr_t bitmap[ArenaBitmapWords * ArenasPerChunk];
 
+  public:
+    ChunkBitmap() { }
+    ChunkBitmap(MoveRef<ChunkBitmap> b) {
+        mozilla::PodArrayCopy(bitmap, b->bitmap);
+    }
+
+
     MOZ_ALWAYS_INLINE void getMarkWordAndMask(const Cell *cell, uint32_t color,
                                               uintptr_t **wordp, uintptr_t *maskp)
     {
@@ -825,6 +834,7 @@ struct Chunk
 
 JS_STATIC_ASSERT(sizeof(Chunk) == ChunkSize);
 JS_STATIC_ASSERT(js::gc::ChunkMarkBitmapOffset == offsetof(Chunk, bitmap));
+JS_STATIC_ASSERT(js::gc::ChunkRuntimeOffset == offsetof(Chunk, info) + offsetof(ChunkInfo, runtime));
 
 inline uintptr_t
 ArenaHeader::address() const
@@ -992,6 +1002,16 @@ bool
 Cell::isAligned() const
 {
     return Arena::isAligned(address(), arenaHeader()->getThingSize());
+}
+
+bool
+Cell::isTenured() const
+{
+#ifdef JSGC_GENERATIONAL
+    JS::shadow::Runtime *rt = js::gc::GetGCThingRuntime(this);
+    return uintptr_t(this) < rt->gcNurseryStart_ || uintptr_t(this) >= rt->gcNurseryEnd_;
+#endif
+    return true;
 }
 #endif
 

@@ -1,6 +1,5 @@
-/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -74,7 +73,7 @@ ComputeImplicitThis(JSContext *cx, HandleObject obj, MutableHandleValue vp)
     if (IsCacheableNonGlobalScope(obj))
         return true;
 
-    RawObject nobj = JSObject::thisObject(cx, obj);
+    JSObject *nobj = JSObject::thisObject(cx, obj);
     if (!nobj)
         return false;
 
@@ -418,10 +417,9 @@ FetchNameNoGC(JSObject *pobj, Shape *shape, MutableHandleValue vp)
 }
 
 inline bool
-GetIntrinsicOperation(JSContext *cx, JSScript *script, jsbytecode *pc, MutableHandleValue vp)
+GetIntrinsicOperation(JSContext *cx, jsbytecode *pc, MutableHandleValue vp)
 {
-    JSOp op = JSOp(*pc);
-    RootedPropertyName name(cx, GetNameFromBytecode(cx, script, pc, op));
+    RootedPropertyName name(cx, cx->stack.currentScript()->getName(pc));
     return cx->global()->getIntrinsicValue(cx, name, vp);
 }
 
@@ -537,6 +535,14 @@ DefVarOrConstOperation(JSContext *cx, HandleObject varobj, HandlePropertyName dn
     }
 
     return true;
+}
+
+inline bool
+SetConstOperation(JSContext *cx, HandleObject varobj, HandlePropertyName name, HandleValue rval)
+{
+    return JSObject::defineProperty(cx, varobj, name, rval,
+                                    JS_PropertyStub, JS_StrictPropertyStub,
+                                    JSPROP_ENUMERATE | JSPROP_PERMANENT | JSPROP_READONLY);
 }
 
 inline void
@@ -704,18 +710,6 @@ NegOperation(JSContext *cx, HandleScript script, jsbytecode *pc, HandleValue val
     return true;
 }
 
-static inline bool
-FetchElementId(JSContext *cx, JSObject *obj, const Value &idval, MutableHandleId idp,
-               MutableHandleValue vp)
-{
-    int32_t i_;
-    if (ValueFitsInInt32(idval, &i_) && INT_FITS_IN_JSID(i_)) {
-        idp.set(INT_TO_JSID(i_));
-        return true;
-    }
-    return !!InternNonIntElementId<CanGC>(cx, obj, idval, idp, vp);
-}
-
 static JS_ALWAYS_INLINE bool
 ToIdOperation(JSContext *cx, HandleScript script, jsbytecode *pc, HandleValue objval,
               HandleValue idval, MutableHandleValue res)
@@ -729,10 +723,11 @@ ToIdOperation(JSContext *cx, HandleScript script, jsbytecode *pc, HandleValue ob
     if (!obj)
         return false;
 
-    RootedId dummy(cx);
-    if (!InternNonIntElementId<CanGC>(cx, obj, idval, &dummy, res))
+    RootedId id(cx);
+    if (!ValueToId<CanGC>(cx, idval, &id))
         return false;
 
+    res.set(IdToValue(id));
     if (!res.isInt32())
         types::TypeScript::MonitorUnknown(cx, script, pc);
     return true;
@@ -892,12 +887,12 @@ GetElementOperation(JSContext *cx, JSOp op, MutableHandleValue lref, HandleValue
 
 static JS_ALWAYS_INLINE bool
 SetObjectElementOperation(JSContext *cx, Handle<JSObject*> obj, HandleId id, const Value &value,
-                          bool strict, RawScript maybeScript = NULL, jsbytecode *pc = NULL)
+                          bool strict, JSScript *maybeScript = NULL, jsbytecode *pc = NULL)
 {
     RootedScript script(cx, maybeScript);
     types::TypeScript::MonitorAssign(cx, obj, id);
 
-    if (obj->isArray() && JSID_IS_INT(id)) {
+    if (obj->isNative() && JSID_IS_INT(id)) {
         uint32_t length = obj->getDenseInitializedLength();
         int32_t i = JSID_TO_INT(id);
         if ((uint32_t)i >= length) {
@@ -916,6 +911,9 @@ SetObjectElementOperation(JSContext *cx, Handle<JSObject*> obj, HandleId id, con
         }
     }
 
+    if (obj->isNative() && !obj->setHadElementsAccess(cx))
+        return false;
+
     RootedValue tmp(cx, value);
     return JSObject::setGeneric(cx, obj, obj, id, &tmp, strict);
 }
@@ -928,12 +926,12 @@ TypeOfOperation(JSContext *cx, HandleValue v)
 }
 
 static JS_ALWAYS_INLINE bool
-InitElemOperation(JSContext *cx, HandleObject obj, MutableHandleValue idval, HandleValue val)
+InitElemOperation(JSContext *cx, HandleObject obj, HandleValue idval, HandleValue val)
 {
     JS_ASSERT(!val.isMagic(JS_ELEMENTS_HOLE));
 
     RootedId id(cx);
-    if (!FetchElementId(cx, obj, idval, &id, idval))
+    if (!ValueToId<CanGC>(cx, idval, &id))
         return false;
 
     return JSObject::defineGeneric(cx, obj, id, val, NULL, NULL, JSPROP_ENUMERATE);

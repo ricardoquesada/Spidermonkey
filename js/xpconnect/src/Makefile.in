@@ -13,13 +13,6 @@ include $(DEPTH)/config/autoconf.mk
 LIBRARY_NAME    = xpconnect_s
 FORCE_STATIC_LIB = 1
 LIBXUL_LIBRARY = 1
-EXPORTS = \
-		qsObjectHelper.h \
-		xpcObjectHelper.h \
-		xpcpublic.h \
-		XPCJSMemoryReporter.h \
-		GeneratedEvents.h
-
 CPPSRCS		= \
 		nsScriptError.cpp \
 		nsXPConnect.cpp \
@@ -63,6 +56,7 @@ LOCAL_INCLUDES = \
 		-I$(srcdir)/../loader \
 		-I$(topsrcdir)/caps/include \
 		-I$(topsrcdir)/content/base/src \
+		-I$(topsrcdir)/content/base/public \
 		-I$(topsrcdir)/content/events/src \
 		-I$(topsrcdir)/content/html/content/src \
 		-I$(topsrcdir)/content/html/document/src \

@@ -114,6 +114,11 @@ class Test:
                             test.expect_status = int(value, 0);
                         except ValueError:
                             print("warning: couldn't parse exit status %s" % value)
+                    elif name == 'thread-count':
+                        try:
+                            test.jitflags.append('--thread-count=' + int(value, 0));
+                        except ValueError:
+                            print("warning: couldn't parse thread-count %s" % value)
                     else:
                         print('warning: unrecognized |jit-test| attribute %s' % part)
                 else:
@@ -135,6 +140,8 @@ class Test:
                         test.jitflags.append('--no-jm')
                     elif name == 'ion-eager':
                         test.jitflags.append('--ion-eager')
+                    elif name == 'no-ion':
+                        test.jitflags.append('--no-ion')
                     elif name == 'dump-bytecode':
                         test.jitflags.append('--dump-bytecode')
                     else:

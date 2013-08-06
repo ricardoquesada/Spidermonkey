@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -27,6 +26,7 @@ class MDefinitionIterator;
 typedef InlineListIterator<MInstruction> MInstructionIterator;
 typedef InlineListReverseIterator<MInstruction> MInstructionReverseIterator;
 typedef InlineForwardListIterator<MPhi> MPhiIterator;
+typedef InlineForwardListIterator<MResumePoint> MResumePointIterator;
 
 class LBlock;
 
@@ -37,7 +37,8 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
         NORMAL,
         PENDING_LOOP_HEADER,
         LOOP_HEADER,
-        SPLIT_EDGE
+        SPLIT_EDGE,
+        DEAD
     };
 
   private:
@@ -76,7 +77,8 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
                                              MBasicBlock *pred, jsbytecode *entryPc);
     static MBasicBlock *NewSplitEdge(MIRGraph &graph, CompileInfo &info, MBasicBlock *pred);
     static MBasicBlock *NewParBailout(MIRGraph &graph, CompileInfo &info,
-                                      MBasicBlock *pred, jsbytecode *entryPc);
+                                      MBasicBlock *pred, jsbytecode *entryPc,
+                                      MResumePoint *resumePoint);
 
     bool dominates(MBasicBlock *other);
 
@@ -102,6 +104,7 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     MDefinition *peek(int32_t depth);
 
     MDefinition *scopeChain();
+    MDefinition *argumentsObject();
 
     // Increase the number of slots available
     bool increaseSlots(size_t num);
@@ -137,6 +140,7 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     void pushLocal(uint32_t local);
     void pushSlot(uint32_t slot);
     void setScopeChain(MDefinition *ins);
+    void setArgumentsObject(MDefinition *ins);
 
     // Returns the top of the stack, then decrements the virtual stack pointer.
     MDefinition *pop();
@@ -152,6 +156,11 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
 
     // Adds a phi instruction, but does not set successorWithPhis.
     void addPhi(MPhi *phi);
+
+    // Adds a resume point to this block.
+    void addResumePoint(MResumePoint *resume) {
+        resumePoints_.pushFront(resume);
+    }
 
     // Adds a predecessor. Every predecessor must have the same exit stack
     // depth as the entry state to this block. Adding a predecessor
@@ -183,8 +192,9 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     void clearDominatorInfo();
 
     // Sets a back edge. This places phi nodes and rewrites instructions within
-    // the current loop as necessary.
-    bool setBackedge(MBasicBlock *block);
+    // the current loop as necessary. If the backedge introduces new types for
+    // phis at the loop header, returns a disabling abort.
+    AbortReason setBackedge(MBasicBlock *block);
 
     // Resets a LOOP_HEADER block to a NORMAL block.  This is needed when
     // optimizations remove the backedge.
@@ -192,6 +202,9 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
 
     // Propagates phis placed in a loop header down to this successor block.
     void inheritPhis(MBasicBlock *header);
+
+    // Compute the types for phis in this block according to their inputs.
+    void specializePhis();
 
     void insertBefore(MInstruction *at, MInstruction *ins);
     void insertAfter(MInstruction *at, MInstruction *ins);
@@ -208,9 +221,17 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     MInstructionIterator discardAt(MInstructionIterator &iter);
     MInstructionReverseIterator discardAt(MInstructionReverseIterator &iter);
     MDefinitionIterator discardDefAt(MDefinitionIterator &iter);
+    void discardAllInstructions();
+    void discardAllPhis();
+    void discardAllResumePoints(bool discardEntry = true);
 
     // Discards a phi instruction and updates predecessor successorWithPhis.
     MPhiIterator discardPhiAt(MPhiIterator &at);
+
+    // Mark this block as having been removed from the graph.
+    void markAsDead() {
+        kind_ = DEAD;
+    }
 
     ///////////////////////////////////////////////////////
     /////////// END GRAPH BUILDING INSTRUCTIONS ///////////
@@ -236,6 +257,7 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     }
 
     uint32_t domIndex() const {
+        JS_ASSERT(!isDead());
         return domIndex_;
     }
     void setDomIndex(uint32_t d) {
@@ -256,6 +278,12 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     }
     bool phisEmpty() const {
         return phis_.empty();
+    }
+    MResumePointIterator resumePointsBegin() const {
+        return resumePoints_.begin();
+    }
+    MResumePointIterator resumePointsEnd() const {
+        return resumePoints_.end();
     }
     MInstructionIterator begin() {
         return instructions_.begin();
@@ -301,6 +329,9 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     }
     bool isSplitEdge() const {
         return kind_ == SPLIT_EDGE;
+    }
+    bool isDead() const {
+        return kind_ == DEAD;
     }
 
     uint32_t stackDepth() const {
@@ -436,6 +467,7 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     InlineList<MInstruction> instructions_;
     Vector<MBasicBlock *, 1, IonAllocPolicy> predecessors_;
     InlineForwardList<MPhi> phis_;
+    InlineForwardList<MResumePoint> resumePoints_;
     FixedList<MDefinition *> slots_;
     uint32_t stackPosition_;
     MControlInstruction *lastIns_;
@@ -478,7 +510,11 @@ class MIRGraph
     MStart *osrStart_;
 
     // List of compiled/inlined scripts.
-    Vector<RawScript, 4, IonAllocPolicy> scripts_;
+    Vector<JSScript *, 4, IonAllocPolicy> scripts_;
+
+    // List of possible scripts that this graph may call. Currently this is
+    // only tracked when compiling for parallel execution.
+    Vector<JSScript *, 4, IonAllocPolicy> callTargets_;
 
     size_t numBlocks_;
 
@@ -550,6 +586,7 @@ class MIRGraph
     ReversePostorderIterator rpoEnd() {
         return blocks_.end();
     }
+    void removeBlocksAfter(MBasicBlock *block);
     void removeBlock(MBasicBlock *block) {
         blocks_.remove(block);
         numBlocks_--;
@@ -597,7 +634,7 @@ class MIRGraph
     MStart *osrStart() {
         return osrStart_;
     }
-    bool addScript(RawScript script) {
+    bool addScript(JSScript *script) {
         // The same script may be inlined multiple times, add it only once.
         for (size_t i = 0; i < scripts_.length(); i++) {
             if (scripts_[i] == script)
@@ -610,6 +647,19 @@ class MIRGraph
     }
     JSScript **scripts() {
         return scripts_.begin();
+    }
+    bool addCallTarget(JSScript *script) {
+        for (size_t i = 0; i < callTargets_.length(); i++) {
+            if (callTargets_[i] == script)
+                return true;
+        }
+        return callTargets_.append(script);
+    }
+    size_t numCallTargets() const {
+        return callTargets_.length();
+    }
+    JSScript **callTargets() {
+        return callTargets_.begin();
     }
 
     // The ParSlice is an instance of ForkJoinSlice*, it carries

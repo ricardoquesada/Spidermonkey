@@ -1,4 +1,5 @@
-/* vim: set ts=4 sw=4 tw=99 et:
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  *
  * Copyright (C) 2009 Apple Inc. All rights reserved.
  *
@@ -2558,6 +2559,9 @@ class YarrGenerator : private MacroAssembler {
         push(X86Registers::ebp);
         move(stackPointerRegister, X86Registers::ebp);
         push(X86Registers::ebx);
+        // The ABI doesn't guarantee the upper bits are zero on unsigned arguments, so clear them ourselves.
+        zeroExtend32ToPtr(index, index);
+        zeroExtend32ToPtr(length, length);
 #elif WTF_CPU_X86
         push(X86Registers::ebp);
         move(stackPointerRegister, X86Registers::ebp);

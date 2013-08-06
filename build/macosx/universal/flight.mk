@@ -16,6 +16,7 @@ OBJDIR = $(OBJDIR_ARCH_1)
 endif
 
 topsrcdir = $(TOPSRCDIR)
+DEPTH = $(OBJDIR)
 include $(OBJDIR)/config/autoconf.mk
 
 core_abspath = $(if $(filter /%,$(1)),$(1),$(CURDIR)/$(1))
@@ -43,6 +44,8 @@ ifdef ENABLE_TESTS
              $(DIST_ARCH_2)/test-package-stage/mochitest/;              \
            cp -RL $(DIST_ARCH_1)/test-package-stage/mochitest/extensions/specialpowers \
              $(DIST_ARCH_2)/test-package-stage/mochitest/extensions/;              \
+           cp $(DIST_ARCH_1)/test-package-stage/xpcshell/automation.py  \
+             $(DIST_ARCH_2)/test-package-stage/xpcshell/;               \
            cp $(DIST_ARCH_1)/test-package-stage/reftest/automation.py   \
              $(DIST_ARCH_2)/test-package-stage/reftest/;                \
            cp -RL $(DIST_ARCH_1)/test-package-stage/reftest/specialpowers \

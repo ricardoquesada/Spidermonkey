@@ -1,3 +1,4 @@
+# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -6,6 +7,7 @@
 CONFIGURE_SUBST_FILES += [
     'autoconf.mk',
     'doxygen.cfg',
+    'emptyvars.mk',
     'makefiles/test/Makefile',
     'tests/makefiles/autodeps/Makefile',
     'tests/src-simple/Makefile',

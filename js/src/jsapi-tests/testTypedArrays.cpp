@@ -1,5 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=99:
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -59,6 +59,11 @@ template<JSObject *Create(JSContext *, uint32_t),
 bool
 TestPlainTypedArray(JSContext *cx)
 {
+    {
+        RootedObject notArray(cx, Create(cx, UINT32_MAX));
+        CHECK(!notArray);
+    }
+
     RootedObject array(cx, Create(cx, 7));
     CHECK(JS_IsTypedArrayObject(array));
     RootedObject proto(cx);
@@ -94,6 +99,11 @@ TestArrayFromBuffer(JSContext *cx)
     uint8_t *bufdata;
     CHECK(bufdata = JS_GetArrayBufferData(buffer));
     memset(bufdata, 1, nbytes);
+
+    {
+        RootedObject notArray(cx, CreateWithBuffer(cx, buffer, UINT32_MAX, -1));
+        CHECK(!notArray);
+    }
 
     RootedObject array(cx, CreateWithBuffer(cx, buffer, 0, -1));
     CHECK_EQUAL(JS_GetTypedArrayLength(array), elts);

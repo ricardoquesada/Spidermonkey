@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +7,7 @@
 #ifndef jsion_type_policy_h__
 #define jsion_type_policy_h__
 
-#include "TypeOracle.h"
+#include "IonTypes.h"
 
 namespace js {
 namespace ion {
@@ -187,6 +186,20 @@ class MixPolicy : public TypePolicy
     }
 };
 
+// Combine three policies.
+template <class Policy1, class Policy2, class Policy3>
+class Mix3Policy : public TypePolicy
+{
+  public:
+    static bool staticAdjustInputs(MInstruction *ins) {
+        return Policy1::staticAdjustInputs(ins) && Policy2::staticAdjustInputs(ins) &&
+               Policy3::staticAdjustInputs(ins);
+    }
+    virtual bool adjustInputs(MInstruction *ins) {
+        return staticAdjustInputs(ins);
+    }
+};
+
 class CallSetElementPolicy : public SingleObjectPolicy
 {
   public:
@@ -202,6 +215,21 @@ class InstanceOfPolicy : public TypePolicy
 };
 
 class StoreTypedArrayPolicy : public BoxInputsPolicy
+{
+  protected:
+    bool adjustValueInput(MInstruction *ins, int arrayType, MDefinition *value, int valueOperand);
+
+  public:
+    bool adjustInputs(MInstruction *ins);
+};
+
+class StoreTypedArrayHolePolicy : public StoreTypedArrayPolicy
+{
+  public:
+    bool adjustInputs(MInstruction *ins);
+};
+
+class StoreTypedArrayElementStaticPolicy : public StoreTypedArrayPolicy
 {
   public:
     bool adjustInputs(MInstruction *ins);

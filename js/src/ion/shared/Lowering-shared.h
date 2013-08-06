@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -79,6 +78,11 @@ class LIRGeneratorShared : public MInstructionVisitorWithDefaults
     // and only registers on ARM.
     inline LAllocation useAny(MDefinition *mir);
     inline LAllocation useAnyOrConstant(MDefinition *mir);
+    // "Storable" is architecture dependend, and will include registers and constants on X86
+    // and only registers on ARM.
+    // this is a generic "things we can expect to write into memory in 1 instruction"
+    inline LAllocation useStorable(MDefinition *mir);
+    inline LAllocation useStorableAtStart(MDefinition *mir);
     inline LAllocation useKeepaliveOrConstant(MDefinition *mir);
     inline LAllocation useRegisterOrConstant(MDefinition *mir);
     inline LAllocation useRegisterOrConstantAtStart(MDefinition *mir);
@@ -169,6 +173,11 @@ class LIRGeneratorShared : public MInstructionVisitorWithDefaults
 
     // Whether to generate typed reads for element accesses with hole checks.
     static bool allowTypedElementHoleCheck() {
+        return false;
+    }
+
+    // Whether to generate typed array accesses on statically known objects.
+    static bool allowStaticTypedArrayAccesses() {
         return false;
     }
 };

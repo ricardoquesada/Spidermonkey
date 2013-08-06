@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -47,7 +46,7 @@ class Loop
 
   public:
     // A loop is constructed on a backedge found in the control flow graph.
-    Loop(MIRGenerator *mir, MBasicBlock *header, MBasicBlock *footer);
+    Loop(MIRGenerator *mir, MBasicBlock *footer);
 
     // Initializes the loop, finds all blocks and instructions contained in the loop.
     LoopReturn init();
@@ -56,19 +55,12 @@ class Loop
     bool optimize();
 
   private:
-    // These blocks define the loop.  header_ points to the loop header, and footer_
-    // points to the basic block that has a backedge back to the loop header.
-    MBasicBlock *footer_;
+    // These blocks define the loop.  header_ points to the loop header
     MBasicBlock *header_;
 
     // The pre-loop block is the first predecessor of the loop header.  It is where
     // the loop is first entered and where hoisted instructions will be placed.
     MBasicBlock* preLoop_;
-
-    // This method recursively traverses the graph from the loop footer back through
-    // predecessor edges and stops when it reaches the loop header.
-    // Along the way it adds instructions to the worklist for invariance testing.
-    LoopReturn iterateLoopBlocks(MBasicBlock *current);
 
     bool hoistInstructions(InstructionQueue &toHoist);
 

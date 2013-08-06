@@ -47,6 +47,10 @@ class XPCShellRunner(MozbuildObject):
     def run_test(self, test_file, debug=False, interactive=False,
         keep_going=False, shuffle=False):
         """Runs an individual xpcshell test."""
+        # TODO Bug 794506 remove once mach integrates with virtualenv.
+        build_path = os.path.join(self.topobjdir, 'build')
+        if build_path not in sys.path:
+            sys.path.append(build_path)
 
         if test_file == 'all':
             self.run_suite(debug=debug, interactive=interactive,
@@ -150,7 +154,8 @@ class XPCShellRunner(MozbuildObject):
 
 @CommandProvider
 class MachCommands(MachCommandBase):
-    @Command('xpcshell-test', help='Run an xpcshell test.')
+    @Command('xpcshell-test', category='testing',
+        description='Run XPCOM Shell tests.')
     @CommandArgument('test_file', default='all', nargs='?', metavar='TEST',
         help='Test to run. Can be specified as a single JS file, a directory, '
              'or omitted. If omitted, the entire test suite is executed.')

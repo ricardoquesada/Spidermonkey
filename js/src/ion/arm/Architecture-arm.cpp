@@ -1,9 +1,9 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 #define HWCAP_ARMv7 (1 << 31)
 #include <mozilla/StandardInteger.h>
 
@@ -48,7 +48,7 @@ uint32_t getFlags()
                 close(fd);
                 flags = aux.a_un.a_val;
                 isSet = true;
-#ifdef __ARM_ARCH_7__
+#if defined(__ARM_ARCH_7__) || defined (__ARM_ARCH_7A__)
                 // this should really be detected at runtime, but
                 // /proc/*/auxv doesn't seem to carry the ISA
                 // I could look in /proc/cpuinfo as well, but

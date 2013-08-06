@@ -20,8 +20,8 @@ class XPCCallContext;
 
 struct xpc_qsPropertySpec {
     uint16_t name_index;
-    JSPropertyOp getter;
-    JSStrictPropertyOp setter;
+    JSNative getter;
+    JSNative setter;
 };
 
 struct xpc_qsFunctionSpec {
@@ -72,6 +72,13 @@ xpc_qsThrow(JSContext *cx, nsresult rv);
 JSBool
 xpc_qsThrowGetterSetterFailed(JSContext *cx, nsresult rv,
                               JSObject *obj, jsid memberId);
+// And variants using strings and string tables
+JSBool
+xpc_qsThrowGetterSetterFailed(JSContext *cx, nsresult rv,
+                              JSObject *obj, const char* memberName);
+JSBool
+xpc_qsThrowGetterSetterFailed(JSContext *cx, nsresult rv,
+                              JSObject *obj, uint16_t memberIndex);
 
 /**
  * Fail after an XPCOM method returned rv.
@@ -112,10 +119,20 @@ xpc_qsThrowBadArgWithDetails(JSContext *cx, nsresult rv, unsigned paramnum,
 void
 xpc_qsThrowBadSetterValue(JSContext *cx, nsresult rv, JSObject *obj,
                           jsid propId);
+// And variants using strings and string tables
+void
+xpc_qsThrowBadSetterValue(JSContext *cx, nsresult rv, JSObject *obj,
+                          const char* propName);
+void
+xpc_qsThrowBadSetterValue(JSContext *cx, nsresult rv, JSObject *obj,
+                          uint16_t name_index);
 
 
 JSBool
 xpc_qsGetterOnlyPropertyStub(JSContext *cx, JSHandleObject obj, JSHandleId id, JSBool strict, JSMutableHandleValue vp);
+
+JSBool
+xpc_qsGetterOnlyNativeStub(JSContext *cx, unsigned argc, jsval *vp);
 
 /* Functions for converting values between COM and JS. */
 
@@ -375,7 +392,7 @@ castNative(JSContext *cx,
 template <class T>
 inline JSBool
 xpc_qsUnwrapThis(JSContext *cx,
-                 JSObject *obj,
+                 JS::HandleObject obj,
                  T **ppThis,
                  nsISupports **pThisRef,
                  jsval *pThisVal,
@@ -384,9 +401,10 @@ xpc_qsUnwrapThis(JSContext *cx,
 {
     XPCWrappedNative *wrapper;
     XPCWrappedNativeTearOff *tearoff;
-    nsresult rv = getWrapper(cx, obj, &wrapper, &obj, &tearoff);
+    JS::RootedObject current(cx);
+    nsresult rv = getWrapper(cx, obj, &wrapper, current.address(), &tearoff);
     if (NS_SUCCEEDED(rv))
-        rv = castNative(cx, wrapper, obj, tearoff, NS_GET_TEMPLATE_IID(T),
+        rv = castNative(cx, wrapper, current, tearoff, NS_GET_TEMPLATE_IID(T),
                         reinterpret_cast<void **>(ppThis), pThisRef, pThisVal,
                         lccx);
 
@@ -619,7 +637,7 @@ xpc_qsSameResult(int32_t result1, int32_t result2)
 
 // Apply |op| to |obj|, |id|, and |vp|. If |op| is a setter, treat the assignment as lenient.
 template<typename Op>
-static inline JSBool ApplyPropertyOp(JSContext *cx, Op op, JSHandleObject obj, JSHandleId id, JSMutableHandleValue vp);
+inline JSBool ApplyPropertyOp(JSContext *cx, Op op, JSHandleObject obj, JSHandleId id, JSMutableHandleValue vp);
 
 template<>
 inline JSBool
@@ -647,7 +665,7 @@ PropertyOpForwarder(JSContext *cx, unsigned argc, jsval *vp)
 
     JS::CallArgs args = CallArgsFromVp(argc, vp);
 
-    JSObject *callee = &args.callee();
+    JS::RootedObject callee(cx, &args.callee());
     JS::RootedObject obj(cx, JS_THIS_OBJECT(cx, vp));
     if (!obj)
         return false;
@@ -659,7 +677,7 @@ PropertyOpForwarder(JSContext *cx, unsigned argc, jsval *vp)
 
     v = js::GetFunctionNativeReserved(callee, 1);
 
-    jsval argval = (argc > 0) ? args[0] : JSVAL_VOID;
+    JS::RootedValue argval(cx, (argc > 0) ? args.get(0) : JSVAL_VOID);
     JS::RootedId id(cx);
     if (!JS_ValueToId(cx, v, id.address()))
         return false;
@@ -671,7 +689,7 @@ extern JSClass PointerHolderClass;
 
 template<typename Op>
 JSObject *
-GeneratePropertyOp(JSContext *cx, JSObject *obj, jsid id, unsigned argc, Op pop)
+GeneratePropertyOp(JSContext *cx, JS::HandleObject obj, JS::HandleId id, unsigned argc, Op pop)
 {
     // The JS engine provides two reserved slots on function objects for
     // XPConnect to use. Use them to stick the necessary info here.
@@ -680,9 +698,7 @@ GeneratePropertyOp(JSContext *cx, JSObject *obj, jsid id, unsigned argc, Op pop)
     if (!fun)
         return nullptr;
 
-    JSObject *funobj = JS_GetFunctionObject(fun);
-
-    JS::AutoObjectRooter tvr(cx, funobj);
+    JS::RootedObject funobj(cx, JS_GetFunctionObject(fun));
 
     // Unfortunately, we cannot guarantee that Op is aligned. Use a
     // second object to work around this.

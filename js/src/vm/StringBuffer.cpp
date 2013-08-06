@@ -1,8 +1,8 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "vm/StringBuffer.h"
 
@@ -38,7 +38,7 @@ StringBuffer::extractWellSized()
     return buf;
 }
 
-RawFlatString
+JSFlatString *
 StringBuffer::finishString()
 {
     JSContext *cx = context();
@@ -66,7 +66,7 @@ StringBuffer::finishString()
     return str;
 }
 
-RawAtom
+JSAtom *
 StringBuffer::finishAtom()
 {
     JSContext *cx = context();
@@ -75,7 +75,7 @@ StringBuffer::finishAtom()
     if (length == 0)
         return cx->names().empty;
 
-    RawAtom atom = AtomizeChars<CanGC>(cx, cb.begin(), length);
+    JSAtom *atom = AtomizeChars<CanGC>(cx, cb.begin(), length);
     cb.clear();
     return atom;
 }

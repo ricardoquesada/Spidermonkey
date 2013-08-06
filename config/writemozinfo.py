@@ -30,7 +30,10 @@ def build_dict(env=os.environ):
                         ', '.join(missing))
 
     if 'MOZCONFIG' in env:
-        d["mozconfig"] = env["MOZCONFIG"]
+        mozconfig = env["MOZCONFIG"]
+        if 'TOPSRCDIR' in env:
+            mozconfig = os.path.join(env["TOPSRCDIR"], mozconfig)
+        d['mozconfig'] = os.path.normpath(mozconfig)
 
     if 'TOPSRCDIR' in env:
         d["topsrcdir"] = env["TOPSRCDIR"]
@@ -80,6 +83,9 @@ def build_dict(env=os.environ):
 
     # crashreporter
     d["crashreporter"] = 'MOZ_CRASHREPORTER' in env and env['MOZ_CRASHREPORTER'] == '1'
+
+    # asan
+    d["asan"] = 'MOZ_ASAN' in env and env['MOZ_ASAN'] == '1'
     return d
 
 def write_json(file, env=os.environ):
