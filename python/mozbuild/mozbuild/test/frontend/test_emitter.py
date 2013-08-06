@@ -14,6 +14,9 @@ from mozbuild.frontend.data import (
     DirectoryTraversal,
     ReaderSummary,
     VariablePassthru,
+    Exports,
+    Program,
+    XpcshellManifests,
 )
 from mozbuild.frontend.emitter import TreeMetadataEmitter
 from mozbuild.frontend.reader import BuildReader
@@ -29,6 +32,7 @@ class TestEmitterBasic(unittest.TestCase):
     def reader(self, name):
         config = MockConfig(os.path.join(data_path, name))
         config.substs['ENABLE_TESTS'] = '1'
+        config.substs['BIN_SUFFIX'] = '.prog'
 
         return BuildReader(config)
 
@@ -131,6 +135,71 @@ class TestEmitterBasic(unittest.TestCase):
         self.assertEqual(variables['XPIDL_FLAGS'],
             ['-Idir1', '-Idir2', '-Idir3'])
 
+    def test_exports(self):
+        reader = self.reader('exports')
+        objs = self.read_topsrcdir(reader)
+
+        self.assertEqual(len(objs), 2)
+        self.assertIsInstance(objs[0], DirectoryTraversal)
+        self.assertIsInstance(objs[1], Exports)
+
+        exports = objs[1].exports
+        self.assertEqual(exports.get_strings(), ['foo.h', 'bar.h', 'baz.h'])
+
+        self.assertIn('mozilla', exports._children)
+        mozilla = exports._children['mozilla']
+        self.assertEqual(mozilla.get_strings(), ['mozilla1.h', 'mozilla2.h'])
+
+        self.assertIn('dom', mozilla._children)
+        dom = mozilla._children['dom']
+        self.assertEqual(dom.get_strings(), ['dom1.h', 'dom2.h', 'dom3.h'])
+
+        self.assertIn('gfx', mozilla._children)
+        gfx = mozilla._children['gfx']
+        self.assertEqual(gfx.get_strings(), ['gfx.h'])
+
+        self.assertIn('vpx', exports._children)
+        vpx = exports._children['vpx']
+        self.assertEqual(vpx.get_strings(), ['mem.h', 'mem2.h'])
+
+        self.assertIn('nspr', exports._children)
+        nspr = exports._children['nspr']
+        self.assertIn('private', nspr._children)
+        private = nspr._children['private']
+        self.assertEqual(private.get_strings(), ['pprio.h', 'pprthred.h'])
+
+        self.assertIn('overwrite', exports._children)
+        overwrite = exports._children['overwrite']
+        self.assertEqual(overwrite.get_strings(), ['new.h'])
+
+    def test_program(self):
+        reader = self.reader('program')
+        objs = self.read_topsrcdir(reader)
+
+        self.assertEqual(len(objs), 2)
+        self.assertIsInstance(objs[0], DirectoryTraversal)
+        self.assertIsInstance(objs[1], Program)
+
+        program = objs[1].program
+        self.assertEqual(program, 'test_program.prog')
+
+    def test_xpcshell_manifests(self):
+        reader = self.reader('xpcshell_manifests')
+        objs = self.read_topsrcdir(reader)
+
+        inis = []
+        for o in objs:
+            if isinstance(o, XpcshellManifests):
+                inis.append(o.xpcshell_manifests)
+
+        iniByDir = [
+            'bar/xpcshell.ini',
+            'enabled_var/xpcshell.ini',
+            'foo/xpcshell.ini',
+            'tans/xpcshell.ini',
+            ]
+
+        self.assertEqual(sorted(inis), iniByDir)
 
 if __name__ == '__main__':
     main()
