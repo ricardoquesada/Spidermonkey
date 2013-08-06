@@ -1,12 +1,12 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "Lowering-x86.h"
+
 #include "ion/MIR.h"
-#include "ion/Lowering.h"
 #include "Assembler-x86.h"
 #include "ion/shared/Lowering-shared-inl.h"
 
@@ -126,36 +126,6 @@ LIRGeneratorX86::visitReturn(MReturn *ret)
 }
 
 bool
-LIRGeneratorX86::lowerForShift(LInstructionHelper<1, 2, 0> *ins, MDefinition *mir, MDefinition *lhs, MDefinition *rhs)
-{
-    ins->setOperand(0, useRegisterAtStart(lhs));
-
-    // shift operator should be constant or in register ecx
-    // x86 can't shift a non-ecx register
-    if (rhs->isConstant())
-        ins->setOperand(1, useOrConstant(rhs));
-    else
-        ins->setOperand(1, useFixed(rhs, ecx));
-
-    return defineReuseInput(ins, mir, 0);
-}
-
-bool
-LIRGeneratorX86::lowerForALU(LInstructionHelper<1, 1, 0> *ins, MDefinition *mir, MDefinition *input)
-{
-    ins->setOperand(0, useRegisterAtStart(input));
-    return defineReuseInput(ins, mir, 0);
-}
-
-bool
-LIRGeneratorX86::lowerForALU(LInstructionHelper<1, 2, 0> *ins, MDefinition *mir, MDefinition *lhs, MDefinition *rhs)
-{
-    ins->setOperand(0, useRegisterAtStart(lhs));
-    ins->setOperand(1, useOrConstant(rhs));
-    return defineReuseInput(ins, mir, 0);
-}
-
-bool
 LIRGeneratorX86::lowerForFPU(LInstructionHelper<1, 2, 0> *ins, MDefinition *mir, MDefinition *lhs, MDefinition *rhs)
 {
     ins->setOperand(0, useRegisterAtStart(lhs));
@@ -221,6 +191,31 @@ LIRGeneratorX86::visitStoreTypedArrayElement(MStoreTypedArrayElement *ins)
 }
 
 bool
+LIRGeneratorX86::visitStoreTypedArrayElementHole(MStoreTypedArrayElementHole *ins)
+{
+    JS_ASSERT(ins->elements()->type() == MIRType_Elements);
+    JS_ASSERT(ins->index()->type() == MIRType_Int32);
+    JS_ASSERT(ins->length()->type() == MIRType_Int32);
+
+    if (ins->isFloatArray())
+        JS_ASSERT(ins->value()->type() == MIRType_Double);
+    else
+        JS_ASSERT(ins->value()->type() == MIRType_Int32);
+
+    LUse elements = useRegister(ins->elements());
+    LAllocation length = useAnyOrConstant(ins->length());
+    LAllocation index = useRegisterOrConstant(ins->index());
+    LAllocation value;
+
+    // For byte arrays, the value has to be in a byte register on x86.
+    if (ins->isByteArray())
+        value = useFixed(ins->value(), eax);
+    else
+        value = useRegisterOrNonDoubleConstant(ins->value());
+    return add(new LStoreTypedArrayElementHole(elements, length, index, value), ins);
+}
+
+bool
 LIRGeneratorX86::visitAsmJSUnsignedToDouble(MAsmJSUnsignedToDouble *ins)
 {
     JS_ASSERT(ins->input()->type() == MIRType_Int32);
@@ -257,8 +252,45 @@ LIRGeneratorX86::visitAsmJSStoreHeap(MAsmJSStoreHeap *ins)
 }
 
 bool
+LIRGeneratorX86::visitStoreTypedArrayElementStatic(MStoreTypedArrayElementStatic *ins)
+{
+    // The code generated for StoreTypedArrayElementStatic is identical to that
+    // for AsmJSStoreHeap, and the same concerns apply.
+    LStoreTypedArrayElementStatic *lir;
+    switch (ins->viewType()) {
+      case ArrayBufferView::TYPE_INT8: case ArrayBufferView::TYPE_UINT8:
+      case ArrayBufferView::TYPE_UINT8_CLAMPED:
+        lir = new LStoreTypedArrayElementStatic(useRegister(ins->ptr()),
+                                                useFixed(ins->value(), eax));
+        break;
+      case ArrayBufferView::TYPE_INT16: case ArrayBufferView::TYPE_UINT16:
+      case ArrayBufferView::TYPE_INT32: case ArrayBufferView::TYPE_UINT32:
+      case ArrayBufferView::TYPE_FLOAT32: case ArrayBufferView::TYPE_FLOAT64:
+        lir = new LStoreTypedArrayElementStatic(useRegisterAtStart(ins->ptr()),
+                                                useRegisterAtStart(ins->value()));
+        break;
+      default: JS_NOT_REACHED("unexpected array type");
+    }
+
+    return add(lir, ins);
+}
+
+bool
 LIRGeneratorX86::visitAsmJSLoadFuncPtr(MAsmJSLoadFuncPtr *ins)
 {
     return define(new LAsmJSLoadFuncPtr(useRegisterAtStart(ins->index())), ins);
 }
 
+LGetPropertyCacheT *
+LIRGeneratorX86::newLGetPropertyCacheT(MGetPropertyCache *ins)
+{
+    // Since x86 doesn't have a scratch register and we need one for the
+    // indirect jump for dispatch-style ICs, we need a temporary in the case
+    // of a double output type as we can't get a scratch from the output.
+    LDefinition scratch;
+    if (ins->type() == MIRType_Double)
+        scratch = temp();
+    else
+        scratch = LDefinition::BogusTemp();
+    return new LGetPropertyCacheT(useRegister(ins->object()), scratch);
+}

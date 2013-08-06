@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,6 +15,7 @@
 #include "jsbool.h"
 #include "assembler/assembler/MacroAssemblerCodeRef.h"
 #include "jstypes.h"
+#include "jsworkers.h"
 
 #include "gc/Marking.h"
 #include "ion/AsmJS.h"
@@ -58,6 +58,9 @@ using namespace js::types;
 using namespace JSC;
 
 using mozilla::DebugOnly;
+using mozilla::DoubleIsInt32;
+using mozilla::IsNaN;
+using mozilla::IsNegative;
 
 void JS_FASTCALL
 stubs::BindName(VMFrame &f, PropertyName *name_)
@@ -135,17 +138,13 @@ stubs::SetElem(VMFrame &f)
     Value &idval  = regs.sp[-2];
     RootedValue rval(cx, regs.sp[-1]);
 
-    RootedId id(cx);
-
     RootedObject obj(cx, ToObjectFromStack(cx, objval));
     if (!obj)
         THROW();
 
-    if (!FetchElementId(f.cx, obj, idval, &id,
-                        MutableHandleValue::fromMarkedLocation(&regs.sp[-2])))
-    {
+    RootedId id(f.cx);
+    if (!ValueToId<CanGC>(f.cx, idval, &id))
         THROW();
-    }
 
     TypeScript::MonitorAssign(cx, obj, id);
 
@@ -182,9 +181,10 @@ stubs::ToId(VMFrame &f)
         THROW();
 
     RootedId id(f.cx);
-    if (!FetchElementId(f.cx, obj, idval, &id, idval))
+    if (!ValueToId<CanGC>(f.cx, idval, &id))
         THROW();
 
+    idval.set(IdToValue(id));
     if (!idval.isInt32()) {
         RootedScript fscript(f.cx, f.script());
         TypeScript::MonitorUnknown(f.cx, fscript, f.pc());
@@ -676,13 +676,13 @@ stubs::Div(VMFrame &f)
         const Value *vp;
 #ifdef XP_WIN
         /* XXX MSVC miscompiles such that (NaN == 0) */
-        if (MOZ_DOUBLE_IS_NaN(d2))
+        if (IsNaN(d2))
             vp = &rt->NaNValue;
         else
 #endif
-        if (d1 == 0 || MOZ_DOUBLE_IS_NaN(d1))
+        if (d1 == 0 || IsNaN(d1))
             vp = &rt->NaNValue;
-        else if (MOZ_DOUBLE_IS_NEGATIVE(d1) != MOZ_DOUBLE_IS_NEGATIVE(d2))
+        else if (IsNegative(d1) != IsNegative(d2))
             vp = &rt->negativeInfinityValue;
         else
             vp = &rt->positiveInfinityValue;
@@ -776,7 +776,7 @@ stubs::TriggerIonCompile(VMFrame &f)
 {
     RootedScript script(f.cx, f.script());
 
-    if (ion::js_IonOptions.parallelCompilation && !f.cx->runtime->profilingScripts) {
+    if (OffThreadCompilationEnabled(f.cx) && !f.cx->runtime->profilingScripts) {
         if (script->hasIonScript()) {
             /*
              * Normally TriggerIonCompile is not called if !script->ion, but the
@@ -1304,7 +1304,7 @@ stubs::TableSwitch(VMFrame &f, jsbytecode *origPc)
         if (d == 0) {
             /* Treat -0 (double) as 0. */
             tableIdx = 0;
-        } else if (!MOZ_DOUBLE_IS_INT32(d, &tableIdx)) {
+        } else if (!DoubleIsInt32(d, &tableIdx)) {
             goto finally;
         }
     } else {
@@ -1359,8 +1359,11 @@ stubs::DelName(VMFrame &f, PropertyName *name_)
     f.regs.sp++;
     f.regs.sp[-1] = BooleanValue(true);
     if (prop) {
-        if (!JSObject::deleteProperty(f.cx, obj, name, MutableHandleValue::fromMarkedLocation(&f.regs.sp[-1]), false))
+        JSBool succeeded;
+        if (!JSObject::deleteProperty(f.cx, obj, name, &succeeded))
             THROW();
+        MutableHandleValue rval = MutableHandleValue::fromMarkedLocation(&f.regs.sp[-1]);
+        rval.setBoolean(succeeded);
     }
 }
 
@@ -1376,11 +1379,15 @@ stubs::DelProp(VMFrame &f, PropertyName *name_)
     if (!obj)
         THROW();
 
-    RootedValue rval(cx);
-    if (!JSObject::deleteProperty(cx, obj, name, &rval, strict))
+    JSBool succeeded;
+    if (!JSObject::deleteProperty(cx, obj, name, &succeeded))
         THROW();
+    if (strict && !succeeded) {
+        obj->reportNotConfigurable(cx, NameToId(name));
+        THROW();
+    }
 
-    f.regs.sp[-1] = rval;
+    f.regs.sp[-1] = BooleanValue(succeeded);
 }
 
 template void JS_FASTCALL stubs::DelProp<true>(VMFrame &f, PropertyName *name);
@@ -1398,10 +1405,22 @@ stubs::DelElem(VMFrame &f)
         THROW();
 
     const Value &propval = f.regs.sp[-1];
-    MutableHandleValue rval = MutableHandleValue::fromMarkedLocation(&f.regs.sp[-2]);
-
-    if (!JSObject::deleteByValue(cx, obj, propval, rval, strict))
+    JSBool succeeded;
+    if (!JSObject::deleteByValue(cx, obj, propval, &succeeded))
         THROW();
+    if (strict && !succeeded) {
+        // XXX This observably calls ToString(propval).  We should convert to
+        //     PropertyKey and use that to delete, and to report an error if
+        //     necessary -- but this code's all dying soon, so who cares?
+        RootedId id(cx);
+        if (!ValueToId<CanGC>(cx, propval, &id))
+            THROW();
+        obj->reportNotConfigurable(cx, id);
+        THROW();
+    }
+
+    MutableHandleValue rval = MutableHandleValue::fromMarkedLocation(&f.regs.sp[-2]);
+    rval.setBoolean(succeeded);
 }
 
 void JS_FASTCALL
@@ -1449,11 +1468,8 @@ stubs::In(VMFrame &f)
 
     RootedObject obj(cx, &rref.toObject());
     RootedId id(cx);
-    if (!FetchElementId(f.cx, obj, f.regs.sp[-2], &id,
-                        MutableHandleValue::fromMarkedLocation(&f.regs.sp[-2])))
-    {
+    if (!ValueToId<CanGC>(f.cx, f.regs.sp[-2], &id))
         THROWV(JS_FALSE);
-    }
 
     RootedObject obj2(cx);
     RootedShape prop(cx);
@@ -1555,7 +1571,7 @@ stubs::AssertArgumentTypes(VMFrame &f)
 {
     StackFrame *fp = f.fp();
     JSFunction *fun = fp->fun();
-    RawScript script = fun->nonLazyScript();
+    JSScript *script = fun->nonLazyScript();
 
     /*
      * Don't check the type of 'this' for constructor frames, the 'this' value
@@ -1599,7 +1615,7 @@ stubs::InvariantFailure(VMFrame &f, void *rval)
     *frameAddr = repatchCode;
 
     /* Recompile the outermost script, and don't hoist any bounds checks. */
-    RawScript script = f.fp()->script();
+    JSScript *script = f.fp()->script();
     JS_ASSERT(!script->failedBoundsCheck);
     script->failedBoundsCheck = true;
 

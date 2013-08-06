@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -55,6 +54,7 @@ static const Register CallTempReg2 = ebx;
 static const Register CallTempReg3 = ecx;
 static const Register CallTempReg4 = esi;
 static const Register CallTempReg5 = edx;
+static const Register CallTempReg6 = ebp;
 
 // We have no arg regs, so our NonArgRegs are just our CallTempReg*
 static const Register CallTempNonArgRegs[] = { edi, eax, ebx, ecx, esi, edx };
@@ -89,9 +89,10 @@ static const uint32_t StackAlignment = 16;
 static const uint32_t StackAlignment = 4;
 #endif
 static const bool StackKeptAligned = false;
+static const uint32_t CodeAlignment = 8;
 static const uint32_t NativeFrameSize = sizeof(void*);
 static const uint32_t AlignmentAtPrologue = sizeof(void*);
-
+static const uint32_t AlignmentMidPrologue = AlignmentAtPrologue;
 struct ImmTag : public Imm32
 {
     ImmTag(JSValueTag mask)
@@ -281,6 +282,11 @@ class Assembler : public AssemblerX86Shared
         return masm.currentOffset();
     }
 
+    CodeOffsetLabel movWithPatch(const ImmWord &word, const Register &dest) {
+        movl(Imm32(word.value), dest);
+        return masm.currentOffset();
+    }
+
     void movl(const ImmGCPtr &ptr, const Register &dest) {
         masm.movl_i32r(ptr.value, dest.code());
         writeDataRelocation(ptr);
@@ -399,7 +405,13 @@ class Assembler : public AssemblerX86Shared
         CodeOffsetLabel offset(size());
         JmpSrc src = enabled ? masm.call() : masm.cmp_eax();
         addPendingJump(src, target->raw(), Relocation::IONCODE);
+        JS_ASSERT(size() - offset.offset() == ToggledCallSize());
         return offset;
+    }
+
+    static size_t ToggledCallSize() {
+        // Size of a call instruction.
+        return 5;
     }
 
     // Re-routes pending jumps to an external target, flushing the label in the
@@ -420,6 +432,7 @@ class Assembler : public AssemblerX86Shared
     }
 
     void movsd(const double *dp, const FloatRegister &dest) {
+        JS_ASSERT(HasSSE2());
         masm.movsd_mr((const void *)dp, dest.code());
     }
 
@@ -436,6 +449,7 @@ class Assembler : public AssemblerX86Shared
         return masm.currentOffset();
     }
     CodeOffsetLabel movsdWithPatch(void *addr, FloatRegister dest) {
+        JS_ASSERT(HasSSE2());
         masm.movsd_mr(addr, dest.code());
         return masm.currentOffset();
     }
@@ -446,6 +460,7 @@ class Assembler : public AssemblerX86Shared
         return masm.currentOffset();
     }
     CodeOffsetLabel movsdWithPatch(FloatRegister dest, void *addr) {
+        JS_ASSERT(HasSSE2());
         masm.movsd_rm(dest.code(), addr);
         return masm.currentOffset();
     }
@@ -472,10 +487,12 @@ class Assembler : public AssemblerX86Shared
         return masm.currentOffset();
     }
     CodeOffsetLabel movssWithPatch(Address src, FloatRegister dest) {
+        JS_ASSERT(HasSSE2());
         masm.movss_mr_disp32(src.offset, src.base.code(), dest.code());
         return masm.currentOffset();
     }
     CodeOffsetLabel movsdWithPatch(Address src, FloatRegister dest) {
+        JS_ASSERT(HasSSE2());
         masm.movsd_mr_disp32(src.offset, src.base.code(), dest.code());
         return masm.currentOffset();
     }
@@ -494,10 +511,12 @@ class Assembler : public AssemblerX86Shared
         return masm.currentOffset();
     }
     CodeOffsetLabel movssWithPatch(FloatRegister src, Address dest) {
+        JS_ASSERT(HasSSE2());
         masm.movss_rm_disp32(src.code(), dest.offset, dest.base.code());
         return masm.currentOffset();
     }
     CodeOffsetLabel movsdWithPatch(FloatRegister src, Address dest) {
+        JS_ASSERT(HasSSE2());
         masm.movsd_rm_disp32(src.code(), dest.offset, dest.base.code());
         return masm.currentOffset();
     }
@@ -527,4 +546,3 @@ GetTempRegForIntArg(uint32_t usedIntArgs, uint32_t usedFloatArgs, Register *out)
 } // namespace js
 
 #endif // jsion_cpu_x86_assembler_h__
-

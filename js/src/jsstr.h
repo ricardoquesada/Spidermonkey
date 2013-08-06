@@ -1,12 +1,13 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=79 ft=cpp:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jsstr_h___
 #define jsstr_h___
+
+#include "mozilla/PodOperations.h"
 
 #include <ctype.h>
 #include "jsapi.h"
@@ -213,7 +214,7 @@ js_strchr_limit(const jschar *s, jschar c, const jschar *limit);
 static JS_ALWAYS_INLINE void
 js_strncpy(jschar *dst, const jschar *src, size_t nelem)
 {
-    return js::PodCopy(dst, src, nelem);
+    return mozilla::PodCopy(dst, src, nelem);
 }
 
 extern jschar *

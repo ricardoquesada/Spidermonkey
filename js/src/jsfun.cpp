@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,28 +7,20 @@
 /*
  * JS function support.
  */
+#include "jsfun.h"
+
 #include <string.h>
 
-#include "mozilla/RangedPtr.h"
+#include "mozilla/PodOperations.h"
 #include "mozilla/Util.h"
 
 #include "jstypes.h"
-#include "jsutil.h"
 #include "jsapi.h"
 #include "jsarray.h"
 #include "jsatom.h"
-#include "jsbool.h"
 #include "jscntxt.h"
-#include "jsexn.h"
-#include "jsfun.h"
-#include "jsgc.h"
 #include "jsinterp.h"
-#include "jsiter.h"
-#include "jslock.h"
-#include "jsnum.h"
 #include "jsobj.h"
-#include "jsopcode.h"
-#include "jspropertytree.h"
 #include "jsproxy.h"
 #include "jsscript.h"
 #include "jsstr.h"
@@ -38,8 +29,6 @@
 #include "frontend/BytecodeCompiler.h"
 #include "frontend/TokenStream.h"
 #include "gc/Marking.h"
-#include "vm/Debugger.h"
-#include "vm/ScopeObject.h"
 #include "vm/Shape.h"
 #include "vm/StringBuffer.h"
 #include "vm/Xdr.h"
@@ -48,15 +37,12 @@
 #include "methodjit/MethodJIT.h"
 #endif
 
-#include "jsatominlines.h"
 #include "jsfuninlines.h"
 #include "jsinferinlines.h"
 #include "jsinterpinlines.h"
 #include "jsobjinlines.h"
 #include "jsscriptinlines.h"
 
-#include "vm/ArgumentsObject-inl.h"
-#include "vm/ScopeObject-inl.h"
 #include "vm/Stack-inl.h"
 
 #ifdef JS_ION
@@ -71,6 +57,7 @@ using namespace js::types;
 using namespace js::frontend;
 
 using mozilla::ArrayLength;
+using mozilla::PodCopy;
 
 static JSBool
 fun_getProperty(JSContext *cx, HandleObject obj_, HandleId id, MutableHandleValue vp)
@@ -138,7 +125,7 @@ fun_getProperty(JSContext *cx, HandleObject obj_, HandleId id, MutableHandleValu
         // IonMonkey does not guarantee |f.arguments| can be
         // fully recovered, so we try to mitigate observing this behavior by
         // detecting its use early.
-        RawScript script = iter.script();
+        JSScript *script = iter.script();
         ion::ForbidCompilation(cx, script);
 #endif
 
@@ -148,7 +135,7 @@ fun_getProperty(JSContext *cx, HandleObject obj_, HandleId id, MutableHandleValu
 
 #ifdef JS_METHODJIT
     StackFrame *fp = NULL;
-    if (iter.isScript() && !iter.isIon())
+    if (!iter.isIon())
         fp = iter.interpFrame();
 
     if (JSID_IS_ATOM(id, cx->names().caller) && fp && fp->prev()) {
@@ -161,7 +148,7 @@ fun_getProperty(JSContext *cx, HandleObject obj_, HandleId id, MutableHandleValu
         jsbytecode *prevpc = fp->prevpc(&inlined);
         if (inlined) {
             mjit::JITChunk *chunk = fp->prev()->jit()->chunk(prevpc);
-            RawFunction fun = chunk->inlineFrames()[inlined->inlineIndex].fun;
+            JSFunction *fun = chunk->inlineFrames()[inlined->inlineIndex].fun;
             fun->nonLazyScript()->uninlineable = true;
             MarkTypeObjectFlags(cx, fun, OBJECT_FLAG_UNINLINEABLE);
         }
@@ -188,11 +175,11 @@ fun_getProperty(JSContext *cx, HandleObject obj_, HandleId id, MutableHandleValu
         /*
          * Censor the caller if we don't have full access to it.
          */
-        JSObject &caller = vp.toObject();
-        if (caller.isWrapper() && !Wrapper::wrapperHandler(&caller)->isSafeToUnwrap()) {
+        RootedObject caller(cx, &vp.toObject());
+        if (caller->isWrapper() && !Wrapper::wrapperHandler(caller)->isSafeToUnwrap()) {
             vp.setNull();
-        } else if (caller.isFunction()) {
-            JSFunction *callerFun = caller.toFunction();
+        } else if (caller->isFunction()) {
+            JSFunction *callerFun = caller->toFunction();
             if (callerFun->isInterpreted() && callerFun->strict()) {
                 JS_ReportErrorFlagsAndNumber(cx, JSREPORT_ERROR, js_GetErrorMessage, NULL,
                                              JSMSG_CALLER_IS_STRICT);
@@ -269,7 +256,7 @@ ResolveInterpretedFunctionPrototype(JSContext *cx, HandleObject obj)
      * Make the prototype object an instance of Object with the same parent
      * as the function object itself.
      */
-    RawObject objProto = obj->global().getOrCreateObjectPrototype(cx);
+    JSObject *objProto = obj->global().getOrCreateObjectPrototype(cx);
     if (!objProto)
         return NULL;
     RootedObject proto(cx, NewObjectWithGivenProto(cx, &ObjectClass, objProto, NULL, SingletonObject));
@@ -536,7 +523,7 @@ JSFunction::trace(JSTracer *trc)
 }
 
 static void
-fun_trace(JSTracer *trc, RawObject obj)
+fun_trace(JSTracer *trc, JSObject *obj)
 {
     obj->toFunction()->trace(trc);
 }
@@ -546,7 +533,7 @@ JS_FRIEND_DATA(Class) js::FunctionClass = {
     JSCLASS_NEW_RESOLVE | JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_CACHED_PROTO(JSProto_Function),
     JS_PropertyStub,         /* addProperty */
-    JS_PropertyStub,         /* delProperty */
+    JS_DeletePropertyStub,   /* delProperty */
     JS_PropertyStub,         /* getProperty */
     JS_StrictPropertyStub,   /* setProperty */
     fun_enumerate,
@@ -570,7 +557,8 @@ FindBody(JSContext *cx, HandleFunction fun, StableCharPtr chars, size_t length,
     CompileOptions options(cx);
     options.setFileAndLine("internal-findBody", 0)
            .setVersion(fun->nonLazyScript()->getVersion());
-    TokenStream ts(cx, options, chars.get(), length, NULL);
+    AutoKeepAtoms keepAtoms(cx->runtime);
+    TokenStream ts(cx, options, chars.get(), length, NULL, keepAtoms);
     int nest = 0;
     bool onward = true;
     // Skip arguments list.
@@ -877,6 +865,27 @@ js_fun_call(JSContext *cx, unsigned argc, Value *vp)
     return ok;
 }
 
+#ifdef JS_ION
+static bool
+PushBaselineFunApplyArguments(JSContext *cx, ion::IonFrameIterator &frame, InvokeArgsGuard &args,
+                              Value *vp)
+{
+    unsigned length = frame.numActualArgs();
+    JS_ASSERT(length <= StackSpace::ARGS_LENGTH_MAX);
+
+    if (!cx->stack.pushInvokeArgs(cx, length, &args))
+        return false;
+
+    /* Push fval, obj, and aobj's elements as args. */
+    args.setCallee(vp[1]);
+    args.setThis(vp[2]);
+
+    /* Steps 7-8. */
+    frame.forEachCanonicalActualArg(CopyTo(args.array()), 0, -1);
+    return true;
+}
+#endif
+
 /* ES5 15.3.4.3 */
 JSBool
 js_fun_apply(JSContext *cx, unsigned argc, Value *vp)
@@ -910,29 +919,51 @@ js_fun_apply(JSContext *cx, unsigned argc, Value *vp)
         StackFrame *fp = cx->fp();
 
 #ifdef JS_ION
-        // We do not want to use StackIter to abstract here because this is
-        // supposed to be a fast path as opposed to StackIter which is doing
-        // complex logic to settle on the next frame twice.
+        // We do not want to use ScriptFrameIter to abstract here because this
+        // is supposed to be a fast path as opposed to ScriptFrameIter which is
+        // doing complex logic to settle on the next frame twice.
         if (fp->beginsIonActivation()) {
             ion::IonActivationIterator activations(cx);
             ion::IonFrameIterator frame(activations);
-            JS_ASSERT(frame.isNative());
-            // Stop on the next Ion JS Frame.
-            ++frame;
-            ion::InlineFrameIterator iter(cx, &frame);
+            if (frame.isNative()) {
+                // Stop on the next Ion JS Frame.
+                ++frame;
+                if (frame.isOptimizedJS()) {
+                    ion::InlineFrameIterator iter(cx, &frame);
 
-            unsigned length = iter.numActualArgs();
-            JS_ASSERT(length <= StackSpace::ARGS_LENGTH_MAX);
+                    unsigned length = iter.numActualArgs();
+                    JS_ASSERT(length <= StackSpace::ARGS_LENGTH_MAX);
 
-            if (!cx->stack.pushInvokeArgs(cx, length, &args))
-                return false;
+                    if (!cx->stack.pushInvokeArgs(cx, length, &args))
+                        return false;
 
-            /* Push fval, obj, and aobj's elements as args. */
-            args.setCallee(fval);
-            args.setThis(vp[2]);
+                    /* Push fval, obj, and aobj's elements as args. */
+                    args.setCallee(fval);
+                    args.setThis(vp[2]);
 
-            /* Steps 7-8. */
-            iter.forEachCanonicalActualArg(cx, CopyTo(args.array()), 0, -1);
+                    /* Steps 7-8. */
+                    iter.forEachCanonicalActualArg(cx, CopyTo(args.array()), 0, -1);
+                } else {
+                    JS_ASSERT(frame.isBaselineStub());
+
+                    ++frame;
+                    JS_ASSERT(frame.isBaselineJS());
+
+                    if (!PushBaselineFunApplyArguments(cx, frame, args, vp))
+                        return false;
+                }
+            } else {
+                JS_ASSERT(frame.type() == ion::IonFrame_Exit);
+
+                ++frame;
+                JS_ASSERT(frame.isBaselineStub());
+
+                ++frame;
+                JS_ASSERT(frame.isBaselineJS());
+
+                if (!PushBaselineFunApplyArguments(cx, frame, args, vp))
+                    return false;
+            }
         } else
 #endif
         {
@@ -1058,7 +1089,7 @@ bool
 JSFunction::initializeLazyScript(JSContext *cx)
 {
     JS_ASSERT(isInterpretedLazy());
-    JSFunctionSpec *fs = static_cast<JSFunctionSpec *>(getExtendedSlot(0).toPrivate());
+    const JSFunctionSpec *fs = static_cast<JSFunctionSpec *>(getExtendedSlot(0).toPrivate());
     Rooted<JSFunction*> self(cx, this);
     RootedAtom funAtom(cx, Atomize(cx, fs->selfHostedName, strlen(fs->selfHostedName)));
     if (!funAtom)
@@ -1124,7 +1155,7 @@ js::CallOrConstructBoundFunction(JSContext *cx, unsigned argc, Value *vp)
 static JSBool
 fun_isGenerator(JSContext *cx, unsigned argc, Value *vp)
 {
-    RawFunction fun;
+    JSFunction *fun;
     if (!IsFunctionObject(vp[1], &fun)) {
         JS_SET_RVAL(cx, vp, BooleanValue(false));
         return true;
@@ -1132,7 +1163,7 @@ fun_isGenerator(JSContext *cx, unsigned argc, Value *vp)
 
     bool result = false;
     if (fun->hasScript()) {
-        RawScript script = fun->nonLazyScript();
+        JSScript *script = fun->nonLazyScript();
         JS_ASSERT(script->length != 0);
         result = script->isGenerator;
     }
@@ -1168,7 +1199,7 @@ fun_bind(JSContext *cx, unsigned argc, Value *vp)
     /* Steps 7-9. */
     RootedValue thisArg(cx, args.length() >= 1 ? args[0] : UndefinedValue());
     RootedObject target(cx, &thisv.toObject());
-    RawObject boundFunction = js_fun_bind(cx, target, thisArg, boundArgs, argslen);
+    JSObject *boundFunction = js_fun_bind(cx, target, thisArg, boundArgs, argslen);
     if (!boundFunction)
         return false;
 
@@ -1223,7 +1254,7 @@ OnBadFormal(JSContext *cx, TokenKind tt)
     return false;
 }
 
-JSFunctionSpec js::function_methods[] = {
+const JSFunctionSpec js::function_methods[] = {
 #if JS_HAS_TOSOURCE
     JS_FN(js_toSource_str,   fun_toSource,   0,0),
 #endif
@@ -1264,7 +1295,8 @@ js::Function(JSContext *cx, unsigned argc, Value *vp)
     CompileOptions options(cx);
     options.setPrincipals(principals)
            .setOriginPrincipals(originPrincipals)
-           .setFileAndLine(filename, lineno);
+           .setFileAndLine(filename, lineno)
+           .setCompileAndGo(true);
 
     unsigned n = args.length() ? args.length() - 1 : 0;
     if (n > 0) {
@@ -1343,7 +1375,8 @@ js::Function(JSContext *cx, unsigned argc, Value *vp)
          * here (duplicate argument names, etc.) will be detected when we
          * compile the function body.
          */
-        TokenStream ts(cx, options, collected_args.get(), args_length, /* strictModeGetter = */ NULL);
+        TokenStream ts(cx, options, collected_args.get(), args_length,
+                       /* strictModeGetter = */ NULL, keepAtoms);
 
         /* The argument string may be empty or contain no tokens. */
         TokenKind tt = ts.getToken();
@@ -1391,7 +1424,7 @@ js::Function(JSContext *cx, unsigned argc, Value *vp)
 
 #ifdef DEBUG
     for (unsigned i = 0; i < formals.length(); ++i) {
-        RawString str = formals[i];
+        JSString *str = formals[i];
         JS_ASSERT(str->asAtom().asPropertyName() == formals[i]);
     }
 #endif
@@ -1642,7 +1675,7 @@ JSObject::hasIdempotentProtoChain() const
 {
     // Return false if obj (or an object on its proto chain) is non-native or
     // has a resolve or lookup hook.
-    RawObject obj = const_cast<RawObject>(this);
+    JSObject *obj = const_cast<JSObject *>(this);
     while (true) {
         if (!obj->isNative())
             return false;

@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -116,14 +115,14 @@ PatchSetFallback(VMFrame &f, ic::SetGlobalNameIC *ic)
 }
 
 void
-SetGlobalNameIC::patchInlineShapeGuard(Repatcher &repatcher, RawShape shape)
+SetGlobalNameIC::patchInlineShapeGuard(Repatcher &repatcher, Shape *shape)
 {
     JSC::CodeLocationDataLabelPtr label = fastPathStart.dataLabelPtrAtOffset(shapeOffset);
     repatcher.repatch(label, shape);
 }
 
 static LookupStatus
-UpdateSetGlobalName(VMFrame &f, ic::SetGlobalNameIC *ic, JSObject *obj, RawShape shape)
+UpdateSetGlobalName(VMFrame &f, ic::SetGlobalNameIC *ic, JSObject *obj, Shape *shape)
 {
     /* Give globals a chance to appear. */
     if (!shape)
@@ -161,7 +160,7 @@ ic::SetGlobalName(VMFrame &f, ic::SetGlobalNameIC *ic)
 
     {
         RootedId id(f.cx, NameToId(name));
-        RawShape shape = obj->nativeLookup(f.cx, id);
+        Shape *shape = obj->nativeLookup(f.cx, id);
 
         if (!monitor.recompiled()) {
             LookupStatus status = UpdateSetGlobalName(f, ic, obj, shape);
@@ -438,7 +437,7 @@ mjit::NativeStubEpilogue(VMFrame &f, Assembler &masm, NativeStubLinker::FinalJum
          * the call. We don't assume knowledge about the types that natives can
          * return, except when generating specialized paths in FastBuiltins.
          */
-        types::TypeSet *types = f.script()->analysis()->bytecodeTypes(f.pc());
+        types::TypeSet *types = types::TypeScript::BytecodeTypes(f.script(), f.pc());
         if (!masm.generateTypeCheck(f.cx, resultAddress, types, &mismatches))
             THROWV(false);
     }
@@ -1309,7 +1308,7 @@ class CallCompiler : public BaseCompiler
         }
 
         JS_ASSERT(fun);
-        RawScript script = fun->nonLazyScript();
+        JSScript *script = fun->nonLazyScript();
         JS_ASSERT(script);
 
         uint32_t flags = callingNew ? StackFrame::CONSTRUCTING : 0;
@@ -1489,7 +1488,7 @@ ic::GenerateArgumentCheckStub(VMFrame &f)
     JITScript *jit = f.jit();
     StackFrame *fp = f.fp();
     JSFunction *fun = fp->fun();
-    RawScript script = fun->nonLazyScript();
+    JSScript *script = fun->nonLazyScript();
 
     if (jit->argsCheckPool)
         jit->resetArgsCheck();

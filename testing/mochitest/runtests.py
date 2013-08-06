@@ -358,7 +358,7 @@ See <http://mochikit.com/doc/html/MochiKit/Logging.html> for details on the logg
       options.testingModulesDir = os.path.normpath(options.testingModulesDir)
 
       if not os.path.isabs(options.testingModulesDir):
-        options.testingModulesDir = os.path.abspath(testingModulesDir)
+        options.testingModulesDir = os.path.abspath(options.testingModulesDir)
 
       if not os.path.isdir(options.testingModulesDir):
         self.error('--testing-modules-dir not a directory: %s' %
@@ -588,7 +588,9 @@ class Mochitest(object):
       options.extraPrefs.append("testing.browserTestHarness.timeout=%d" % options.timeout)
     self.automation.initializeProfile(options.profilePath,
                                       options.extraPrefs,
-                                      useServerLocations=True)
+                                      useServerLocations=True,
+                                      prefsPath=os.path.join(self.SCRIPT_DIRECTORY,
+                                                        'profile_data', 'prefs_general.js'))
     manifest = self.addChromeToProfile(options)
     self.copyExtraFilesToProfile(options)
     self.installExtensionsToProfile(options)

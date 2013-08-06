@@ -24,11 +24,9 @@ LIBXUL_LIBRARY = 1
 MODULE_NAME = JavaScript_Debugger
 EXPORT_LIBRARY = 1
 
-XPCSHELL_TESTS  = test
+DISABLED_XPCSHELL_TESTS  = test
 
 # REQUIRES	= java js
-
-EXPORTS		= jsdebug.h
 
 ifdef JS_THREADSAFE
 DEFINES         += -DJS_THREADSAFE

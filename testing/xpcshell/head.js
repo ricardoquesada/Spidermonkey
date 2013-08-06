@@ -321,9 +321,9 @@ function _execute_test() {
   _load_files(_TEST_FILE);
 
   try {
-    do_test_pending();
+    do_test_pending("MAIN run_test");
     run_test();
-    do_test_finished();
+    do_test_finished("MAIN run_test");
     _do_main();
   } catch (e) {
     _passed = false;
@@ -417,8 +417,9 @@ function do_timeout(delay, func) {
   new _Timer(func, Number(delay));
 }
 
-function do_execute_soon(callback) {
-  do_test_pending();
+function do_execute_soon(callback, aName) {
+  let funcName = (aName ? aName : callback.name);
+  do_test_pending(funcName);
   var tm = Components.classes["@mozilla.org/thread-manager;1"]
                      .getService(Components.interfaces.nsIThreadManager);
 
@@ -445,25 +446,51 @@ function do_execute_soon(callback) {
         }
       }
       finally {
-        do_test_finished();
+        do_test_finished(funcName);
       }
     }
   }, Components.interfaces.nsIThread.DISPATCH_NORMAL);
 }
 
-function do_throw(text, stack) {
-  if (!stack)
-    stack = Components.stack.caller;
-
-  _passed = false;
-  _dump("TEST-UNEXPECTED-FAIL | " + stack.filename + " | " + text +
-        " - See following stack:\n");
-  var frame = Components.stack;
-  while (frame != null) {
-    _dump(frame + "\n");
-    frame = frame.caller;
+/**
+ * Shows an error message and the current stack and aborts the test.
+ *
+ * @param error  A message string or an Error object.
+ * @param stack  null or nsIStackFrame object or a string containing
+ *               \n separated stack lines (as in Error().stack).
+ */
+function do_throw(error, stack) {
+  let filename = "";
+  if (!stack) {
+    if (error instanceof Error) {
+      // |error| is an exception object
+      filename = error.fileName;
+      stack = error.stack;
+    } else {
+      stack = Components.stack.caller;
+    }
   }
 
+  if (stack instanceof Components.interfaces.nsIStackFrame)
+    filename = stack.filename;
+
+  _dump("TEST-UNEXPECTED-FAIL | " + filename + " | " + error +
+        " - See following stack:\n");
+
+  if (stack instanceof Components.interfaces.nsIStackFrame) {
+    let frame = stack;
+    while (frame != null) {
+      _dump(frame + "\n");
+      frame = frame.caller;
+    }
+  } else if (typeof stack == "string") {
+    let stackLines = stack.split("\n");
+    for (let line of stackLines) {
+      _dump(line + "\n");
+    }
+  }
+
+  _passed = false;
   _do_quit();
   throw Components.results.NS_ERROR_ABORT;
 }
@@ -774,16 +801,16 @@ function format_pattern_match_failure(diagnosis, indent="") {
   return indent + a;
 }
 
-function do_test_pending() {
+function do_test_pending(aName) {
   ++_tests_pending;
 
-  _dump("TEST-INFO | (xpcshell/head.js) | test " + _tests_pending +
-         " pending\n");
+  _dump("TEST-INFO | (xpcshell/head.js) | test" + (aName ? " " + aName : "") +
+         " pending (" + _tests_pending + ")\n");
 }
 
-function do_test_finished() {
-  _dump("TEST-INFO | (xpcshell/head.js) | test " + _tests_pending +
-         " finished\n");
+function do_test_finished(aName) {
+  _dump("TEST-INFO | (xpcshell/head.js) | test" + (aName ? " " + aName : "") +
+         " finished (" + _tests_pending + ")\n");
 
   if (--_tests_pending == 0)
     _do_quit();
@@ -977,28 +1004,21 @@ function do_load_child_test_harness()
   if (typeof do_load_child_test_harness.alreadyRun != "undefined")
     return;
   do_load_child_test_harness.alreadyRun = 1;
-  
-  function addQuotes (str)  { 
-    return '"' + str + '"'; 
-  }
-  var quoted_head_files = _HEAD_FILES.map(addQuotes);
-  var quoted_tail_files = _TAIL_FILES.map(addQuotes);
 
   _XPCSHELL_PROCESS = "parent";
 
   let command =
-        "const _HEAD_JS_PATH='" + _HEAD_JS_PATH + "'; "
-      + "const _HTTPD_JS_PATH='" + _HTTPD_JS_PATH + "'; "
-      + "const _HEAD_FILES=[" + quoted_head_files.join() + "];"
-      + "const _TAIL_FILES=[" + quoted_tail_files.join() + "];"
+        "const _HEAD_JS_PATH=" + uneval(_HEAD_JS_PATH) + "; "
+      + "const _HTTPD_JS_PATH=" + uneval(_HTTPD_JS_PATH) + "; "
+      + "const _HEAD_FILES=" + uneval(_HEAD_FILES) + "; "
+      + "const _TAIL_FILES=" + uneval(_TAIL_FILES) + "; "
       + "const _XPCSHELL_PROCESS='child';";
 
   if (this._TESTING_MODULES_DIR) {
-    normalized = this._TESTING_MODULES_DIR.replace('\\', '\\\\', 'g');
-    command += "const _TESTING_MODULES_DIR='" + normalized + "'; ";
+    command += " const _TESTING_MODULES_DIR=" + uneval(_TESTING_MODULES_DIR) + ";";
   }
 
-  command += "load(_HEAD_JS_PATH);";
+  command += " load(_HEAD_JS_PATH);";
 
   sendCommand(command);
 }
@@ -1023,7 +1043,7 @@ function run_test_in_child(testFile, optionalCallback)
   do_load_child_test_harness();
 
   var testPath = do_get_file(testFile).path.replace(/\\/g, "/");
-  do_test_pending();
+  do_test_pending("run in child");
   sendCommand("_dump('CHILD-TEST-STARTED'); "
               + "const _TEST_FILE=['" + testPath + "']; _execute_test(); "
               + "_dump('CHILD-TEST-COMPLETED');", 
@@ -1105,10 +1125,10 @@ function run_next_test()
   function _run_next_test()
   {
     if (_gTestIndex < _gTests.length) {
-      do_test_pending();
       let _isTask;
       [_isTask, _gRunningTest] = _gTests[_gTestIndex++];
       print("TEST-INFO | " + _TEST_FILE + " | Starting " + _gRunningTest.name);
+      do_test_pending(_gRunningTest.name);
 
       if (_isTask) {
         _Task.spawn(_gRunningTest)
@@ -1128,10 +1148,10 @@ function run_next_test()
   // We do this now, before we call do_test_finished(), to ensure the pending
   // counter (_tests_pending) never reaches 0 while we still have tests to run
   // (do_execute_soon bumps that counter).
-  do_execute_soon(_run_next_test);
+  do_execute_soon(_run_next_test, "run_next_test " + _gTestIndex);
 
   if (_gRunningTest !== null) {
     // Close the previous test do_test_pending call.
-    do_test_finished();
+    do_test_finished(_gRunningTest.name);
   }
 }

@@ -1,7 +1,8 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-/* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jsapi.h"
 #include "jsbool.h"
@@ -205,7 +206,7 @@ GC(JSContext *cx, unsigned argc, jsval *vp)
             if (!JS_StringEqualsAscii(cx, arg.toString(), "compartment", &compartment))
                 return false;
         } else if (arg.isObject()) {
-            PrepareZoneForGC(UnwrapObject(&arg.toObject())->zone());
+            PrepareZoneForGC(UncheckedUnwrap(&arg.toObject())->zone());
             compartment = true;
         }
     }
@@ -408,7 +409,7 @@ ScheduleGC(JSContext *cx, unsigned argc, jsval *vp)
         JS_ScheduleGC(cx, args[0].toInt32());
     } else if (args[0].isObject()) {
         /* Ensure that |zone| is collected during the next GC. */
-        Zone *zone = UnwrapObject(&args[0].toObject())->zone();
+        Zone *zone = UncheckedUnwrap(&args[0].toObject())->zone();
         PrepareZoneForGC(zone);
     } else if (args[0].isString()) {
         /* This allows us to schedule atomsCompartment for GC. */
@@ -667,7 +668,7 @@ CountHeap(JSContext *cx, unsigned argc, jsval *vp)
     JSCountHeapNode *node;
     size_t counter;
 
-    Value startValue = UndefinedValue();
+    RootedValue startValue(cx, UndefinedValue());
     if (argc > 0) {
         v = JS_ARGV(cx, vp)[0];
         if (JSVAL_IS_TRACEABLE(v)) {
@@ -714,7 +715,7 @@ CountHeap(JSContext *cx, unsigned argc, jsval *vp)
     if (startValue.isUndefined()) {
         JS_TraceRuntime(&countTracer.base);
     } else {
-        JS_CallValueTracer(&countTracer.base, startValue, "root");
+        JS_CallValueTracer(&countTracer.base, startValue.address(), "root");
     }
 
     counter = 0;
@@ -750,7 +751,7 @@ finalize_counter_finalize(JSFreeOp *fop, JSObject *obj)
 static JSClass FinalizeCounterClass = {
     "FinalizeCounter", JSCLASS_IS_ANONYMOUS,
     JS_PropertyStub,       /* addProperty */
-    JS_PropertyStub,       /* delProperty */
+    JS_DeletePropertyStub, /* delProperty */
     JS_PropertyStub,       /* getProperty */
     JS_StrictPropertyStub, /* setProperty */
     JS_EnumerateStub,
@@ -924,6 +925,22 @@ js::IsAsmJSCompilationAvailable(JSContext *cx, unsigned argc, Value *vp)
     args.rval().set(BooleanValue(false));
     return true;
 }
+
+JSBool
+js::IsAsmJSModule(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().set(BooleanValue(false));
+    return true;
+}
+
+JSBool
+js::IsAsmJSFunction(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().set(BooleanValue(false));
+    return true;
+}
 #endif
 
 static JSFunctionSpecWithHelp TestingFunctions[] = {
@@ -1069,6 +1086,16 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
 "isAsmJSCompilationAvailable",
 "  Returns whether asm.js compilation is currently available or whether it is disabled\n"
 "  (e.g., by the debugger)."),
+
+    JS_FN_HELP("isAsmJSModule", IsAsmJSModule, 1, 0,
+"isAsmJSModule(fn)",
+"  Returns whether the given value is a function containing \"use asm\" that has been\n"
+"  validated according to the asm.js spec."),
+
+    JS_FN_HELP("isAsmJSFunction", IsAsmJSFunction, 1, 0,
+"isAsmJSModule(fn)",
+"  Returns whether the given value is a nested function in an asm.js module that has been\n"
+"  both compile- and link-time validated."),
 
     JS_FN_HELP("inParallelSection", testingFunc_inParallelSection, 0, 0,
 "inParallelSection()",

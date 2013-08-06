@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -42,6 +41,7 @@ class CodeGenerator : public CodeGeneratorSpecific
 
   public:
     CodeGenerator(MIRGenerator *gen, LIRGraph *graph, MacroAssembler *masm = NULL);
+    ~CodeGenerator();
 
   public:
     bool generate();
@@ -117,10 +117,14 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitParNew(LParNew *lir);
     bool visitParNewDenseArray(LParNewDenseArray *lir);
     bool visitParBailout(LParBailout *lir);
+    bool visitInitElem(LInitElem *lir);
     bool visitInitProp(LInitProp *lir);
     bool visitCreateThis(LCreateThis *lir);
     bool visitCreateThisWithProto(LCreateThisWithProto *lir);
     bool visitCreateThisWithTemplate(LCreateThisWithTemplate *lir);
+    bool visitCreateArgumentsObject(LCreateArgumentsObject *lir);
+    bool visitGetArgumentsObjectArg(LGetArgumentsObjectArg *lir);
+    bool visitSetArgumentsObjectArg(LSetArgumentsObjectArg *lir);
     bool visitReturnFromCtor(LReturnFromCtor *lir);
     bool visitArrayLength(LArrayLength *lir);
     bool visitTypedArrayLength(LTypedArrayLength *lir);
@@ -137,11 +141,17 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitLoadFixedSlotT(LLoadFixedSlotT *ins);
     bool visitStoreFixedSlotV(LStoreFixedSlotV *ins);
     bool visitStoreFixedSlotT(LStoreFixedSlotT *ins);
+    bool emitGetPropertyPolymorphic(LInstruction *lir, Register obj,
+                                    Register scratch, const TypedOrValueRegister &output);
+    bool visitGetPropertyPolymorphicV(LGetPropertyPolymorphicV *ins);
+    bool visitGetPropertyPolymorphicT(LGetPropertyPolymorphicT *ins);
+    bool emitSetPropertyPolymorphic(LInstruction *lir, Register obj,
+                                    Register scratch, const ConstantOrRegister &value);
+    bool visitSetPropertyPolymorphicV(LSetPropertyPolymorphicV *ins);
+    bool visitSetPropertyPolymorphicT(LSetPropertyPolymorphicT *ins);
     bool visitAbsI(LAbsI *lir);
     bool visitPowI(LPowI *lir);
     bool visitPowD(LPowD *lir);
-    bool visitNegI(LNegI *lir);
-    bool visitNegD(LNegD *lir);
     bool visitRandom(LRandom *lir);
     bool visitMathFunctionD(LMathFunctionD *ins);
     bool visitModD(LModD *ins);
@@ -151,7 +161,6 @@ class CodeGenerator : public CodeGeneratorSpecific
                       Register output, Register temp);
     bool visitCompareS(LCompareS *lir);
     bool visitCompareStrictS(LCompareStrictS *lir);
-    bool visitParCompareS(LParCompareS *lir);
     bool visitCompareVM(LCompareVM *lir);
     bool visitIsNullOrLikeUndefined(LIsNullOrLikeUndefined *lir);
     bool visitIsNullOrLikeUndefinedAndBranch(LIsNullOrLikeUndefinedAndBranch *lir);
@@ -167,6 +176,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitCallGetProperty(LCallGetProperty *lir);
     bool visitCallGetElement(LCallGetElement *lir);
     bool visitCallSetElement(LCallSetElement *lir);
+    bool visitCallInitElementArray(LCallInitElementArray *lir);
     bool visitThrow(LThrow *lir);
     bool visitTypeOfV(LTypeOfV *lir);
     bool visitOutOfLineTypeOfV(OutOfLineTypeOfV *ool);
@@ -189,6 +199,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitLoadTypedArrayElement(LLoadTypedArrayElement *lir);
     bool visitLoadTypedArrayElementHole(LLoadTypedArrayElementHole *lir);
     bool visitStoreTypedArrayElement(LStoreTypedArrayElement *lir);
+    bool visitStoreTypedArrayElementHole(LStoreTypedArrayElementHole *lir);
     bool visitClampIToUint8(LClampIToUint8 *lir);
     bool visitClampDToUint8(LClampDToUint8 *lir);
     bool visitClampVToUint8(LClampVToUint8 *lir);
@@ -204,7 +215,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitCallDeleteProperty(LCallDeleteProperty *lir);
     bool visitBitNotV(LBitNotV *lir);
     bool visitBitOpV(LBitOpV *lir);
-    bool emitInstanceOf(LInstruction *ins, RawObject prototypeObject);
+    bool emitInstanceOf(LInstruction *ins, JSObject *prototypeObject);
     bool visitIn(LIn *ins);
     bool visitInArray(LInArray *ins);
     bool visitInstanceOfO(LInstanceOfO *ins);
@@ -215,6 +226,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitSetDOMProperty(LSetDOMProperty *lir);
     bool visitCallDOMNative(LCallDOMNative *lir);
     bool visitCallGetIntrinsicValue(LCallGetIntrinsicValue *lir);
+    bool visitIsCallable(LIsCallable *lir);
     bool visitAsmJSCall(LAsmJSCall *lir);
     bool visitAsmJSParameter(LAsmJSParameter *lir);
     bool visitAsmJSReturn(LAsmJSReturn *ret);
@@ -236,6 +248,9 @@ class CodeGenerator : public CodeGeneratorSpecific
 
     bool visitOutOfLineParNewGCThing(OutOfLineParNewGCThing *ool);
     bool visitOutOfLineParallelAbort(OutOfLineParallelAbort *ool);
+    bool visitOutOfLinePropagateParallelAbort(OutOfLinePropagateParallelAbort *ool);
+    void loadJSScriptForBlock(MBasicBlock *block, Register reg);
+    void loadOutermostJSScript(Register reg);
 
     // Inline caches visitors.
     bool visitOutOfLineCache(OutOfLineUpdateCache *ool);
@@ -252,23 +267,36 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitCallsiteCloneCache(LCallsiteCloneCache *ins);
 
     bool visitGetPropertyIC(OutOfLineUpdateCache *ool, GetPropertyIC *ic);
+    bool visitParallelGetPropertyIC(OutOfLineUpdateCache *ool, ParallelGetPropertyIC *ic);
     bool visitSetPropertyIC(OutOfLineUpdateCache *ool, SetPropertyIC *ic);
     bool visitGetElementIC(OutOfLineUpdateCache *ool, GetElementIC *ic);
     bool visitBindNameIC(OutOfLineUpdateCache *ool, BindNameIC *ic);
     bool visitNameIC(OutOfLineUpdateCache *ool, NameIC *ic);
     bool visitCallsiteCloneIC(OutOfLineUpdateCache *ool, CallsiteCloneIC *ic);
 
+    IonScriptCounts *extractUnassociatedScriptCounts() {
+        IonScriptCounts *counts = unassociatedScriptCounts_;
+        unassociatedScriptCounts_ = NULL;  // prevent delete in dtor
+        return counts;
+    }
+
   private:
-    bool checkForParallelBailout();
+    bool addGetPropertyCache(LInstruction *ins, RegisterSet liveRegs, Register objReg,
+                             PropertyName *name, TypedOrValueRegister output,
+                             bool allowGetters);
+    bool checkForParallelBailout(LInstruction *lir);
+
     bool generateBranchV(const ValueOperand &value, Label *ifTrue, Label *ifFalse, FloatRegister fr);
 
-    bool emitParAllocateGCThing(const Register &objReg,
+    bool emitParAllocateGCThing(LInstruction *lir,
+                                const Register &objReg,
                                 const Register &threadContextReg,
                                 const Register &tempReg1,
                                 const Register &tempReg2,
                                 JSObject *templateObj);
 
-    bool emitParCallToUncompiledScript(Register calleeReg);
+    bool emitParCallToUncompiledScript(LInstruction *lir,
+                                       Register calleeReg);
 
     void emitLambdaInit(const Register &resultReg,
                         const Register &scopeChainReg,
@@ -295,6 +323,9 @@ class CodeGenerator : public CodeGeneratorSpecific
 
     // Bailout if an element about to be written to is a hole.
     bool emitStoreHoleCheck(Register elements, const LAllocation *index, LSnapshot *snapshot);
+
+    // Script counts created when compiling code with no associated JSScript.
+    IonScriptCounts *unassociatedScriptCounts_;
 };
 
 } // namespace ion

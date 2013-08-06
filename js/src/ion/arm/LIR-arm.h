@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +7,7 @@
 #ifndef jsion_lir_arm_h__
 #define jsion_lir_arm_h__
 
-#include "ion/TypeOracle.h"
+#include "ion/LIR.h"
 
 namespace js {
 namespace ion {
@@ -71,13 +70,16 @@ class LUnboxDouble : public LInstructionHelper<1, 2, 0>
 };
 
 // Constant double.
-class LDouble : public LInstructionHelper<1, 1, 0>
+class LDouble : public LInstructionHelper<1, 0, 0>
 {
+    double d_;
   public:
     LIR_HEADER(Double);
 
-    LDouble(const LConstantIndex &cindex) {
-        setOperand(0, cindex);
+    LDouble(double d) : d_(d)
+    { }
+    double getDouble() const {
+        return d_;
     }
 };
 
@@ -112,6 +114,32 @@ class LDivI : public LBinaryMath<2>
         setOperand(1, rhs);
         setTemp(0, temp1);
         setTemp(1, temp2);
+    }
+
+    MDiv *mir() const {
+        return mir_->toDiv();
+    }
+};
+
+class LDivPowTwoI : public LInstructionHelper<1, 1, 0>
+{
+    const int32_t shift_;
+
+  public:
+    LIR_HEADER(DivPowTwoI)
+
+    LDivPowTwoI(const LAllocation &lhs, int32_t shift)
+      : shift_(shift)
+    {
+        setOperand(0, lhs);
+    }
+
+    const LAllocation *numerator() {
+        return getOperand(0);
+    }
+
+    int32_t shift() {
+        return shift_;
     }
 
     MDiv *mir() const {
@@ -260,7 +288,6 @@ class LTableSwitchV : public LInstructionHelper<0, BOX_PIECES, 2>
     }
 };
 
-// Guard against an object's shape.
 class LGuardShape : public LInstructionHelper<0, 1, 1>
 {
   public:
@@ -272,6 +299,23 @@ class LGuardShape : public LInstructionHelper<0, 1, 1>
     }
     const MGuardShape *mir() const {
         return mir_->toGuardShape();
+    }
+    const LAllocation *tempInt() {
+        return getTemp(0)->output();
+    }
+};
+
+class LGuardObjectType : public LInstructionHelper<0, 1, 1>
+{
+  public:
+    LIR_HEADER(GuardObjectType);
+
+    LGuardObjectType(const LAllocation &in, const LDefinition &temp) {
+        setOperand(0, in);
+        setTemp(0, temp);
+    }
+    const MGuardObjectType *mir() const {
+        return mir_->toGuardObjectType();
     }
     const LAllocation *tempInt() {
         return getTemp(0)->output();
@@ -291,6 +335,43 @@ class LMulI : public LBinaryMath<0>
 
     MMul *mir() {
         return mir_->toMul();
+    }
+};
+
+// This class performs a simple x86 'div', yielding either a quotient or remainder depending on
+// whether this instruction is defined to output eax (quotient) or edx (remainder).
+class LAsmJSDivOrMod : public LBinaryMath<2>
+{
+  public:
+    LIR_HEADER(AsmJSDivOrMod);
+
+    LAsmJSDivOrMod(const LAllocation &lhs, const LAllocation &rhs, const LDefinition &temp1, const LDefinition &temp2) {
+        setOperand(0, lhs);
+        setOperand(1, rhs);
+        setTemp(0, temp1);
+        setTemp(1, temp2);
+    }
+    // this is incorrect, it is returned in r1, getTemp(0) is r2.
+    const LDefinition *remainder() {
+        return getTemp(0);
+    }
+};
+class LAsmJSLoadFuncPtr : public LInstructionHelper<1, 1, 1>
+{
+  public:
+    LIR_HEADER(AsmJSLoadFuncPtr);
+    LAsmJSLoadFuncPtr(const LAllocation &index, const LDefinition &temp) {
+        setOperand(0, index);
+        setTemp(0, temp);
+    }
+    const MAsmJSLoadFuncPtr *mir() const {
+        return mir_->toAsmJSLoadFuncPtr();
+    }
+    const LAllocation *index() {
+        return getOperand(0);
+    }
+    const LDefinition *temp() {
+        return getTemp(0);
     }
 };
 

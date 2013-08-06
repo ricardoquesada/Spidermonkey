@@ -1,9 +1,8 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=78:
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef ObjectImpl_h___
 #define ObjectImpl_h___
@@ -25,9 +24,8 @@ namespace js {
 
 class Debugger;
 class ObjectImpl;
-ForwardDeclare(Shape);
-
-class AutoPropDescArrayRooter;
+class Nursery;
+class Shape;
 
 static inline PropertyOp
 CastAsPropertyOp(JSObject *object)
@@ -132,7 +130,7 @@ struct PropDesc {
     }
 
   public:
-    friend class AutoPropDescArrayRooter;
+    friend class AutoPropDescRooter;
     friend void JS::AutoGCRooter::trace(JSTracer *trc);
 
     enum Enumerability { Enumerable = true, NonEnumerable = false };
@@ -293,24 +291,70 @@ struct PropDesc {
 
     bool wrapInto(JSContext *cx, HandleObject obj, const jsid &id, jsid *wrappedId,
                   PropDesc *wrappedDesc) const;
+};
 
-    class AutoRooter : private AutoGCRooter
+class AutoPropDescRooter : private JS::CustomAutoRooter
+{
+  public:
+    explicit AutoPropDescRooter(JSContext *cx
+                                MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+      : CustomAutoRooter(cx), skip(cx, &propDesc)
     {
-      public:
-        explicit AutoRooter(JSContext *cx, PropDesc *pd_
-                            MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-          : AutoGCRooter(cx, PROPDESC), pd(pd_), skip(cx, pd_)
-        {
-            MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-        }
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+    }
 
-        friend void AutoGCRooter::trace(JSTracer *trc);
+    PropDesc& getPropDesc() { return propDesc; }
 
-      private:
-        PropDesc *pd;
-        SkipRoot skip;
-        MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
-     };
+    void initFromPropertyDescriptor(const PropertyDescriptor &desc) {
+        propDesc.initFromPropertyDescriptor(desc);
+    }
+
+    bool makeObject(JSContext *cx) {
+        return propDesc.makeObject(cx);
+    }
+
+    void setUndefined() { propDesc.setUndefined(); }
+    bool isUndefined() const { return propDesc.isUndefined(); }
+
+    bool hasGet() const { return propDesc.hasGet(); }
+    bool hasSet() const { return propDesc.hasSet(); }
+    bool hasValue() const { return propDesc.hasValue(); }
+    bool hasWritable() const { return propDesc.hasWritable(); }
+    bool hasEnumerable() const { return propDesc.hasEnumerable(); }
+    bool hasConfigurable() const { return propDesc.hasConfigurable(); }
+
+    Value pd() const { return propDesc.pd(); }
+    void clearPd() { propDesc.clearPd(); }
+
+    uint8_t attributes() const { return propDesc.attributes(); }
+
+    bool isAccessorDescriptor() const { return propDesc.isAccessorDescriptor(); }
+    bool isDataDescriptor() const { return propDesc.isDataDescriptor(); }
+    bool isGenericDescriptor() const { return propDesc.isGenericDescriptor(); }
+    bool configurable() const { return propDesc.configurable(); }
+    bool enumerable() const { return propDesc.enumerable(); }
+    bool writable() const { return propDesc.writable(); }
+
+    HandleValue value() const { return propDesc.value(); }
+    JSObject *getterObject() const { return propDesc.getterObject(); }
+    JSObject *setterObject() const { return propDesc.setterObject(); }
+    HandleValue getterValue() const { return propDesc.getterValue(); }
+    HandleValue setterValue() const { return propDesc.setterValue(); }
+
+    PropertyOp getter() const { return propDesc.getter(); }
+    StrictPropertyOp setter() const { return propDesc.setter(); }
+
+  private:
+    virtual void trace(JSTracer *trc) {
+        traceValue(trc, &propDesc.pd_, "AutoPropDescRooter pd");
+        traceValue(trc, &propDesc.value_, "AutoPropDescRooter value");
+        traceValue(trc, &propDesc.get_, "AutoPropDescRooter get");
+        traceValue(trc, &propDesc.set_, "AutoPropDescRooter set");
+    }
+
+    PropDesc propDesc;
+    SkipRoot skip;
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 class DenseElementsHeader;
@@ -359,7 +403,7 @@ class ElementsHeader
         } dense;
         class {
             friend class SparseElementsHeader;
-            RawShape shape;
+            Shape *shape;
         } sparse;
         class {
             friend class ArrayBufferElementsHeader;
@@ -450,7 +494,7 @@ class DenseElementsHeader : public ElementsHeader
 class SparseElementsHeader : public ElementsHeader
 {
   public:
-    RawShape shape() {
+    Shape *shape() {
         MOZ_ASSERT(ElementsHeader::isSparseElements());
         return sparse.shape;
     }
@@ -555,11 +599,11 @@ struct uint8_clamped {
 };
 
 /* Note that we can't use std::numeric_limits here due to uint8_clamped. */
-template<typename T> static inline const bool TypeIsFloatingPoint() { return false; }
+template<typename T> inline const bool TypeIsFloatingPoint() { return false; }
 template<> inline const bool TypeIsFloatingPoint<float>() { return true; }
 template<> inline const bool TypeIsFloatingPoint<double>() { return true; }
 
-template<typename T> static inline const bool TypeIsUnsigned() { return false; }
+template<typename T> inline const bool TypeIsUnsigned() { return false; }
 template<> inline const bool TypeIsUnsigned<uint8_t>() { return true; }
 template<> inline const bool TypeIsUnsigned<uint16_t>() { return true; }
 template<> inline const bool TypeIsUnsigned<uint32_t>() { return true; }
@@ -854,6 +898,18 @@ ElementsHeader::asArrayBufferElements()
 class ArrayBufferObject;
 
 /*
+ * ES6 20130308 draft 8.4.2.4 ArraySetLength.
+ *
+ * |id| must be "length", |attrs| are the attributes to be used for the newly-
+ * changed length property, |value| is the value for the new length, and
+ * |setterIsStrict| indicates whether invalid changes will cause a TypeError
+ * to be thrown.
+ */
+extern bool
+ArraySetLength(JSContext *cx, HandleObject obj, HandleId id, unsigned attrs, HandleValue value,
+               bool setterIsStrict);
+
+/*
  * Elements header used for all native objects. The elements component of such
  * objects offers an efficient representation for all or some of the indexed
  * properties of the object, using a flat array of Values rather than a shape
@@ -886,12 +942,20 @@ class ArrayBufferObject;
  * These indicate indexes which are not dense properties of the array. The
  * property may, however, be held by the object's properties.
  *
- * NB: the capacity and length of an object are entirely unrelated!  The
- * length may be greater than, less than, or equal to the capacity. The first
- * case may occur when the user writes "new Array(100)", in which case the
- * length is 100 while the capacity remains 0 (indices below length and above
- * capacity must be treated as holes). See array_length_setter for another
- * explanation of how the first case may occur.
+ * The capacity and length of an object's elements are almost entirely
+ * unrelated!  In general the length may be greater than, less than, or equal
+ * to the capacity.  The first case occurs with |new Array(100)|.  The length
+ * is 100, but the capacity remains 0 (indices below length and above capacity
+ * must be treated as holes) until elements between capacity and length are
+ * set.  The other two cases are common, depending upon the number of elements
+ * in an array and the underlying allocator used for element storage.
+ *
+ * The only case in which the capacity and length of an object's elements are
+ * related is when the object is an array with non-writable length.  In this
+ * case the capacity is always less than or equal to the length.  This permits
+ * JIT code to optimize away the check for non-writable length when assigning
+ * to possibly out-of-range elements: such code already has to check for
+ * |index < capacity|, and fallback code checks for non-writable length.
  *
  * The initialized length of an object specifies the number of elements that
  * have been initialized. All elements above the initialized length are
@@ -919,13 +983,22 @@ class ObjectElements
   public:
     enum Flags {
         CONVERT_DOUBLE_ELEMENTS = 0x1,
-        ASMJS_ARRAY_BUFFER = 0x2
+        ASMJS_ARRAY_BUFFER = 0x2,
+
+        // Present only if these elements correspond to an array with
+        // non-writable length; never present for non-arrays.
+        NONWRITABLE_ARRAY_LENGTH = 0x4
     };
 
   private:
     friend class ::JSObject;
     friend class ObjectImpl;
     friend class ArrayBufferObject;
+    friend class Nursery;
+
+    friend bool
+    ArraySetLength(JSContext *cx, HandleObject obj, HandleId id, unsigned attrs, HandleValue value,
+                   bool setterIsStrict);
 
     /* See Flags enum above. */
     uint32_t flags;
@@ -968,28 +1041,36 @@ class ObjectElements
     void setIsAsmJSArrayBuffer() {
         flags |= ASMJS_ARRAY_BUFFER;
     }
+    bool hasNonwritableArrayLength() const {
+        return flags & NONWRITABLE_ARRAY_LENGTH;
+    }
+    void setNonwritableArrayLength() {
+        flags |= NONWRITABLE_ARRAY_LENGTH;
+    }
 
   public:
     ObjectElements(uint32_t capacity, uint32_t length)
       : flags(0), initializedLength(0), capacity(capacity), length(length)
     {}
 
-    HeapSlot *elements() { return (HeapSlot *)(uintptr_t(this) + sizeof(ObjectElements)); }
+    HeapSlot *elements() {
+        return reinterpret_cast<HeapSlot*>(uintptr_t(this) + sizeof(ObjectElements));
+    }
     static ObjectElements * fromElements(HeapSlot *elems) {
-        return (ObjectElements *)(uintptr_t(elems) - sizeof(ObjectElements));
+        return reinterpret_cast<ObjectElements*>(uintptr_t(elems) - sizeof(ObjectElements));
     }
 
     static int offsetOfFlags() {
-        return (int)offsetof(ObjectElements, flags) - (int)sizeof(ObjectElements);
+        return int(offsetof(ObjectElements, flags)) - int(sizeof(ObjectElements));
     }
     static int offsetOfInitializedLength() {
-        return (int)offsetof(ObjectElements, initializedLength) - (int)sizeof(ObjectElements);
+        return int(offsetof(ObjectElements, initializedLength)) - int(sizeof(ObjectElements));
     }
     static int offsetOfCapacity() {
-        return (int)offsetof(ObjectElements, capacity) - (int)sizeof(ObjectElements);
+        return int(offsetof(ObjectElements, capacity)) - int(sizeof(ObjectElements));
     }
     static int offsetOfLength() {
-        return (int)offsetof(ObjectElements, length) - (int)sizeof(ObjectElements);
+        return int(offsetof(ObjectElements, length)) - int(sizeof(ObjectElements));
     }
 
     static bool ConvertElementsToDoubles(JSContext *cx, uintptr_t elements);
@@ -1077,6 +1158,10 @@ class ObjectImpl : public gc::Cell
     HeapSlot *slots;     /* Slots for object properties. */
     HeapSlot *elements;  /* Slots for object elements. */
 
+    friend bool
+    ArraySetLength(JSContext *cx, HandleObject obj, HandleId id, unsigned attrs, HandleValue value,
+                   bool setterIsStrict);
+
   private:
     static void staticAsserts() {
         MOZ_STATIC_ASSERT(sizeof(ObjectImpl) == sizeof(shadow::Object),
@@ -1121,6 +1206,7 @@ class ObjectImpl : public gc::Cell
     inline const Value & getDenseElement(uint32_t idx);
     inline bool containsDenseElement(uint32_t idx);
     inline uint32_t getDenseInitializedLength();
+    inline uint32_t getDenseCapacity();
 
     bool makeElementsSparse(JSContext *cx) {
         NEW_OBJECT_REPRESENTATION_ONLY();
@@ -1270,13 +1356,25 @@ class ObjectImpl : public gc::Cell
     /* Compute dynamicSlotsCount() for this object. */
     inline uint32_t numDynamicSlots() const;
 
-    RawShape nativeLookup(JSContext *cx, jsid id);
-    inline RawShape nativeLookup(JSContext *cx, PropertyId pid);
-    inline RawShape nativeLookup(JSContext *cx, PropertyName *name);
+    Shape *nativeLookup(JSContext *cx, jsid id);
+    inline Shape *nativeLookup(JSContext *cx, PropertyId pid);
+    inline Shape *nativeLookup(JSContext *cx, PropertyName *name);
 
     inline bool nativeContains(JSContext *cx, jsid id);
     inline bool nativeContains(JSContext *cx, PropertyName* name);
     inline bool nativeContains(JSContext *cx, Shape* shape);
+
+    /*
+     * Contextless; can be called from parallel code. Returns false if the
+     * operation would have been effectful.
+     */
+    Shape *nativeLookupPure(jsid id);
+    inline Shape *nativeLookupPure(PropertyId pid);
+    inline Shape *nativeLookupPure(PropertyName *name);
+
+    inline bool nativeContainsPure(jsid id);
+    inline bool nativeContainsPure(PropertyName* name);
+    inline bool nativeContainsPure(Shape* shape);
 
     inline JSClass *getJSClass() const;
     inline bool hasClass(const Class *c) const;
@@ -1393,7 +1491,11 @@ class ObjectImpl : public gc::Cell
          * immediately afterwards. Such cases cannot occur for dense arrays
          * (which have at least two fixed slots) and can only result in a leak.
          */
-        return elements != emptyObjectElements && elements != fixedElements();
+        return !hasEmptyElements() && elements != fixedElements();
+    }
+
+    inline bool hasFixedElements() const {
+        return elements == fixedElements();
     }
 
     inline bool hasEmptyElements() const {

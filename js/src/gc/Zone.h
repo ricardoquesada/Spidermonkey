@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=79:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -112,16 +111,32 @@ struct Zone : private JS::shadow::Zone, public js::gc::GraphNodeBase<JS::Zone>
 
     bool                         hold;
 
-#ifdef JSGC_GENERATIONAL
-    js::gc::VerifierNursery      gcNursery;
-    js::gc::StoreBuffer          gcStoreBuffer;
-#endif
-
   private:
     bool                         ionUsingBarriers_;
-  public:
 
+    /*
+     * This flag saves the value of needsBarrier_ during minor collection,
+     * since needsBarrier_ is always set to false during minor collection.
+     * Outside of minor collection, the value of savedNeedsBarrier_ is
+     * undefined.
+     */
+    bool                         savedNeedsBarrier_;
+
+  public:
     bool                         active;  // GC flag, whether there are active frames
+
+    void saveNeedsBarrier(bool newNeeds) {
+        savedNeedsBarrier_ = needsBarrier_;
+        needsBarrier_ = newNeeds;
+    }
+
+    void restoreNeedsBarrier() {
+        needsBarrier_ = savedNeedsBarrier_;
+    }
+
+    bool savedNeedsBarrier() const {
+        return savedNeedsBarrier_;
+    }
 
     bool needsBarrier() const {
         return needsBarrier_;
@@ -182,7 +197,7 @@ struct Zone : private JS::shadow::Zone, public js::gc::GraphNodeBase<JS::Zone>
      * tracer.
      */
     bool requireGCTracer() const {
-        return rt->isHeapCollecting() && gcState != NoGC;
+        return rt->isHeapMajorCollecting() && gcState != NoGC;
     }
 
     void setGCState(CompartmentGCState state) {

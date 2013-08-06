@@ -136,3 +136,44 @@ class VariablePassthru(SandboxDerived):
         SandboxDerived.__init__(self, sandbox)
         self.variables = {}
 
+class Exports(SandboxDerived):
+    """Sandbox container object for EXPORTS, which is a HierarchicalStringList.
+
+    We need an object derived from SandboxDerived for use in the backend, so
+    this object fills that role. It just has a reference to the underlying
+    HierarchicalStringList, which is created when parsing EXPORTS.
+    """
+    __slots__ = ('exports')
+
+    def __init__(self, sandbox, exports):
+        SandboxDerived.__init__(self, sandbox)
+        self.exports = exports
+
+class Program(SandboxDerived):
+    """Sandbox container object for PROGRAM, which is a unicode string.
+
+    This class handles automatically appending BIN_SUFFIX to the PROGRAM value.
+    If BIN_SUFFIX is not defined, PROGRAM is unchanged.
+    Otherwise, if PROGRAM ends in BIN_SUFFIX, it is unchanged
+    Otherwise, BIN_SUFFIX is appended to PROGRAM
+    """
+    __slots__ = ('program')
+
+    def __init__(self, sandbox, program, bin_suffix):
+        SandboxDerived.__init__(self, sandbox)
+
+        bin_suffix = bin_suffix or ''
+        if not program.endswith(bin_suffix):
+            program += bin_suffix
+        self.program = program
+
+class XpcshellManifests(SandboxDerived):
+    """Build object container for XPCSHELL_TESTS_MANIFESTS (was: XPCSHELL_TESTS).
+
+    This object contains a list of xpcshell.ini manifest files.
+    """
+    __slots__ = ('xpcshell_manifests')
+
+    def __init__(self, sandbox, manifests):
+        SandboxDerived.__init__(self, sandbox)
+        self.xpcshell_manifests = manifests

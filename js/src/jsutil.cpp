@@ -1,33 +1,28 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Various JS utility functions. */
 
+#include "jsutil.h"
+
 #include "mozilla/Assertions.h"
-#include "mozilla/Attributes.h"
+#include "mozilla/PodOperations.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include "jstypes.h"
-#include "jsutil.h"
 
 #ifdef WIN32
 #    include "jswin.h"
-#else
-#    include <signal.h>
 #endif
 
-#include "js/TemplateLib.h"
 #include "js/Utility.h"
 
-#if USE_ZLIB
-#include "zlib.h"
-#endif
-
 using namespace js;
+
+using mozilla::PodArrayZero;
 
 #if USE_ZLIB
 static void *
@@ -166,7 +161,6 @@ JS_Assert(const char *s, const char *file, int ln)
 #ifdef JS_BASIC_STATS
 
 #include <math.h>
-#include <string.h>
 
 /*
  * Histogram bins count occurrences of values <= the bin label, as follows:

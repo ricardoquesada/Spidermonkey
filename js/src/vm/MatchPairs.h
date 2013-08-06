@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99 ft=cpp:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -99,19 +98,13 @@ class MatchPairs
 /* MatchPairs allocated into temporary storage, removed when out of scope. */
 class ScopedMatchPairs : public MatchPairs
 {
-    LifoAlloc *lifoAlloc_;
-    void      *mark_;        /* Saved original position in bump allocator. */
+    LifoAllocScope lifoScope_;
 
   public:
     /* Constructs an implicit LifoAllocScope. */
     ScopedMatchPairs(LifoAlloc *lifoAlloc)
-      : lifoAlloc_(lifoAlloc),
-        mark_(lifoAlloc->mark())
+      : lifoScope_(lifoAlloc)
     { }
-
-    ~ScopedMatchPairs() {
-        lifoAlloc_->release(mark_);
-    }
 
     const MatchPair &operator[](size_t i) const { return pair(i); }
 

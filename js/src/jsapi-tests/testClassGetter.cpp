@@ -1,5 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=99:
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  *
  * Tests the JSClass::getProperty hook
  */
@@ -27,7 +27,7 @@ static JSClass ptestClass = {
     JSCLASS_HAS_PRIVATE,
 
     JS_PropertyStub,       // add
-    JS_PropertyStub,       // delete
+    JS_DeletePropertyStub, // delete
     test_prop_get,         // get
     JS_StrictPropertyStub, // set
     JS_EnumerateStub,
@@ -50,7 +50,7 @@ static JSBool test_fn(JSContext *cx, unsigned argc, jsval *vp)
     return JS_TRUE;
 }
 
-static JSFunctionSpec ptestFunctions[] = {
+static const JSFunctionSpec ptestFunctions[] = {
     JS_FS( "test_fn", test_fn, 0, 0 ),
     JS_FS_END
 };

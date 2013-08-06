@@ -19,9 +19,6 @@ class FilteringWrapper : public Base {
     FilteringWrapper(unsigned flags);
     virtual ~FilteringWrapper();
 
-    // This is potentially dynamic until XBL scopes are no longer behind a pref.
-    virtual bool isSafeToUnwrap();
-
     virtual bool getPropertyDescriptor(JSContext *cx, JS::Handle<JSObject*> wrapper,
                                        JS::Handle<jsid> id, js::PropertyDescriptor *desc,
                                        unsigned flags) MOZ_OVERRIDE;
@@ -38,6 +35,8 @@ class FilteringWrapper : public Base {
                          JS::MutableHandle<JS::Value> vp) MOZ_OVERRIDE;
     virtual bool nativeCall(JSContext *cx, JS::IsAcceptableThis test, JS::NativeImpl impl,
                             JS::CallArgs args) MOZ_OVERRIDE;
+
+    virtual bool defaultValue(JSContext *cx, JS::Handle<JSObject*> obj, JSType hint, JS::MutableHandleValue vp) MOZ_OVERRIDE;
 
     virtual bool enter(JSContext *cx, JS::Handle<JSObject*> wrapper, JS::Handle<jsid> id,
                        js::Wrapper::Action act, bool *bp) MOZ_OVERRIDE;

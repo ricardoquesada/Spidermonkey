@@ -834,6 +834,16 @@ SpecialPowersAPI.prototype = {
     this.pushPrefEnv({set: [['dom.mozApps.auto_confirm_install', true]]}, cb);
   },
 
+  // Allow tests to disable the per platform app validity checks so we can
+  // test higher level WebApp functionality without full platform support.
+  setAllAppsLaunchable: function(launchable) {
+    var message = {
+      op: "set-launchable",
+      launchable: launchable
+    };
+    return this._sendSyncMessage("SPWebAppService", message);
+  },
+
   addObserver: function(obs, notification, weak) {
     var obsvc = Cc['@mozilla.org/observer-service;1']
                    .getService(Ci.nsIObserverService);
@@ -843,6 +853,11 @@ SpecialPowersAPI.prototype = {
     var obsvc = Cc['@mozilla.org/observer-service;1']
                    .getService(Ci.nsIObserverService);
     obsvc.removeObserver(obs, notification);
+  },
+  notifyObservers: function(subject, topic, data) {
+    var obsvc = Cc['@mozilla.org/observer-service;1']
+                   .getService(Ci.nsIObserverService);
+    obsvc.notifyObservers(subject, topic, data);
   },
 
   can_QI: function(obj) {
@@ -952,15 +967,20 @@ SpecialPowersAPI.prototype = {
     return this._getTopChromeWindow(window).document
                                            .getElementById("PopupAutoComplete");
   },
-  addAutoCompletePopupEventListener: function(window, listener) {
-    this._getAutoCompletePopup(window).addEventListener("popupshowing",
+  addAutoCompletePopupEventListener: function(window, eventname, listener) {
+    this._getAutoCompletePopup(window).addEventListener(eventname,
                                                         listener,
                                                         false);
   },
-  removeAutoCompletePopupEventListener: function(window, listener) {
-    this._getAutoCompletePopup(window).removeEventListener("popupshowing",
+  removeAutoCompletePopupEventListener: function(window, eventname, listener) {
+    this._getAutoCompletePopup(window).removeEventListener(eventname,
                                                            listener,
                                                            false);
+  },
+  get formHistory() {
+    let tmp = {};
+    Cu.import("resource://gre/modules/FormHistory.jsm", tmp);
+    return wrapPrivileged(tmp.FormHistory);
   },
   getFormFillController: function(window) {
     return Components.classes["@mozilla.org/satchel/form-fill-controller;1"]
@@ -1246,8 +1266,12 @@ SpecialPowersAPI.prototype = {
     return this.focusManager.focusedWindow;
   },
 
-  focus: function(window) {
-    window.focus();
+  focus: function(aWindow) {
+    // This is called inside TestRunner._makeIframe without aWindow, because of assertions in oop mochitests
+    // With aWindow, it is called in SimpleTest.waitForFocus to allow popup window opener focus switching
+    if (aWindow)
+      aWindow.focus();
+    sendAsyncMessage("SpecialPowers.Focus", {});
   },
 
   getClipboardData: function(flavor) {

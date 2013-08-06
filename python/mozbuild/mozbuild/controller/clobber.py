@@ -9,10 +9,7 @@ r'''This module contains code for managing clobbering of the tree.'''
 import os
 import sys
 
-try:
-    from mozfile.mozfile import rmtree
-except ImportError:
-    from shutil import rmtree
+from mozfile.mozfile import rmtree
 
 
 CLOBBER_MESSAGE = '''
@@ -100,7 +97,7 @@ class Clobberer(object):
             with open(self.obj_clobber, 'a'):
                 pass
 
-    def maybe_do_clobber(self, cwd, allow_auto=True, fh=sys.stderr):
+    def maybe_do_clobber(self, cwd, allow_auto=False, fh=sys.stderr):
         """Perform a clobber if it is required. Maybe.
 
         This is the API the build system invokes to determine if a clobber
@@ -123,15 +120,15 @@ class Clobberer(object):
             return False, False, None
 
         # So a clobber is needed. We only perform a clobber if we are
-        # allowed to perform an automatic clobber (the default) and if the
+        # allowed to perform an automatic clobber (off by default) and if the
         # current directory is not under the object directory. The latter is
         # because operating systems, filesystems, and shell can throw fits
         # if the current working directory is deleted from under you. While it
         # can work in some scenarios, we take the conservative approach and
         # never try.
         if not allow_auto:
-            return True, False, self._message(
-                'Automatic clobbering has been disabled.')
+            return True, False, self._message('Automatic clobbering is not '
+                'enabled (add "mk_add_options AUTOCLOBBER=1" to your mozconfig).')
 
         if cwd.startswith(self.topobjdir) and cwd != self.topobjdir:
             return True, False, self._message(
@@ -178,7 +175,7 @@ def main(args, env, cwd, fh=sys.stderr):
     if not os.path.isabs(topobjdir):
         topobjdir = os.path.abspath(topobjdir)
 
-    auto = False if env.get('NO_AUTOCLOBBER', False) else True
+    auto = True if env.get('AUTOCLOBBER', False) else False
     clobber = Clobberer(topsrcdir, topobjdir)
     required, performed, message = clobber.maybe_do_clobber(cwd, auto, fh)
 

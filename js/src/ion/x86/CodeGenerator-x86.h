@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,7 +13,8 @@
 namespace js {
 namespace ion {
 
-class OutOfLineAsmJSLoadHeapOutOfBounds;
+class OutOfLineLoadTypedArrayOutOfBounds;
+class OutOfLineTruncate;
 
 class CodeGeneratorX86 : public CodeGeneratorX86Shared
 {
@@ -28,6 +28,10 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
     ValueOperand ToOutValue(LInstruction *ins);
     ValueOperand ToTempValue(LInstruction *ins, size_t pos);
 
+    void loadViewTypeElement(ArrayBufferView::ViewType vt, const Address &srcAddr,
+                             const LDefinition *out);
+    void storeViewTypeElement(ArrayBufferView::ViewType vt, const LAllocation *value,
+                              const Address &dstAddr);
     void storeElementTyped(const LAllocation *value, MIRType valueType, MIRType elementType,
                            const Register &elements, const LAllocation *index);
 
@@ -51,6 +55,9 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
     bool visitCompareV(LCompareV *lir);
     bool visitCompareVAndBranch(LCompareVAndBranch *lir);
     bool visitUInt32ToDouble(LUInt32ToDouble *lir);
+    bool visitTruncateDToInt32(LTruncateDToInt32 *ins);
+    bool visitLoadTypedArrayElementStatic(LLoadTypedArrayElementStatic *ins);
+    bool visitStoreTypedArrayElementStatic(LStoreTypedArrayElementStatic *ins);
     bool visitAsmJSLoadHeap(LAsmJSLoadHeap *ins);
     bool visitAsmJSStoreHeap(LAsmJSStoreHeap *ins);
     bool visitAsmJSLoadGlobalVar(LAsmJSLoadGlobalVar *ins);
@@ -58,7 +65,8 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
     bool visitAsmJSLoadFuncPtr(LAsmJSLoadFuncPtr *ins);
     bool visitAsmJSLoadFFIFunc(LAsmJSLoadFFIFunc *ins);
 
-    bool visitOutOfLineAsmJSLoadHeapOutOfBounds(OutOfLineAsmJSLoadHeapOutOfBounds *ool);
+    bool visitOutOfLineLoadTypedArrayOutOfBounds(OutOfLineLoadTypedArrayOutOfBounds *ool);
+    bool visitOutOfLineTruncate(OutOfLineTruncate *ool);
 
     void postAsmJSCall(LAsmJSCall *lir);
 };

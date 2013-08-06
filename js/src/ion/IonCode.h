@@ -1,12 +1,13 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jsion_coderef_h__
 #define jsion_coderef_h__
+
+#include "mozilla/PodOperations.h"
 
 #include "IonTypes.h"
 #include "gc/Heap.h"
@@ -45,8 +46,8 @@ class IonCode : public gc::Cell
     uint32_t jumpRelocTableBytes_;    // Size of the jump relocation table.
     uint32_t dataRelocTableBytes_;    // Size of the data relocation table.
     uint32_t preBarrierTableBytes_;   // Size of the prebarrier table.
-    JSBool invalidated_;            // Whether the code object has been invalidated.
-                                    // This is necessary to prevent GC tracing.
+    JSBool invalidated_;              // Whether the code object has been invalidated.
+                                      // This is necessary to prevent GC tracing.
 
 #if JS_BITS_PER_WORD == 32
     // Ensure IonCode is gc::Cell aligned.
@@ -148,16 +149,19 @@ struct IonScript
 {
   private:
     // Code pointer containing the actual method.
-    HeapPtr<IonCode> method_;
+    EncapsulatedPtr<IonCode> method_;
 
     // Deoptimization table used by this method.
-    HeapPtr<IonCode> deoptTable_;
+    EncapsulatedPtr<IonCode> deoptTable_;
 
     // Entrypoint for OSR, or NULL.
     jsbytecode *osrPc_;
 
     // Offset to OSR entrypoint from method_->raw(), or 0.
     uint32_t osrEntryOffset_;
+
+    // Offset to entrypoint skipping type arg check from method_->raw().
+    uint32_t skipArgCheckEntryOffset_;
 
     // Offset of the invalidation epilogue (which pushes this IonScript
     // and calls the invalidation thunk).
@@ -169,8 +173,12 @@ struct IonScript
     // per-platform if we want.
     uint32_t invalidateEpilogueDataOffset_;
 
-    // Flag set when we bailout, to avoid frequent bailouts.
-    bool bailoutExpected_;
+    // Number of times this script bailed out without invalidation.
+    uint32_t numBailouts_;
+
+    // Flag set when we bailed out in parallel execution and should ensure its
+    // call targets are compiled.
+    bool hasInvalidatedCallTarget_;
 
     // Any kind of data needed by the runtime, these can be either cache
     // information or profiling info.
@@ -219,23 +227,21 @@ struct IonScript
     uint32_t scriptList_;
     uint32_t scriptEntries_;
 
-    // In parallel mode, list of scripts that we call that were invalidated
-    // last time this script bailed out. These will be recompiled (or tried to
-    // be) upon next parallel entry of this script.
+    // List of scripts that we call.
     //
-    // For non-parallel IonScripts, this is NULL.
-    //
-    // For parallel IonScripts, there are as many entries as there are slices,
-    // since for any single parallel execution, we can only get a single
-    // invalidation per slice.
-    uint32_t parallelInvalidatedScriptList_;
-    uint32_t parallelInvalidatedScriptEntries_;
+    // Currently this is only non-NULL for parallel IonScripts.
+    uint32_t callTargetList_;
+    uint32_t callTargetEntries_;
 
     // Number of references from invalidation records.
     size_t refcount_;
 
     // Identifier of the compilation which produced this code.
     types::RecompileInfo recompileInfo_;
+
+    // Number of times we tried to enter this script via OSR but failed due to
+    // a LOOPENTRY pc other than osrPc_.
+    uint32_t osrPcMismatchCounter_;
 
   private:
     inline uint8_t *bottomBuffer() {
@@ -246,14 +252,11 @@ struct IonScript
     }
 
   public:
-    // Number of times this function has tried to call a non-IM compileable function
-    uint32_t slowCallCount;
-
     SnapshotOffset *bailoutTable() {
         return (SnapshotOffset *) &bottomBuffer()[bailoutTable_];
     }
-    HeapValue *constants() {
-        return (HeapValue *) &bottomBuffer()[constantTable_];
+    EncapsulatedValue *constants() {
+        return (EncapsulatedValue *) &bottomBuffer()[constantTable_];
     }
     const SafepointIndex *safepointIndices() const {
         return const_cast<IonScript *>(this)->safepointIndices();
@@ -276,8 +279,8 @@ struct IonScript
     JSScript **scriptList() const {
         return (JSScript **) &bottomBuffer()[scriptList_];
     }
-    JSScript **parallelInvalidatedScriptList() {
-        return (JSScript **) &bottomBuffer()[parallelInvalidatedScriptList_];
+    JSScript **callTargetList() {
+        return (JSScript **) &bottomBuffer()[callTargetList_];
     }
 
   private:
@@ -292,7 +295,7 @@ struct IonScript
                           size_t constants, size_t safepointIndexEntries, size_t osiIndexEntries,
                           size_t cacheEntries, size_t runtimeSize,
                           size_t safepointsSize, size_t scriptEntries,
-                          size_t parallelInvalidatedScriptEntries);
+                          size_t callTargetEntries);
     static void Trace(JSTracer *trc, IonScript *script);
     static void Destroy(FreeOp *fop, IonScript *script);
 
@@ -301,6 +304,9 @@ struct IonScript
     }
     static inline size_t offsetOfOsrEntryOffset() {
         return offsetof(IonScript, osrEntryOffset_);
+    }
+    static inline size_t offsetOfSkipArgCheckEntryOffset() {
+        return offsetof(IonScript, skipArgCheckEntryOffset_);
     }
 
   public:
@@ -327,6 +333,13 @@ struct IonScript
     uint32_t osrEntryOffset() const {
         return osrEntryOffset_;
     }
+    void setSkipArgCheckEntryOffset(uint32_t offset) {
+        JS_ASSERT(!skipArgCheckEntryOffset_);
+        skipArgCheckEntryOffset_ = offset;
+    }
+    uint32_t getSkipArgCheckEntryOffset() const {
+        return skipArgCheckEntryOffset_;
+    }
     bool containsCodeAddress(uint8_t *addr) const {
         return method()->raw() <= addr && addr <= method()->raw() + method()->instructionsSize();
     }
@@ -351,11 +364,23 @@ struct IonScript
         JS_ASSERT(invalidateEpilogueDataOffset_);
         return invalidateEpilogueDataOffset_;
     }
-    void setBailoutExpected() {
-        bailoutExpected_ = true;
+    void incNumBailouts() {
+        numBailouts_++;
+    }
+    uint32_t numBailouts() const {
+        return numBailouts_;
     }
     bool bailoutExpected() const {
-        return bailoutExpected_;
+        return numBailouts_ > 0;
+    }
+    void setHasInvalidatedCallTarget() {
+        hasInvalidatedCallTarget_ = true;
+    }
+    void clearHasInvalidatedCallTarget() {
+        hasInvalidatedCallTarget_ = false;
+    }
+    bool hasInvalidatedCallTarget() const {
+        return hasInvalidatedCallTarget_;
     }
     const uint8_t *snapshots() const {
         return reinterpret_cast<const uint8_t *>(this) + snapshots_;
@@ -369,26 +394,20 @@ struct IonScript
     size_t safepointsSize() const {
         return safepointsSize_;
     }
-    RawScript getScript(size_t i) const {
+    JSScript *getScript(size_t i) const {
         JS_ASSERT(i < scriptEntries_);
         return scriptList()[i];
     }
     size_t scriptEntries() const {
         return scriptEntries_;
     }
-    size_t parallelInvalidatedScriptEntries() const {
-        return parallelInvalidatedScriptEntries_;
-    }
-    RawScript getAndZeroParallelInvalidatedScript(uint32_t i) {
-        JS_ASSERT(i < parallelInvalidatedScriptEntries_);
-        RawScript script = parallelInvalidatedScriptList()[i];
-        parallelInvalidatedScriptList()[i] = NULL;
-        return script;
+    size_t callTargetEntries() const {
+        return callTargetEntries_;
     }
     size_t sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf) const {
         return mallocSizeOf(this);
     }
-    HeapValue &getConstant(size_t index) {
+    EncapsulatedValue &getConstant(size_t index) {
         JS_ASSERT(index < numConstants());
         return constants()[index];
     }
@@ -426,16 +445,17 @@ struct IonScript
     }
     void toggleBarriers(bool enabled);
     void purgeCaches(JS::Zone *zone);
+    void destroyCaches();
     void copySnapshots(const SnapshotWriter *writer);
     void copyBailoutTable(const SnapshotOffset *table);
-    void copyConstants(const HeapValue *vp);
+    void copyConstants(const Value *vp);
     void copySafepointIndices(const SafepointIndex *firstSafepointIndex, MacroAssembler &masm);
     void copyOsiIndices(const OsiIndex *firstOsiIndex, MacroAssembler &masm);
     void copyRuntimeData(const uint8_t *data);
     void copyCacheEntries(const uint32_t *caches, MacroAssembler &masm);
     void copySafepoints(const SafepointWriter *writer);
     void copyScriptEntries(JSScript **scripts);
-    void zeroParallelInvalidatedScripts();
+    void copyCallTargetEntries(JSScript **callTargets);
 
     bool invalidated() const {
         return refcount_ != 0;
@@ -454,6 +474,12 @@ struct IonScript
     }
     const types::RecompileInfo& recompileInfo() const {
         return recompileInfo_;
+    }
+    uint32_t incrOsrPcMismatchCounter() {
+        return ++osrPcMismatchCounter_;
+    }
+    void resetOsrPcMismatchCounter() {
+        osrPcMismatchCounter_ = 0;
     }
 };
 
@@ -578,7 +604,7 @@ struct IonScriptCounts
   public:
 
     IonScriptCounts() {
-        PodZero(this);
+        mozilla::PodZero(this);
     }
 
     ~IonScriptCounts() {

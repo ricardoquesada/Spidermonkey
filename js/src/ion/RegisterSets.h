@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,7 +8,6 @@
 #define jsion_cpu_registersets_h__
 
 #include "Registers.h"
-#include "TypeOracle.h"
 #include "ion/IonAllocPolicy.h"
 
 namespace js {
@@ -108,6 +106,12 @@ class ValueOperand
     Register scratchReg() const {
         return payloadReg();
     }
+    bool operator==(const ValueOperand &o) const {
+        return type_ == o.type_ && payload_ == o.payload_;
+    }
+    bool operator!=(const ValueOperand &o) const {
+        return !(*this == o);
+    }
 
 #elif defined(JS_PUNBOX64)
     Register value_;
@@ -124,7 +128,12 @@ class ValueOperand
     Register scratchReg() const {
         return valueReg();
     }
-
+    bool operator==(const ValueOperand &o) const {
+        return value_ == o.value_;
+    }
+    bool operator!=(const ValueOperand &o) const {
+        return !(*this == o);
+    }
 #endif
 
     ValueOperand() {}
@@ -319,6 +328,9 @@ class TypedRegisterSet
     static inline TypedRegisterSet Volatile() {
         return TypedRegisterSet(T::Codes::AllocatableMask & T::Codes::VolatileMask);
     }
+    static inline TypedRegisterSet NonVolatile() {
+        return TypedRegisterSet(T::Codes::AllocatableMask & T::Codes::NonVolatileMask);
+    }
     void intersect(TypedRegisterSet other) {
         bits_ &= ~other.bits_;
     }
@@ -337,6 +349,16 @@ class TypedRegisterSet
         JS_ASSERT(!has(reg));
         addUnchecked(reg);
     }
+    void add(ValueOperand value) {
+#if defined(JS_NUNBOX32)
+        add(value.payloadReg());
+        add(value.typeReg());
+#elif defined(JS_PUNBOX64)
+        add(value.valueReg());
+#else
+#error "Bad architecture"
+#endif
+    }
     // Determemine if some register are still allocated.  This function should
     // be used with the set of allocatable registers used for the initialization
     // of the current set.
@@ -349,6 +371,29 @@ class TypedRegisterSet
     void take(T reg) {
         JS_ASSERT(has(reg));
         bits_ &= ~(1 << reg.code());
+    }
+    void takeUnchecked(T reg) {
+        bits_ &= ~(1 << reg.code());
+    }
+    void take(ValueOperand value) {
+#if defined(JS_NUNBOX32)
+        take(value.payloadReg());
+        take(value.typeReg());
+#elif defined(JS_PUNBOX64)
+        take(value.valueReg());
+#else
+#error "Bad architecture"
+#endif
+    }
+    void takeUnchecked(ValueOperand value) {
+#if defined(JS_NUNBOX32)
+        takeUnchecked(value.payloadReg());
+        takeUnchecked(value.typeReg());
+#elif defined(JS_PUNBOX64)
+        takeUnchecked(value.valueReg());
+#else
+#error "Bad architecture"
+#endif
     }
     T getAny() const {
         JS_ASSERT(!empty());
@@ -366,6 +411,18 @@ class TypedRegisterSet
         T reg = getAny();
         take(reg);
         return reg;
+    }
+    ValueOperand takeAnyValue() {
+#if defined(JS_NUNBOX32)
+        T type = takeAny();
+        T payload = takeAny();
+        return ValueOperand(type, payload);
+#elif defined(JS_PUNBOX64)
+        T reg = takeAny();
+        return ValueOperand(reg);
+#else
+#error "Bad architecture"
+#endif
     }
     T takeFirst() {
         JS_ASSERT(!empty());
@@ -742,6 +799,20 @@ class AsmJSHeapAccess
 };
 
 typedef Vector<AsmJSHeapAccess, 0, IonAllocPolicy> AsmJSHeapAccessVector;
+
+#ifdef JS_CPU_ARM
+struct AsmJSBoundsCheck
+{
+    unsigned offset_;
+    AsmJSBoundsCheck(unsigned offset)
+    : offset_(offset)
+    {}
+    void setOffset(uint32_t offset) { offset_ = offset; }
+    unsigned offset() {return offset_;}
+};
+
+typedef Vector<AsmJSBoundsCheck, 0, IonAllocPolicy> AsmJSBoundsCheckVector;
+#endif
 
 } // namespace ion
 } // namespace js

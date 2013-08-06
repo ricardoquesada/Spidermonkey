@@ -1,6 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=80:
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,6 +16,7 @@
 #include "jsfriendapi.h"
 
 using namespace mozilla::jsipc;
+using namespace JS;
 
 namespace {
 
@@ -179,11 +179,13 @@ ObjectWrapperParent::GetJSObject(JSContext* cx) const
 }
 
 static ObjectWrapperParent*
-Unwrap(JSContext* cx, JSObject* obj)
+Unwrap(JSContext* cx, JSObject* objArg)
 {
+    RootedObject obj(cx, objArg), proto(cx);
     while (js::GetObjectClass(obj) != &ObjectWrapperParent::sCPOW_JSClass) {
-        if (!js::GetObjectProto(cx, obj, &obj) || !obj)
+        if (!js::GetObjectProto(cx, obj, &proto) || !proto)
             return NULL;
+        obj = proto;
     }
 
     ObjectWrapperParent* self =
@@ -275,6 +277,43 @@ ObjectWrapperParent::jsval_from_JSVariant(JSContext* cx, const JSVariant& from,
 }
 
 /*static*/ bool
+ObjectWrapperParent::boolean_from_JSVariant(JSContext* cx, const JSVariant& from,
+                                            JSBool* to)
+{
+    switch (from.type()) {
+    case JSVariant::Tvoid_t:
+        *to = false;
+        return true;
+    case JSVariant::TPObjectWrapperParent: {
+        JS::Rooted<JS::Value> v(cx);
+        if (!jsval_from_PObjectWrapperParent(cx, from.get_PObjectWrapperParent(), v.address()))
+            return false;
+        *to = JS::ToBoolean(v);
+        return true;
+    }
+    case JSVariant::TnsString:
+        {
+            JSString* str = JS_NewUCStringCopyZ(cx, from.get_nsString().BeginReading());
+            if (!str)
+                return false;
+            *to = JS::ToBoolean(JS::StringValue(str));
+            return true;
+        }
+    case JSVariant::Tint:
+        *to = from.get_int() != 0;
+        return true;
+    case JSVariant::Tdouble:
+        *to = JS::ToBoolean(JS::DoubleValue(from.get_double()));
+        return true;
+    case JSVariant::Tbool:
+        *to = from.get_bool();
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*static*/ bool
 ObjectWrapperParent::
 JSObject_to_PObjectWrapperParent(JSContext* cx, JSObject* from, PObjectWrapperParent** to)
 {
@@ -293,7 +332,7 @@ JSObject_to_PObjectWrapperParent(JSContext* cx, JSObject* from, PObjectWrapperPa
 ObjectWrapperParent::
 JSObject_from_PObjectWrapperParent(JSContext* cx,
                                    const PObjectWrapperParent* from,
-                                   JSMutableHandleObject to)
+                                   JS::MutableHandleObject to)
 {
     const ObjectWrapperParent* owp =
         static_cast<const ObjectWrapperParent*>(from);
@@ -432,7 +471,7 @@ ObjectWrapperParent::CPOW_SetProperty(JSContext *cx, JSHandleObject obj, JSHandl
     
 /*static*/ JSBool
 ObjectWrapperParent::CPOW_DelProperty(JSContext *cx, JSHandleObject obj, JSHandleId id,
-                                      JSMutableHandleValue vp)
+                                      JSBool *succeeded)
 {
     CPOW_LOG(("Calling CPOW_DelProperty (%s)...",
               JSVAL_TO_CSTR(cx, id)));
@@ -454,7 +493,7 @@ ObjectWrapperParent::CPOW_DelProperty(JSContext *cx, JSHandleObject obj, JSHandl
             self->CallDelProperty(in_id,
                                   aco.StatusPtr(), &out_v) &&
             aco.Ok() &&
-            jsval_from_JSVariant(cx, out_v, vp.address()));
+            boolean_from_JSVariant(cx, out_v, succeeded));
 }
 
 JSBool
@@ -539,7 +578,7 @@ ObjectWrapperParent::CPOW_NewEnumerate(JSContext *cx, JSHandleObject obj,
 
 /*static*/ JSBool
 ObjectWrapperParent::CPOW_NewResolve(JSContext *cx, JSHandleObject obj, JSHandleId id,
-                                     unsigned flags, JSMutableHandleObject objp)
+                                     unsigned flags, JS::MutableHandleObject objp)
 {
     CPOW_LOG(("Calling CPOW_NewResolve (%s)...",
               JSVAL_TO_CSTR(cx, id)));

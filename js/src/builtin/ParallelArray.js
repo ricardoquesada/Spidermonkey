@@ -123,10 +123,6 @@ function StepIndices(shape, indices) {
   }
 }
 
-function IsInteger(v) {
-  return (v | 0) === v;
-}
-
 // Constructor
 //
 // We split the 3 construction cases so that we don't case on arguments.
@@ -299,9 +295,9 @@ function ParallelArrayBuild(self, shape, func, mode) {
       break parallel;
 
     var chunks = ComputeNumChunks(length);
-    var numSlices = ParallelSlices();
+    var numSlices = ForkJoinSlices();
     var info = ComputeAllSliceBounds(chunks, numSlices);
-    ParallelDo(constructSlice, CheckParallel(mode));
+    ForkJoin(constructSlice, CheckParallel(mode));
     return;
   }
 
@@ -389,9 +385,9 @@ function ParallelArrayMap(func, mode) {
       break parallel;
 
     var chunks = ComputeNumChunks(length);
-    var numSlices = ParallelSlices();
+    var numSlices = ForkJoinSlices();
     var info = ComputeAllSliceBounds(chunks, numSlices);
-    ParallelDo(mapSlice, CheckParallel(mode));
+    ForkJoin(mapSlice, CheckParallel(mode));
     return NewParallelArray(ParallelArrayView, [length], buffer, 0);
   }
 
@@ -444,13 +440,13 @@ function ParallelArrayReduce(func, mode) {
       break parallel;
 
     var chunks = ComputeNumChunks(length);
-    var numSlices = ParallelSlices();
+    var numSlices = ForkJoinSlices();
     if (chunks < numSlices)
       break parallel;
 
     var info = ComputeAllSliceBounds(chunks, numSlices);
     var subreductions = NewDenseArray(numSlices);
-    ParallelDo(reduceSlice, CheckParallel(mode));
+    ForkJoin(reduceSlice, CheckParallel(mode));
     var accumulator = subreductions[0];
     for (var i = 1; i < numSlices; i++)
       accumulator = func(accumulator, subreductions[i]);
@@ -531,13 +527,13 @@ function ParallelArrayScan(func, mode) {
       break parallel;
 
     var chunks = ComputeNumChunks(length);
-    var numSlices = ParallelSlices();
+    var numSlices = ForkJoinSlices();
     if (chunks < numSlices)
       break parallel;
     var info = ComputeAllSliceBounds(chunks, numSlices);
 
     // Scan slices individually (see comment on phase1()).
-    ParallelDo(phase1, CheckParallel(mode));
+    ForkJoin(phase1, CheckParallel(mode));
 
     // Compute intermediates array (see comment on phase2()).
     var intermediates = [];
@@ -557,7 +553,7 @@ function ParallelArrayScan(func, mode) {
     info[SLICE_END(numSlices - 1)] = std_Math_min(info[SLICE_END(numSlices - 1)], length);
 
     // Complete each slice using intermediates array (see comment on phase2()).
-    ParallelDo(phase2, CheckParallel(mode));
+    ForkJoin(phase2, CheckParallel(mode));
     return NewParallelArray(ParallelArrayView, [length], buffer, 0);
   }
 
@@ -808,7 +804,7 @@ function ParallelArrayScatter(targets, defaultValue, conflictFunc, length, mode)
 
   function parDivideOutputRange() {
     var chunks = ComputeNumChunks(targetsLength);
-    var numSlices = ParallelSlices();
+    var numSlices = ForkJoinSlices();
     var checkpoints = NewDenseArray(numSlices);
     for (var i = 0; i < numSlices; i++)
       UnsafeSetElement(checkpoints, i, 0);
@@ -821,7 +817,7 @@ function ParallelArrayScatter(targets, defaultValue, conflictFunc, length, mode)
       UnsafeSetElement(conflicts, i, false);
     }
 
-    ParallelDo(fill, CheckParallel(mode));
+    ForkJoin(fill, CheckParallel(mode));
     return NewParallelArray(ParallelArrayView, [length], buffer, 0);
 
     function fill(sliceId, numSlices, warmup) {
@@ -835,8 +831,7 @@ function ParallelArrayScatter(targets, defaultValue, conflictFunc, length, mode)
 
       for (; indexPos < indexEnd; indexPos++) {
         var x = self.get(indexPos);
-        var t = targets[indexPos];
-        checkTarget(indexPos, t);
+        var t = checkTarget(indexPos, targets[indexPos]);
         if (t < outputStart || t >= outputEnd)
           continue;
         if (conflicts[t])
@@ -854,7 +849,7 @@ function ParallelArrayScatter(targets, defaultValue, conflictFunc, length, mode)
     // target array for fear of inducing a conflict where none existed
     // before. Therefore, we must proceed not by chunks but rather by
     // individual indices.
-    var numSlices = ParallelSlices();
+    var numSlices = ForkJoinSlices();
     var info = ComputeAllSliceBounds(targetsLength, numSlices);
 
     // FIXME(bug 844890): Use typed arrays here.
@@ -877,7 +872,7 @@ function ParallelArrayScatter(targets, defaultValue, conflictFunc, length, mode)
     for (var i = 0; i < length; i++)
       UnsafeSetElement(outputBuffer, i, defaultValue);
 
-    ParallelDo(fill, CheckParallel(mode));
+    ForkJoin(fill, CheckParallel(mode));
     mergeBuffers();
     return NewParallelArray(ParallelArrayView, [length], outputBuffer, 0);
 
@@ -891,8 +886,7 @@ function ParallelArrayScatter(targets, defaultValue, conflictFunc, length, mode)
       var conflicts = localConflicts[sliceId];
       while (indexPos < indexEnd) {
         var x = self.get(indexPos);
-        var t = targets[indexPos];
-        checkTarget(indexPos, t);
+        var t = checkTarget(indexPos, targets[indexPos]);
         if (conflicts[t])
           x = collide(x, localbuffer[t]);
         UnsafeSetElement(localbuffer, t, x,
@@ -937,8 +931,7 @@ function ParallelArrayScatter(targets, defaultValue, conflictFunc, length, mode)
 
     for (var i = 0; i < targetsLength; i++) {
       var x = self.get(i);
-      var t = targets[i];
-      checkTarget(i, t);
+      var t = checkTarget(i, targets[i]);
       if (conflicts[t])
         x = collide(x, buffer[t]);
 
@@ -950,11 +943,14 @@ function ParallelArrayScatter(targets, defaultValue, conflictFunc, length, mode)
   }
 
   function checkTarget(i, t) {
-      if ((t | 0) !== t)
-        ThrowError(JSMSG_PAR_ARRAY_SCATTER_BAD_TARGET, i);
+    if (TO_INT32(t) !== t)
+      ThrowError(JSMSG_PAR_ARRAY_SCATTER_BAD_TARGET, i);
 
-      if (t < 0 || t >= length)
-        ThrowError(JSMSG_PAR_ARRAY_SCATTER_BOUNDS);
+    if (t < 0 || t >= length)
+      ThrowError(JSMSG_PAR_ARRAY_SCATTER_BOUNDS);
+
+    // It's not enough to return t, as -0 | 0 === -0.
+    return TO_INT32(t);
   }
 }
 
@@ -976,7 +972,7 @@ function ParallelArrayFilter(func, mode) {
       break parallel;
 
     var chunks = ComputeNumChunks(length);
-    var numSlices = ParallelSlices();
+    var numSlices = ForkJoinSlices();
     if (chunks < numSlices * 2)
       break parallel;
 
@@ -994,7 +990,7 @@ function ParallelArrayFilter(func, mode) {
     for (var i = 0; i < numSlices; i++)
       UnsafeSetElement(counts, i, 0);
     var survivors = NewDenseArray(chunks);
-    ParallelDo(findSurvivorsInSlice, CheckParallel(mode));
+    ForkJoin(findSurvivorsInSlice, CheckParallel(mode));
 
     // Step 2. Compress the slices into one contiguous set.
     var count = 0;
@@ -1002,7 +998,7 @@ function ParallelArrayFilter(func, mode) {
       count += counts[i];
     var buffer = NewDenseArray(count);
     if (count > 0)
-      ParallelDo(copySurvivorsInSlice, CheckParallel(mode));
+      ForkJoin(copySurvivorsInSlice, CheckParallel(mode));
 
     return NewParallelArray(ParallelArrayView, [count], buffer, 0);
   }
@@ -1251,13 +1247,13 @@ function ParallelArrayToString() {
  * sequential execution
  */
 function AssertSequentialIsOK(mode) {
-  if (mode && mode.mode !== "seq" && ParallelTestsShouldPass())
-    ThrowError(JSMSG_WRONG_VALUE, "par", "seq");
+  if (mode && mode.mode && mode.mode !== "seq" && ParallelTestsShouldPass())
+    ThrowError(JSMSG_WRONG_VALUE, "parallel execution", "sequential was forced");
 }
 
 /**
  * Internal debugging tool: returns a function to be supplied to
- * ParallelDo() that will check that the parallel results
+ * ForkJoin() that will check that the parallel results
  * bailout/succeed as expected. Returns null if no mode is supplied
  * or we are building with some strange IF_DEF configuration such that
  * we don't expect parallel execution to work.
@@ -1266,25 +1262,17 @@ function CheckParallel(mode) {
   if (!mode || !ParallelTestsShouldPass())
     return null;
 
-  return function(bailouts) {
+  return function(result, bailouts, causes) {
     if (!("expect" in mode) || mode.expect === "any") {
       return; // Ignore result when unspecified or unimportant.
+    } else if (mode.expect === "mixed" && result !== "disqualified") {
+      return; // "mixed" means that it may bailout, may succeed
+    } else if (result === mode.expect) {
+      return;
     }
 
-    var result;
-    if (bailouts === 0)
-      result = "success";
-    else if (bailouts === global.Infinity)
-      result = "disqualified";
-    else
-      result = "bailout";
-
-    if (mode.expect === "mixed") {
-      if (result === "disqualified")
-        ThrowError(JSMSG_WRONG_VALUE, mode.expect, result);
-    } else if (result !== mode.expect) {
-      ThrowError(JSMSG_WRONG_VALUE, mode.expect, result);
-    }
+    ThrowError(JSMSG_WRONG_VALUE, mode.expect,
+               result+":"+bailouts+":"+causes);
   };
 }
 

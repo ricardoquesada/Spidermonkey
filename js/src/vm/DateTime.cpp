@@ -1,14 +1,16 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "DateTime.h"
 
 #include <time.h>
 
 #include "jsutil.h"
+
+using mozilla::UnspecifiedNaN;
 
 static bool
 ComputeLocalTime(time_t local, struct tm *ptm)
@@ -162,7 +164,7 @@ js::DateTimeInfo::DateTimeInfo()
 {
     // Set to a totally impossible TZA so that the comparison above will fail
     // and all fields will be properly initialized.
-    localTZA_ = MOZ_DOUBLE_NaN();
+    localTZA_ = UnspecifiedNaN();
     updateTimeZoneAdjustment();
 }
 

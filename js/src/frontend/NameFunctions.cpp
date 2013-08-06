@@ -1,6 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=99:
- *
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -246,7 +245,7 @@ class NameResolver
         if (buf.empty())
             return NULL;
 
-        RawAtom atom = buf.finishAtom();
+        JSAtom *atom = buf.finishAtom();
         fun->setGuessedAtom(atom);
         return atom;
     }
@@ -315,7 +314,7 @@ class NameResolver
             resolve(cur->pn_kid3, prefix);
             break;
           case PN_CODE:
-            JS_ASSERT(cur->isKind(PNK_FUNCTION));
+            JS_ASSERT(cur->isKind(PNK_MODULE) || cur->isKind(PNK_FUNCTION));
             resolve(cur->pn_body, prefix);
             break;
           case PN_LIST:

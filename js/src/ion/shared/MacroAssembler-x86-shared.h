@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -96,6 +95,9 @@ class MacroAssemblerX86Shared : public Assembler
     void test32(const Register &lhs, const Register &rhs) {
         testl(lhs, rhs);
     }
+    void test32(const Address &addr, Imm32 imm) {
+        testl(Operand(addr), imm);
+    }
     void cmp32(Register a, Register b) {
         cmpl(a, b);
     }
@@ -104,6 +106,9 @@ class MacroAssemblerX86Shared : public Assembler
     }
     void cmp32(const Operand &lhs, const Register &rhs) {
         cmpl(lhs, rhs);
+    }
+    void add32(Register src, Register dest) {
+        addl(src, dest);
     }
     void add32(Imm32 imm, Register dest) {
         addl(imm, dest);
@@ -114,10 +119,21 @@ class MacroAssemblerX86Shared : public Assembler
     void sub32(Imm32 imm, Register dest) {
         subl(imm, dest);
     }
+    void sub32(Register src, Register dest) {
+        subl(src, dest);
+    }
     void xor32(Imm32 imm, Register dest) {
         xorl(imm, dest);
     }
 
+    void branch32(Condition cond, const Operand &lhs, const Register &rhs, Label *label) {
+        cmpl(lhs, rhs);
+        j(cond, label);
+    }
+    void branch32(Condition cond, const Operand &lhs, Imm32 rhs, Label *label) {
+        cmpl(lhs, rhs);
+        j(cond, label);
+    }
     void branch32(Condition cond, const Address &lhs, const Register &rhs, Label *label) {
         cmpl(Operand(lhs), rhs);
         j(cond, label);
@@ -190,16 +206,13 @@ class MacroAssemblerX86Shared : public Assembler
     void convertInt32ToDouble(const Register &src, const FloatRegister &dest) {
         cvtsi2sd(Operand(src), dest);
     }
+    void convertInt32ToDouble(const Address &src, FloatRegister dest) {
+        cvtsi2sd(Operand(src), dest);
+    }
     Condition testDoubleTruthy(bool truthy, const FloatRegister &reg) {
         xorpd(ScratchFloatReg, ScratchFloatReg);
         ucomisd(ScratchFloatReg, reg);
         return truthy ? NonZero : Zero;
-    }
-    void branchTruncateDouble(const FloatRegister &src, const Register &dest, Label *fail) {
-        JS_STATIC_ASSERT(INT_MIN == int(0x80000000));
-        cvttsd2si(src, dest);
-        cmpl(dest, Imm32(INT_MIN));
-        j(Assembler::Equal, fail);
     }
     void load8ZeroExtend(const Address &src, const Register &dest) {
         movzbl(Operand(src), dest);
@@ -277,6 +290,15 @@ class MacroAssemblerX86Shared : public Assembler
     }
     void addDouble(FloatRegister src, FloatRegister dest) {
         addsd(src, dest);
+    }
+    void subDouble(FloatRegister src, FloatRegister dest) {
+        subsd(src, dest);
+    }
+    void mulDouble(FloatRegister src, FloatRegister dest) {
+        mulsd(src, dest);
+    }
+    void divDouble(FloatRegister src, FloatRegister dest) {
+        divsd(src, dest);
     }
     void convertDoubleToFloat(const FloatRegister &src, const FloatRegister &dest) {
         cvtsd2ss(src, dest);
@@ -401,14 +423,14 @@ class MacroAssemblerX86Shared : public Assembler
     }
 
     void emitSet(Assembler::Condition cond, const Register &dest,
-                 Assembler::NaNCond ifNaN = Assembler::NaN_Unexpected) {
+                 Assembler::NaNCond ifNaN = Assembler::NaN_HandledByCond) {
         if (GeneralRegisterSet(Registers::SingleByteRegs).has(dest)) {
             // If the register we're defining is a single byte register,
             // take advantage of the setCC instruction
             setCC(cond, dest);
             movzxbl(dest, dest);
 
-            if (ifNaN != Assembler::NaN_Unexpected) {
+            if (ifNaN != Assembler::NaN_HandledByCond) {
                 Label noNaN;
                 j(Assembler::NoParity, &noNaN);
                 if (ifNaN == Assembler::NaN_IsTrue)
@@ -487,6 +509,10 @@ class MacroAssemblerX86Shared : public Assembler
 
     CodeOffsetLabel labelForPatch() {
         return CodeOffsetLabel(size());
+    }
+    
+    void abiret() {
+        ret();
     }
 };
 

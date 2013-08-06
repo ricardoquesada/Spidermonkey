@@ -11,9 +11,13 @@ srcdir		= @srcdir@
 run_for_side_effects := $(shell echo "MAKE: $(MAKE)")
 include $(DEPTH)/config/autoconf.mk
 
-LIBRARY_NAME	    = mozjs
-STATIC_LIBRARY_NAME = js_static
+ifdef JS_STANDALONE
+LIBRARY_NAME	= mozjs-@MOZJS_MAJOR_VERSION@.@MOZJS_MINOR_VERSION@@MOZJS_ALPHA@
+else
+LIBRARY_NAME	= mozjs
+endif
 
+STATIC_LIBRARY_NAME = js_static
 LIBS		= $(NSPR_LIBS)
 
 # JavaScript must be built shared, even for static builds, as it is used by
@@ -114,7 +118,6 @@ CPPSRCS		= \
 		FoldConstants.cpp \
 		Intl.cpp \
 		NameFunctions.cpp \
-		ParallelDo.cpp \
 		ParallelArray.cpp \
 		ParseMaps.cpp \
 		ParseNode.cpp \
@@ -135,6 +138,7 @@ CPPSRCS		= \
 		Memory.cpp \
 		Statistics.cpp \
 		StoreBuffer.cpp \
+		Nursery.cpp \
 		Iteration.cpp \
 		Zone.cpp \
 		Verifier.cpp \
@@ -150,37 +154,10 @@ CPPSRCS		+= \
 		$(NULL)
 endif
 
-# Changes to internal header files, used externally, massively slow down
-# browser builds.  Don't add new files here unless you know what you're
-# doing!
-INSTALLED_HEADERS = \
-		js-config.h \
-		jscpucfg.h \
-		js.msg \
-		jsalloc.h \
-		jsapi.h \
-		jsclass.h \
-		jsclist.h \
-		jsdbgapi.h \
-		jsdhash.h \
-		jsfriendapi.h \
-		jslock.h \
-		json.h \
-		jsproxy.h \
-		jsprf.h \
-		jsprototypes.h \
-		jsprvtd.h \
-		jspubtd.h \
-		jstypes.h \
-		jsutil.h \
-		jsversion.h \
-		jswrapper.h \
-		$(NULL)
-
 ######################################################
 # BEGIN include exported headers from the JS engine
 #
-#       Ultimately, after cleansing INSTALLED_HEADERS,
+#       Ultimately, after cleansing EXPORTS,
 #       these will be the ONLY headers exported by
 #       the js engine
 #
@@ -188,34 +165,13 @@ VPATH		+= \
 		$(srcdir)/../public \
 		$(NULL)
 
-EXPORTS_NAMESPACES += js
-
-# If you add a header here, add it to js/src/jsapi-tests/testIntTypesABI.cpp so
-# that we ensure we don't over-expose our internal integer typedefs.  Note that
-# LegacyIntTypes.h below is deliberately exempted from this requirement.
-EXPORTS_js = \
-		Anchor.h \
-		CallArgs.h \
-		CharacterEncoding.h \
-		GCAPI.h \
-		HashTable.h \
-		HeapAPI.h \
-		LegacyIntTypes.h \
-		MemoryMetrics.h \
-		PropertyKey.h \
-		RequiredDefines.h \
-		RootingAPI.h \
-		TemplateLib.h \
-		Utility.h \
-		Value.h \
-		Vector.h \
-		$(NULL)
-
 ###############################################
 # BEGIN enable non-releasable features
 #
 ifeq (,$(filter beta release esr,$(MOZ_UPDATE_CHANNEL)))
 DEFINES += -DENABLE_TYPEDARRAY_MOVE
+endif
+ifeq (,$(filter aurora beta release esr,$(MOZ_UPDATE_CHANNEL)))
 DEFINES += -DENABLE_PARALLEL_JS
 endif
 
@@ -258,6 +214,14 @@ VPATH +=	$(srcdir)/ion
 VPATH +=	$(srcdir)/ion/shared
 
 CPPSRCS +=	MIR.cpp \
+		BytecodeAnalysis.cpp \
+		BaselineCompiler.cpp \
+		BaselineIC.cpp \
+		BaselineFrame.cpp \
+		BaselineFrameInfo.cpp \
+		BaselineJIT.cpp \
+		BaselineInspector.cpp \
+		BaselineBailouts.cpp \
 		BacktrackingAllocator.cpp \
 		Bailouts.cpp \
 		BitSet.cpp \
@@ -286,7 +250,6 @@ CPPSRCS +=	MIR.cpp \
 		Snapshots.cpp \
 		Safepoints.cpp \
 		StupidAllocator.cpp \
-		TypeOracle.cpp \
 		TypePolicy.cpp \
 		ValueNumbering.cpp \
 		RangeAnalysis.cpp \
@@ -295,6 +258,7 @@ CPPSRCS +=	MIR.cpp \
 		AliasAnalysis.cpp \
 		ParallelArrayAnalysis.cpp \
 		UnreachableCodeElimination.cpp \
+		BaselineCompiler-shared.cpp \
 		EffectiveAddressAnalysis.cpp \
 		AsmJS.cpp \
 		AsmJSLink.cpp \
@@ -308,6 +272,8 @@ CPPSRCS +=	IonFrames-x86-shared.cpp
 CPPSRCS +=	MoveEmitter-x86-shared.cpp
 CPPSRCS +=	Assembler-x86-shared.cpp
 CPPSRCS +=	Lowering-x86-shared.cpp
+CPPSRCS +=	BaselineCompiler-x86-shared.cpp
+CPPSRCS +=	BaselineIC-x86-shared.cpp
 endif #ENABLE_ION
 ifeq (x86_64, $(TARGET_CPU))
 ifdef _MSC_VER
@@ -329,6 +295,8 @@ CPPSRCS += 	Lowering-x64.cpp \
 		Assembler-x64.cpp \
 		Bailouts-x64.cpp \
 		MacroAssembler-x64.cpp \
+		BaselineCompiler-x64.cpp \
+		BaselineIC-x64.cpp \
 		$(NULL)
 endif #ENABLE_ION
 else
@@ -340,6 +308,8 @@ CPPSRCS +=	Lowering-x86.cpp \
 		Assembler-x86.cpp \
 		Bailouts-x86.cpp \
 		MacroAssembler-x86.cpp \
+		BaselineCompiler-x86.cpp \
+		BaselineIC-x86.cpp \
 		$(NULL)
 endif #ENABLE_ION
 ifdef SOLARIS_SUNPRO_CXX
@@ -360,6 +330,8 @@ CPPSRCS +=	Lowering-arm.cpp \
 		MoveEmitter-arm.cpp \
 		Architecture-arm.cpp \
 		MacroAssembler-arm.cpp \
+		BaselineCompiler-arm.cpp \
+		BaselineIC-arm.cpp \
 		$(NULL)
 endif #ENABLE_ION
 endif
@@ -482,26 +454,17 @@ endif # JS_HAS_CTYPES
 
 LOCAL_INCLUDES += -I$(MFBT_ROOT)/double-conversion
 
-ifdef HAVE_DTRACE
-INSTALLED_HEADERS += \
-		$(CURDIR)/javascript-trace.h \
-		$(NULL)
-endif
-
 # PerfMeasurement is available regardless of low-level support for it;
 # it just doesn't necessarily do anything useful.  There is one
 # implementation source file per supported operating system, plus a stub
 # for unsupported OSes, plus the Javascript wrapper.
 VPATH += $(srcdir)/perf
-INSTALLED_HEADERS += jsperf.h
 CPPSRCS += jsperf.cpp
 ifdef HAVE_LINUX_PERF_EVENT_H
 CPPSRCS += pm_linux.cpp
 else
 CPPSRCS += pm_stub.cpp
 endif
-
-EXPORTS = $(INSTALLED_HEADERS)
 
 DASH_R		= -r
 
@@ -569,6 +532,18 @@ config/nsinstall$(HOST_BIN_SUFFIX): $(srcdir)/config/nsinstall.c $(srcdir)/confi
 	$(MAKE) -C config/ nsinstall$(HOST_BIN_SUFFIX)
 endif
 
+# Ensure symbol versions of shared library on Linux do not conflict
+# with those in libxul.
+ifeq (Linux,$(OS_TARGET))
+EXTRA_DSO_LDOPTS += -Wl,-version-script,symverscript
+
+symverscript: symverscript.in
+	$(PYTHON) $(topsrcdir)/config/Preprocessor.py \
+		-DVERSION="$(subst -,_,$(LIBRARY_NAME))" $< > $@
+
+EXTRA_DEPS += symverscript
+endif
+
 include $(topsrcdir)/config/rules.mk
 
 ifdef JS_HAS_CTYPES
@@ -583,13 +558,53 @@ distclean clean::
 endif
 endif
 
+
+#############################################
+# BEGIN ECMAScript Internationalization API
+#
+
 # ICU headers need to be available whether we build with the complete
 # Internationalization API or not - ICU stubs rely on them.
 
 LOCAL_INCLUDES += \
-    -I$(topsrcdir)/../../intl/icu/source/common \
-    -I$(topsrcdir)/../../intl/icu/source/i18n \
-    $(NULL)
+  -I$(topsrcdir)/../../intl/icu/source/common \
+  -I$(topsrcdir)/../../intl/icu/source/i18n \
+  $(NULL)
+
+ifdef ENABLE_INTL_API
+
+ifeq ($(OS_ARCH),WINNT)
+  # Parallel gmake is buggy on Windows
+  ICU_GMAKE_OPTIONS="-j1"
+  # Library names: On Windows, ICU uses modified library names for static
+  # and debug libraries.
+  ifdef MOZ_DEBUG
+    ICU_LIB_SUFFIX=d
+  endif
+  ICU_LIB_RENAME = $(foreach libname,$(ICU_LIB_NAMES),\
+                     cp -p intl/icu/lib/s$(libname)$(ICU_LIB_SUFFIX).lib intl/icu/lib/$(libname).lib;)
+endif
+
+# - Build ICU as part of the "export" target, so things get built
+#   in the right order.
+# - ICU requires GNU make according to its readme.html. pymake can't be used
+#   because it doesn't support order only dependencies.
+# - Force ICU to use the standard suffix for object files because expandlibs
+#   will discard all files with a non-standard suffix (bug 857450).
+# - Options for genrb: -k strict parsing; -R omit collation tailoring rules.
+export::
+	$(GMAKE) $(ICU_GMAKE_OPTIONS) -C intl/icu STATIC_O=$(OBJ_SUFFIX) GENRBOPTS='-k -R'
+	$(ICU_LIB_RENAME)
+
+distclean clean::
+	$(call SUBMAKE,$@,intl/icu)
+
+endif
+
+#
+# END ECMAScript Internationalization API
+#############################################
+
 
 # The "find any vanilla new/new[] calls" script is tailored to Linux, so
 # only run it there.  That should be enough to catch any such calls that
@@ -620,7 +635,7 @@ endif
 check-jit-test::
 	$(wildcard $(RUN_TEST_PROGRAM)) $(PYTHON) -u $(srcdir)/jit-test/jit_test.py \
 	        --no-slow --no-progress --tinderbox --tbpl $(JITTEST_VALGRIND_FLAG) \
-	        $(DIST)/bin/js$(BIN_SUFFIX)
+	        $(DIST)/bin/$(JS_SHELL_NAME)$(BIN_SUFFIX)
 
 check:: check-jit-test
 
@@ -637,7 +652,7 @@ check-jstests:
 				--no-extensions \
 				--timeout 300 \
 				--args="`echo $$f | sed 's/\(.\)/ -\1/g'`" \
-				$(DIST)/bin/js$(BIN_SUFFIX); \
+				$(DIST)/bin/$(JS_SHELL_NAME)$(BIN_SUFFIX); \
 			RC=$$(( $$RC || $$?)); \
 		done; \
 	exit $$RC
@@ -664,7 +679,7 @@ endif
 
 DIST_GARBAGE = config.cache config.log config.status* \
    config/autoconf.mk \
-   unallmakefiles js-config js-config.h js-confdefs.h
+   unallmakefiles $(JS_CONFIG_NAME) js-config.h js-confdefs.h
 
 distclean::
 	cat unallmakefiles | $(XARGS) rm -f
@@ -683,10 +698,6 @@ DEFINES		+= -DJS_HAS_CTYPES
 DEFINES         += -DDLL_PREFIX=\"$(DLL_PREFIX)\" -DDLL_SUFFIX=\"$(DLL_SUFFIX)\"
 endif
 
-ifdef JS_VERSION
-DEFINES		+= -DJS_VERSION=$(JS_VERSION)
-endif
-
 ifneq ($(findstring -L,$(NSPR_LIBS)),)
 NSPR_STATIC_PATH = $(subst -L,,$(findstring -L,$(NSPR_LIBS)))
 else
@@ -694,10 +705,13 @@ NSPR_STATIC_PATH = $(DIST)/lib
 endif
 
 ifdef MOZ_VTUNE
-#CXXFLAGS += -IC:/Program\ Files/Intel/VTune/Analyzer/Include
-#EXTRA_DSO_LDOPTS += C:/Program\ Files/Intel/VTune/Analyzer/Lib/VtuneApi.lib
-#LIBS +=  C:/Program\ Files/Intel/VTune/Analyzer/Lib/VtuneApi.lib
-endif
+ifeq ($(OS_ARCH), WINNT)
+EXTRA_DSO_LDOPTS += $(VTUNE_LIBRARIES)
+LIBS += $(VTUNE_LIBRARIES)
+else
+SHARED_LIBRARY_LIBS += $(VTUNE_LIBRARIES)
+endif # WINNT
+endif # MOZ_VTUNE
 
 ifdef MOZ_ETW
 # This will get the ETW provider resources into the library mozjs.dll
@@ -717,6 +731,8 @@ EXTRA_LIBS += $(MOZ_ZLIB_LIBS)
 ifneq (,$(MOZ_ZLIB_LIBS)$(MOZ_GLUE_LDFLAGS))
 DEFINES += -DUSE_ZLIB
 endif
+
+SHARED_LIBRARY_LIBS += $(ICU_LIBS)
 
 # Prevent floating point errors caused by VC++ optimizations
 ifdef _MSC_VER
@@ -795,6 +811,11 @@ endif
 # - OS_LIBS includes libraries selected by the configure script.
 # - EXTRA_LIBS includes libraries selected by this Makefile.
 JS_CONFIG_LIBS=$(EXTRA_DSO_LDOPTS) $(OS_LIBS) $(EXTRA_LIBS)
+ifdef GNU_CC
+JS_CONFIG_MOZ_JS_LIBS=-L$(libdir) -l$(LIBRARY_NAME)
+else
+JS_CONFIG_MOZ_JS_LIBS=$(libdir)/$(LIBRARY_NAME).lib
+endif
 
 # The configure script invokes this rule explicitly at configure time!
 # It's important that js-config be ready by the time we're done
@@ -808,23 +829,39 @@ JS_CONFIG_LIBS=$(EXTRA_DSO_LDOPTS) $(OS_LIBS) $(EXTRA_LIBS)
 # avoid trying to re-compute all that in the configure script, we just
 # have the configure script generate this Makefile, and then invoke
 # this rule.
-at=@
-js-config: js-config.in Makefile $(DEPTH)/config/autoconf.mk $(topsrcdir)/config/config.mk $(topsrcdir)/config/rules.mk
-	$(RM) js-config.tmp
-	sed < $< > js-config.tmp \
-	-e 's|$(at)prefix$(at)|$(prefix)|' \
-	-e 's|$(at)exec_prefix$(at)|$(exec_prefix)|' \
-	-e 's|$(at)includedir$(at)|$(includedir)|' \
-	-e 's|$(at)libdir$(at)|$(libdir)|' \
-	-e 's|$(at)MOZILLA_VERSION$(at)|$(MOZILLA_VERSION)|' \
-	-e 's|$(at)LIBRARY_NAME$(at)|$(LIBRARY_NAME)|' \
-	-e 's|$(at)NSPR_CFLAGS$(at)|$(NSPR_CFLAGS)|' \
-	-e 's|$(at)JS_CONFIG_LIBS$(at)|$(JS_CONFIG_LIBS)|' \
-	-e 's|$(at)MOZ_JS_LIBS$(at)|$(MOZ_JS_LIBS)|' \
-	&& mv js-config.tmp $@ && chmod +x $@
 
-SCRIPTS = js-config
-SDK_BINARY = js-config
+# Set the various definitions that will be substituted for js-config
+# and for the pck-config .pc file.
+JS_CONFIG_SUBSTITUTIONS=\
+	-Dprefix="$(prefix)" \
+	-Dexec_prefix="$(exec_prefix)" \
+	-Dincludedir="$(includedir)" \
+	-Dlibdir="$(libdir)" \
+	-DMODULE="$(MODULE)" \
+	-DMOZILLA_VERSION="$(MOZILLA_VERSION)" \
+	-DLIBRARY_NAME="$(LIBRARY_NAME)" \
+	-DJS_CONFIG_LIBS="$(JS_CONFIG_LIBS)" \
+	-DJS_CONFIG_MOZ_JS_LIBS="$(JS_CONFIG_MOZ_JS_LIBS)" \
+	-DMOZJS_MAJOR_VERSION="$(MOZJS_MAJOR_VERSION)" \
+	-DMOZJS_MINOR_VERSION="$(MOZJS_MINOR_VERSION)" \
+	-DMOZJS_PATCH_VERSION="$(MOZJS_PATCH_VERSION)" \
+	-DMOZJS_ALPHA="$(MOZJS_ALPHA)" \
+	-DNSPR_CFLAGS="$(NSPR_CFLAGS)" \
+	-DNSPR_PKGCONF_CHECK="$(NSPR_PKGCONF_CHECK)"
+
+$(JS_CONFIG_NAME): js-config.in Makefile $(DEPTH)/config/autoconf.mk $(topsrcdir)/config/config.mk $(topsrcdir)/config/rules.mk
+	$(RM) $@.tmp
+	$(PYTHON) $(topsrcdir)/config/Preprocessor.py --marker % $(JS_CONFIG_SUBSTITUTIONS) $< > $@.tmp \
+	&& mv $@.tmp $@ && chmod +x $@
+
+SCRIPTS = $(JS_CONFIG_NAME)
+SDK_BINARY = $(JS_CONFIG_NAME)
+
+$(LIBRARY_NAME).pc: js.pc.in
+	$(PYTHON) $(topsrcdir)/config/Preprocessor.py $(JS_CONFIG_SUBSTITUTIONS) $< > $@
+
+install:: $(LIBRARY_NAME).pc
+	$(SYSINSTALL) $^ $(DESTDIR)$(libdir)/pkgconfig
 
 ######################################################
 # BEGIN SpiderMonkey header installation
@@ -839,7 +876,7 @@ SDK_BINARY = js-config
 #
 #   $(includedir)/
 #      $(MODULE)/
-#        jsapi.h, jspubtd.h, etc. (all of INSTALLED_HEADERS)
+#        jsapi.h, jspubtd.h, etc. (all of EXPORTS)
 #        js/
 #          js/public/* headers (all are public)
 #        ds/
@@ -849,29 +886,8 @@ SDK_BINARY = js-config
 #        mozilla/
 #          mfbt headers
 #
-# Currently $(MODULE) is just js, but we'll soon be changing it to include the
-# SpiderMonkey version, so that headers for multiple SpiderMonkey installs can
-# exist on a system at once.  (This permits embedders depending on system
-# SpiderMonkey to independently update their embeddings to newer SpiderMonkey
-# releases at different paces.)
-#
-# It is expected that embedders will then add -I$(includedir)/$(MODULE) to
-# their compiler invocations, which will then expose all of jsapi.h and friends
-# as they've always been exported.  (This will happen naturally for anyone using
-# pkgconfig systems to determine compiler/linker flags and the like.)  Headers
-# in subdirectories will show up as "mozilla/Assertions.h" and so on.  Also,
-# this system keeps #include "js/CharacterEncoding.h" in internal headers
-# working -- not that this is required, but it does simplify things.  (At some
-# point we may want to convert SpiderMonkey, and maybe Gecko, to this system, in
-# the interest of being a more conventional embedder, but it's probably a ways
-# off.)
-#
-# Eventually we'll probably trim this structure down to having the mfbt headers
-# in mozilla/, and every SpiderMonkey-specific header in js/*.  In the meantime
-# this is the structure implemented below.
-#
 
-install:: $(INSTALLED_HEADERS)
+install:: $(EXPORTS)
 	$(SYSINSTALL) $^ $(DESTDIR)$(includedir)/$(MODULE)
 
 install:: $(EXPORTS_js)
@@ -887,9 +903,10 @@ install:: $(EXPORTS_mozilla)
 install:: $(SCRIPTS)
 	$(SYSINSTALL) $^ $(DESTDIR)$(bindir)
 
-install:: $(LIBRARY) $(SHARED_LIBRARY) $(IMPORT_LIBRARY)
-ifneq (,$(LIBRARY))
-	$(SYSINSTALL) $(LIBRARY) $(DESTDIR)$(libdir)
+install:: $(REAL_LIBRARY) $(SHARED_LIBRARY) $(IMPORT_LIBRARY)
+ifneq (,$(REAL_LIBRARY))
+	$(SYSINSTALL) $(REAL_LIBRARY) $(DESTDIR)$(libdir)
+	mv -f $(DESTDIR)$(libdir)/$(REAL_LIBRARY) $(subst $(STATIC_LIBRARY_NAME),$(LIBRARY_NAME),$(DESTDIR)$(libdir)/$(REAL_LIBRARY))
 endif
 ifneq (,$(SHARED_LIBRARY))
 	$(SYSINSTALL) $(SHARED_LIBRARY) $(DESTDIR)$(libdir)
@@ -970,16 +987,8 @@ selfhosted_out_h_deps := \
   $(srcdir)/builtin/embedjs.py \
   $(NULL)
 
-ifeq ($(MOZ_DEBUG),1)
-selfhosting_defines += -DDEBUG
-endif
-
-ifneq (,$(MOZ_ZLIB_LIBS)$(MOZ_GLUE_LDFLAGS))
-selfhosting_defines += -DUSE_ZLIB
-endif
-
 selfhosted.out.h: $(selfhosted_out_h_deps)
-	$(PYTHON) $(srcdir)/builtin/embedjs.py $(selfhosting_defines) \
+	$(PYTHON) $(srcdir)/builtin/embedjs.py $(DEFINES) $(ACDEFINES) \
 	  -p '$(CPP)' -m $(srcdir)/js.msg -o $@ $(selfhosting_srcs)
 
 ###############################################
@@ -1022,4 +1031,3 @@ endif
 #
 # END kludges for the Nitro assembler
 ###############################################
-

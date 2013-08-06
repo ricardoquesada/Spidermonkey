@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99:
- *
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -76,6 +75,7 @@ class CodeGeneratorARM : public CodeGeneratorShared
     virtual bool visitMulI(LMulI *ins);
 
     virtual bool visitDivI(LDivI *ins);
+    virtual bool visitDivPowTwoI(LDivPowTwoI *ins);
     virtual bool visitModI(LModI *ins);
     virtual bool visitModPowTwoI(LModPowTwoI *ins);
     virtual bool visitModMaskI(LModMaskI *ins);
@@ -136,14 +136,39 @@ class CodeGeneratorARM : public CodeGeneratorShared
     bool visitLoadElementT(LLoadElementT *load);
 
     bool visitGuardShape(LGuardShape *guard);
+    bool visitGuardObjectType(LGuardObjectType *guard);
     bool visitGuardClass(LGuardClass *guard);
     bool visitImplicitThis(LImplicitThis *lir);
 
     bool visitInterruptCheck(LInterruptCheck *lir);
 
-    bool generateInvalidateEpilogue();
+    bool visitNegI(LNegI *lir);
+    bool visitNegD(LNegD *lir);
+    bool visitLoadTypedArrayElementStatic(LLoadTypedArrayElementStatic *ins);
+    bool visitStoreTypedArrayElementStatic(LStoreTypedArrayElementStatic *ins);
+    bool visitAsmJSLoadHeap(LAsmJSLoadHeap *ins);
+    bool visitAsmJSStoreHeap(LAsmJSStoreHeap *ins);
+    bool visitAsmJSLoadGlobalVar(LAsmJSLoadGlobalVar *ins);
+    bool visitAsmJSStoreGlobalVar(LAsmJSStoreGlobalVar *ins);
+    bool visitAsmJSLoadFuncPtr(LAsmJSLoadFuncPtr *ins);
+    bool visitAsmJSLoadFFIFunc(LAsmJSLoadFFIFunc *ins);
 
-    void postAsmJSCall(LAsmJSCall *lir) {}
+    bool visitAsmJSPassStackArg(LAsmJSPassStackArg *ins);
+
+    bool generateInvalidateEpilogue();
+  protected:
+    bool generateAsmJSPrologue(const MIRTypeVector &argTypes, MIRType returnType,
+                             Label *internalEntry);
+    void postAsmJSCall(LAsmJSCall *lir) {
+#if  !defined(JS_CPU_ARM_HARDFP)
+        if (lir->mir()->type() == MIRType_Double) {
+            masm.ma_vxfer(r0, r1, d0);
+        }
+#endif
+}
+ 
+    bool visitEffectiveAddress(LEffectiveAddress *ins);
+    bool visitAsmJSDivOrMod(LAsmJSDivOrMod *ins);
 };
 
 typedef CodeGeneratorARM CodeGeneratorSpecific;

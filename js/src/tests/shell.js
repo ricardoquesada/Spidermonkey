@@ -1,5 +1,4 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -43,6 +42,17 @@ var DEBUG = false;
 
 var DESCRIPTION;
 var EXPECTED;
+
+/*
+ * Signals to results.py that the current test case should be considered to
+ * have passed if it doesn't throw an exception.
+ *
+ * When the test suite is run in the browser, this function gets overridden by
+ * the same-named function in browser.js.
+ */
+function testPassesUnlessItThrows() {
+  print(PASSED);
+}
 
 /*
  * wrapper for test case constructor that doesn't require the SECTION
@@ -132,7 +142,7 @@ function reportFailure (msg)
   var l;
   var funcName = currentFunc();
   var prefix = (funcName) ? "[reported from " + funcName + "] ": "";
-   
+
   for (var i=0; i<lines.length; i++)
     print (FAILED + prefix + lines[i]);
 }
@@ -376,7 +386,7 @@ function enterFunc (funcName)
 function exitFunc (funcName)
 {
   var lastFunc = callStack.pop();
-   
+
   if (funcName)
   {
     if (!funcName.match(/\(\)$/))
@@ -486,7 +496,7 @@ function BigO(data)
     {
       var Ydiff = Y[i] - this.Yavg;
       var Xdiff = X[i] - this.Xavg;
-       
+
       SUM_Ydiff2 += Ydiff * Ydiff;
       SUM_Xdiff2 += Xdiff * Xdiff;
       SUM_XdiffYdiff += Xdiff * Ydiff;
@@ -522,7 +532,7 @@ function BigO(data)
     {
       deriv.X[i] = (X[i] + X[i+1])/2;
       deriv.Y[i] = (Y[i+1] - Y[i])/(X[i+1] - X[i]);
-    } 
+    }
     return deriv;
   }
 
@@ -598,7 +608,7 @@ function optionsInit() {
 }
 
 function optionsClear() {
-       
+
   // turn off current settings
   // except jit.
   var optionNames = options().split(',');
@@ -844,5 +854,3 @@ function OptLevel( i ) {
   cx.setOptimizationLevel(i);
 }
 /* end of Rhino functions */
-
-
