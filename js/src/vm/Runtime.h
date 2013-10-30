@@ -1309,7 +1309,7 @@ struct JSRuntime : public JS::shadow::Runtime,
 
     js::GCHelperThread  gcHelperThread;
 
-#ifdef XP_MACOSX
+#if defined(XP_MACOSX) && !defined(IPHONEOS)
     js::AsmJSMachExceptionHandler asmJSMachExceptionHandler;
 #endif
 
