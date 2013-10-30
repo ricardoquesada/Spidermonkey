@@ -77,7 +77,7 @@ iPhoneOS|iPhoneSimulator)
 
     CFLAGS="-isysroot $ios_sdk_root -arch $ios_arch -miphoneos-version-min=$ios_deploy_version -I$ios_sdk_root/usr/include -pipe -Wno-implicit-int -Wno-return-type"
     CXXFLAGS="$CFLAGS"
-    CPPFLAGS=""
+    CPPFLAGS="$CFLAGS"
 
     dnl prevent cross compile section from using these flags as host flags
     if test -z "$HOST_CPPFLAGS" ; then
