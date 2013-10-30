@@ -32,14 +32,14 @@
 #endif
 #define ASSERT MOZ_ASSERT
 
-#define ASSERT_NOT_REACHED() MOZ_NOT_REACHED("")
+#define ASSERT_NOT_REACHED() MOZ_ASSUME_UNREACHABLE("moz-decimal-utils.h")
 
 #define WTF_MAKE_NONCOPYABLE(ClassName) \
   private: \
     ClassName(const ClassName&) MOZ_DELETE; \
     void operator=(const ClassName&) MOZ_DELETE;
 
-#if defined(_MSC_VER) && (_MSC_VER <= 1700)
+#if defined(_MSC_VER)
 namespace std {
   inline bool isinf(double num) { return mozilla::IsInfinite(num); }
   inline bool isnan(double num) { return mozilla::IsNaN(num); }

@@ -11,43 +11,9 @@ VPATH		= @srcdir@
 include $(DEPTH)/config/autoconf.mk
 
 LIBRARY_NAME    = xpconnect_s
-FORCE_STATIC_LIB = 1
+MSVC_ENABLE_PGO := 1
 LIBXUL_LIBRARY = 1
-CPPSRCS		= \
-		nsScriptError.cpp \
-		nsXPConnect.cpp \
-		XPCCallContext.cpp \
-		XPCComponents.cpp \
-		XPCContext.cpp \
-		XPCConvert.cpp \
-		XPCDebug.cpp \
-		XPCException.cpp \
-		XPCJSID.cpp \
-		XPCJSRuntime.cpp \
-		XPCLocale.cpp \
-		XPCLog.cpp \
-		XPCMaps.cpp \
-		XPCModule.cpp \
-		XPCRuntimeService.cpp  \
-		XPCStack.cpp \
-		XPCString.cpp \
-		XPCJSContextStack.cpp \
-		XPCThrower.cpp \
-		XPCWrappedJS.cpp \
-		XPCVariant.cpp \
-		XPCWrappedJSClass.cpp \
-		XPCWrappedNative.cpp \
-		XPCWrappedNativeInfo.cpp \
-		XPCWrappedNativeJSOps.cpp \
-		XPCWrappedNativeProto.cpp \
-		XPCWrappedNativeScope.cpp \
-		XPCJSWeakReference.cpp \
-		XPCWrapper.cpp \
-		XPCQuickStubs.cpp \
-		dom_quickstubs.cpp \
-		DictionaryHelpers.cpp \
-		GeneratedEvents.cpp \
-		$(NULL)
+FAIL_ON_WARNINGS := 1
 
 include $(topsrcdir)/config/config.mk
 
@@ -65,6 +31,7 @@ LOCAL_INCLUDES = \
 		-I$(topsrcdir)/layout/base \
 		-I$(topsrcdir)/dom/base \
 		-I$(topsrcdir)/xpcom/ds \
+		-I$(topsrcdir)/js/ipc \
 		$(NULL)
 
 SHARED_LIBRARY_LIBS = \
@@ -75,6 +42,7 @@ SHARED_LIBRARY_LIBS = \
 EXTRA_MDDEPEND_FILES = dom_qsgen.pp dictionary_helper_gen.pp event_impl_gen.pp
 
 include $(topsrcdir)/config/rules.mk
+include $(topsrcdir)/ipc/chromium/chromium-config.mk
 
 DEFINES += \
   -DJSFILE \
@@ -150,7 +118,10 @@ GeneratedEvents.h: $(srcdir)/dictionary_helper_gen.conf \
 	  --header-output GeneratedEvents.h \
 	  event_impl_gen.conf
 
+GeneratedEventClasses.h: GeneratedEvents.cpp
+
 GeneratedEvents.cpp: DictionaryHelpers.h \
+                     GeneratedEvents.h \
                      $(srcdir)/dictionary_helper_gen.conf \
                      event_impl_gen.conf \
                      $(srcdir)/dictionary_helper_gen.py \
@@ -163,13 +134,23 @@ GeneratedEvents.cpp: DictionaryHelpers.h \
 	  -I$(LIBXUL_DIST)/sdk/bin \
 	  $(srcdir)/event_impl_gen.py \
 	  -I $(DEPTH)/dist/idl \
-	  --header-output GeneratedEvents.h \
+	  --class-declarations GeneratedEventClasses.h \
 	  --stub-output GeneratedEvents.cpp \
 	  --makedepend-output $(MDDEPDIR)/event_impl_gen.pp \
 	  event_impl_gen.conf
 
+GeneratedEvents-webidl: event_impl_gen.conf
+	$(PYTHON) $(topsrcdir)/config/pythonpath.py \
+	  $(PLY_INCLUDE) \
+	  -I$(LIBXUL_DIST)/sdk/bin \
+	  $(srcdir)/event_impl_gen.py \
+	  -I $(DEPTH)/dist/idl \
+	  --webidltarget=$(top_srcdir)/dom/webidl \
+	  event_impl_gen.conf
+
 _EXTRA_EXPORT_FILES = \
   DictionaryHelpers.h \
+  GeneratedEventClasses.h \
   $(NULL)
 
 libs:: $(_EXTRA_EXPORT_FILES)
@@ -182,6 +163,7 @@ GARBAGE += \
 		DictionaryHelpers.cpp \
 		GeneratedEvents.h \
 		GeneratedEvents.cpp \
+		GeneratedEventClasses.h \
 		event_impl_gen.conf \
 		xpidl_debug \
 		$(MDDEPDIR)/dom_qsgen.pp \

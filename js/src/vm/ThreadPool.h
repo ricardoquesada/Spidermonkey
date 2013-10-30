@@ -4,19 +4,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef ThreadPool_h__
-#define ThreadPool_h__
+#ifndef vm_ThreadPool_h
+#define vm_ThreadPool_h
 
 #include <stddef.h>
-#include "mozilla/StandardInteger.h"
-#include "js/Vector.h"
-#include "jsalloc.h"
+#include <stdint.h>
 
+#include "jsalloc.h"
 #ifdef JS_THREADSAFE
-#  include "prtypes.h"
-#  include "prlock.h"
-#  include "prcvar.h"
+# include "prcvar.h"
+# include "prlock.h"
+# include "prtypes.h"
 #endif
+
+#include "js/Vector.h"
 
 struct JSContext;
 struct JSRuntime;
@@ -103,4 +104,4 @@ class ThreadPool
 
 } // namespace js
 
-#endif // ThreadPool_h__
+#endif /* vm_ThreadPool_h */

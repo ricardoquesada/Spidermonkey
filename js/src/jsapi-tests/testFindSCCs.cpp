@@ -5,18 +5,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-
-#include "tests.h"
-
-#include <string.h>
 #include <stdarg.h>
+#include <string.h>
 
 #include "jscntxt.h"
 #include "jsgc.h"
 
 #include "gc/FindSCCs.h"
-
-#include "gc/FindSCCs-inl.h"
+#include "jsapi-tests/tests.h"
 
 static const unsigned MaxVertices = 10;
 

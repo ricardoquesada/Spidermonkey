@@ -40,7 +40,7 @@ function testOnLoad() {
                            "chrome,centerscreen,dialog=no,resizable,titlebar,toolbar=no,width=800,height=600", sstring);
   } else {
     // This code allows us to redirect without requiring specialpowers for chrome and a11y tests.
-    function messageHandler(m) {
+    let messageHandler = function(m) {
       messageManager.removeMessageListener("chromeEvent", messageHandler);
       var url = m.json.data;
 
@@ -49,7 +49,7 @@ function testOnLoad() {
       var webNav = content.window.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
                          .getInterface(Components.interfaces.nsIWebNavigation);
       webNav.loadURI(url, null, null, null, null);
-    }
+    };
 
     var listener = 'data:,function doLoad(e) { var data=e.getData("data");removeEventListener("contentEvent", function (e) { doLoad(e); }, false, true);sendAsyncMessage("chromeEvent", {"data":data}); };addEventListener("contentEvent", function (e) { doLoad(e); }, false, true);';
     messageManager.loadFrameScript(listener, true);
@@ -79,6 +79,7 @@ Tester.prototype = {
   SimpleTest: {},
 
   repeat: 0,
+  runUntilFailure: false,
   checker: null,
   currentTestIndex: -1,
   lastStartTime: null,
@@ -104,7 +105,13 @@ Tester.prototype = {
     //if testOnLoad was not called, then gConfig is not defined
     if (!gConfig)
       gConfig = readConfig();
-    this.repeat = gConfig.repeat;
+
+    if (gConfig.runUntilFailure)
+      this.runUntilFailure = true;
+
+    if (gConfig.repeat)
+      this.repeat = gConfig.repeat;
+
     this.dumper.dump("*** Start BrowserChrome Test Results ***\n");
     Services.console.registerListener(this);
     Services.obs.addObserver(this, "chrome-document-global-created", false);
@@ -169,6 +176,13 @@ Tester.prototype = {
   },
 
   finish: function Tester_finish(aSkipSummary) {
+    var passCount = this.tests.reduce(function(a, f) a + f.passCount, 0);
+    var failCount = this.tests.reduce(function(a, f) a + f.failCount, 0);
+    var todoCount = this.tests.reduce(function(a, f) a + f.todoCount, 0);
+
+    if (failCount > 0 && this.runUntilFailure)
+      this.repeat = 0;
+
     if (this.repeat > 0) {
       --this.repeat;
       this.currentTestIndex = -1;
@@ -182,11 +196,6 @@ Tester.prototype = {
       this.dumper.dump("\nINFO TEST-START | Shutdown\n");
       if (this.tests.length) {
         this.dumper.dump("Browser Chrome Test Summary\n");
-  
-        function sum(a,b) a+b;
-        var passCount = this.tests.map(function (f) f.passCount).reduce(sum);
-        var failCount = this.tests.map(function (f) f.failCount).reduce(sum);
-        var todoCount = this.tests.map(function (f) f.todoCount).reduce(sum);
   
         this.dumper.dump("\tPassed: " + passCount + "\n" +
                          "\tFailed: " + failCount + "\n" +
@@ -293,6 +302,14 @@ Tester.prototype = {
       // for its own purposes, nulling it out it will go back to the default
       // behavior of returning the last opened popup.
       document.popupNode = null;
+
+      // Notify a long running test problem if it didn't end up in a timeout.
+      if (this.currentTest.unexpectedTimeouts && !this.currentTest.timedOut) {
+        let msg = "This test exceeded the timeout threshold. It should be " +
+                  "rewritten or split up. If that's not possible, use " +
+                  "requestLongerTimeout(N), but only as a last resort.";
+        this.currentTest.addResult(new testResult(false, msg, "", false));
+      }
 
       // Note the test run time
       let time = Date.now() - this.lastStartTime;
@@ -444,16 +461,32 @@ Tester.prototype = {
     }
     else {
       var self = this;
-      this.currentTest.scope.__waitTimer = setTimeout(function() {
+      this.currentTest.scope.__waitTimer = setTimeout(function timeoutFn() {
         if (--self.currentTest.scope.__timeoutFactor > 0) {
           // We were asked to wait a bit longer.
           self.currentTest.scope.info(
             "Longer timeout required, waiting longer...  Remaining timeouts: " +
             self.currentTest.scope.__timeoutFactor);
           self.currentTest.scope.__waitTimer =
-            setTimeout(arguments.callee, gTimeoutSeconds * 1000);
+            setTimeout(timeoutFn, gTimeoutSeconds * 1000);
           return;
         }
+
+        // If the test is taking longer than expected, but it's not hanging,
+        // mark the fact, but let the test continue.  At the end of the test,
+        // if it didn't timeout, we will notify the problem through an error.
+        // To figure whether it's an actual hang, compare the time of the last
+        // result or message to half of the timeout time.
+        // Though, to protect against infinite loops, limit the number of times
+        // we allow the test to proceed.
+        const MAX_UNEXPECTED_TIMEOUTS = 10;
+        if (Date.now() - self.currentTest.lastOutputTime < (gTimeoutSeconds / 2) * 1000 &&
+            ++self.currentTest.unexpectedTimeouts <= MAX_UNEXPECTED_TIMEOUTS) {
+            self.currentTest.scope.__waitTimer =
+              setTimeout(timeoutFn, gTimeoutSeconds * 1000);
+          return;
+        }
+
         self.currentTest.addResult(new testResult(false, "Test timed out", "", false));
         self.currentTest.timedOut = true;
         self.currentTest.scope.__waitTimer = null;

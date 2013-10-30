@@ -4,23 +4,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#ifndef jsapi_tests_tests_h
+#define jsapi_tests_tests_h
+
 #include "mozilla/Util.h"
 
-#include "jsapi.h"
-#include "jsprvtd.h"
-#include "jsalloc.h"
-
-// For js::gc::AutoSuppressGC
-#include "jsgc.h"
-#include "jsobjinlines.h"
-#include "jsgcinlines.h"
-
-#include "js/Vector.h"
-
 #include <errno.h>
-#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+#include "jsalloc.h"
+#include "jsapi.h"
+#include "jscntxt.h"
+#include "jsgc.h"
+#include "jsprvtd.h"
+
+#include "js/Vector.h"
 
 /* Note: Aborts on OOM. */
 class JSAPITestString {
@@ -79,6 +79,7 @@ class JSAPITest
         }
         if (cx) {
             JS_RemoveObjectRoot(cx, &global);
+            JS_LeaveCompartment(cx, NULL);
             JS_EndRequest(cx);
             JS_DestroyContext(cx);
             cx = NULL;
@@ -299,7 +300,6 @@ class JSAPITest
         if (!cx)
             return NULL;
         JS_SetOptions(cx, JSOPTION_VAROBJFIX);
-        JS_SetVersion(cx, JSVERSION_LATEST);
         JS_SetErrorReporter(cx, &reportError);
         return cx;
     }
@@ -397,3 +397,5 @@ class TempFile {
         name = NULL;
     }
 };
+
+#endif /* jsapi_tests_tests_h */

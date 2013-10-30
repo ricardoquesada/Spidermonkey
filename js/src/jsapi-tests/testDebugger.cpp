@@ -5,10 +5,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-
-#include "tests.h"
-#include "jsdbgapi.h"
 #include "jscntxt.h"
+#include "jsdbgapi.h"
+
+#include "jsapi-tests/tests.h"
 
 static int callCount[2] = {0, 0};
 
@@ -120,7 +120,7 @@ ThrowHook(JSContext *cx, JSScript *, jsbytecode *, jsval *rval, void *closure)
     JS_ASSERT(!closure);
     called = true;
 
-    JS::RootedObject global(cx, JS_GetGlobalForScopeChain(cx));
+    JS::RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
 
     char text[] = "new Error()";
     jsval _;
@@ -131,10 +131,7 @@ ThrowHook(JSContext *cx, JSScript *, jsbytecode *, jsval *rval, void *closure)
 
 BEGIN_TEST(testDebugger_throwHook)
 {
-    uint32_t newopts =
-        JS_GetOptions(cx) | JSOPTION_METHODJIT | JSOPTION_METHODJIT_ALWAYS;
-    uint32_t oldopts = JS_SetOptions(cx, newopts);
-
+    CHECK(JS_SetDebugMode(cx, true));
     CHECK(JS_SetThrowHook(rt, ThrowHook, NULL));
     EXEC("function foo() { throw 3 };\n"
          "for (var i = 0; i < 10; ++i) { \n"
@@ -145,7 +142,6 @@ BEGIN_TEST(testDebugger_throwHook)
          "}\n");
     CHECK(called);
     CHECK(JS_SetThrowHook(rt, NULL, NULL));
-    JS_SetOptions(cx, oldopts);
     return true;
 }
 END_TEST(testDebugger_throwHook)
@@ -153,7 +149,7 @@ END_TEST(testDebugger_throwHook)
 BEGIN_TEST(testDebugger_debuggerObjectVsDebugMode)
 {
     CHECK(JS_DefineDebuggerObject(cx, global));
-    JS::RootedObject debuggee(cx, JS_NewGlobalObject(cx, getGlobalClass(), NULL));
+    JS::RootedObject debuggee(cx, JS_NewGlobalObject(cx, getGlobalClass(), NULL, JS::FireOnNewGlobalHook));
     CHECK(debuggee);
 
     {
@@ -165,7 +161,7 @@ BEGIN_TEST(testDebugger_debuggerObjectVsDebugMode)
     JS::RootedObject debuggeeWrapper(cx, debuggee);
     CHECK(JS_WrapObject(cx, debuggeeWrapper.address()));
     JS::RootedValue v(cx, JS::ObjectValue(*debuggeeWrapper));
-    CHECK(JS_SetProperty(cx, global, "debuggee", v.address()));
+    CHECK(JS_SetProperty(cx, global, "debuggee", v));
 
     EVAL("var dbg = new Debugger(debuggee);\n"
          "var hits = 0;\n"
@@ -193,7 +189,7 @@ BEGIN_TEST(testDebugger_newScriptHook)
 {
     // Test that top-level indirect eval fires the newScript hook.
     CHECK(JS_DefineDebuggerObject(cx, global));
-    JS::RootedObject g(cx, JS_NewGlobalObject(cx, getGlobalClass(), NULL));
+    JS::RootedObject g(cx, JS_NewGlobalObject(cx, getGlobalClass(), NULL, JS::FireOnNewGlobalHook));
     CHECK(g);
     {
         JSAutoCompartment ae(cx, g);
@@ -203,7 +199,7 @@ BEGIN_TEST(testDebugger_newScriptHook)
     JS::RootedObject gWrapper(cx, g);
     CHECK(JS_WrapObject(cx, gWrapper.address()));
     JS::RootedValue v(cx, JS::ObjectValue(*gWrapper));
-    CHECK(JS_SetProperty(cx, global, "g", v.address()));
+    CHECK(JS_SetProperty(cx, global, "g", v));
 
     EXEC("var dbg = Debugger(g);\n"
          "var hits = 0;\n"
@@ -243,12 +239,8 @@ END_TEST(testDebugger_newScriptHook)
 
 BEGIN_TEST(testDebugger_singleStepThrow)
     {
-        CHECK(JS_SetDebugModeForCompartment(cx, cx->compartment, true));
+        CHECK(JS_SetDebugModeForCompartment(cx, cx->compartment(), true));
         CHECK(JS_SetInterrupt(rt, onStep, NULL));
-
-        uint32_t opts = JS_GetOptions(cx);
-        opts |= JSOPTION_METHODJIT | JSOPTION_METHODJIT_ALWAYS;
-        JS_SetOptions(cx, opts);
 
         CHECK(JS_DefineFunction(cx, global, "setStepMode", setStepMode, 0, 0));
         EXEC("var e;\n"

@@ -2,6 +2,42 @@
 # Any copyright is dedicated to the Public Domain.
 # http://creativecommons.org/publicdomain/zero/1.0/
 
-XPIDL_SOURCES = ['foo.idl', 'bar.idl', 'biz.idl']
+XPIDL_SOURCES = ['bar.idl', 'biz.idl', 'foo.idl']
 XPIDL_MODULE = 'module_name'
 XPIDL_FLAGS = ['-Idir1', '-Idir2', '-Idir3']
+
+ASFILES = ['bar.s', 'foo.asm']
+
+DEFINES = ['-Dbar', '-Dfoo']
+
+EXTRA_COMPONENTS = ['bar.js', 'foo.js']
+EXTRA_PP_COMPONENTS = ['bar.pp.js', 'foo.pp.js']
+
+EXTRA_JS_MODULES = ['bar.jsm', 'foo.jsm']
+EXTRA_PP_JS_MODULES = ['bar.pp.jsm', 'foo.pp.jsm']
+
+CPP_UNIT_TESTS = ['foo.cpp']
+
+GTEST_C_SOURCES = ['test1.c', 'test2.c']
+GTEST_CMM_SOURCES = ['test1.mm', 'test2.mm']
+GTEST_CPP_SOURCES = ['test1.cpp', 'test2.cpp']
+
+HOST_CPPSRCS = ['bar.cpp', 'foo.cpp']
+HOST_CSRCS = ['bar.c', 'foo.c']
+
+HOST_LIBRARY_NAME = 'host_bar'
+
+LIBRARY_NAME = 'lib_name'
+LIBS = ['bar.lib', 'foo.lib']
+
+SDK_LIBRARY = ['bar.sdk', 'foo.sdk']
+
+SHARED_LIBRARY_LIBS += ['bar.sll', 'foo.sll']
+
+SIMPLE_PROGRAMS = ['bar.x', 'foo.x']
+
+CSRCS += ['bar.c', 'foo.c']
+
+CMMSRCS = ['bar.mm', 'foo.mm']
+
+SSRCS = ['bar.S', 'foo.S']

@@ -4,29 +4,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/DebugOnly.h"
-
-#include "jsversion.h"
+#include "vm/Xdr.h"
 
 #include <string.h>
-#include "jstypes.h"
-#include "jsutil.h"
-#include "jsdhash.h"
-#include "jsprf.h"
+
 #include "jsapi.h"
-#include "jscntxt.h"
-#include "jsnum.h"
+#include "jsprf.h"
 #include "jsscript.h"
-#include "jsstr.h"
 
-#include "Xdr.h"
-#include "Debugger.h"
+#include "vm/Debugger.h"
+#include "vm/Runtime.h"
 
-#include "jsobjinlines.h"
+#include "jsscriptinlines.h"
 
 using namespace js;
-
-using mozilla::DebugOnly;
 
 void
 XDRBuffer::freeBuffer()
@@ -144,8 +135,8 @@ XDRDecoder::XDRDecoder(JSContext *cx, const void *data, uint32_t length,
   : XDRState<XDR_DECODE>(cx)
 {
     buf.setData(data, length);
-    this->principals = principals;
-    this->originPrincipals = JSScript::normalizeOriginPrincipals(principals, originPrincipals);
+    this->principals_ = principals;
+    this->originPrincipals_ = NormalizeOriginPrincipals(principals, originPrincipals);
 }
 
 template class js::XDRState<XDR_ENCODE>;

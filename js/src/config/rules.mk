@@ -15,8 +15,17 @@ endif
 # present. If they are, this is a violation of the separation of
 # responsibility between Makefile.in and mozbuild files.
 _MOZBUILD_EXTERNAL_VARIABLES := \
+  CPP_UNIT_TESTS \
   DIRS \
+  EXTRA_PP_COMPONENTS \
+  EXTRA_PP_JS_MODULES \
+  GTEST_CMMSRCS \
+  GTEST_CPPSRCS \
+  GTEST_CSRCS \
+  HOST_CSRCS \
+  HOST_LIBRARY_NAME \
   MODULE \
+  NO_DIST_INSTALL \
   PARALLEL_DIRS \
   TEST_DIRS \
   TIERS \
@@ -66,6 +75,17 @@ endif
 USE_AUTOTARGETS_MK = 1
 include $(topsrcdir)/config/makefiles/makeutils.mk
 
+# Only build with Pymake (not GNU make) on Windows.
+ifeq ($(HOST_OS_ARCH),WINNT)
+ifndef L10NBASEDIR
+ifndef .PYMAKE
+$(error Pymake is required to build on Windows. Run |./mach build| to \
+automatically use pymake or invoke pymake directly via \
+|python build/pymake/make.py|.)
+endif
+endif
+endif
+
 ifdef SDK_HEADERS
 _EXTRA_EXPORTS := $(filter-out $(EXPORTS),$(SDK_HEADERS))
 EXPORTS += $(_EXTRA_EXPORTS)
@@ -98,10 +118,6 @@ else
 endif # ifndef .PYMAKE
 
 _VPATH_SRCS = $(abspath $<)
-
-ifdef EXTRA_DSO_LIBS
-EXTRA_DSO_LIBS	:= $(call EXPAND_MOZLIBNAME,$(EXTRA_DSO_LIBS))
-endif
 
 ################################################################################
 # Testing frameworks support
@@ -152,9 +168,15 @@ ifdef CPP_UNIT_TESTS
 # through TestHarness.h, by modifying the list of includes and the libs against
 # which stuff links.
 CPPSRCS += $(CPP_UNIT_TESTS)
-SIMPLE_PROGRAMS += $(CPP_UNIT_TESTS:.cpp=$(BIN_SUFFIX))
+CPP_UNIT_TEST_BINS := $(CPP_UNIT_TESTS:.cpp=$(BIN_SUFFIX))
+SIMPLE_PROGRAMS += $(CPP_UNIT_TEST_BINS)
 INCLUDES += -I$(DIST)/include/testing
 LIBS += $(XPCOM_GLUE_LDOPTS) $(NSPR_LIBS) $(MOZ_JS_LIBS) $(if $(JS_SHARED_LIBRARY),,$(MOZ_ZLIB_LIBS))
+
+ifndef MOZ_PROFILE_GENERATE
+libs:: $(CPP_UNIT_TEST_BINS) $(call mkdir_deps,$(DIST)/cppunittests)
+	$(NSINSTALL) $(CPP_UNIT_TEST_BINS) $(DIST)/cppunittests
+endif
 
 check::
 	@$(PYTHON) $(topsrcdir)/testing/runcppunittests.py --xre-path=$(DIST)/bin --symbols-path=$(DIST)/crashreporter-symbols $(subst .cpp,$(BIN_SUFFIX),$(CPP_UNIT_TESTS))
@@ -341,15 +363,15 @@ ifndef TARGETS
 TARGETS			= $(LIBRARY) $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(HOST_LIBRARY) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS) $(JAVA_LIBRARY)
 endif
 
-COBJS = $(CSRCS:.c=.$(OBJ_SUFFIX))
-SOBJS = $(SSRCS:.S=.$(OBJ_SUFFIX))
-CCOBJS = $(patsubst %.cc,%.$(OBJ_SUFFIX),$(filter %.cc,$(CPPSRCS)))
-CPPOBJS = $(patsubst %.cpp,%.$(OBJ_SUFFIX),$(filter %.cpp,$(CPPSRCS)))
-CMOBJS = $(CMSRCS:.m=.$(OBJ_SUFFIX))
-CMMOBJS = $(CMMSRCS:.mm=.$(OBJ_SUFFIX))
-ASOBJS = $(ASFILES:.$(ASM_SUFFIX)=.$(OBJ_SUFFIX))
+COBJS = $(notdir $(CSRCS:.c=.$(OBJ_SUFFIX)))
+SOBJS = $(notdir $(SSRCS:.S=.$(OBJ_SUFFIX)))
+# CPPSRCS can have different extensions (eg: .cpp, .cc)
+CPPOBJS = $(notdir $(addsuffix .$(OBJ_SUFFIX),$(basename $(CPPSRCS))))
+CMOBJS = $(notdir $(CMSRCS:.m=.$(OBJ_SUFFIX)))
+CMMOBJS = $(notdir $(CMMSRCS:.mm=.$(OBJ_SUFFIX)))
+ASOBJS = $(notdir $(ASFILES:.$(ASM_SUFFIX)=.$(OBJ_SUFFIX)))
 ifndef OBJS
-_OBJS = $(COBJS) $(SOBJS) $(CCOBJS) $(CPPOBJS) $(CMOBJS) $(CMMOBJS) $(ASOBJS)
+_OBJS = $(COBJS) $(SOBJS) $(CPPOBJS) $(CMOBJS) $(CMMOBJS) $(ASOBJS)
 OBJS = $(strip $(_OBJS))
 endif
 
@@ -408,11 +430,24 @@ ifdef MOZ_UPDATE_XTERM
 UPDATE_TITLE = printf "\033]0;%s in %s\007" $(1) $(shell $(BUILD_TOOLS)/print-depth-path.sh)/$(2) ;
 endif
 
-define SUBMAKE # $(call SUBMAKE,target,directory)
+# Static directories are largely independent of our build system. But, they
+# could share the same build mechanism (like moz.build files). We need to
+# prevent leaking of our backend state to these independent build systems. This
+# is why MOZBUILD_BACKEND_CHECKED isn't exported to make invocations for static
+# directories.
+define SUBMAKE # $(call SUBMAKE,target,directory,static)
 +@$(UPDATE_TITLE)
-+$(MAKE) $(if $(2),-C $(2)) $(1)
++$(if $(3), MOZBUILD_BACKEND_CHECKED=,) $(MAKE) $(if $(2),-C $(2)) $(1)
 
 endef # The extra line is important here! don't delete it
+
+define TIER_DIR_SUBMAKE
+@echo "BUILDSTATUS TIERDIR_START  $(2)"
+$(call SUBMAKE,$(1),$(2),$(3))
+@echo "BUILDSTATUS TIERDIR_FINISH $(2)"
+
+endef # Ths empty line is important.
+
 
 ifneq (,$(strip $(DIRS)))
 LOOP_OVER_DIRS = \
@@ -423,11 +458,6 @@ endif
 ifneq (,$(strip $(PARALLEL_DIRS)))
 LOOP_OVER_PARALLEL_DIRS = \
   $(foreach dir,$(PARALLEL_DIRS),$(call SUBMAKE,$@,$(dir)))
-endif
-
-ifneq (,$(strip $(STATIC_DIRS)))
-LOOP_OVER_STATIC_DIRS = \
-  $(foreach dir,$(STATIC_DIRS),$(call SUBMAKE,$@,$(dir)))
 endif
 
 ifneq (,$(strip $(TOOL_DIRS)))
@@ -611,6 +641,33 @@ HOST_OUTOPTION = -o # eol
 endif
 ################################################################################
 
+# Regenerate the build backend if it is out of date. We only check this once
+# per traversal, hence the ifdef and the export. This rule needs to come before
+# other rules for the default target or else it may not run in time.
+ifndef MOZBUILD_BACKEND_CHECKED
+
+# Since Makefile is listed as a global dependency, this has the
+# unfortunate side-effect of invalidating all targets if it is executed.
+# So e.g. if you are in /dom/bindings and /foo/moz.build changes,
+# /dom/bindings will get invalidated. The upside is if the current
+# Makefile/backend.mk is updated as a result of backend regeneration, we
+# actually pick up the changes. This should reduce the amount of
+# required clobbers and is thus the lesser evil.
+Makefile: $(DEPTH)/backend.RecursiveMakeBackend.built
+	@$(TOUCH) $@
+
+$(DEPTH)/backend.RecursiveMakeBackend.built:
+	@echo "Build configuration changed. Regenerating backend."
+	@cd $(DEPTH) && $(PYTHON) ./config.status
+
+include $(DEPTH)/backend.RecursiveMakeBackend.built.pp
+
+default:: $(DEPTH)/backend.RecursiveMakeBackend.built
+
+export MOZBUILD_BACKEND_CHECKED=1
+endif
+
+
 # SUBMAKEFILES: List of Makefiles for next level down.
 #   This is used to update or create the Makefiles before invoking them.
 SUBMAKEFILES += $(addsuffix /Makefile, $(DIRS) $(TOOL_DIRS) $(PARALLEL_DIRS))
@@ -622,12 +679,13 @@ SUBMAKEFILES += $(addsuffix /Makefile, $(DIRS) $(TOOL_DIRS) $(PARALLEL_DIRS))
 ifndef SUPPRESS_DEFAULT_RULES
 ifdef TIERS
 default all alldep::
+	@echo "BUILDSTATUS TIERS $(TIERS)"
 	$(foreach tier,$(TIERS),$(call SUBMAKE,tier_$(tier)))
 else
 
 default all::
 ifneq (,$(strip $(STATIC_DIRS)))
-	$(foreach dir,$(STATIC_DIRS),$(call SUBMAKE,,$(dir)))
+	$(foreach dir,$(STATIC_DIRS),$(call SUBMAKE,,$(dir),1))
 endif
 	$(MAKE) export
 	$(MAKE) libs
@@ -651,14 +709,44 @@ ECHO := true
 QUIET := -q
 endif
 
-MAKE_TIER_SUBMAKEFILES = +$(if $(tier_$*_dirs),$(MAKE) $(addsuffix /Makefile,$(tier_$*_dirs)))
+# This function is called and evaluated to produce the rule to build the
+# specified tier. Each tier begins by building the "static" directories.
+# The BUILDSTATUS echo commands are used to faciliate easier parsing
+# of build output. Build drivers are encouraged to filter these lines
+# from the user.
+define CREATE_TIER_RULE
+tier_$(1)::
+	@echo "BUILDSTATUS TIER_START $(1)"
+	@printf "BUILDSTATUS SUBTIERS"
+ifneq (,$(tier_$(1)_staticdirs))
+	@printf " static"
+endif
+ifneq (,$(tier_$(1)_dirs))
+	@printf " export libs tools"
+endif
+	@printf "\n"
+	@echo "BUILDSTATUS STATICDIRS $$($$@_staticdirs)"
+	@echo "BUILDSTATUS DIRS $$($$@_dirs)"
+ifneq (,$(tier_$(1)_staticdirs))
+	@echo "BUILDSTATUS SUBTIER_START $(1) static"
+	$$(foreach dir,$$($$@_staticdirs),$$(call TIER_DIR_SUBMAKE,,$$(dir),1))
+	@echo "BUILDSTATUS SUBTIER_FINISH $(1) static"
+endif
+ifneq (,$(tier_$(1)_dirs))
+	@echo "BUILDSTATUS SUBTIER_START $(1) export"
+	$$(MAKE) export_$$@
+	@echo "BUILDSTATUS SUBTIER_FINISH $(1) export"
+	@echo "BUILDSTATUS SUBTIER_START $(1) libs"
+	$$(MAKE) libs_$$@
+	@echo "BUILDSTATUS SUBTIER_FINISH $(1) libs"
+	@echo "BUILDSTATUS SUBTIER_START $(1) tools"
+	$$(MAKE) tools_$$@
+	@echo "BUILDSTATUS SUBTIER_FINISH $(1) tools"
+	@echo "BUILDSTATUS TIER_FINISH $(1)"
+endif
+endef
 
-$(foreach tier,$(TIERS),tier_$(tier))::
-	@$(ECHO) "$@: $($@_staticdirs) $($@_dirs)"
-	$(foreach dir,$($@_staticdirs),$(call SUBMAKE,,$(dir)))
-	$(MAKE) export_$@
-	$(MAKE) libs_$@
-	$(MAKE) tools_$@
+$(foreach tier,$(TIERS),$(eval $(call CREATE_TIER_RULE,$(tier))))
 
 # Do everything from scratch
 everything::
@@ -802,7 +890,7 @@ ifdef MOZ_PROFILE_GENERATE
 	touch -t `date +%Y%m%d%H%M.%S -d "now+5seconds"` pgo.relink
 endif
 else # !WINNT || GNU_CC
-	$(EXPAND_CCC) -o $@ $(CXXFLAGS) $(PROGOBJS) $(RESFILE) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS_DIR) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS) $(EXE_DEF_FILE)
+	$(EXPAND_CCC) -o $@ $(CXXFLAGS) $(PROGOBJS) $(RESFILE) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS_DIR) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS) $(EXE_DEF_FILE) $(STLPORT_LIBS)
 	@$(call CHECK_STDCXX,$@)
 endif # WINNT && !GNU_CC
 
@@ -856,7 +944,7 @@ ifdef MSMANIFEST_TOOL
 	fi
 endif	# MSVC with manifest tool
 else
-	$(EXPAND_CCC) $(CXXFLAGS) -o $@ $< $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS_DIR) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS)
+	$(EXPAND_CCC) $(CXXFLAGS) -o $@ $< $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS_DIR) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS) $(STLPORT_LIBS)
 	@$(call CHECK_STDCXX,$@)
 endif # WINNT && !GNU_CC
 
@@ -952,10 +1040,10 @@ ifdef DTRACE_LIB_DEPENDENT
 ifndef XP_MACOSX
 	dtrace -G -C -s $(MOZILLA_DTRACE_SRC) -o  $(DTRACE_PROBE_OBJ) $(shell $(EXPAND_LIBS) $(MOZILLA_PROBE_LIBS))
 endif
-	$(EXPAND_MKSHLIB) $(SHLIB_LDSTARTFILE) $(OBJS) $(LOBJS) $(SUB_SHLOBJS) $(DTRACE_PROBE_OBJ) $(MOZILLA_PROBE_LIBS) $(RESFILE) $(LDFLAGS) $(WRAP_LDFLAGS) $(SHARED_LIBRARY_LIBS) $(EXTRA_DSO_LDOPTS) $(MOZ_GLUE_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(DEF_FILE) $(SHLIB_LDENDFILE)
+	$(EXPAND_MKSHLIB) $(SHLIB_LDSTARTFILE) $(OBJS) $(LOBJS) $(SUB_SHLOBJS) $(DTRACE_PROBE_OBJ) $(MOZILLA_PROBE_LIBS) $(RESFILE) $(LDFLAGS) $(WRAP_LDFLAGS) $(SHARED_LIBRARY_LIBS) $(EXTRA_DSO_LDOPTS) $(MOZ_GLUE_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(DEF_FILE) $(SHLIB_LDENDFILE) $(if $(LIB_IS_C_ONLY),,$(STLPORT_LIBS))
 	@$(RM) $(DTRACE_PROBE_OBJ)
 else # ! DTRACE_LIB_DEPENDENT
-	$(EXPAND_MKSHLIB) $(SHLIB_LDSTARTFILE) $(OBJS) $(LOBJS) $(SUB_SHLOBJS) $(RESFILE) $(LDFLAGS) $(WRAP_LDFLAGS) $(SHARED_LIBRARY_LIBS) $(EXTRA_DSO_LDOPTS) $(MOZ_GLUE_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(DEF_FILE) $(SHLIB_LDENDFILE)
+	$(EXPAND_MKSHLIB) $(SHLIB_LDSTARTFILE) $(OBJS) $(LOBJS) $(SUB_SHLOBJS) $(RESFILE) $(LDFLAGS) $(WRAP_LDFLAGS) $(SHARED_LIBRARY_LIBS) $(EXTRA_DSO_LDOPTS) $(MOZ_GLUE_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(DEF_FILE) $(SHLIB_LDENDFILE) $(if $(LIB_IS_C_ONLY),,$(STLPORT_LIBS))
 endif # DTRACE_LIB_DEPENDENT
 	@$(call CHECK_STDCXX,$@)
 
@@ -1000,6 +1088,16 @@ fi
 endef
 endif # Sun Studio on Solaris
 
+# The object file is in the current directory, and the source file can be any
+# relative path. This macro adds the dependency obj: src for each source file.
+# This dependency must be first for the $< flag to work correctly, and the
+# rules that have commands for these targets must not list any other
+# prerequisites, or they will override the $< variable.
+define src_objdep
+$(basename $(notdir $1)).$(OBJ_SUFFIX): $1 $(call mkdir_deps,$(MDDEPDIR))
+endef
+$(foreach f,$(CSRCS) $(SSRCS) $(CPPSRCS) $(CMSRCS) $(CMMSRCS) $(ASFILES),$(eval $(call src_objdep,$(f))))
+
 $(OBJS) $(HOST_OBJS) $(PROGOBJS) $(HOST_PROGOBJS): $(GLOBAL_DEPS)
 
 # Rules for building native targets must come first because of the host_ prefix
@@ -1023,7 +1121,7 @@ $(HOST_CMMOBJS): host_%.$(OBJ_SUFFIX): %.mm
 	$(REPORT_BUILD)
 	$(ELOG) $(HOST_CXX) $(HOST_OUTOPTION)$@ -c $(HOST_CXXFLAGS) $(HOST_CMMFLAGS) $(INCLUDES) $(NSPR_CFLAGS) $(_VPATH_SRCS)
 
-$(COBJS): %.$(OBJ_SUFFIX): %.c $(call mkdir_deps,$(MDDEPDIR))
+$(COBJS):
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CC)
 	$(ELOG) $(CC) $(OUTOPTION)$@ -c $(COMPILE_CFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
@@ -1043,32 +1141,24 @@ qrc_%.cpp: %.qrc
 ifdef ASFILES
 # The AS_DASH_C_FLAG is needed cause not all assemblers (Solaris) accept
 # a '-c' flag.
-$(ASOBJS): %.$(OBJ_SUFFIX): %.$(ASM_SUFFIX)
+$(ASOBJS):
 	$(AS) $(ASOUTOPTION)$@ $(ASFLAGS) $(AS_DASH_C_FLAG) $(_VPATH_SRCS)
 endif
 
-$(SOBJS): %.$(OBJ_SUFFIX): %.S
+$(SOBJS):
 	$(AS) -o $@ $(ASFLAGS) $(LOCAL_INCLUDES) $(TARGET_LOCAL_INCLUDES) -c $<
 
-#
-# Please keep the next two rules in sync.
-#
-$(CCOBJS): %.$(OBJ_SUFFIX): %.cc $(call mkdir_deps,$(MDDEPDIR))
+$(CPPOBJS):
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CXX)
 	$(ELOG) $(CCC) $(OUTOPTION)$@ -c $(COMPILE_CXXFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
-$(CPPOBJS): %.$(OBJ_SUFFIX): %.cpp $(call mkdir_deps,$(MDDEPDIR))
-	$(REPORT_BUILD)
-	@$(MAKE_DEPS_AUTO_CXX)
-	$(ELOG) $(CCC) $(OUTOPTION)$@ -c $(COMPILE_CXXFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
-
-$(CMMOBJS): $(OBJ_PREFIX)%.$(OBJ_SUFFIX): %.mm $(call mkdir_deps,$(MDDEPDIR))
+$(CMMOBJS):
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CXX)
 	$(ELOG) $(CCC) -o $@ -c $(COMPILE_CXXFLAGS) $(COMPILE_CMMFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
-$(CMOBJS): $(OBJ_PREFIX)%.$(OBJ_SUFFIX): %.m $(call mkdir_deps,$(MDDEPDIR))
+$(CMOBJS):
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CC)
 	$(ELOG) $(CC) -o $@ -c $(COMPILE_CFLAGS) $(COMPILE_CMFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
@@ -1106,22 +1196,13 @@ else
 endif
 endif
 
-# need 3 separate lines for OS/2
-%:: %.pl
-	$(RM) $@
-	cp $< $@
-	chmod +x $@
-
-%:: %.sh
-	$(RM) $@
-	cp $< $@
-	chmod +x $@
-
 # Cancel these implicit rules
 #
 %: %,v
 
 %: RCS/%,v
+
+%: RCS/%
 
 %: s.%
 
@@ -1189,26 +1270,6 @@ GARBAGE_DIRS += $(_JAVA_DIR)
 ###############################################################################
 # Update Files Managed by Build Backend
 ###############################################################################
-
-ifdef MOZBUILD_DERIVED
-
-# If this Makefile is derived from moz.build files, substitution for all .in
-# files is handled by SUBSTITUTE_FILES. This includes Makefile.in.
-ifneq ($(SUBSTITUTE_FILES),,)
-$(SUBSTITUTE_FILES): % : $(srcdir)/%.in $(DEPTH)/config/autoconf.mk
-	@$(PYTHON) $(DEPTH)/config.status -n --file=$@
-	@$(TOUCH) $@
-endif
-
-# Detect when the backend.mk needs rebuilt. This will cause a full scan and
-# rebuild. While relatively expensive, it should only occur once per recursion.
-ifneq ($(BACKEND_INPUT_FILES),,)
-backend.mk: $(BACKEND_INPUT_FILES)
-	@$(PYTHON) $(DEPTH)/config.status -n
-	@$(TOUCH) $@
-endif
-
-endif # MOZBUILD_DERIVED
 
 ifndef NO_MAKEFILE_RULE
 Makefile: Makefile.in
@@ -1434,21 +1495,23 @@ libs:: $(call mkdir_deps,$(FINAL_TARGET))
 endif
 
 ################################################################################
-# Copy each element of EXTRA_JS_MODULES to JS_MODULES_PATH, or
-# $(FINAL_TARGET)/modules if that isn't defined.
-JS_MODULES_PATH ?= $(FINAL_TARGET)/modules
+# Copy each element of EXTRA_JS_MODULES to
+# $(FINAL_TARGET)/$(JS_MODULES_PATH). JS_MODULES_PATH defaults to "modules"
+# if it is undefined.
+JS_MODULES_PATH ?= modules
+FINAL_JS_MODULES_PATH := $(FINAL_TARGET)/$(JS_MODULES_PATH)
 
 ifdef EXTRA_JS_MODULES
 ifndef NO_DIST_INSTALL
 EXTRA_JS_MODULES_FILES := $(EXTRA_JS_MODULES)
-EXTRA_JS_MODULES_DEST := $(JS_MODULES_PATH)
+EXTRA_JS_MODULES_DEST := $(FINAL_JS_MODULES_PATH)
 INSTALL_TARGETS += EXTRA_JS_MODULES
 endif
 endif
 
 ifdef EXTRA_PP_JS_MODULES
 ifndef NO_DIST_INSTALL
-EXTRA_PP_JS_MODULES_PATH := $(JS_MODULES_PATH)
+EXTRA_PP_JS_MODULES_PATH := $(FINAL_JS_MODULES_PATH)
 PP_TARGETS += EXTRA_PP_JS_MODULES
 endif
 endif
@@ -1608,7 +1671,7 @@ endif
 #   it.
 
 ifneq (,$(filter-out all chrome default export realchrome tools clean clobber clobber_all distclean realclean,$(MAKECMDGOALS)))
-MDDEPEND_FILES		:= $(strip $(wildcard $(foreach file,$(OBJS) $(PROGOBJS) $(HOST_OBJS) $(HOST_PROGOBJS) $(TARGETS) $(XPIDLSRCS:.idl=.h) $(XPIDLSRCS:.idl=.xpt),$(MDDEPDIR)/$(notdir $(file)).pp) $(addprefix $(MDDEPDIR)/,$(EXTRA_MDDEPEND_FILES))))
+MDDEPEND_FILES		:= $(strip $(wildcard $(foreach file,$(sort $(OBJS) $(PROGOBJS) $(HOST_OBJS) $(HOST_PROGOBJS) $(TARGETS) $(XPIDLSRCS:.idl=.h) $(XPIDLSRCS:.idl=.xpt)),$(MDDEPDIR)/$(notdir $(file)).pp) $(addprefix $(MDDEPDIR)/,$(EXTRA_MDDEPEND_FILES))))
 
 ifneq (,$(MDDEPEND_FILES))
 ifdef .PYMAKE
@@ -1619,6 +1682,21 @@ endif
 endif
 
 endif
+
+
+ifneq (,$(filter export,$(MAKECMDGOALS)))
+MDDEPEND_FILES		:= $(strip $(wildcard $(addprefix $(MDDEPDIR)/,$(EXTRA_EXPORT_MDDEPEND_FILES))))
+
+ifneq (,$(MDDEPEND_FILES))
+ifdef .PYMAKE
+includedeps $(MDDEPEND_FILES)
+else
+include $(MDDEPEND_FILES)
+endif
+endif
+
+endif
+
 #############################################################################
 
 -include $(topsrcdir)/$(MOZ_BUILD_APP)/app-rules.mk
@@ -1728,6 +1806,11 @@ $(foreach category,$(PP_TARGETS),						\
    )										\
  )
 
+# Pull in non-recursive targets if this is a partial tree build.
+ifndef TOPLEVEL_BUILD
+include $(topsrcdir)/config/makefiles/nonrecursive.mk
+endif
+
 ################################################################################
 # Special gmake rules.
 ################################################################################
@@ -1795,6 +1878,7 @@ FREEZE_VARIABLES = \
   MOCHITEST_BROWSER_FILES \
   MOCHITEST_BROWSER_FILES_PARTS \
   MOCHITEST_A11Y_FILES \
+  MOCHITEST_METRO_FILES \
   MOCHITEST_ROBOCOP_FILES \
   MOCHITEST_WEBAPPRT_CHROME_FILES \
   $(NULL)

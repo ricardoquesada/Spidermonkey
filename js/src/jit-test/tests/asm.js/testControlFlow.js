@@ -4,6 +4,9 @@ assertAsmTypeFail(USE_ASM + "function f(i,j) { i=i|0;j=+j; if (i) return j; retu
 assertEq(asmLink(asmCompile(USE_ASM + "function f(i,j) { i=i|0;j=+j; if (i) return j; return +~~i } return f"))(1,1.4), 1.4);
 assertAsmTypeFail(USE_ASM + "function f(i,j) { i=i|0;j=j|0; if (i) return j^0; return i^0 } return f");
 assertEq(asmLink(asmCompile(USE_ASM + "function f(i,j) { i=i|0;j=j|0; if (i) return j^0; return i|0 } return f"))(1,8), 8);
+assertEq(asmLink(asmCompile(USE_ASM + "function f(i) { i=i|0; if ((i|0) == 0) return 10; else if ((i|0) == 1) return 12; else if ((i|0) == 2) return 14; return 0} return f"))(2), 14);
+assertEq(asmLink(asmCompile(USE_ASM + "function f(i) { i=i|0; if ((i|0) == 0) return 10; else if ((i|0) == 1) return 12; else if ((i|0) == 2) return 14; else return 16; return 0} return f"))(3), 16);
+assertEq(asmLink(asmCompile(USE_ASM + "function f(i) { i=i|0; if ((i|0) == 0) i = 10; else if ((i|0) == 1) return 12; return (i|0) } return f"))(0), 10);
 
 assertEq(asmLink(asmCompile(USE_ASM + "function f() { while (0) {} return 0} return f"))(), 0);
 assertEq(asmLink(asmCompile(USE_ASM + "function f() { for (;0;) {} return 0} return f"))(), 0);
@@ -133,7 +136,7 @@ assertEq(asmLink(asmCompile(USE_ASM + "function f() { var i=1; switch(i|0) { cas
 assertEq(asmLink(asmCompile(USE_ASM + "function f() { var i=1; switch(i|0) { case 0: case 2: break; default: i=42; break } return i|0 } return f"))(), 42);
 assertEq(asmLink(asmCompile(USE_ASM + "function f() { return 42; switch(1) { case 1: return 13 } return 14 } return f"))(), 42);
 
-var exp = asmLink(asmCompile(USE_ASM + "var x=0; function a() { return x|0 } function b(i) { i=i|0; x=i } function c(i) { i=i|0; if (i) return b(i); } return {a:a,b:b,c:c}"));
+var exp = asmLink(asmCompile(USE_ASM + "var x=0; function a() { return x|0 } function b(i) { i=i|0; x=i } function c(i) { i=i|0; if (i) b(i); } return {a:a,b:b,c:c}"));
 assertEq(exp.c(10), undefined);
 assertEq(exp.a(), 10);
 

@@ -4,20 +4,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <stddef.h>
 #include <assert.h>
+#include <ctype.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
-#include <ctype.h>
-
-#include "jsversion.h"
 
 #include "vm/Keywords.h"
 
 const char * const keyword_list[] = {
-#define KEYWORD_STRING(keyword, name, type, op, version) #keyword,
+#define KEYWORD_STRING(keyword, name, type, version) #keyword,
     FOR_EACH_JAVASCRIPT_KEYWORD(KEYWORD_STRING)
 #undef KEYWORD_STRING
 };

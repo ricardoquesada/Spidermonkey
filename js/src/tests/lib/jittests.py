@@ -286,6 +286,16 @@ def run_test(test, prefix, options):
 
 def check_output(out, err, rc, test):
     if test.expect_error:
+        # The shell exits with code 3 on uncaught exceptions.
+        # Sometimes 0 is returned on Windows for unknown reasons.
+        # See bug 899697.
+        if sys.platform in ['win32', 'cygwin']:
+            if rc != 3 and rc != 0:
+                return False
+        else:
+            if rc != 3:
+                return False
+
         return test.expect_error in err
 
     for line in out.split('\n'):
@@ -499,9 +509,11 @@ def process_test_results(results, num_tests, options):
             doing = 'after %s' % res.test.path
             if not ok:
                 failures.append(res)
-                pb.message("FAIL - %s" % res.test.path)
-            if res.timed_out:
-                timeouts += 1
+                if res.timed_out:
+                    pb.message("TIMEOUT - %s" % res.test.path)
+                    timeouts += 1
+                else:
+                    pb.message("FAIL - %s" % res.test.path)
 
             if options.tinderbox:
                 if ok:

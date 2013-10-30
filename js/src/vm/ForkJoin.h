@@ -4,13 +4,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef ForkJoin_h__
-#define ForkJoin_h__
+#ifndef vm_ForkJoin_h
+#define vm_ForkJoin_h
 
 #include "jscntxt.h"
-#include "vm/ThreadPool.h"
 #include "jsgc.h"
-#include "ion/Ion.h"
+
+#include "jit/Ion.h"
+#include "vm/ThreadPool.h"
 
 ///////////////////////////////////////////////////////////////////////////
 // Read Me First
@@ -98,7 +99,7 @@
 //   get interesting.  In that case, the semantics of parallel
 //   execution guarantee us that no visible side effects have occurred
 //   (unless they were performed with the intrinsic
-//   |UnsafeSetElement()|, which can only be used in self-hosted
+//   |UnsafePutElements()|, which can only be used in self-hosted
 //   code).  We therefore reinvoke |func()| but with warmup set to
 //   true.  The idea here is that often parallel bailouts result from
 //   a failed type guard or other similar assumption, so rerunning the
@@ -124,6 +125,26 @@
 // worker thread terminates before calling |check()|, that's fine too.
 // We assume that you do not do unbounded work without invoking
 // |check()|.
+//
+// Transitive compilation:
+//
+// One of the challenges for parallel compilation is that we
+// (currently) have to abort when we encounter an uncompiled script.
+// Therefore, we try to compile everything that might be needed
+// beforehand. The exact strategy is described in `ParallelDo::apply()`
+// in ForkJoin.cpp, but at the highest level the idea is:
+//
+// 1. We maintain a flag on every script telling us if that script and
+//    its transitive callees are believed to be compiled. If that flag
+//    is set, we can skip the initial compilation.
+// 2. Otherwise, we maintain a worklist that begins with the main
+//    script. We compile it and then examine the generated parallel IonScript,
+//    which will have a list of callees. We enqueue those. Some of these
+//    compilations may take place off the main thread, in which case
+//    we will run warmup iterations while we wait for them to complete.
+// 3. If the warmup iterations finish all the work, we're done.
+// 4. If compilations fail, we fallback to sequential.
+// 5. Otherwise, we will try running in parallel once we're all done.
 //
 // Bailout tracing and recording:
 //
@@ -180,7 +201,7 @@
 
 namespace js {
 
-struct ForkJoinSlice;
+class ForkJoinSlice;
 
 bool ForkJoin(JSContext *cx, CallArgs &args);
 
@@ -199,13 +220,6 @@ struct IonLIRTraceData {
     jsbytecode *pc;
 };
 #endif
-
-// Parallel operations in general can have one of three states.  They may
-// succeed, fail, or "bail", where bail indicates that the code encountered an
-// unexpected condition and should be re-run sequentially.
-// Different subcategories of the "bail" state are encoded as variants of
-// TP_RETRY_*.
-enum ParallelResult { TP_SUCCESS, TP_RETRY_SEQUENTIALLY, TP_RETRY_AFTER_GC, TP_FATAL };
 
 ///////////////////////////////////////////////////////////////////////////
 // Bailout tracking
@@ -238,6 +252,8 @@ enum ParallelBailoutCause {
     ParallelBailoutUnsupported,
     ParallelBailoutUnsupportedStringComparison,
     ParallelBailoutUnsupportedSparseArray,
+    ParallelBailoutRequestedGC,
+    ParallelBailoutRequestedZoneGC,
 };
 
 struct ParallelBailoutTrace {
@@ -268,22 +284,14 @@ struct ParallelBailoutRecord {
 
 struct ForkJoinShared;
 
-struct ForkJoinSlice
+class ForkJoinSlice : public ThreadSafeContext
 {
   public:
-    // PerThreadData corresponding to the current worker thread.
-    PerThreadData *perThreadData;
-
     // Which slice should you process? Ranges from 0 to |numSlices|.
     const uint32_t sliceId;
 
     // How many slices are there in total?
     const uint32_t numSlices;
-
-    // Allocator to use when allocating on this thread.  See
-    // |ion::ParFunctions::ParNewGCThing()|.  This should move into
-    // |perThreadData|.
-    Allocator *const allocator;
 
     // Bailout record used to record the reason this thread stopped executing
     ParallelBailoutRecord *const bailoutRecord;
@@ -294,11 +302,11 @@ struct ForkJoinSlice
 #endif
 
     ForkJoinSlice(PerThreadData *perThreadData, uint32_t sliceId, uint32_t numSlices,
-                  Allocator *arenaLists, ForkJoinShared *shared,
+                  Allocator *allocator, ForkJoinShared *shared,
                   ParallelBailoutRecord *bailoutRecord);
 
     // True if this is the main thread, false if it is one of the parallel workers.
-    bool isMainThread();
+    bool isMainThread() const;
 
     // When the code would normally trigger a GC, we don't trigger it
     // immediately but instead record that request here.  This will
@@ -332,6 +340,7 @@ struct ForkJoinSlice
     // Acquire and release the JSContext from the runtime.
     JSContext *acquireContext();
     void releaseContext();
+    bool hasAcquiredContext() const;
 
     // Check the current state of parallel execution.
     static inline ForkJoinSlice *Current();
@@ -350,6 +359,8 @@ struct ForkJoinSlice
 #endif
 
     ForkJoinShared *const shared;
+
+    bool acquiredContext_;
 };
 
 // Locks a JSContext for its scope. Be very careful, because locking a
@@ -399,6 +410,10 @@ InParallelSection()
 #endif
 }
 
+bool InSequentialOrExclusiveParallelSection();
+
+bool ParallelTestsShouldPass(JSContext *cx);
+
 ///////////////////////////////////////////////////////////////////////////
 // Debug Spew
 
@@ -410,6 +425,9 @@ enum ExecutionStatus {
 
     // Parallel exec failed and so we fell back to sequential
     ExecutionSequential,
+
+    // We completed the work in seq mode before parallel compilation completed
+    ExecutionWarmup,
 
     // Parallel exec was successful after some number of bailouts
     ExecutionParallel
@@ -431,8 +449,8 @@ void SpewBailout(uint32_t count, HandleScript script, jsbytecode *pc,
                  ParallelBailoutCause cause);
 ExecutionStatus SpewEndOp(ExecutionStatus status);
 void SpewBeginCompile(HandleScript script);
-ion::MethodStatus SpewEndCompile(ion::MethodStatus status);
-void SpewMIR(ion::MDefinition *mir, const char *fmt, ...);
+jit::MethodStatus SpewEndCompile(jit::MethodStatus status);
+void SpewMIR(jit::MDefinition *mir, const char *fmt, ...);
 void SpewBailoutIR(uint32_t bblockId, uint32_t lirId,
                    const char *lir, const char *mir, JSScript *script, jsbytecode *pc);
 
@@ -446,8 +464,8 @@ static inline void SpewBailout(uint32_t count, HandleScript script,
 static inline ExecutionStatus SpewEndOp(ExecutionStatus status) { return status; }
 static inline void SpewBeginCompile(HandleScript script) { }
 #ifdef JS_ION
-static inline ion::MethodStatus SpewEndCompile(ion::MethodStatus status) { return status; }
-static inline void SpewMIR(ion::MDefinition *mir, const char *fmt, ...) { }
+static inline jit::MethodStatus SpewEndCompile(jit::MethodStatus status) { return status; }
+static inline void SpewMIR(jit::MDefinition *mir, const char *fmt, ...) { }
 #endif
 static inline void SpewBailoutIR(uint32_t bblockId, uint32_t lirId,
                                  const char *lir, const char *mir,
@@ -468,4 +486,4 @@ js::ForkJoinSlice::Current()
 #endif
 }
 
-#endif // ForkJoin_h__
+#endif /* vm_ForkJoin_h */

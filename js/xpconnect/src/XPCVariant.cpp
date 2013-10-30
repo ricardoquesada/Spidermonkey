@@ -8,10 +8,12 @@
 
 #include "xpcprivate.h"
 #include "XPCWrapper.h"
+#include "nsCxPusher.h"
 
 #include "jsfriendapi.h"
 
 using namespace JS;
+using namespace mozilla;
 
 NS_IMPL_CLASSINFO(XPCVariant, NULL, 0, XPCVARIANT_CID)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(XPCVariant)
@@ -43,7 +45,7 @@ XPCVariant::XPCVariant(JSContext* cx, jsval aJSVal)
         mJSVal = OBJECT_TO_JSVAL(obj);
 
         JSObject *unwrapped = js::CheckedUnwrap(obj, /* stopAtOuter = */ false);
-        mReturnRawObject = !(unwrapped && IS_WN_WRAPPER(unwrapped));
+        mReturnRawObject = !(unwrapped && IS_WN_REFLECTOR(unwrapped));
     } else
         mReturnRawObject = false;
 }
@@ -67,7 +69,7 @@ void XPCTraceableVariant::TraceJS(JSTracer* trc)
 {
     MOZ_ASSERT(JSVAL_IS_TRACEABLE(mJSVal));
     JS_SET_TRACING_DETAILS(trc, GetTraceName, this, 0);
-    JS_CallValueTracer(trc, &mJSVal, "XPCTraceableVariant::mJSVal");
+    JS_CallHeapValueTracer(trc, &mJSVal, "XPCTraceableVariant::mJSVal");
 }
 
 // static
@@ -76,6 +78,8 @@ XPCTraceableVariant::GetTraceName(JSTracer* trc, char *buf, size_t bufsize)
 {
     JS_snprintf(buf, bufsize, "XPCVariant[0x%p].mJSVal", trc->debugPrintArg);
 }
+
+NS_IMPL_CYCLE_COLLECTION_CLASS(XPCVariant)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(XPCVariant)
     JS::Value val = tmp->GetJSValPreserveColor();
@@ -335,7 +339,7 @@ JSBool XPCVariant::InitializeData(JSContext* cx)
         if (!XPCArrayHomogenizer::GetTypeForArray(cx, jsobj, len, &type, &id))
             return false;
 
-        if (!XPCConvert::JSArray2Native(cx, &mData.u.array.mArrayValue,
+        if (!XPCConvert::JSArray2Native(&mData.u.array.mArrayValue,
                                         val, len, type, &id, nullptr))
             return false;
 
@@ -350,12 +354,11 @@ JSBool XPCVariant::InitializeData(JSContext* cx)
 
     // XXX This could be smarter and pick some more interesting iface.
 
-    nsXPConnect*  xpc;
+    nsXPConnect*  xpc = nsXPConnect::XPConnect();
     nsCOMPtr<nsISupports> wrapper;
     const nsIID& iid = NS_GET_IID(nsISupports);
 
-    return nullptr != (xpc = nsXPConnect::GetXPConnect()) &&
-           NS_SUCCEEDED(xpc->WrapJS(cx, jsobj,
+    return NS_SUCCEEDED(xpc->WrapJS(cx, jsobj,
                                     iid, getter_AddRefs(wrapper))) &&
            NS_SUCCEEDED(nsVariant::SetFromInterface(&mData, iid, wrapper));
 }
@@ -370,8 +373,7 @@ XPCVariant::GetAsJSVal(jsval* result)
 
 // static
 JSBool
-XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
-                            nsIVariant* variant,
+XPCVariant::VariantDataToJS(nsIVariant* variant,
                             nsresult* pErr, jsval* pJSVal)
 {
     // Get the type early because we might need to spoof it below.
@@ -379,7 +381,7 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
     if (NS_FAILED(variant->GetDataType(&type)))
         return false;
 
-    JSContext *cx = lccx.GetJSContext();
+    AutoJSContext cx;
     RootedValue realVal(cx);
     nsresult rv = variant->GetAsJSVal(realVal.address());
 
@@ -418,9 +420,6 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
 
     nsID iid;
 
-    NS_ABORT_IF_FALSE(js::IsObjectInContextCompartment(lccx.GetScopeForNewJSObjects(), cx),
-                      "bad scope for new JSObjects");
-
     switch (type) {
         case nsIDataType::VTYPE_INT8:
         case nsIDataType::VTYPE_INT16:
@@ -452,21 +451,21 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
             char c;
             if (NS_FAILED(variant->GetAsChar(&c)))
                 return false;
-            return XPCConvert::NativeData2JS(lccx, pJSVal, (const void*)&c, TD_CHAR, &iid, pErr);
+            return XPCConvert::NativeData2JS(pJSVal, (const void*)&c, TD_CHAR, &iid, pErr);
         }
         case nsIDataType::VTYPE_WCHAR:
         {
             PRUnichar wc;
             if (NS_FAILED(variant->GetAsWChar(&wc)))
                 return false;
-            return XPCConvert::NativeData2JS(lccx, pJSVal, (const void*)&wc, TD_WCHAR, &iid, pErr);
+            return XPCConvert::NativeData2JS(pJSVal, (const void*)&wc, TD_WCHAR, &iid, pErr);
         }
         case nsIDataType::VTYPE_ID:
         {
             if (NS_FAILED(variant->GetAsID(&iid)))
                 return false;
             nsID *v = &iid;
-            return XPCConvert::NativeData2JS(lccx, pJSVal, (const void*)&v, TD_PNSIID, &iid, pErr);
+            return XPCConvert::NativeData2JS(pJSVal, (const void*)&v, TD_PNSIID, &iid, pErr);
         }
         case nsIDataType::VTYPE_ASTRING:
         {
@@ -474,7 +473,7 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
             if (NS_FAILED(variant->GetAsAString(astring)))
                 return false;
             nsAutoString *v = &astring;
-            return XPCConvert::NativeData2JS(lccx, pJSVal, (const void*)&v, TD_ASTRING, &iid, pErr);
+            return XPCConvert::NativeData2JS(pJSVal, (const void*)&v, TD_ASTRING, &iid, pErr);
         }
         case nsIDataType::VTYPE_DOMSTRING:
         {
@@ -482,7 +481,7 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
             if (NS_FAILED(variant->GetAsAString(astring)))
                 return false;
             nsAutoString *v = &astring;
-            return XPCConvert::NativeData2JS(lccx, pJSVal, (const void*)&v,
+            return XPCConvert::NativeData2JS(pJSVal, (const void*)&v,
                                              TD_DOMSTRING, &iid, pErr);
         }
         case nsIDataType::VTYPE_CSTRING:
@@ -491,7 +490,7 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
             if (NS_FAILED(variant->GetAsACString(cString)))
                 return false;
             nsAutoCString *v = &cString;
-            return XPCConvert::NativeData2JS(lccx, pJSVal, (const void*)&v,
+            return XPCConvert::NativeData2JS(pJSVal, (const void*)&v,
                                              TD_CSTRING, &iid, pErr);
         }
         case nsIDataType::VTYPE_UTF8STRING:
@@ -500,7 +499,7 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
             if (NS_FAILED(variant->GetAsAUTF8String(utf8String)))
                 return false;
             nsUTF8String *v = &utf8String;
-            return XPCConvert::NativeData2JS(lccx, pJSVal, (const void*)&v,
+            return XPCConvert::NativeData2JS(pJSVal, (const void*)&v,
                                              TD_UTF8STRING, &iid, pErr);
         }
         case nsIDataType::VTYPE_CHAR_STR:
@@ -508,7 +507,7 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
             char *pc;
             if (NS_FAILED(variant->GetAsString(&pc)))
                 return false;
-            bool success = XPCConvert::NativeData2JS(lccx, pJSVal, (const void*)&pc,
+            bool success = XPCConvert::NativeData2JS(pJSVal, (const void*)&pc,
                                                      TD_PSTRING, &iid, pErr);
             nsMemory::Free(pc);
             return success;
@@ -519,7 +518,7 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
             uint32_t size;
             if (NS_FAILED(variant->GetAsStringWithSize(&size, &pc)))
                 return false;
-            bool success = XPCConvert::NativeStringWithSize2JS(cx, pJSVal, (const void*)&pc,
+            bool success = XPCConvert::NativeStringWithSize2JS(pJSVal, (const void*)&pc,
                                                                TD_PSTRING_SIZE_IS, size, pErr);
             nsMemory::Free(pc);
             return success;
@@ -529,7 +528,7 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
             PRUnichar *pwc;
             if (NS_FAILED(variant->GetAsWString(&pwc)))
                 return false;
-            bool success = XPCConvert::NativeData2JS(lccx, pJSVal, (const void*)&pwc,
+            bool success = XPCConvert::NativeData2JS(pJSVal, (const void*)&pwc,
                                                      TD_PSTRING, &iid, pErr);
             nsMemory::Free(pwc);
             return success;
@@ -540,7 +539,7 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
             uint32_t size;
             if (NS_FAILED(variant->GetAsWStringWithSize(&size, &pwc)))
                 return false;
-            bool success = XPCConvert::NativeStringWithSize2JS(cx, pJSVal, (const void*)&pwc,
+            bool success = XPCConvert::NativeStringWithSize2JS(pJSVal, (const void*)&pwc,
                                                                TD_PWSTRING_SIZE_IS, size, pErr);
             nsMemory::Free(pwc);
             return success;
@@ -556,7 +555,7 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
             iid = *piid;
             nsMemory::Free((char*)piid);
 
-            bool success = XPCConvert::NativeData2JS(lccx, pJSVal, (const void*)&pi,
+            bool success = XPCConvert::NativeData2JS(pJSVal, (const void*)&pi,
                                                      TD_INTERFACE_IS_TYPE, &iid, pErr);
             if (pi)
                 pi->Release();
@@ -633,7 +632,7 @@ XPCVariant::VariantDataToJS(XPCLazyCallContext& lccx,
             }
 
             success =
-                XPCConvert::NativeArray2JS(lccx, pJSVal,
+                XPCConvert::NativeArray2JS(pJSVal,
                                            (const void**)&du.u.array.mArrayValue,
                                            conversionType, pid,
                                            du.u.array.mArrayCount, pErr);

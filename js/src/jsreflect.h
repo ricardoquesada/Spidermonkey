@@ -7,10 +7,11 @@
 /*
  * JS reflection package.
  */
-#ifndef jsreflect_h___
-#define jsreflect_h___
+#ifndef jsreflect_h
+#define jsreflect_h
 
 #include <stdlib.h>
+
 #include "jspubtd.h"
 
 namespace js {
@@ -88,11 +89,11 @@ enum PropKind {
     PROP_LIMIT
 };
 
-extern char const *aopNames[];
-extern char const *binopNames[];
-extern char const *unopNames[];
-extern char const *nodeTypeNames[];
+extern char const * const aopNames[];
+extern char const * const binopNames[];
+extern char const * const unopNames[];
+extern char const * const nodeTypeNames[];
 
 } /* namespace js */
 
-#endif /* jsreflect_h___ */
+#endif /* jsreflect_h */

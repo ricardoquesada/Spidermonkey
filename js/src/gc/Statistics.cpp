@@ -4,24 +4,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <stdio.h>
-#include <stdarg.h>
+#include "gc/Statistics.h"
 
 #include "mozilla/PodOperations.h"
 
-#include "jscntxt.h"
-#include "jscompartment.h"
-#include "jscrashformat.h"
+#include <stdarg.h>
+#include <stdio.h>
+
 #include "jscrashreport.h"
 #include "jsprf.h"
-#include "jsprobes.h"
 #include "jsutil.h"
 #include "prmjtime.h"
 
 #include "gc/Memory.h"
-#include "gc/Statistics.h"
-
-#include "gc/Barrier-inl.h"
+#include "vm/Runtime.h"
 
 using namespace js;
 using namespace js::gcstats;
@@ -256,8 +252,7 @@ ExplainReason(JS::gcreason::Reason reason)
         GCREASONS(SWITCH_REASON)
 
         default:
-          JS_NOT_REACHED("bad GC reason");
-          return "?";
+          MOZ_ASSUME_UNREACHABLE("bad GC reason");
 #undef SWITCH_REASON
     }
 }
@@ -277,7 +272,7 @@ struct PhaseInfo
 
 static const Phase PHASE_NO_PARENT = PHASE_LIMIT;
 
-static PhaseInfo phases[] = {
+static const PhaseInfo phases[] = {
     { PHASE_GC_BEGIN, "Begin Callback", PHASE_NO_PARENT },
     { PHASE_WAIT_BACKGROUND_THREAD, "Wait Background Thread", PHASE_NO_PARENT },
     { PHASE_MARK_DISCARD_CODE, "Mark Discard Code", PHASE_NO_PARENT },
@@ -302,7 +297,7 @@ static PhaseInfo phases[] = {
     { PHASE_SWEEP_TABLES, "Sweep Tables", PHASE_SWEEP_COMPARTMENTS },
     { PHASE_SWEEP_TABLES_WRAPPER, "Sweep Cross Compartment Wrappers", PHASE_SWEEP_TABLES },
     { PHASE_SWEEP_TABLES_BASE_SHAPE, "Sweep Base Shapes", PHASE_SWEEP_TABLES },
-    { PHASE_SWEEP_TABLES_INITIAL_SHAPE, "Sweep Intital Shapes", PHASE_SWEEP_TABLES },
+    { PHASE_SWEEP_TABLES_INITIAL_SHAPE, "Sweep Initial Shapes", PHASE_SWEEP_TABLES },
     { PHASE_SWEEP_TABLES_TYPE_OBJECT, "Sweep Type Objects", PHASE_SWEEP_TABLES },
     { PHASE_SWEEP_TABLES_BREAKPOINT, "Sweep Breakpoints", PHASE_SWEEP_TABLES },
     { PHASE_SWEEP_TABLES_REGEXP, "Sweep Regexps", PHASE_SWEEP_TABLES },
@@ -367,6 +362,10 @@ Statistics::formatData(StatisticsSerializer &ss, uint64_t timestamp)
     ss.beginObject(NULL);
     if (ss.isJSON())
         ss.appendNumber("Timestamp", "%llu", "", (unsigned long long)timestamp);
+    if (slices.length() > 1 || ss.isJSON())
+        ss.appendDecimal("Max Pause", "ms", t(longest));
+    else
+        ss.appendString("Reason", ExplainReason(slices[0].reason));
     ss.appendDecimal("Total Time", "ms", t(total));
     ss.appendNumber("Compartments Collected", "%d", "", collectedCount);
     ss.appendNumber("Total Compartments", "%d", "", compartmentCount);
@@ -375,10 +374,6 @@ Statistics::formatData(StatisticsSerializer &ss, uint64_t timestamp)
     ss.appendNumber("MMU (50ms)", "%d", "%", int(mmu50 * 100));
     ss.appendDecimal("SCC Sweep Total", "ms", t(sccTotal));
     ss.appendDecimal("SCC Sweep Max Pause", "ms", t(sccLongest));
-    if (slices.length() > 1 || ss.isJSON())
-        ss.appendDecimal("Max Pause", "ms", t(longest));
-    else
-        ss.appendString("Reason", ExplainReason(slices[0].reason));
     if (nonincrementalReason || ss.isJSON()) {
         ss.appendString("Nonincremental Reason",
                         nonincrementalReason ? nonincrementalReason : "none");

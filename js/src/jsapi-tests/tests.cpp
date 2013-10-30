@@ -4,10 +4,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "tests.h"
-#include "js/RootingAPI.h"
-#include "jsobj.h"
+#include "jsapi-tests/tests.h"
+
 #include <stdio.h>
+
+#include "jsobj.h"
+
+#include "js/RootingAPI.h"
 
 JSAPITest *JSAPITest::list;
 
@@ -23,8 +26,8 @@ bool JSAPITest::init()
     JS::RootedObject global(cx, createGlobal());
     if (!global)
         return false;
-    oldCompartment = JS_EnterCompartment(cx, global);
-    return oldCompartment != NULL;
+    JS_EnterCompartment(cx, global);
+    return true;
 }
 
 bool JSAPITest::exec(const char *bytes, const char *filename, int lineno)
@@ -51,7 +54,9 @@ bool JSAPITest::definePrint()
 JSObject * JSAPITest::createGlobal(JSPrincipals *principals)
 {
     /* Create the global object. */
-    global = JS_NewGlobalObject(cx, getGlobalClass(), principals);
+    JS::CompartmentOptions options;
+    options.setVersion(JSVERSION_LATEST);
+    global = JS_NewGlobalObject(cx, getGlobalClass(), principals, JS::FireOnNewGlobalHook, options);
     if (!global)
         return NULL;
     JS_AddNamedObjectRoot(cx, &global, "test-global");
@@ -71,6 +76,11 @@ int main(int argc, char *argv[])
     int total = 0;
     int failures = 0;
     const char *filter = (argc == 2) ? argv[1] : NULL;
+
+    if (!JS_Init()) {
+        printf("TEST-UNEXPECTED-FAIL | jsapi-tests | JS_Init() failed.\n");
+        return 1;
+    }
 
     for (JSAPITest *test = JSAPITest::list; test; test = test->next) {
         const char *name = test->name();
@@ -99,6 +109,8 @@ int main(int argc, char *argv[])
         }
         test->uninit();
     }
+
+    JS_ShutDown();
 
     if (failures) {
         printf("\n%d unexpected failure%s.\n", failures, (failures == 1 ? "" : "s"));

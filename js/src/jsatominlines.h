@@ -4,13 +4,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jsatominlines_h___
-#define jsatominlines_h___
+#ifndef jsatominlines_h
+#define jsatominlines_h
+
+#include "jsatom.h"
 
 #include "mozilla/PodOperations.h"
 #include "mozilla/RangedPtr.h"
 
-#include "jsatom.h"
+#include "jscntxt.h"
 #include "jsnum.h"
 #include "jsobj.h"
 #include "jsstr.h"
@@ -41,29 +43,26 @@ AtomToId(JSAtom *atom)
     return JSID_FROM_BITS(size_t(atom));
 }
 
-template <AllowGC allowGC>
-inline JSAtom *
-ToAtom(JSContext *cx, const js::Value &v)
+inline bool
+ValueToIdPure(const Value &v, jsid *id)
 {
-    if (!v.isString()) {
-        JSString *str = js::ToStringSlow<allowGC>(cx, v);
-        if (!str)
-            return NULL;
-        JS::Anchor<JSString *> anchor(str);
-        return AtomizeString<allowGC>(cx, str);
+    int32_t i;
+    if (ValueFitsInInt32(v, &i) && INT_FITS_IN_JSID(i)) {
+        *id = INT_TO_JSID(i);
+        return true;
     }
 
-    JSString *str = v.toString();
-    if (str->isAtom())
-        return &str->asAtom();
+    if (!v.isString() || !v.toString()->isAtom())
+        return false;
 
-    JS::Anchor<JSString *> anchor(str);
-    return AtomizeString<allowGC>(cx, str);
+    *id = AtomToId(&v.toString()->asAtom());
+    return true;
 }
 
 template <AllowGC allowGC>
 inline bool
-ValueToId(JSContext* cx, const Value &v, typename MaybeRooted<jsid, allowGC>::MutableHandleType idp)
+ValueToId(JSContext* cx, typename MaybeRooted<Value, allowGC>::HandleType v,
+          typename MaybeRooted<jsid, allowGC>::MutableHandleType idp)
 {
     int32_t i;
     if (ValueFitsInInt32(v, &i) && INT_FITS_IN_JSID(i)) {
@@ -110,11 +109,11 @@ BackfillIndexInCharBuffer(uint32_t index, mozilla::RangedPtr<T> end)
 
 template <AllowGC allowGC>
 bool
-IndexToIdSlow(JSContext *cx, uint32_t index,
+IndexToIdSlow(ExclusiveContext *cx, uint32_t index,
               typename MaybeRooted<jsid, allowGC>::MutableHandleType idp);
 
 inline bool
-IndexToId(JSContext *cx, uint32_t index, MutableHandleId idp)
+IndexToId(ExclusiveContext *cx, uint32_t index, MutableHandleId idp)
 {
     MaybeCheckStackRoots(cx);
 
@@ -127,12 +126,21 @@ IndexToId(JSContext *cx, uint32_t index, MutableHandleId idp)
 }
 
 inline bool
-IndexToIdNoGC(JSContext *cx, uint32_t index, jsid *idp)
+IndexToIdPure(uint32_t index, jsid *idp)
 {
     if (index <= JSID_INT_MAX) {
         *idp = INT_TO_JSID(index);
         return true;
     }
+
+    return false;
+}
+
+inline bool
+IndexToIdNoGC(JSContext *cx, uint32_t index, jsid *idp)
+{
+    if (IndexToIdPure(index, idp))
+        return true;
 
     return IndexToIdSlow<NoGC>(cx, index, idp);
 }
@@ -146,7 +154,8 @@ IdToString(JSContext *cx, jsid id)
     if (JS_LIKELY(JSID_IS_INT(id)))
         return Int32ToString<CanGC>(cx, JSID_TO_INT(id));
 
-    JSString *str = ToStringSlow<CanGC>(cx, IdToValue(id));
+    RootedValue idv(cx, IdToValue(id));
+    JSString *str = ToStringSlow<CanGC>(cx, idv);
     if (!str)
         return NULL;
 
@@ -183,20 +192,20 @@ TypeName(JSType type, JSRuntime *rt)
 inline Handle<PropertyName*>
 TypeName(JSType type, JSContext *cx)
 {
-    return TypeName(type, cx->runtime);
+    return TypeName(type, cx->runtime());
 }
 
 inline Handle<PropertyName*>
-ClassName(JSProtoKey key, JSContext *cx)
+ClassName(JSProtoKey key, ExclusiveContext *cx)
 {
     JS_ASSERT(key < JSProto_LIMIT);
     JS_STATIC_ASSERT(offsetof(JSAtomState, Null) +
                      JSProto_LIMIT * sizeof(FixedHeapPtr<PropertyName>) <=
                      sizeof(JSAtomState));
     JS_STATIC_ASSERT(JSProto_Null == 0);
-    return (&cx->runtime->atomState.Null)[key];
+    return (&cx->names().Null)[key];
 }
 
 } // namespace js
 
-#endif /* jsatominlines_h___ */
+#endif /* jsatominlines_h */

@@ -8,6 +8,7 @@ user preferences
 
 __all__ = ('PreferencesReadError', 'Preferences')
 
+import mozfile
 import os
 import re
 import tokenize
@@ -91,7 +92,7 @@ class Preferences(object):
             # section of INI file
             path, section = path.rsplit(':', 1)
 
-        if not os.path.exists(path):
+        if not os.path.exists(path) and not mozfile.is_url(path):
             raise PreferencesReadError("'%s' does not exist" % path)
 
         if section:
@@ -120,7 +121,7 @@ class Preferences(object):
         """read preferences from an .ini file"""
 
         parser = ConfigParser()
-        parser.read(path)
+        parser.readfp(mozfile.load(path))
 
         if section:
             if section not in parser.sections():
@@ -136,7 +137,7 @@ class Preferences(object):
     def read_json(cls, path):
         """read preferences from a JSON blob"""
 
-        prefs = json.loads(file(path).read())
+        prefs = json.loads(mozfile.load(path).read())
 
         if type(prefs) not in [list, dict]:
             raise PreferencesReadError("Malformed preferences: %s" % path)
@@ -155,13 +156,21 @@ class Preferences(object):
         return prefs
 
     @classmethod
-    def read_prefs(cls, path, pref_setter='user_pref'):
-        """read preferences from (e.g.) prefs.js"""
+    def read_prefs(cls, path, pref_setter='user_pref', interpolation=None):
+        """
+        Read preferences from (e.g.) prefs.js
+
+        :param path: The path to the preference file to read.
+        :param pref_setter: The name of the function used to set preferences
+                            in the preference file.
+        :param interpolation: If provided, a dict that will be passed
+                              to str.format to interpolate preference values.
+        """
 
         comment = re.compile('/\*([^*]|[\r\n]|(\*+([^*/]|[\r\n])))*\*+/', re.MULTILINE)
 
         marker = '##//' # magical marker
-        lines = [i.strip() for i in file(path).readlines() if i.strip()]
+        lines = [i.strip() for i in mozfile.load(path).readlines() if i.strip()]
         _lines = []
         for line in lines:
             if line.startswith(('#', '//')):
@@ -183,6 +192,8 @@ class Preferences(object):
 
         retval = []
         def pref(a, b):
+            if interpolation and isinstance(b, basestring):
+                b = b.format(**interpolation)
             retval.append((a, b))
         lines = [i.strip().rstrip(';') for i in string.split('\n') if i.strip()]
 

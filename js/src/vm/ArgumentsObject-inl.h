@@ -4,66 +4,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef ArgumentsObject_inl_h___
-#define ArgumentsObject_inl_h___
+#ifndef vm_ArgumentsObject_inl_h
+#define vm_ArgumentsObject_inl_h
 
-#include "ArgumentsObject.h"
+#include "vm/ArgumentsObject.h"
 
-#include "ScopeObject-inl.h"
+#include "mozilla/MemoryReporting.h"
+
+#include "vm/ScopeObject.h"
+
+#include "vm/ScopeObject-inl.h"
 
 namespace js {
-
-inline uint32_t
-ArgumentsObject::initialLength() const
-{
-    uint32_t argc = uint32_t(getFixedSlot(INITIAL_LENGTH_SLOT).toInt32()) >> PACKED_BITS_COUNT;
-    JS_ASSERT(argc <= StackSpace::ARGS_LENGTH_MAX);
-    return argc;
-}
-
-inline void
-ArgumentsObject::markLengthOverridden()
-{
-    uint32_t v = getFixedSlot(INITIAL_LENGTH_SLOT).toInt32() | LENGTH_OVERRIDDEN_BIT;
-    setFixedSlot(INITIAL_LENGTH_SLOT, Int32Value(v));
-}
-
-inline bool
-ArgumentsObject::hasOverriddenLength() const
-{
-    const Value &v = getFixedSlot(INITIAL_LENGTH_SLOT);
-    return v.toInt32() & LENGTH_OVERRIDDEN_BIT;
-}
-
-inline ArgumentsData *
-ArgumentsObject::data() const
-{
-    return reinterpret_cast<ArgumentsData *>(getFixedSlot(DATA_SLOT).toPrivate());
-}
-
-inline JSScript *
-ArgumentsObject::containingScript() const
-{
-    return data()->script;
-}
-
-inline const Value &
-ArgumentsObject::arg(unsigned i) const
-{
-    JS_ASSERT(i < data()->numArgs);
-    const Value &v = data()->args[i];
-    JS_ASSERT(!v.isMagic(JS_FORWARD_TO_CALL_OBJECT));
-    return v;
-}
-
-inline void
-ArgumentsObject::setArg(unsigned i, const Value &v)
-{
-    JS_ASSERT(i < data()->numArgs);
-    HeapValue &lhs = data()->args[i];
-    JS_ASSERT(!lhs.isMagic(JS_FORWARD_TO_CALL_OBJECT));
-    lhs = v;
-}
 
 inline const Value &
 ArgumentsObject::element(uint32_t i) const
@@ -71,7 +23,7 @@ ArgumentsObject::element(uint32_t i) const
     JS_ASSERT(!isElementDeleted(i));
     const Value &v = data()->args[i];
     if (v.isMagic(JS_FORWARD_TO_CALL_OBJECT)) {
-        CallObject &callobj = getFixedSlot(MAYBE_CALL_SLOT).toObject().asCall();
+        CallObject &callobj = getFixedSlot(MAYBE_CALL_SLOT).toObject().as<CallObject>();
         for (AliasedFormalIter fi(callobj.callee().nonLazyScript()); ; fi++) {
             if (fi.frameIndex() == i)
                 return callobj.aliasedVar(fi);
@@ -81,50 +33,20 @@ ArgumentsObject::element(uint32_t i) const
 }
 
 inline void
-ArgumentsObject::setElement(uint32_t i, const Value &v)
+ArgumentsObject::setElement(JSContext *cx, uint32_t i, const Value &v)
 {
     JS_ASSERT(!isElementDeleted(i));
     HeapValue &lhs = data()->args[i];
     if (lhs.isMagic(JS_FORWARD_TO_CALL_OBJECT)) {
-        CallObject &callobj = getFixedSlot(MAYBE_CALL_SLOT).toObject().asCall();
+        CallObject &callobj = getFixedSlot(MAYBE_CALL_SLOT).toObject().as<CallObject>();
         for (AliasedFormalIter fi(callobj.callee().nonLazyScript()); ; fi++) {
             if (fi.frameIndex() == i) {
-                callobj.setAliasedVar(fi, v);
+                callobj.setAliasedVar(cx, fi, fi->name(), v);
                 return;
             }
         }
     }
     lhs = v;
-}
-
-inline bool
-ArgumentsObject::isElementDeleted(uint32_t i) const
-{
-    JS_ASSERT(i < data()->numArgs);
-    if (i >= initialLength())
-        return false;
-    return IsBitArrayElementSet(data()->deletedBits, initialLength(), i);
-}
-
-inline bool
-ArgumentsObject::isAnyElementDeleted() const
-{
-    return IsAnyBitArrayElementSet(data()->deletedBits, initialLength());
-}
-
-inline void
-ArgumentsObject::markElementDeleted(uint32_t i)
-{
-    SetBitArrayElement(data()->deletedBits, initialLength(), i);
-}
-
-inline bool
-ArgumentsObject::maybeGetElement(uint32_t i, MutableHandleValue vp)
-{
-    if (i >= initialLength() || isElementDeleted(i))
-        return false;
-    vp.set(element(i));
-    return true;
 }
 
 inline bool
@@ -141,24 +63,6 @@ ArgumentsObject::maybeGetElements(uint32_t start, uint32_t count, Value *vp)
     return true;
 }
 
-inline size_t
-ArgumentsObject::sizeOfMisc(JSMallocSizeOfFun mallocSizeOf) const
-{
-    return mallocSizeOf(data());
-}
-
-inline const Value &
-NormalArgumentsObject::callee() const
-{
-    return data()->callee;
-}
-
-inline void
-NormalArgumentsObject::clearCallee()
-{
-    data()->callee.set(zone(), MagicValue(JS_OVERWRITTEN_CALLEE));
-}
-
 } /* namespace js */
 
-#endif /* ArgumentsObject_inl_h___ */
+#endif /* vm_ArgumentsObject_inl_h */

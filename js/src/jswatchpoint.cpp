@@ -7,10 +7,14 @@
 #include "jswatchpoint.h"
 
 #include "jsatom.h"
+#include "jscompartment.h"
 
 #include "gc/Marking.h"
 
-#include "jsobjinlines.h"
+#include "jsgcinlines.h"
+
+#include "gc/Barrier-inl.h"
+#include "vm/ObjectImpl-inl.h"
 
 using namespace js;
 using namespace js::gc;
@@ -92,7 +96,7 @@ WatchpointMap::watch(JSContext *cx, HandleObject obj, HandleId id,
         js_ReportOutOfMemory(cx);
         return false;
     }
-    WatchpointWriteBarrierPost(cx->runtime, &map, WatchKey(obj, id), w);
+    WatchpointWriteBarrierPost(cx->runtime(), &map, WatchKey(obj, id), w);
     return true;
 }
 

@@ -43,13 +43,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef LIVEWIRE
-#include <base/pblock.h>
-#include <base/session.h>
-#include <frame/log.h>
-#include <frame/req.h>
-#endif /* LIVEWIRE */
-
 #define JSD_MAJOR_VERSION 1
 #define JSD_MINOR_VERSION 1
 
@@ -108,7 +101,6 @@ struct JSDContext
     void*                   functionHookData;
     JSD_CallHookProc        toplevelHook;
     void*                   toplevelHookData;
-    JSContext*              dumbContext;
     JSObject*               glob;
     JSD_UserCallbacks       userCallbacks;
     void*                   user;
@@ -148,11 +140,6 @@ struct JSDScript
     void*       data;
 
     JSDProfileData  *profileData;
-
-#ifdef LIVEWIRE
-    LWDBGApp*    app;
-    LWDBGScript* lwscript;
-#endif
 };
 
 struct JSDProfileData
@@ -1056,45 +1043,15 @@ jsd_DropAtom(JSDContext* jsdc, JSDAtom* atom);
 
 #define JSD_ATOM_TO_STRING(a) ((const char*)((a)->str))
 
-/***************************************************************************/
-/* Livewire specific API */
-#ifdef LIVEWIRE
-
-extern LWDBGScript*
-jsdlw_GetLWScript(JSDContext* jsdc, JSDScript* jsdscript);
-
-extern char*
-jsdlw_BuildAppRelativeFilename(LWDBGApp* app, const char* filename);
-
-extern JSDSourceText*
-jsdlw_PreLoadSource(JSDContext* jsdc, LWDBGApp* app,
-                     const char* filename, JSBool clear);
-
-extern JSDSourceText*
-jsdlw_ForceLoadSource(JSDContext* jsdc, JSDSourceText* jsdsrc);
-
-extern JSBool
-jsdlw_UserCodeAtPC(JSDContext* jsdc, JSDScript* jsdscript, uintptr_t pc);
-
-extern JSBool
-jsdlw_RawToProcessedLineNumber(JSDContext* jsdc, JSDScript* jsdscript,
-                               unsigned lineIn, unsigned* lineOut);
-
-extern JSBool
-jsdlw_ProcessedToRawLineNumber(JSDContext* jsdc, JSDScript* jsdscript,
-                               unsigned lineIn, unsigned* lineOut);
-
-
-#if 0
-/* our hook proc for LiveWire app start/stop */
-extern void
-jsdlw_AppHookProc(LWDBGApp* app,
-                  JSBool created,
-                  void *callerdata);
-#endif
-
-
-#endif
-/***************************************************************************/
+struct AutoSaveExceptionState {
+    AutoSaveExceptionState(JSContext *cx) : mCx(cx) {
+        mState = JS_SaveExceptionState(cx);
+    }
+    ~AutoSaveExceptionState() {
+        JS_RestoreExceptionState(mCx, mState);
+    }
+    JSContext *mCx;
+    JSExceptionState *mState;
+};
 
 #endif /* jsd_h___ */

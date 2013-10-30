@@ -45,6 +45,17 @@ try {
 } 
 catch (e) { }
 
+// Only if building of places is enabled.
+if (runningInParent &&
+    "mozIAsyncHistory" in Components.interfaces) {
+  // Ensure places history is enabled for xpcshell-tests as some non-FF
+  // apps disable it.
+  let (prefs = Components.classes["@mozilla.org/preferences-service;1"]
+               .getService(Components.interfaces.nsIPrefBranch)) {
+    prefs.setBoolPref("places.history.enabled", true);
+  };
+}
+
 try {
   if (runningInParent) {
     let prefs = Components.classes["@mozilla.org/preferences-service;1"]
@@ -76,7 +87,7 @@ try { // nsIXULRuntime is not available in some configurations.
           Components.classes["@mozilla.org/toolkit/crash-reporter;1"]
           .getService(Components.interfaces.nsICrashReporter)) {
       crashReporter.enabled = true;
-      crashReporter.minidumpPath = do_get_cwd();
+      crashReporter.minidumpPath = do_get_tempdir();
     }
   }
 }
@@ -111,8 +122,8 @@ function _Timer(func, delay) {
 }
 _Timer.prototype = {
   QueryInterface: function(iid) {
-    if (iid.Equals(Components.interfaces.nsITimerCallback) ||
-        iid.Equals(Components.interfaces.nsISupports))
+    if (iid.equals(Components.interfaces.nsITimerCallback) ||
+        iid.equals(Components.interfaces.nsISupports))
       return this;
 
     throw Components.results.NS_ERROR_NO_INTERFACE;
@@ -189,7 +200,7 @@ function _dump_exception_stack(stack) {
  * @note Idle service is overridden by default.  If a test requires it, it will
  *       have to call do_get_idle() function at least once before use.
  */
-_fakeIdleService = {
+var _fakeIdleService = {
   get registrar() {
     delete this.registrar;
     return this.registrar =
@@ -333,7 +344,7 @@ function _execute_test() {
     // possible that this will mask an NS_ERROR_ABORT that happens after a
     // do_check failure though.
     if (!_quit || e != Components.results.NS_ERROR_ABORT) {
-      msg = "TEST-UNEXPECTED-FAIL | ";
+      let msg = "TEST-UNEXPECTED-FAIL | ";
       if (e.fileName) {
         msg += e.fileName;
         if (e.lineNumber) {
@@ -392,6 +403,9 @@ function _load_files(aFiles) {
   aFiles.forEach(loadTailFile);
 }
 
+function _wrap_with_quotes_if_necessary(val) {
+  return typeof val == "string" ? '"' + val + '"' : val;
+}
 
 /************** Functions to be used from the tests **************/
 
@@ -400,6 +414,7 @@ function _load_files(aFiles) {
  */
 function do_print(msg) {
   var caller_stack = Components.stack.caller;
+  msg = _wrap_with_quotes_if_necessary(msg);
   _dump("TEST-INFO | " + caller_stack.filename + " | " + msg + "\n");
 }
 
@@ -462,9 +477,12 @@ function do_execute_soon(callback, aName) {
 function do_throw(error, stack) {
   let filename = "";
   if (!stack) {
-    if (error instanceof Error) {
-      // |error| is an exception object
+    // Use duck typing rather than instanceof in case error came
+    // from another context
+    if ("filename" in error)
       filename = error.fileName;
+    if ("stack" in error) {
+      // |error| is likely an exception object
       stack = error.stack;
     } else {
       stack = Components.stack.caller;
@@ -538,24 +556,9 @@ function _do_check_neq(left, right, stack, todo) {
   if (!stack)
     stack = Components.stack.caller;
 
-  var text = left + " != " + right;
-  if (left == right) {
-    if (!todo) {
-      do_throw(text, stack);
-    } else {
-      ++_todoChecks;
-      _dump("TEST-KNOWN-FAIL | " + stack.filename + " | [" + stack.name +
-            " : " + stack.lineNumber + "] " + text +"\n");
-    }
-  } else {
-    if (!todo) {
-      ++_passedChecks;
-      _dump("TEST-PASS | " + stack.filename + " | [" + stack.name + " : " +
-            stack.lineNumber + "] " + text + "\n");
-    } else {
-      do_throw_todo(text, stack);
-    }
-  }
+  var text = _wrap_with_quotes_if_necessary(left) + " != " +
+             _wrap_with_quotes_if_necessary(right);
+  do_report_result(left != right, text, stack, todo);
 }
 
 function do_check_neq(left, right, stack) {
@@ -596,7 +599,8 @@ function _do_check_eq(left, right, stack, todo) {
   if (!stack)
     stack = Components.stack.caller;
 
-  var text = left + " == " + right;
+  var text = _wrap_with_quotes_if_necessary(left) + " == " +
+             _wrap_with_quotes_if_necessary(right);
   do_report_result(left == right, text, stack, todo);
 }
 
@@ -914,6 +918,23 @@ function do_register_cleanup(aFunction)
 }
 
 /**
+ * Returns the directory for a temp dir, which is created by the
+ * test harness. Every test gets its own temp dir.
+ *
+ * @return nsILocalFile of the temporary directory
+ */
+function do_get_tempdir() {
+  let env = Components.classes["@mozilla.org/process/environment;1"]
+                      .getService(Components.interfaces.nsIEnvironment);
+  // the python harness sets this in the environment for us
+  let path = env.get("XPCSHELL_TEST_TEMP_DIR");
+  let file = Components.classes["@mozilla.org/file/local;1"]
+                       .createInstance(Components.interfaces.nsILocalFile);
+  file.initWithPath(path);
+  return file;
+}
+
+/**
  * Registers a directory with the profile service,
  * and return the directory as an nsILocalFile.
  *
@@ -1155,3 +1176,14 @@ function run_next_test()
     do_test_finished(_gRunningTest.name);
   }
 }
+
+try {
+  if (runningInParent) {
+    // Always use network provider for geolocation tests
+    // so we bypass the OSX dialog raised by the corelocation provider
+    let prefs = Components.classes["@mozilla.org/preferences-service;1"]
+      .getService(Components.interfaces.nsIPrefBranch);
+
+    prefs.setBoolPref("geo.provider.testing", true);
+  }
+} catch (e) { }

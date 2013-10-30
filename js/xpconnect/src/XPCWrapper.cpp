@@ -4,12 +4,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "xpcprivate.h"
 #include "XPCWrapper.h"
 #include "AccessCheck.h"
 #include "WrapperFactory.h"
 #include "AccessCheck.h"
+#include "nsCxPusher.h"
 
 using namespace xpc;
+using namespace mozilla;
+
 namespace XPCNativeWrapper {
 
 static inline
@@ -61,16 +65,19 @@ XrayWrapperConstructor(JSContext *cx, unsigned argc, jsval *vp)
 }
 // static
 bool
-AttachNewConstructorObject(XPCCallContext &ccx, JSObject *aGlobalObject)
+AttachNewConstructorObject(JSContext *aCx, JS::HandleObject aGlobalObject)
 {
+  // Pushing a JSContext calls ActivateDebugger which calls this function, so
+  // we can't use an AutoJSContext here until JSD is gone.
+  JSAutoCompartment ac(aCx, aGlobalObject);
   JSFunction *xpcnativewrapper =
-    JS_DefineFunction(ccx, aGlobalObject, "XPCNativeWrapper",
+    JS_DefineFunction(aCx, aGlobalObject, "XPCNativeWrapper",
                       XrayWrapperConstructor, 1,
                       JSPROP_READONLY | JSPROP_PERMANENT | JSFUN_STUB_GSOPS | JSFUN_CONSTRUCTOR);
   if (!xpcnativewrapper) {
     return false;
   }
-  return JS_DefineFunction(ccx, JS_GetFunctionObject(xpcnativewrapper), "unwrap", UnwrapNW, 1,
+  return JS_DefineFunction(aCx, JS_GetFunctionObject(xpcnativewrapper), "unwrap", UnwrapNW, 1,
                            JSPROP_READONLY | JSPROP_PERMANENT) != nullptr;
 }
 

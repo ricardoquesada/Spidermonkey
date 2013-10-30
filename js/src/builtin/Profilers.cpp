@@ -6,24 +6,20 @@
 
 /* Profiling-related API */
 
+#include "builtin/Profilers.h"
+
 #include <stdarg.h>
-
-#include "Profilers.h"
-#include "jsapi.h"
-#include "jscntxt.h"
-#include "jsprobes.h"
-
-#include "jscntxtinlines.h"
-#include "vm/Stack-inl.h"
 
 #ifdef MOZ_CALLGRIND
 #include <valgrind/callgrind.h>
 #endif
 
 #ifdef __APPLE__
-#include "devtools/sharkctl.h"
 #include "devtools/Instruments.h"
+#include "devtools/sharkctl.h"
 #endif
+
+#include "jscntxtinlines.h"
 
 using namespace js;
 
@@ -449,10 +445,9 @@ js_DumpCallgrind(const char *outfile)
  * MOZ_PROFILE_PERF_FLAGS="-e 'foo bar'").
  */
 
-#include <sys/types.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <signal.h>
 
 static bool perfInitialized = false;
 static pid_t perfPid = 0;

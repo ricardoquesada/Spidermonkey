@@ -1,15 +1,14 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sts=4 et sw=4 tw=99:
- */
-/* This Source Code Form is subject to the terms of the Mozilla Public
+ * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-
-#include "tests.h"
+#include "jsfriendapi.h"
 #include "jsscript.h"
 #include "jsstr.h"
-#include "jsfriendapi.h"
+
+#include "jsapi-tests/tests.h"
 
 #include "jsscriptinlines.h"
 
@@ -48,7 +47,7 @@ FreezeThaw(JSContext *cx, JS::HandleScript script)
 
     // thaw
     JSScript *script2 = JS_DecodeScript(cx, memory, nbytes,
-                                        script->principals(), script->originPrincipals);
+                                        script->principals(), script->originPrincipals());
     js_free(memory);
     return script2;
 }
@@ -72,7 +71,7 @@ FreezeThaw(JSContext *cx, JS::HandleObject funobj)
     JSScript *script = GetScript(cx, funobj);
     JSObject *funobj2 = JS_DecodeInterpretedFunction(cx, memory, nbytes,
                                                      script->principals(),
-                                                     script->originPrincipals);
+                                                     script->originPrincipals());
     js_free(memory);
     return funobj2;
 }
@@ -123,7 +122,7 @@ JSScript *createScriptViaXDR(JSPrincipals *prin, JSPrincipals *orig, int testCas
         "function f() { return 1; }\n"
         "f;\n";
 
-    JS::RootedObject global(cx, JS_GetGlobalObject(cx));
+    JS::RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
     JS::RootedScript script(cx, CompileScriptForPrincipalsVersionOrigin(cx, global, prin, orig,
                                                                         src, strlen(src), "test", 1,
                                                                         JSVERSION_DEFAULT));
@@ -240,7 +239,7 @@ BEGIN_TEST(testXDR_sourceMap)
         CHECK(expected);
 
         // The script source takes responsibility of free'ing |expected|.
-        CHECK(script->scriptSource()->setSourceMap(cx, expected, script->filename()));
+        CHECK(script->scriptSource()->setSourceMap(cx, expected));
         script = FreezeThaw(cx, script);
         CHECK(script);
         CHECK(script->scriptSource());

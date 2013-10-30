@@ -13,10 +13,10 @@ include $(DEPTH)/config/autoconf.mk
 LIBRARY_NAME = xpctest
 IS_COMPONENT = 1
 MODULE_NAME = xpconnect_test
-NO_DIST_INSTALL = 1
 
 JS_FILES = \
   xpctest_attributes.js \
+  xpctest_bug809674.js \
   xpctest_interfaces.js \
   xpctest_params.js \
   $(NULL)

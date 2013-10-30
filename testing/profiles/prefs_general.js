@@ -10,6 +10,7 @@ user_pref("dom.allow_scripts_to_close_windows", true);
 user_pref("dom.disable_open_during_load", false);
 user_pref("dom.experimental_forms", true); // on for testing
 user_pref("dom.experimental_forms_range", true); // on for testing
+user_pref("dom.forms.color", true); // on for testing
 user_pref("dom.max_script_run_time", 0); // no slow script dialogs
 user_pref("hangmonitor.timeout", 0); // no hang monitor
 user_pref("dom.max_chrome_script_run_time", 0);
@@ -113,3 +114,37 @@ user_pref("datareporting.healthreport.documentServerURI", "http://%(server)s/hea
 
 // Make sure CSS error reporting is enabled for tests
 user_pref("layout.css.report_errors", true);
+
+// Enable mozContacts
+user_pref("dom.mozContacts.enabled", true);
+user_pref("dom.navigator-property.disable.mozContacts", false);
+user_pref("dom.global-constructor.disable.mozContact", false);
+
+// Enable mozSettings
+user_pref("dom.mozSettings.enabled", true);
+
+// Make sure the disk cache doesn't get auto disabled
+user_pref("network.http.bypass-cachelock-threshold", 200000);
+
+// Enable Gamepad
+user_pref("dom.gamepad.enabled", true);
+user_pref("dom.gamepad.non_standard_events.enabled", true);
+
+// Enable Web Audio
+user_pref("media.webaudio.enabled", true);
+
+// Enable Web Audio legacy APIs
+user_pref("media.webaudio.legacy.AudioBufferSourceNode", true);
+user_pref("media.webaudio.legacy.AudioContext", true);
+user_pref("media.webaudio.legacy.AudioParam", true);
+user_pref("media.webaudio.legacy.BiquadFilterNode", true);
+user_pref("media.webaudio.legacy.PannerNode", true);
+user_pref("media.webaudio.legacy.OscillatorNode", true);
+
+// Always use network provider for geolocation tests
+// so we bypass the OSX dialog raised by the corelocation provider
+user_pref("geo.provider.testing", true);
+
+// Background thumbnails in particular cause grief, and disabling thumbnails
+// in general can't hurt - we re-enable them when tests need them.
+user_pref("browser.pagethumbnails.capturing_disabled", true);

@@ -37,34 +37,6 @@ from .logging import LoggingManager
 from .registrar import Registrar
 
 
-AVATAR = '''
-                       _.-;:q=._
-                      .' j=""^k;:\.
-                     ; .F       ";`Y
-                    ,;.J_        ;'j
-                  ,-;"^7F       : .F
-                 ,-'-_<.        ;gj.
-                ;  _,._`\.     : `T"5
-                : `?8w7 `J  ,-'" -^q.
-                 \;._ _,=' ;   n58L Y.
-                   F;";  .' k_ `^'  j'
-                   J;:: ;     "y:-='
-                    L;;==      |:;   jT\\
-                    L;:;J      J:L  7:;'
-                    I;|:.L     |:k J:.'
-                    |;J:.|     ;.I F.:
-                    J;:L::     |.| |.J
-                    J:`J.`.    :.J |. L
-                     L :k:`._ ,',j J; |
-                     I :`=.:."_".'  L J
-                     |.:  `"-=-'    |.J
-                     `: :           ;:;
-                      J: :         /.;'
-                       k;.\.    _.;:Y'
-                        `Y;."-=';:='
-                          `"==="'
-'''
-
 
 MACH_ERROR = r'''
 The error occurred in mach itself. This is likely a bug in mach itself or a
@@ -155,7 +127,20 @@ class ArgumentParser(argparse.ArgumentParser):
 
 @CommandProvider
 class Mach(object):
-    """Contains code for the command-line `mach` interface."""
+    """Main mach driver type.
+
+    This type is responsible for holding global mach state and dispatching
+    a command from arguments.
+
+    The following attributes may be assigned to the instance to influence
+    behavior:
+
+        populate_context_handler -- If defined, it must be a callable. The
+            callable will be called with the mach.base.CommandContext instance
+            as its single argument right before command dispatch. This allows
+            modification of the context instance and thus passing of
+            arbitrary data to command handlers.
+    """
 
     USAGE = """%(prog)s [global arguments] command [command arguments]
 
@@ -181,6 +166,8 @@ To see more help for a specific command, run:
         self.log_manager = LoggingManager()
         self.logger = logging.getLogger(__name__)
         self.settings = ConfigSettings()
+
+        self.populate_context_handler = None
 
         self.log_manager.register_structured_logger(self.logger)
 
@@ -296,15 +283,12 @@ To see more help for a specific command, run:
         try:
             args = parser.parse_args(argv)
         except NoCommandError:
-            print(AVATAR)
             print(NO_COMMAND_ERROR)
             return 1
         except UnknownCommandError as e:
-            print(AVATAR)
             print(UNKNOWN_COMMAND_ERROR % (e.verb, e.command))
             return 1
         except UnrecognizedArgumentError as e:
-            print(AVATAR)
             print(UNRECOGNIZED_ARGUMENT_ERROR % (e.command,
                 ' '.join(e.arguments)))
             return 1
@@ -333,6 +317,9 @@ To see more help for a specific command, run:
         context = CommandContext(topdir=self.cwd, cwd=self.cwd,
             settings=self.settings, log_manager=self.log_manager,
             commands=Registrar)
+
+        if self.populate_context_handler:
+            self.populate_context_handler(context)
 
         handler = getattr(args, 'mach_handler')
         cls = handler.cls

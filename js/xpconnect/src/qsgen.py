@@ -497,23 +497,23 @@ def writeArgumentUnboxing(f, i, name, type, optional, rvdeclared,
     isSetter = (i is None)
 
     if isSetter:
-        argPtr = "argv"
+        argPtr = "argv[0].address()"
         argVal = "argv[0]"
     elif optional:
         if typeName == "[jsval]":
-            val = "JSVAL_VOID"
+            val = "JS::UndefinedHandleValue"
         else:
-            val = "JSVAL_NULL"
+            val = "JS::NullHandleValue"
         argVal = "(%d < argc ? argv[%d] : %s)" % (i, i, val)
         if typeName == "[jsval]":
             # This should use the rooted argument,
             # however we probably won't ever need to support that.
             argPtr = None
         else:
-            argPtr = "(%d < argc ? &argv[%d] : NULL)" % (i, i)
+            argPtr = "(%d < argc ? argv[%d].address() : NULL)" % (i, i)
     else:
         argVal = "argv[%d]" % i
-        argPtr = "&" + argVal
+        argPtr = argVal + ".address()"
 
     params = {
         'name': name,
@@ -689,7 +689,7 @@ def writeResultConv(f, type, jsvalPtr, jsvalRef):
         # else fall through; this type isn't supported yet
     elif isInterfaceType(type):
         if isVariantType(type):
-            f.write("    return xpc_qsVariantToJsval(lccx, result, %s);\n"
+            f.write("    return xpc_qsVariantToJsval(cx, result, %s);\n"
                     % jsvalPtr)
             return
         else:
@@ -703,7 +703,7 @@ def writeResultConv(f, type, jsvalPtr, jsvalRef):
                     "    }\n"
                     "    // After this point do not use 'result'!\n"
                     "    qsObjectHelper helper(result, cache);\n"
-                    "    return xpc_qsXPCOMObjectToJsval(lccx, "
+                    "    return xpc_qsXPCOMObjectToJsval(cx, "
                     "helper, &NS_GET_IID(%s), &interfaces[k_%s], %s);\n"
                     % (jsvalPtr, jsvalPtr, type.name, type.name, jsvalPtr))
             return
@@ -850,13 +850,8 @@ def writeQuickStub(f, customMethodCalls, stringtable, member, stubName,
     else:
         unwrapFatalArg = "false"
 
-    if not isSetter and isInterfaceType(member.realtype):
-        f.write("    XPCLazyCallContext lccx(JS_CALLER, cx, obj);\n")
-        f.write("    if (!xpc_qsUnwrapThis(cx, obj, &self, "
-                "&selfref.ptr, %s, &lccx, %s))\n" % (pthisval, unwrapFatalArg))
-    else:
-        f.write("    if (!xpc_qsUnwrapThis(cx, obj, &self, "
-                "&selfref.ptr, %s, nullptr, %s))\n" % (pthisval, unwrapFatalArg))
+    f.write("    if (!xpc_qsUnwrapThis(cx, obj, &self, "
+            "&selfref.ptr, %s, %s))\n" % (pthisval, unwrapFatalArg))
     f.write("        return JS_FALSE;\n")
 
     if not unwrapThisFailureFatal:
@@ -884,7 +879,7 @@ def writeQuickStub(f, customMethodCalls, stringtable, member, stubName,
     rvdeclared = False
     if isMethod:
         if len(member.params) > 0:
-            f.write("    jsval *argv = JS_ARGV(cx, vp);\n")
+            f.write("    JS::CallArgs argv = JS::CallArgsFromVp(argc, vp);\n")
         for i, param in enumerate(member.params):
             argName = 'arg%d' % i
             argTypeKey = argName + 'Type'
@@ -902,7 +897,7 @@ def writeQuickStub(f, customMethodCalls, stringtable, member, stubName,
                 nullBehavior=param.null,
                 undefinedBehavior=param.undefined)
     elif isSetter:
-        f.write("    jsval *argv = JS_ARGV(cx, vp);\n")
+        f.write("    JS::CallArgs argv = JS::CallArgsFromVp(argc, vp);\n")
         rvdeclared = writeArgumentUnboxing(f, None, 'arg0', member.realtype,
                                            optional=False,
                                            rvdeclared=rvdeclared,

@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jspropertytree_h___
-#define jspropertytree_h___
+#ifndef jspropertytree_h
+#define jspropertytree_h
 
 #include "jsalloc.h"
 
@@ -72,9 +72,9 @@ class PropertyTree
 {
     friend class ::JSFunction;
 
-    JSCompartment *compartment;
+    JSCompartment *compartment_;
 
-    bool insertChild(JSContext *cx, Shape *parent, Shape *child);
+    bool insertChild(ExclusiveContext *cx, Shape *parent, Shape *child);
 
     PropertyTree();
 
@@ -90,12 +90,14 @@ class PropertyTree
     };
 
     PropertyTree(JSCompartment *comp)
-        : compartment(comp)
+        : compartment_(comp)
     {
     }
 
-    Shape *newShape(JSContext *cx);
-    Shape *getChild(JSContext *cx, Shape *parent, uint32_t nfixed, const StackShape &child);
+    JSCompartment *compartment() { return compartment_; }
+
+    Shape *newShape(ExclusiveContext *cx);
+    Shape *getChild(ExclusiveContext *cx, Shape *parent, uint32_t nfixed, const StackShape &child);
 
 #ifdef DEBUG
     static void dumpShapes(JSRuntime *rt);
@@ -104,4 +106,4 @@ class PropertyTree
 
 } /* namespace js */
 
-#endif /* jspropertytree_h___ */
+#endif /* jspropertytree_h */

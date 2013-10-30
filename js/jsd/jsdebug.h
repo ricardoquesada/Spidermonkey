@@ -11,25 +11,10 @@
 #ifndef jsdebug_h___
 #define jsdebug_h___
 
-/* Get jstypes.h included first. After that we can use PR macros for doing
-*  this extern "C" stuff!
-*/
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-#include "jstypes.h"
-#ifdef __cplusplus
-}
-#endif
-
 #include "jsapi.h"
 #include "jsdbgapi.h"
-#ifdef LIVEWIRE
-#include "lwdbgapi.h"
-#endif
 
-JS_BEGIN_EXTERN_C
+extern "C" {
 
 /*
  * The linkage of JSD API functions differs depending on whether the file is
@@ -152,10 +137,10 @@ extern JSD_PUBLIC_API(unsigned)
 JSD_GetMinorVersion(void);
 
 /*
-* Returns a 'dumb' JSContext that can be used for utility purposes as needed
+* Returns the default JSD global associated with a given JSDContext.
 */
-extern JSD_PUBLIC_API(JSContext*)
-JSD_GetDefaultJSContext(JSDContext* jsdc);
+extern JSD_PUBLIC_API(JSObject*)
+JSD_GetDefaultGlobal(JSDContext* jsdc);
 
 /*
 * Returns a JSRuntime this context is associated with
@@ -652,11 +637,9 @@ JSD_DestroyAllSources( JSDContext* jsdc );
 /* functions for adding source items */
 
 /*
-* Add a new item for a given URL. If an iten already exists for the given URL
+* Add a new item for a given URL. If an item already exists for the given URL
 * then the old item is removed.
 * 'url' may not be NULL.
-*
-* ifdef LIVEWIRE url is treated as a char* and ownership is claimed by jsd
 */
 extern JSD_PUBLIC_API(JSDSourceText*)
 JSD_NewSourceText(JSDContext* jsdc, const char* url);
@@ -1534,31 +1517,6 @@ JSD_GetObjectForValue(JSDContext* jsdc, JSDValue* jsdval);
 extern JSD_PUBLIC_API(JSDValue*)
 JSD_GetValueForObject(JSDContext* jsdc, JSDObject* jsdobj);
 
-/***************************************************************************/
-/* Livewire specific API */
-#ifdef LIVEWIRE
-
-extern JSD_PUBLIC_API(LWDBGScript*)
-JSDLW_GetLWScript(JSDContext* jsdc, JSDScript* jsdscript);
-
-extern JSD_PUBLIC_API(JSDSourceText*)
-JSDLW_PreLoadSource(JSDContext* jsdc, LWDBGApp* app,
-                    const char* filename, JSBool clear);
-
-extern JSD_PUBLIC_API(JSDSourceText*)
-JSDLW_ForceLoadSource(JSDContext* jsdc, JSDSourceText* jsdsrc);
-
-extern JSD_PUBLIC_API(JSBool)
-JSDLW_RawToProcessedLineNumber(JSDContext* jsdc, JSDScript* jsdscript,
-                               unsigned lineIn, unsigned* lineOut);
-
-extern JSD_PUBLIC_API(JSBool)
-JSDLW_ProcessedToRawLineNumber(JSDContext* jsdc, JSDScript* jsdscript,
-                               unsigned lineIn, unsigned* lineOut);
-
-#endif
-/***************************************************************************/
-
-JS_END_EXTERN_C
+} // extern "C"
 
 #endif /* jsdebug_h___ */

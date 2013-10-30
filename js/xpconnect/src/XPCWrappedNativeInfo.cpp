@@ -7,8 +7,13 @@
 /* Manage the shared info about interfaces for use by wrappedNatives. */
 
 #include "xpcprivate.h"
+#include "nsCxPusher.h"
+
+#include "mozilla/MemoryReporting.h"
+#include "mozilla/XPTInterfaceInfoManager.h"
 
 using namespace JS;
+using namespace mozilla;
 
 /***************************************************************************/
 
@@ -60,7 +65,7 @@ XPCNativeMember::Resolve(XPCCallContext& ccx, XPCNativeInterface* iface,
 
         RootedValue resultVal(ccx);
 
-        if (!XPCConvert::NativeData2JS(ccx, resultVal.address(), &v.val, v.type,
+        if (!XPCConvert::NativeData2JS(resultVal.address(), &v.val, v.type,
                                        nullptr, nullptr))
             return false;
 
@@ -112,10 +117,11 @@ XPCNativeMember::Resolve(XPCCallContext& ccx, XPCNativeInterface* iface,
 
 // static
 XPCNativeInterface*
-XPCNativeInterface::GetNewOrUsed(XPCCallContext& ccx, const nsIID* iid)
+XPCNativeInterface::GetNewOrUsed(const nsIID* iid)
 {
-    AutoMarkingNativeInterfacePtr iface(ccx);
-    XPCJSRuntime* rt = ccx.GetRuntime();
+    AutoJSContext cx;
+    AutoMarkingNativeInterfacePtr iface(cx);
+    XPCJSRuntime* rt = XPCJSRuntime::Get();
 
     IID2NativeInterfaceMap* map = rt->GetIID2NativeInterfaceMap();
     if (!map)
@@ -130,11 +136,11 @@ XPCNativeInterface::GetNewOrUsed(XPCCallContext& ccx, const nsIID* iid)
         return iface;
 
     nsCOMPtr<nsIInterfaceInfo> info;
-    ccx.GetXPConnect()->GetInfoForIID(iid, getter_AddRefs(info));
+    XPTInterfaceInfoManager::GetSingleton()->GetInfoForIID(iid, getter_AddRefs(info));
     if (!info)
         return nullptr;
 
-    iface = NewInstance(ccx, info);
+    iface = NewInstance(info);
     if (!iface)
         return nullptr;
 
@@ -156,15 +162,16 @@ XPCNativeInterface::GetNewOrUsed(XPCCallContext& ccx, const nsIID* iid)
 
 // static
 XPCNativeInterface*
-XPCNativeInterface::GetNewOrUsed(XPCCallContext& ccx, nsIInterfaceInfo* info)
+XPCNativeInterface::GetNewOrUsed(nsIInterfaceInfo* info)
 {
-    AutoMarkingNativeInterfacePtr iface(ccx);
+    AutoJSContext cx;
+    AutoMarkingNativeInterfacePtr iface(cx);
 
     const nsIID* iid;
     if (NS_FAILED(info->GetIIDShared(&iid)) || !iid)
         return nullptr;
 
-    XPCJSRuntime* rt = ccx.GetRuntime();
+    XPCJSRuntime* rt = XPCJSRuntime::Get();
 
     IID2NativeInterfaceMap* map = rt->GetIID2NativeInterfaceMap();
     if (!map)
@@ -178,7 +185,7 @@ XPCNativeInterface::GetNewOrUsed(XPCCallContext& ccx, nsIInterfaceInfo* info)
     if (iface)
         return iface;
 
-    iface = NewInstance(ccx, info);
+    iface = NewInstance(info);
     if (!iface)
         return nullptr;
 
@@ -200,26 +207,26 @@ XPCNativeInterface::GetNewOrUsed(XPCCallContext& ccx, nsIInterfaceInfo* info)
 
 // static
 XPCNativeInterface*
-XPCNativeInterface::GetNewOrUsed(XPCCallContext& ccx, const char* name)
+XPCNativeInterface::GetNewOrUsed(const char* name)
 {
     nsCOMPtr<nsIInterfaceInfo> info;
-    ccx.GetXPConnect()->GetInfoForName(name, getter_AddRefs(info));
-    return info ? GetNewOrUsed(ccx, info) : nullptr;
+    XPTInterfaceInfoManager::GetSingleton()->GetInfoForName(name, getter_AddRefs(info));
+    return info ? GetNewOrUsed(info) : nullptr;
 }
 
 // static
 XPCNativeInterface*
-XPCNativeInterface::GetISupports(XPCCallContext& ccx)
+XPCNativeInterface::GetISupports()
 {
     // XXX We should optimize this to cache this common XPCNativeInterface.
-    return GetNewOrUsed(ccx, &NS_GET_IID(nsISupports));
+    return GetNewOrUsed(&NS_GET_IID(nsISupports));
 }
 
 // static
 XPCNativeInterface*
-XPCNativeInterface::NewInstance(XPCCallContext& ccx,
-                                nsIInterfaceInfo* aInfo)
+XPCNativeInterface::NewInstance(nsIInterfaceInfo* aInfo)
 {
+    AutoJSContext cx;
     static const uint16_t MAX_LOCAL_MEMBER_COUNT = 16;
     XPCNativeMember local_members[MAX_LOCAL_MEMBER_COUNT];
     XPCNativeInterface* obj = nullptr;
@@ -232,8 +239,8 @@ XPCNativeInterface::NewInstance(XPCCallContext& ccx,
     uint16_t totalCount;
     uint16_t realTotalCount = 0;
     XPCNativeMember* cur;
-    RootedString str(ccx);
-    RootedId interfaceName(ccx);
+    RootedString str(cx);
+    RootedId interfaceName(cx);
 
     // XXX Investigate lazy init? This is a problem given the
     // 'placement new' scheme - we need to at least know how big to make
@@ -285,13 +292,13 @@ XPCNativeInterface::NewInstance(XPCCallContext& ccx,
         if (!XPCConvert::IsMethodReflectable(*info))
             continue;
 
-        str = JS_InternString(ccx, info->GetName());
+        str = JS_InternString(cx, info->GetName());
         if (!str) {
             NS_ERROR("bad method name");
             failed = true;
             break;
         }
-        jsid name = INTERNED_STRING_TO_JSID(ccx, str);
+        jsid name = INTERNED_STRING_TO_JSID(cx, str);
 
         if (info->IsSetter()) {
             NS_ASSERTION(realTotalCount,"bad setter");
@@ -322,13 +329,13 @@ XPCNativeInterface::NewInstance(XPCCallContext& ccx,
                 break;
             }
 
-            str = JS_InternString(ccx, constant->GetName());
+            str = JS_InternString(cx, constant->GetName());
             if (!str) {
                 NS_ERROR("bad constant name");
                 failed = true;
                 break;
             }
-            jsid name = INTERNED_STRING_TO_JSID(ccx, str);
+            jsid name = INTERNED_STRING_TO_JSID(cx, str);
 
             // XXX need better way to find dups
             //NS_ASSERTION(!LookupMemberByID(name),"duplicate method/constant name");
@@ -342,10 +349,10 @@ XPCNativeInterface::NewInstance(XPCCallContext& ccx,
     if (!failed) {
         const char* bytes;
         if (NS_FAILED(aInfo->GetNameShared(&bytes)) || !bytes ||
-            nullptr == (str = JS_InternString(ccx, bytes))) {
+            nullptr == (str = JS_InternString(cx, bytes))) {
             failed = true;
         }
-        interfaceName = INTERNED_STRING_TO_JSID(ccx, str);
+        interfaceName = INTERNED_STRING_TO_JSID(cx, str);
     }
 
     if (!failed) {
@@ -382,7 +389,7 @@ XPCNativeInterface::DestroyInstance(XPCNativeInterface* inst)
 }
 
 size_t
-XPCNativeInterface::SizeOfIncludingThis(nsMallocSizeOfFun mallocSizeOf)
+XPCNativeInterface::SizeOfIncludingThis(MallocSizeOf mallocSizeOf)
 {
     return mallocSizeOf(this);
 }
@@ -406,18 +413,19 @@ XPCNativeInterface::DebugDump(int16_t depth)
 
 // static
 XPCNativeSet*
-XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx, const nsIID* iid)
+XPCNativeSet::GetNewOrUsed(const nsIID* iid)
 {
-    AutoMarkingNativeSetPtr set(ccx);
+    AutoJSContext cx;
+    AutoMarkingNativeSetPtr set(cx);
 
-    AutoMarkingNativeInterfacePtr iface(ccx);
-    iface = XPCNativeInterface::GetNewOrUsed(ccx, iid);
+    AutoMarkingNativeInterfacePtr iface(cx);
+    iface = XPCNativeInterface::GetNewOrUsed(iid);
     if (!iface)
         return nullptr;
 
     XPCNativeSetKey key(nullptr, iface, 0);
 
-    XPCJSRuntime* rt = ccx.GetRuntime();
+    XPCJSRuntime* rt = XPCJSRuntime::Get();
     NativeSetMap* map = rt->GetNativeSetMap();
     if (!map)
         return nullptr;
@@ -432,7 +440,7 @@ XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx, const nsIID* iid)
 
     // hacky way to get a XPCNativeInterface** using the AutoPtr
     XPCNativeInterface* temp[] = {iface};
-    set = NewInstance(ccx, temp, 1);
+    set = NewInstance(temp, 1);
     if (!set)
         return nullptr;
 
@@ -454,10 +462,11 @@ XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx, const nsIID* iid)
 
 // static
 XPCNativeSet*
-XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx, nsIClassInfo* classInfo)
+XPCNativeSet::GetNewOrUsed(nsIClassInfo* classInfo)
 {
-    AutoMarkingNativeSetPtr set(ccx);
-    XPCJSRuntime* rt = ccx.GetRuntime();
+    AutoJSContext cx;
+    AutoMarkingNativeSetPtr set(cx);
+    XPCJSRuntime* rt = XPCJSRuntime::Get();
 
     ClassInfo2NativeSetMap* map = rt->GetClassInfo2NativeSetMap();
     if (!map)
@@ -472,7 +481,7 @@ XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx, nsIClassInfo* classInfo)
         return set;
 
     nsIID** iidArray = nullptr;
-    AutoMarkingNativeInterfacePtrArrayPtr interfaceArray(ccx);
+    AutoMarkingNativeInterfacePtrArrayPtr interfaceArray(cx);
     uint32_t iidCount = 0;
 
     if (NS_FAILED(classInfo->GetInterfaces(&iidCount, &iidArray))) {
@@ -491,7 +500,7 @@ XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx, nsIClassInfo* classInfo)
 
     if (iidCount) {
         AutoMarkingNativeInterfacePtrArrayPtr
-            arr(ccx, new XPCNativeInterface*[iidCount], iidCount, true);
+            arr(cx, new XPCNativeInterface*[iidCount], iidCount, true);
         if (!arr)
             goto out;
 
@@ -509,7 +518,7 @@ XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx, nsIClassInfo* classInfo)
             }
 
             XPCNativeInterface* iface =
-                XPCNativeInterface::GetNewOrUsed(ccx, iid);
+                XPCNativeInterface::GetNewOrUsed(iid);
 
             if (!iface) {
                 // XXX warn here
@@ -521,7 +530,7 @@ XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx, nsIClassInfo* classInfo)
         }
 
         if (interfaceCount) {
-            set = NewInstance(ccx, interfaceArray, interfaceCount);
+            set = NewInstance(interfaceArray, interfaceCount);
             if (set) {
                 NativeSetMap* map2 = rt->GetNativeSetMap();
                 if (!map2)
@@ -545,9 +554,9 @@ XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx, nsIClassInfo* classInfo)
                 }
             }
         } else
-            set = GetNewOrUsed(ccx, &NS_GET_IID(nsISupports));
+            set = GetNewOrUsed(&NS_GET_IID(nsISupports));
     } else
-        set = GetNewOrUsed(ccx, &NS_GET_IID(nsISupports));
+        set = GetNewOrUsed(&NS_GET_IID(nsISupports));
 
     if (set)
     {   // scoped lock
@@ -585,13 +594,13 @@ XPCNativeSet::ClearCacheEntryForClassInfo(nsIClassInfo* classInfo)
 
 // static
 XPCNativeSet*
-XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx,
-                           XPCNativeSet* otherSet,
+XPCNativeSet::GetNewOrUsed(XPCNativeSet* otherSet,
                            XPCNativeInterface* newInterface,
                            uint16_t position)
 {
-    AutoMarkingNativeSetPtr set(ccx);
-    XPCJSRuntime* rt = ccx.GetRuntime();
+    AutoJSContext cx;
+    AutoMarkingNativeSetPtr set(cx);
+    XPCJSRuntime* rt = XPCJSRuntime::Get();
     NativeSetMap* map = rt->GetNativeSetMap();
     if (!map)
         return nullptr;
@@ -609,7 +618,7 @@ XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx,
     if (otherSet)
         set = NewInstanceMutate(otherSet, newInterface, position);
     else
-        set = NewInstance(ccx, &newInterface, 1);
+        set = NewInstance(&newInterface, 1);
 
     if (!set)
         return nullptr;
@@ -632,8 +641,7 @@ XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx,
 
 // static
 XPCNativeSet*
-XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx,
-                           XPCNativeSet* firstSet,
+XPCNativeSet::GetNewOrUsed(XPCNativeSet* firstSet,
                            XPCNativeSet* secondSet,
                            bool preserveFirstSetOrder)
 {
@@ -667,7 +675,7 @@ XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx,
         if (!currentSet->HasInterface(iface)) {
             // Create a new augmented set, inserting this interface at the end.
             uint32_t pos = currentSet->mInterfaceCount;
-            currentSet = XPCNativeSet::GetNewOrUsed(ccx, currentSet, iface, pos);
+            currentSet = XPCNativeSet::GetNewOrUsed(currentSet, iface, pos);
             if (!currentSet)
                 return nullptr;
         }
@@ -680,8 +688,7 @@ XPCNativeSet::GetNewOrUsed(XPCCallContext& ccx,
 
 // static
 XPCNativeSet*
-XPCNativeSet::NewInstance(XPCCallContext& ccx,
-                          XPCNativeInterface** array,
+XPCNativeSet::NewInstance(XPCNativeInterface** array,
                           uint16_t count)
 {
     XPCNativeSet* obj = nullptr;
@@ -694,7 +701,7 @@ XPCNativeSet::NewInstance(XPCCallContext& ccx,
     // This is the place where we impose that rule - even if given inputs
     // that don't exactly follow the rule.
 
-    XPCNativeInterface* isup = XPCNativeInterface::GetISupports(ccx);
+    XPCNativeInterface* isup = XPCNativeInterface::GetISupports();
     uint16_t slots = count+1;
 
     uint16_t i;
@@ -792,7 +799,7 @@ XPCNativeSet::DestroyInstance(XPCNativeSet* inst)
 }
 
 size_t
-XPCNativeSet::SizeOfIncludingThis(nsMallocSizeOfFun mallocSizeOf)
+XPCNativeSet::SizeOfIncludingThis(MallocSizeOf mallocSizeOf)
 {
     return mallocSizeOf(this);
 }

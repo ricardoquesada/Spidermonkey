@@ -230,7 +230,7 @@ class DeviceManagerSUT(DeviceManager):
 
                     # Get our response
                     try:
-                          # Wait up to a second for socket to become ready for reading...
+                        # Wait up to a second for socket to become ready for reading...
                         if select.select([self._sock], [], [], select_timeout)[0]:
                             temp = self._sock.recv(1024)
                             self._logger.debug("response: %s" % temp)
@@ -338,9 +338,10 @@ class DeviceManagerSUT(DeviceManager):
         # woops, we couldn't find an end of line/return value
         raise DMError("Automation Error: Error finding end of line/return value when running '%s'" % cmdline)
 
-    def pushFile(self, localname, destname, retryLimit = None):
+    def pushFile(self, localname, destname, retryLimit=None, createDir=True):
         retryLimit = retryLimit or self.retryLimit
-        self.mkDirs(destname)
+        if createDir:
+            self.mkDirs(destname)
 
         try:
             filesize = os.path.getsize(localname)
@@ -368,15 +369,13 @@ class DeviceManagerSUT(DeviceManager):
 
         existentDirectories = []
         for root, dirs, files in os.walk(localDir, followlinks=True):
-            parts = root.split(localDir)
+            _, subpath = root.split(localDir)
+            subpath = subpath.lstrip('/')
+            remoteRoot = posixpath.join(remoteDir, subpath)
             for f in files:
-                remoteRoot = remoteDir + '/' + parts[1]
-                if (remoteRoot.endswith('/')):
-                    remoteName = remoteRoot + f
-                else:
-                    remoteName = remoteRoot + '/' + f
+                remoteName = posixpath.join(remoteRoot, f)
 
-                if (parts[1] == ""):
+                if subpath == "":
                     remoteRoot = remoteDir
 
                 parent = os.path.dirname(remoteName)
@@ -384,8 +383,7 @@ class DeviceManagerSUT(DeviceManager):
                     self.mkDirs(remoteName)
                     existentDirectories.append(parent)
 
-                self.pushFile(os.path.join(root, f), remoteName, retryLimit=retryLimit)
-
+                self.pushFile(os.path.join(root, f), remoteName, retryLimit=retryLimit, createDir=False)
 
     def dirExists(self, remotePath):
         ret = self._runCmds([{ 'cmd': 'isdir ' + remotePath }]).strip()
@@ -397,19 +395,24 @@ class DeviceManagerSUT(DeviceManager):
     def fileExists(self, filepath):
         # Because we always have / style paths we make this a lot easier with some
         # assumptions
-        s = filepath.split('/')
-        containingpath = '/'.join(s[:-1])
-        return s[-1] in self.listFiles(containingpath)
+        filepath = posixpath.normpath(filepath)
+        # / should always exist but we can use this to check for things like
+        # having access to the filesystem
+        if filepath == '/':
+            return self.dirExists(filepath)
+        (containingpath, filename) = posixpath.split(filepath)
+        return filename in self.listFiles(containingpath)
 
     def listFiles(self, rootdir):
-        rootdir = rootdir.rstrip('/')
-        if (self.dirExists(rootdir) == False):
+        rootdir = posixpath.normpath(rootdir)
+        if not self.dirExists(rootdir):
             return []
         data = self._runCmds([{ 'cmd': 'cd ' + rootdir }, { 'cmd': 'ls' }])
 
         files = filter(lambda x: x, data.splitlines())
         if len(files) == 1 and files[0] == '<empty>':
-            # special case on the agent: empty directories return just the string "<empty>"
+            # special case on the agent: empty directories return just the
+            # string "<empty>"
             return []
         return files
 
@@ -496,6 +499,9 @@ class DeviceManagerSUT(DeviceManager):
             self._logger.warn("launchProcess called without command to run")
             return None
 
+        if cmd[0] == 'am' and hasattr(self, '_getExtraAmStartArgs'):
+            cmd = cmd[:2] + self._getExtraAmStartArgs() + cmd[2:] 
+
         cmdline = subprocess.list2cmdline(cmd)
         if (outputFile == "process.txt" or outputFile == None):
             outputFile = self.getDeviceRoot();
@@ -539,7 +545,7 @@ class DeviceManagerSUT(DeviceManager):
     def getTempDir(self):
         return self._runCmds([{ 'cmd': 'tmpd' }]).strip()
 
-    def pullFile(self, remoteFile):
+    def pullFile(self, remoteFile, offset=None, length=None):
         # The "pull" command is different from other commands in that DeviceManager
         # has to read a certain number of bytes instead of just reading to the
         # next prompt.  This is more robust than the "cat" command, which will be
@@ -556,30 +562,23 @@ class DeviceManagerSUT(DeviceManager):
         # the class level if we wanted to refactor sendCMD().  For now they are
         # only used to pull files.
 
-        def uread(to_recv, error_msg, timeout=None):
+        def uread(to_recv, error_msg):
             """ unbuffered read """
-            timer = 0
-            select_timeout = 1
-            if not timeout:
-                timeout = self.default_timeout
-
             try:
-                if select.select([self._sock], [], [], select_timeout)[0]:
+                data = ""
+                if select.select([self._sock], [], [], self.default_timeout)[0]:
                     data = self._sock.recv(to_recv)
-                    timer = 0
-                timer += select_timeout
-                if timer > timeout:
-                    err('timeout in uread while retrieving file')
-
                 if not data:
+                    # timed out waiting for response or error response
                     err(error_msg)
+
                 return data
             except:
                 err(error_msg)
 
         def read_until_char(c, buf, error_msg):
             """ read until 'c' is found; buffer rest """
-            while not '\n' in buf:
+            while not c in buf:
                 data = uread(1024, error_msg)
                 buf += data
             return buf.partition(c)
@@ -601,7 +600,14 @@ class DeviceManagerSUT(DeviceManager):
         # <filename>,-1\n<error message>
 
         # just send the command first, we read the response inline below
-        self._runCmds([{ 'cmd': 'pull ' + remoteFile }])
+        if offset is not None and length is not None:
+            cmd = 'pull %s %d %d' % (remoteFile, offset, length)
+        elif offset is not None:
+            cmd = 'pull %s %d' % (remoteFile, offset)
+        else: 
+            cmd = 'pull %s' % remoteFile
+
+        self._runCmds([{ 'cmd': cmd }])
 
         # read metadata; buffer the rest
         metadata, sep, buf = read_until_char('\n', buf, 'could not find metadata')
@@ -864,7 +870,7 @@ class DeviceManagerSUT(DeviceManager):
         self._logger.debug("updateApp: got status back: %s" % status)
 
     def getCurrentTime(self):
-        return self._runCmds([{ 'cmd': 'clok' }]).strip()
+        return int(self._runCmds([{ 'cmd': 'clok' }]).strip())
 
     def _getCallbackIpAndPort(self, aIp, aPort):
         """

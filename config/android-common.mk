@@ -12,14 +12,11 @@ ifndef JAVA_CLASSPATH
   $(error JAVA_CLASSPATH must be defined before including android-common.mk)
 endif
 
-DX=$(ANDROID_PLATFORM_TOOLS)/dx
-AAPT=$(ANDROID_PLATFORM_TOOLS)/aapt
-APKBUILDER=$(ANDROID_SDK)/../../tools/apkbuilder
-ZIPALIGN=$(ANDROID_SDK)/../../tools/zipalign
-
-ifdef JARSIGNER
-  APKBUILDER_FLAGS += -u
-endif
+# DEBUG_JARSIGNER always debug signs.
+DEBUG_JARSIGNER=$(PYTHON) $(call core_abspath,$(topsrcdir)/mobile/android/debug_sign_tool.py) \
+  --keytool=$(KEYTOOL) \
+  --jarsigner=$(JARSIGNER) \
+  $(NULL)
 
 # For Android, this defaults to $(ANDROID_SDK)/android.jar
 ifndef JAVA_BOOTCLASSPATH

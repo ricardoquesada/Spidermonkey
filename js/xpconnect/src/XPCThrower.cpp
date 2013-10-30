@@ -241,8 +241,8 @@ XPCThrower::ThrowExceptionObject(JSContext* cx, nsIException* e)
                 return false;
             JS_SetPendingException(cx, thrown);
             success = true;
-        } else if ((xpc = nsXPConnect::GetXPConnect())) {
-            JS::RootedObject glob(cx, JS_GetGlobalForScopeChain(cx));
+        } else if ((xpc = nsXPConnect::XPConnect())) {
+            JS::RootedObject glob(cx, JS::CurrentGlobalOrNull(cx));
             if (!glob)
                 return false;
 
@@ -251,8 +251,8 @@ XPCThrower::ThrowExceptionObject(JSContext* cx, nsIException* e)
                                           NS_GET_IID(nsIException),
                                           getter_AddRefs(holder));
             if (NS_SUCCEEDED(rv) && holder) {
-                JS::RootedObject obj(cx);
-                if (NS_SUCCEEDED(holder->GetJSObject(obj.address()))) {
+                JS::RootedObject obj(cx, holder->GetJSObject());
+                if (obj) {
                     JS_SetPendingException(cx, OBJECT_TO_JSVAL(obj));
                     success = true;
                 }

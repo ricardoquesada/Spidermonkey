@@ -4,7 +4,7 @@
 
 from setuptools import setup
 
-PACKAGE_VERSION = '0.9'
+PACKAGE_VERSION = '0.11'
 
 setup(name='mozprocess',
       version=PACKAGE_VERSION,
@@ -21,7 +21,7 @@ setup(name='mozprocess',
       keywords='mozilla',
       author='Mozilla Automation and Tools team',
       author_email='tools@lists.mozilla.org',
-      url='https://wiki.mozilla.org/Auto-tools/Projects/MozBase',
+      url='https://wiki.mozilla.org/Auto-tools/Projects/Mozbase',
       license='MPL 2.0',
       packages=['mozprocess'],
       include_package_data=True,

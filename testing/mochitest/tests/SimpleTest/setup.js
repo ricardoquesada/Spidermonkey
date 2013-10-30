@@ -65,6 +65,19 @@ if (config.testRoot == "chrome" || config.testRoot == "a11y") {
     }
   }
   params = config;
+  params.baseurl = "chrome://mochitests/content";
+} else {
+  params.baseurl = "";
+}
+
+if (params.testRoot == "browser") {
+  params.testPrefix = "chrome://mochitests/content/browser/";
+} else if (params.testRoot == "chrome") {
+  params.testPrefix = "chrome://mochitests/content/chrome/";
+} else if (params.testRoot == "a11y") {
+  params.testPrefix = "chrome://mochitests/content/a11y/";
+} else {
+  params.testPrefix = "/tests/";
 }
 
 // set the per-test timeout if specified in the query string
@@ -76,10 +89,14 @@ if (params.timeout) {
 var fileLevel =  params.fileLevel || null;
 var consoleLevel = params.consoleLevel || null;
 
-// loop tells us how many times to run the tests
+// repeat tells us how many times to repeat the tests
 if (params.repeat) {
   TestRunner.repeat = params.repeat;
 } 
+
+if (params.runUntilFailure) {
+  TestRunner.runUntilFailure = true;
+}
 
 // closeWhenDone tells us to close the browser when complete
 if (params.closeWhenDone) {
@@ -109,67 +126,26 @@ if (params.runSlower) {
   TestRunner.runSlower = true;
 }
 
-
 var gTestList = [];
 var RunSet = {}
 RunSet.runall = function(e) {
   // Filter tests to include|exclude tests based on data in params.filter.
   // This allows for including or excluding tests from the gTestList
-  gTestList = filterTests(params.testManifest, params.runOnly);
+  if (params.testManifest) {
+    getTestManifest("http://mochi.test:8888/" + params.testManifest, params, function(filter) { gTestList = filterTests(filter, gTestList, params.runOnly); RunSet.runtests(); });
+  } else {
+    RunSet.runtests();
+  }
+}
 
+RunSet.runtests = function(e) {
   // Which tests we're going to run
   var my_tests = gTestList;
 
   if (params.totalChunks && params.thisChunk) {
-    var total_chunks = parseInt(params.totalChunks);
-    // this_chunk is in the range [1,total_chunks]
-    var this_chunk = parseInt(params.thisChunk);
-
-    // We want to split the tests up into chunks according to which directory
-    // they're in
-    if (params.chunkByDir) {
-      var chunkByDir = parseInt(params.chunkByDir);
-      var tests_by_dir = {};
-      var test_dirs = []
-      for (var i = 0; i < gTestList.length; ++i) {
-        var test_path = gTestList[i];
-        if (test_path[0] == '/') {
-          test_path = test_path.substr(1);
-        }
-        var dir = test_path.split("/");
-        // We want the first chunkByDir+1 components, or everything but the
-        // last component, whichever is less.
-        // we add 1 to chunkByDir since 'tests' is always part of the path, and
-        // want to ignore the last component since it's the test filename.
-        dir = dir.slice(0, Math.min(chunkByDir+1, dir.length-1));
-        // reconstruct a directory name
-        dir = dir.join("/");
-        if (!(dir in tests_by_dir)) {
-          tests_by_dir[dir] = [gTestList[i]];
-          test_dirs.push(dir);
-        } else {
-          tests_by_dir[dir].push(gTestList[i]);
-        }
-      }
-      var tests_per_chunk = test_dirs.length / total_chunks;
-      var start = Math.round((this_chunk-1) * tests_per_chunk);
-      var end = Math.round(this_chunk * tests_per_chunk);
-      my_tests = [];
-      var dirs = []
-      for (var i = start; i < end; ++i) {
-        var dir = test_dirs[i];
-        dirs.push(dir);
-        my_tests = my_tests.concat(tests_by_dir[dir]);
-      }
-      TestRunner.logger.log("Running tests in " + dirs.join(", "));
-    } else {
-      var tests_per_chunk = gTestList.length / total_chunks;
-      var start = Math.round((this_chunk-1) * tests_per_chunk);
-      var end = Math.round(this_chunk * tests_per_chunk);
-      my_tests = gTestList.slice(start, end);
-      TestRunner.logger.log("Running tests " + (start+1) + "-" + end + "/" + gTestList.length);
-    }
+    my_tests = chunkifyTests(my_tests, params.totalChunks, params.thisChunk, params.chunkByDir, TestRunner.logger);
   }
+
   if (params.shuffle) {
     for (var i = my_tests.length-1; i > 0; --i) {
       var j = Math.floor(Math.random() * i);
@@ -194,95 +170,6 @@ RunSet.reloadAndRunAll = function(e) {
     window.location.href += "?autorun=1";
   }  
 };
-
-// Test Filtering Code
-
-// Open the file referenced by runOnly|exclude and use that to compare against
-// gTestList.  Return a modified version of gTestList
-function filterTests(filterFile, runOnly) {
-  var filteredTests = [];
-  var removedTests = [];
-  var runtests = {};
-  var excludetests = {};
-
-  if (filterFile == null) {
-    return gTestList;
-  }
-
-  var datafile = "http://mochi.test:8888/" + filterFile;
-  var objXml = new XMLHttpRequest();
-  objXml.open("GET",datafile,false);
-  objXml.send(null);
-  try {
-    var filter = JSON.parse(objXml.responseText);
-  } catch (ex) {
-    dump("INFO | setup.js | error loading or parsing '" + datafile + "'\n");
-    return gTestList;
-  }
-
-  if ('runtests' in filter) {
-    runtests = filter.runtests;
-  }
-  if ('excludetests' in filter)
-    excludetests = filter.excludetests;
-  if (!('runtests' in filter) && !('excludetests' in filter)) {
-    if (runOnly == 'true') {
-      runtests = filter;
-    } else
-      excludetests = filter;
-  }
-
-  // Start with gTestList, and put everything that's in 'runtests' in
-  // filteredTests.
-  if (Object.keys(runtests).length) {
-    for (var i = 0; i < gTestList.length; i++) {
-      var test_path = gTestList[i];
-      var tmp_path = test_path.replace(/^\//, '');
-      for (var f in runtests) {
-        // Remove leading /tests/ if exists
-        file = f.replace(/^\//, '')
-        file = file.replace(/^tests\//, '')
-
-        // Match directory or filename, gTestList has tests/<path>
-        if (tmp_path.match("^tests/" + file) != null) {
-          filteredTests.push(test_path);
-          break;
-        }
-      }
-    }
-  }
-  else {
-    filteredTests = gTestList.slice(0);
-  }
-
-  // Continue with filteredTests, and deselect everything that's in
-  // excludedtests.
-  if (Object.keys(excludetests).length) {
-    var refilteredTests = [];
-    for (var i = 0; i < filteredTests.length; i++) {
-      var found = false;
-      var test_path = filteredTests[i];
-      var tmp_path = test_path.replace(/^\//, '');
-      for (var f in excludetests) {
-        // Remove leading /tests/ if exists
-        file = f.replace(/^\//, '')
-        file = file.replace(/^tests\//, '')
-
-        // Match directory or filename, gTestList has tests/<path>
-        if (tmp_path.match("^tests/" + file) != null) {
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        refilteredTests.push(test_path);
-      }
-    }
-    filteredTests = refilteredTests;
-  }
-
-  return filteredTests;
-}
 
 // UI Stuff
 function toggleVisible(elem) {
@@ -318,6 +205,23 @@ function toggleNonTests (e) {
 
 // hook up our buttons
 function hookup() {
+  if (params.manifestFile) {
+    getTestManifest("http://mochi.test:8888/" + params.manifestFile, params, hookupTests);
+  } else {
+    hookupTests(gTestList);
+  }
+}
+
+function hookupTests(testList) {
+  if (testList.length > 0) {
+    gTestList = testList;
+  } else {
+    gTestList = [];
+    for (var obj in testList) {
+        gTestList.push(obj);
+    }
+  }
+
   document.getElementById('runtests').onclick = RunSet.reloadAndRunAll;
   document.getElementById('toggleNonTests').onclick = toggleNonTests; 
   // run automatically if autorun specified

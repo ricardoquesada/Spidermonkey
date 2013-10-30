@@ -5,8 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-
-#include "tests.h"
+#include "jsapi-tests/tests.h"
 
 #define JSVAL_IS_FALSE(x) ((JSVAL_IS_BOOLEAN(x)) && !(JSVAL_TO_BOOLEAN(x)))
 #define JSVAL_IS_TRUE(x)  ((JSVAL_IS_BOOLEAN(x)) && (JSVAL_TO_BOOLEAN(x)))
@@ -30,14 +29,14 @@ BEGIN_TEST(testGetPropertyDefault_bug594060)
         CHECK(obj);
 
         JS::RootedValue v0(cx, JSVAL_TRUE);
-        CHECK(JS_SetProperty(cx, obj, "here", v0.address()));
+        CHECK(JS_SetProperty(cx, obj, "here", v0));
 
         JS::RootedValue v1(cx);
-        CHECK(JS_GetPropertyDefault(cx, obj, "here", JSVAL_FALSE, v1.address()));
+        CHECK(JS_GetPropertyDefault(cx, obj, "here", JSVAL_FALSE, &v1));
         CHECK(JSVAL_IS_TRUE(v1));
 
         JS::RootedValue v2(cx);
-        CHECK(JS_GetPropertyDefault(cx, obj, "nothere", JSVAL_FALSE, v2.address()));
+        CHECK(JS_GetPropertyDefault(cx, obj, "nothere", JSVAL_FALSE, &v2));
         CHECK(JSVAL_IS_FALSE(v2));
     }
 
@@ -54,14 +53,14 @@ BEGIN_TEST(testGetPropertyDefault_bug594060)
         CHECK(stringToId(cx, "nothere", nothereid.address()));
 
         JS::RootedValue v0(cx, JSVAL_TRUE);
-        CHECK(JS_SetPropertyById(cx, obj, hereid, v0.address()));
+        CHECK(JS_SetPropertyById(cx, obj, hereid, v0));
 
         JS::RootedValue v1(cx);
-        CHECK(JS_GetPropertyByIdDefault(cx, obj, hereid, JSVAL_FALSE, v1.address()));
+        CHECK(JS_GetPropertyByIdDefault(cx, obj, hereid, JSVAL_FALSE, &v1));
         CHECK(JSVAL_IS_TRUE(v1));
 
         JS::RootedValue v2(cx);
-        CHECK(JS_GetPropertyByIdDefault(cx, obj, nothereid, JSVAL_FALSE, v2.address()));
+        CHECK(JS_GetPropertyByIdDefault(cx, obj, nothereid, JSVAL_FALSE, &v2));
         CHECK(JSVAL_IS_FALSE(v2));
     }
 

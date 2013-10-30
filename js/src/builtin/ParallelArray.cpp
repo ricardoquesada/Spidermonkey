@@ -4,18 +4,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "jsapi.h"
-#include "jsobj.h"
-#include "jsarray.h"
-
 #include "builtin/ParallelArray.h"
 
-#include "vm/ForkJoin.h"
+#include "jsapi.h"
+#include "jsobj.h"
+
 #include "vm/GlobalObject.h"
 #include "vm/String.h"
-#include "vm/ThreadPool.h"
 
-#include "jsinterpinlines.h"
 #include "jsobjinlines.h"
 
 using namespace js;
@@ -108,8 +104,8 @@ ParallelArrayObject::getConstructor(JSContext *cx, unsigned argc)
     RootedValue ctorValue(cx);
     if (!cx->global()->getIntrinsicValue(cx, ctorName, &ctorValue))
         return NULL;
-    JS_ASSERT(ctorValue.isObject() && ctorValue.toObject().isFunction());
-    return ctorValue.toObject().toFunction();
+    JS_ASSERT(ctorValue.isObject() && ctorValue.toObject().is<JSFunction>());
+    return &ctorValue.toObject().as<JSFunction>();
 }
 
 /*static*/ JSObject *
@@ -136,7 +132,7 @@ ParallelArrayObject::constructHelper(JSContext *cx, MutableHandleFunction ctor, 
 
     if (cx->typeInferenceEnabled()) {
         jsbytecode *pc;
-        RootedScript script(cx, cx->stack.currentScript(&pc));
+        RootedScript script(cx, cx->currentScript(&pc));
         if (script) {
             if (ctor->nonLazyScript()->shouldCloneAtCallsite) {
                 ctor.set(CloneFunctionAtCallsite(cx, ctor, script, pc));
@@ -166,15 +162,15 @@ ParallelArrayObject::constructHelper(JSContext *cx, MutableHandleFunction ctor, 
         }
     }
 
-    InvokeArgsGuard args;
-    if (!cx->stack.pushInvokeArgs(cx, args0.length(), &args))
+    InvokeArgs args(cx);
+    if (!args.init(args0.length()))
         return false;
 
     args.setCallee(ObjectValue(*ctor));
     args.setThis(ObjectValue(*result));
 
     for (uint32_t i = 0; i < args0.length(); i++)
-        args[i] = args0[i];
+        args[i].set(args0[i]);
 
     if (!Invoke(cx, args))
         return false;
@@ -202,7 +198,7 @@ ParallelArrayObject::initClass(JSContext *cx, HandleObject obj)
         }
     }
 
-    Rooted<GlobalObject *> global(cx, &obj->asGlobal());
+    Rooted<GlobalObject *> global(cx, &obj->as<GlobalObject>());
 
     RootedObject proto(cx, global->createBlankPrototype(cx, &protoClass));
     if (!proto)

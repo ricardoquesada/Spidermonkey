@@ -9,9 +9,11 @@
 #include "jsutil.h"
 
 #include "mozilla/Assertions.h"
+#include "mozilla/MathAlgorithms.h"
 #include "mozilla/PodOperations.h"
 
 #include <stdio.h>
+
 #include "jstypes.h"
 
 #ifdef WIN32
@@ -22,13 +24,14 @@
 
 using namespace js;
 
+using mozilla::CeilingLog2Size;
 using mozilla::PodArrayZero;
 
 #if USE_ZLIB
 static void *
 zlib_alloc(void *cx, uInt items, uInt size)
 {
-    return js_malloc(items * size);
+    return js_calloc(items, size);
 }
 
 static void
@@ -194,7 +197,7 @@ ValToBin(unsigned logscale, uint32_t val)
     bin = (logscale == 10)
         ? (unsigned) ceil(log10((double) val))
         : (logscale == 2)
-        ? (unsigned) JS_CEILING_LOG2W(val)
+        ? (unsigned) CeilingLog2Size(val)
         : val;
     return Min(bin, 10U);
 }
@@ -295,7 +298,7 @@ JS_DumpHistogram(JSBasicStats *bs, FILE *fp)
             if (max > 1e6 && mean > 1e3)
                 cnt = uint32_t(ceil(log10((double) cnt)));
             else if (max > 16 && mean > 8)
-                cnt = JS_CEILING_LOG2W(cnt);
+                cnt = CeilingLog2Size(cnt);
             for (unsigned i = 0; i < cnt; i++)
                 putc('*', fp);
         }

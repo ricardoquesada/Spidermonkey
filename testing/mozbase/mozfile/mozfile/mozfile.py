@@ -2,13 +2,23 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from contextlib import contextmanager
 import os
+import shutil
 import tarfile
 import tempfile
 import urlparse
+import urllib2
 import zipfile
 
-__all__ = ['extract_tarball', 'extract_zip', 'extract', 'is_url', 'rmtree', 'NamedTemporaryFile']
+__all__ = ['extract_tarball',
+           'extract_zip',
+           'extract',
+           'is_url',
+           'load',
+           'rmtree',
+           'NamedTemporaryFile',
+           'TemporaryDirectory']
 
 
 ### utilities for extracting archives
@@ -42,7 +52,8 @@ def extract_zip(src, dest):
     for name in namelist:
         filename = os.path.realpath(os.path.join(dest, name))
         if name.endswith('/'):
-            os.makedirs(filename)
+            if not os.path.isdir(filename):
+                os.makedirs(filename)
         else:
             path = os.path.dirname(filename)
             if not os.path.isdir(path):
@@ -50,6 +61,8 @@ def extract_zip(src, dest):
             _dest = open(filename, 'wb')
             _dest.write(bundle.read(name))
             _dest.close()
+        mode = bundle.getinfo(name).external_attr >> 16 & 0x1FF
+        os.chmod(filename, mode)
     bundle.close()
     return namelist
 
@@ -64,12 +77,12 @@ def extract(src, dest=None):
     """
 
     assert os.path.exists(src), "'%s' does not exist" % src
-    assert not os.path.isfile(dest), "dest cannot be a file"
 
     if dest is None:
         dest = os.path.dirname(src)
     elif not os.path.isdir(dest):
         os.makedirs(dest)
+    assert not os.path.isfile(dest), "dest cannot be a file"
 
     if zipfile.is_zipfile(src):
         namelist = extract_zip(src, dest)
@@ -80,14 +93,16 @@ def extract(src, dest=None):
                         src)
 
     # namelist returns paths with forward slashes even in windows
-    top_level_files = [os.path.join(dest, name) for name in namelist
+    top_level_files = [os.path.join(dest, name.rstrip('/')) for name in namelist
                        if len(name.rstrip('/').split('/')) == 1]
 
     # namelist doesn't include folders, append these to the list
     for name in namelist:
-        root = os.path.join(dest, name[:name.find('/')])
-        if root not in top_level_files:
-            top_level_files.append(root)
+        index = name.find('/')
+        if index != -1:
+            root = os.path.join(dest, name[:index])
+            if root not in top_level_files:
+                top_level_files.append(root)
 
     return top_level_files
 
@@ -160,17 +175,21 @@ class NamedTemporaryFile(object):
     see https://bugzilla.mozilla.org/show_bug.cgi?id=821362
     """
     def __init__(self, mode='w+b', bufsize=-1, suffix='', prefix='tmp',
-        dir=None):
+                 dir=None, delete=True):
 
         fd, path = tempfile.mkstemp(suffix, prefix, dir, 't' in mode)
         os.close(fd)
 
         self.file = open(path, mode)
         self._path = path
+        self._delete = delete
         self._unlinked = False
 
     def __getattr__(self, k):
         return getattr(self.__dict__['file'], k)
+
+    def __iter__(self):
+        return self.__dict__['file']
 
     def __enter__(self):
         self.file.__enter__()
@@ -178,16 +197,19 @@ class NamedTemporaryFile(object):
 
     def __exit__(self, exc, value, tb):
         self.file.__exit__(exc, value, tb)
-        os.unlink(self.__dict__['_path'])
-        self._unlinked = True
+        if self.__dict__['_delete']:
+            os.unlink(self.__dict__['_path'])
+            self._unlinked = True
 
     def __del__(self):
         if self.__dict__['_unlinked']:
             return
-
         self.file.__exit__(None, None, None)
-        os.unlink(self.__dict__['_path'])
+        if self.__dict__['_delete']:
+            os.unlink(self.__dict__['_path'])
 
+
+### utilities dealing with URLs
 
 def is_url(thing):
     """
@@ -199,3 +221,36 @@ def is_url(thing):
         return len(parsed.scheme) >= 2
     else:
         return len(parsed[0]) >= 2
+
+def load(resource):
+    """
+    open a file or URL for reading.  If the passed resource string is not a URL,
+    or begins with 'file://', return a ``file``.  Otherwise, return the
+    result of urllib2.urlopen()
+    """
+
+    # handle file URLs separately due to python stdlib limitations
+    if resource.startswith('file://'):
+        resource = resource[len('file://'):]
+
+    if not is_url(resource):
+        # if no scheme is given, it is a file path
+        return file(resource)
+
+    return urllib2.urlopen(resource)
+
+@contextmanager
+def TemporaryDirectory():
+    """
+    create a temporary directory using tempfile.mkdtemp, and then clean it up.
+
+    Example usage:
+    with TemporaryDirectory() as tmp:
+       open(os.path.join(tmp, "a_temp_file"), "w").write("data")
+
+    """
+    tempdir = tempfile.mkdtemp()
+    try:
+        yield tempdir
+    finally:
+        shutil.rmtree(tempdir)

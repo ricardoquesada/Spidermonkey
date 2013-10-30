@@ -156,13 +156,42 @@ class DeviceManagerADB(DeviceManager):
 
         return None
 
+    def forward(self, local, remote):
+        """
+        Forward socket connections.
+        
+        Forward specs are one of:
+          tcp:<port>
+          localabstract:<unix domain socket name>
+          localreserved:<unix domain socket name>
+          localfilesystem:<unix domain socket name>
+          dev:<character device name>
+          jdwp:<process pid> (remote only)
+        """
+        return self._checkCmd(['forward', local, remote])
+
+    def remount(self):
+        "Remounts the /system partition on the device read-write."
+        return self._checkCmd(['remount'])
+
+    def devices(self):
+        "Return a list of connected devices as (serial, status) tuples."
+        proc = self._runCmd(['devices'])
+        proc.stdout.readline() # ignore first line of output
+        devices = []
+        for line in iter(proc.stdout.readline, ''):
+            result = re.match('(.*?)\t(.*)', line)
+            if result:
+                devices.append((result.group(1), result.group(2)))
+        return devices
+
     def _connectRemoteADB(self):
         self._checkCmd(["connect", self.host + ":" + str(self.port)])
 
     def _disconnectRemoteADB(self):
         self._checkCmd(["disconnect", self.host + ":" + str(self.port)])
 
-    def pushFile(self, localname, destname, retryLimit=None):
+    def pushFile(self, localname, destname, retryLimit=None, createDir=True):
         # you might expect us to put the file *in* the directory in this case,
         # but that would be different behaviour from devicemanagerSUT. Throw
         # an exception so we have the same behaviour between the two
@@ -171,6 +200,8 @@ class DeviceManagerADB(DeviceManager):
         if self.dirExists(destname):
             raise DMError("Attempted to push a file (%s) to a directory (%s)!" %
                           (localname, destname))
+        if not os.access(localname, os.F_OK):
+            raise DMError("File not found: %s" % localname)
 
         if self._useRunAs:
             remoteTmpFile = self.getTempDir() + "/" + os.path.basename(localname)
@@ -201,7 +232,7 @@ class DeviceManagerADB(DeviceManager):
                 remoteZip = remoteDir + "/adbdmtmp.zip"
                 subprocess.Popen(["zip", "-r", localZip, '.'], cwd=localDir,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
-                self.pushFile(localZip, remoteZip, retryLimit=retryLimit)
+                self.pushFile(localZip, remoteZip, retryLimit=retryLimit, createDir=False)
                 os.remove(localZip)
                 data = self._runCmdAs(["shell", "unzip", "-o", remoteZip,
                                        "-d", remoteDir]).stdout.read()
@@ -233,8 +264,9 @@ class DeviceManagerADB(DeviceManager):
     def fileExists(self, filepath):
         p = self._runCmd(["shell", "ls", "-a", filepath])
         data = p.stdout.readlines()
-        if (len(data) == 1):
-            if (data[0].rstrip() == filepath):
+        if len(data) == 1:
+            foundpath = data[0].decode('utf-8').rstrip()
+            if foundpath == filepath:
                 return True
         return False
 
@@ -383,13 +415,24 @@ class DeviceManagerADB(DeviceManager):
         except (OSError, ValueError):
             raise DMError("Error pulling remote file '%s' to '%s'" % (remoteFile, localFile))
 
-    def pullFile(self, remoteFile):
+    def pullFile(self, remoteFile, offset=None, length=None):
         # TODO: add debug flags and allow for printing stdout
         localFile = tempfile.mkstemp()[1]
         self._runPull(remoteFile, localFile)
 
         f = open(localFile, 'r')
-        ret = f.read()
+
+        # ADB pull does not support offset and length, but we can instead
+        # read only the requested portion of the local file
+        if offset is not None and length is not None:
+            f.seek(offset)
+            ret = f.read(length)
+        elif offset is not None:
+            f.seek(offset)
+            ret = f.read()
+        else:
+            ret = f.read()
+
         f.close()
         os.remove(localFile)
         return ret
@@ -478,12 +521,10 @@ class DeviceManagerADB(DeviceManager):
         raise DMError("Failed to get application root for: %s" % packageName)
 
     def reboot(self, wait = False, **kwargs):
-        self._runCmd(["reboot"])
-        if (not wait):
+        self._checkCmd(["reboot"])
+        if not wait:
             return
-        countdown = 40
-        while (countdown > 0):
-            self._checkCmd(["wait-for-device", "shell", "ls", "/sbin"])
+        self._checkCmd(["wait-for-device", "shell", "ls", "/sbin"])
 
     def updateApp(self, appBundlePath, **kwargs):
         return self._runCmd(["install", "-r", appBundlePath]).stdout.read()
@@ -492,7 +533,7 @@ class DeviceManagerADB(DeviceManager):
         timestr = self._runCmd(["shell", "date", "+%s"]).stdout.read().strip()
         if (not timestr or not timestr.isdigit()):
             raise DMError("Unable to get current time using date (got: '%s')" % timestr)
-        return str(int(timestr)*1000)
+        return int(timestr)*1000
 
     def getInfo(self, directive=None):
         ret = {}

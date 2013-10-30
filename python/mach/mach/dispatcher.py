@@ -16,6 +16,13 @@ from .base import (
 )
 
 
+class CommandFormatter(argparse.HelpFormatter):
+    """Custom formatter to format just a subcommand."""
+
+    def add_usage(self, *args):
+        pass
+
+
 class CommandAction(argparse.Action):
     """An argparse action that handles mach commands.
 
@@ -78,7 +85,7 @@ class CommandAction(argparse.Action):
         if not values:
             raise NoCommandError()
 
-        command = values[0]
+        command = values[0].lower()
         args = values[1:]
 
         if command == 'help':
@@ -160,7 +167,27 @@ class CommandAction(argparse.Action):
         if not handler:
             raise UnknownCommandError(command, 'query')
 
-        group = parser.add_argument_group('Command Arguments')
+        # This code is worth explaining. Because we are doing funky things with
+        # argument registration to allow the same option in both global and
+        # command arguments, we can't simply put all arguments on the same
+        # parser instance because argparse would complain. We can't register an
+        # argparse subparser here because it won't properly show help for
+        # global arguments. So, we employ a strategy similar to command
+        # execution where we construct a 2nd, independent ArgumentParser for
+        # just the command data then supplement the main help's output with
+        # this 2nd parser's. We use a custom formatter class to ignore some of
+        # the help output.
+        parser_args = {
+            'formatter_class': CommandFormatter,
+            'add_help': False,
+        }
+
+        if handler.allow_all_arguments:
+            parser_args['prefix_chars'] = '+'
+
+        c_parser = argparse.ArgumentParser(**parser_args)
+
+        group = c_parser.add_argument_group('Command Arguments')
 
         for arg in handler.arguments:
             group.add_argument(*arg[0], **arg[1])
@@ -173,4 +200,6 @@ class CommandAction(argparse.Action):
         parser.usage = '%(prog)s [global arguments] ' + command + \
             ' [command arguments]'
         parser.print_help()
+        print('')
+        c_parser.print_help()
 

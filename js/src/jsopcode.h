@@ -4,22 +4,26 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jsopcode_h___
-#define jsopcode_h___
+#ifndef jsopcode_h
+#define jsopcode_h
 
 /*
  * JS bytecode definitions.
  */
+
 #include <stddef.h>
+
 #include "jsprvtd.h"
 #include "jspubtd.h"
 #include "jsutil.h"
+
+#include "frontend/SourceNotes.h"
 
 /*
  * JS operation bytecodes.
  */
 typedef enum JSOp {
-#define OPDEF(op,val,name,token,length,nuses,ndefs,prec,format) \
+#define OPDEF(op,val,name,token,length,nuses,ndefs,format) \
     op = val,
 #include "jsopcode.tbl"
 #undef OPDEF
@@ -67,10 +71,9 @@ typedef enum JSOp {
 #define JOF_MODEMASK      (7U<<5) /* mask for above addressing modes */
 #define JOF_SET           (1U<<8) /* set (i.e., assignment) operation */
 /* (1U<<9) is unused*/
-#define JOF_DEC          (1U<<10) /* decrement (--, not ++) opcode */
-#define JOF_INC          (2U<<10) /* increment (++, not --) opcode */
-#define JOF_INCDEC       (3U<<10) /* increment or decrement opcode */
-#define JOF_POST         (1U<<12) /* postorder increment or decrement */
+/* (1U<<10) is unused*/
+/* (1U<<11) is unused*/
+/* (1U<<12) is unused*/
 /* (1U<<13) is unused*/
 #define JOF_DETECTING    (1U<<14) /* object detection for warning-quelling */
 /* (1U<<15) is unused*/
@@ -79,7 +82,8 @@ typedef enum JSOp {
 /* (1U<<18) is unused */
 /* (1U<<19) is unused*/
 /* (1U<<20) is unused*/
-#define JOF_INVOKE       (1U<<21) /* JSOP_CALL, JSOP_NEW, JSOP_EVAL */
+#define JOF_INVOKE       (1U<<21) /* JSOP_CALL, JSOP_FUNCALL, JSOP_FUNAPPLY,
+                                     JSOP_NEW, JSOP_EVAL */
 #define JOF_TMPSLOT      (1U<<22) /* interpreter uses extra temporary slot
                                      to root intermediate objects besides
                                      the slots opcode uses */
@@ -93,9 +97,7 @@ typedef enum JSOp {
 /* (1U<<24) is unused */
 #define JOF_GNAME        (1U<<25) /* predicted global name */
 #define JOF_TYPESET      (1U<<26) /* has an entry in a script's type sets */
-#define JOF_DECOMPOSE    (1U<<27) /* followed by an equivalent decomposed
-                                   * version of the opcode */
-#define JOF_ARITH        (1U<<28) /* unary or binary arithmetic opcode */
+#define JOF_ARITH        (1U<<27) /* unary or binary arithmetic opcode */
 
 /* Shorthands for type from format and type from opcode. */
 #define JOF_TYPE(fmt)   ((fmt) & JOF_TYPEMASK)
@@ -212,15 +214,14 @@ struct JSCodeSpec {
     int8_t              length;         /* length including opcode byte */
     int8_t              nuses;          /* arity, -1 if variadic */
     int8_t              ndefs;          /* number of stack results */
-    uint8_t             prec;           /* operator precedence */
     uint32_t            format;         /* immediate operand format */
 
     uint32_t type() const { return JOF_TYPE(format); }
 };
 
 extern const JSCodeSpec js_CodeSpec[];
-extern unsigned            js_NumCodeSpecs;
-extern const char       *js_CodeName[];
+extern const unsigned   js_NumCodeSpecs;
+extern const char       * const js_CodeName[];
 extern const char       js_EscapeMap[];
 
 /* Silence unreferenced formal parameter warnings */
@@ -237,21 +238,115 @@ extern const char       js_EscapeMap[];
 extern JSString *
 js_QuoteString(JSContext *cx, JSString *str, jschar quote);
 
-#define GET_ATOM_FROM_BYTECODE(script, pc, pcoff, atom)                       \
-    JS_BEGIN_MACRO                                                            \
-        JS_ASSERT(js_CodeSpec[*(pc)].format & JOF_ATOM);                      \
-        (atom) = (script)->getAtom(GET_UINT32_INDEX((pc) + (pcoff)));         \
-    JS_END_MACRO
-
-#define GET_NAME_FROM_BYTECODE(script, pc, pcoff, name)                       \
-    JS_BEGIN_MACRO                                                            \
-        JSAtom *atom_;                                                        \
-        GET_ATOM_FROM_BYTECODE(script, pc, pcoff, atom_);                     \
-        JS_ASSERT(js_CodeSpec[*(pc)].format & (JOF_NAME | JOF_PROP));         \
-        (name) = atom_->asPropertyName();                                     \
-    JS_END_MACRO
-
 namespace js {
+
+static inline bool
+IsJumpOpcode(JSOp op)
+{
+    uint32_t type = JOF_TYPE(js_CodeSpec[op].format);
+
+    /*
+     * LABEL opcodes have type JOF_JUMP but are no-ops, don't treat them as
+     * jumps to avoid degrading precision.
+     */
+    return type == JOF_JUMP && op != JSOP_LABEL;
+}
+
+static inline bool
+BytecodeFallsThrough(JSOp op)
+{
+    switch (op) {
+      case JSOP_GOTO:
+      case JSOP_DEFAULT:
+      case JSOP_RETURN:
+      case JSOP_STOP:
+      case JSOP_RETRVAL:
+      case JSOP_THROW:
+      case JSOP_TABLESWITCH:
+        return false;
+      case JSOP_GOSUB:
+        /* These fall through indirectly, after executing a 'finally'. */
+        return true;
+      default:
+        return true;
+    }
+}
+
+class SrcNoteLineScanner
+{
+    /* offset of the current JSOp in the bytecode */
+    ptrdiff_t offset;
+
+    /* next src note to process */
+    jssrcnote *sn;
+
+    /* line number of the current JSOp */
+    uint32_t lineno;
+
+    /*
+     * Is the current op the first one after a line change directive? Note that
+     * multiple ops may be "first" if a line directive is used to return to a
+     * previous line (eg, with a for loop increment expression.)
+     */
+    bool lineHeader;
+
+public:
+    SrcNoteLineScanner(jssrcnote *sn, uint32_t lineno)
+        : offset(0), sn(sn), lineno(lineno)
+    {
+    }
+
+    /*
+     * This is called repeatedly with always-advancing relpc values. The src
+     * notes are tuples of <PC offset from prev src note, type, args>. Scan
+     * through, updating the lineno, until the next src note is for a later
+     * bytecode.
+     *
+     * When looking at the desired PC offset ('relpc'), the op is first in that
+     * line iff there is a SRC_SETLINE or SRC_NEWLINE src note for that exact
+     * bytecode.
+     *
+     * Note that a single bytecode may have multiple line-modifying notes (even
+     * though only one should ever be needed.)
+     */
+    void advanceTo(ptrdiff_t relpc) {
+        // Must always advance! If the same or an earlier PC is erroneously
+        // passed in, we will already be past the relevant src notes
+        JS_ASSERT_IF(offset > 0, relpc > offset);
+
+        // Next src note should be for after the current offset
+        JS_ASSERT_IF(offset > 0, SN_IS_TERMINATOR(sn) || SN_DELTA(sn) > 0);
+
+        // The first PC requested is always considered to be a line header
+        lineHeader = (offset == 0);
+
+        if (SN_IS_TERMINATOR(sn))
+            return;
+
+        ptrdiff_t nextOffset;
+        while ((nextOffset = offset + SN_DELTA(sn)) <= relpc && !SN_IS_TERMINATOR(sn)) {
+            offset = nextOffset;
+            SrcNoteType type = (SrcNoteType) SN_TYPE(sn);
+            if (type == SRC_SETLINE || type == SRC_NEWLINE) {
+                if (type == SRC_SETLINE)
+                    lineno = js_GetSrcNoteOffset(sn, 0);
+                else
+                    lineno++;
+
+                if (offset == relpc)
+                    lineHeader = true;
+            }
+
+            sn = SN_NEXT(sn);
+        }
+    }
+
+    bool isLineHeader() const {
+        return lineHeader;
+    }
+
+    uint32_t getLine() const { return lineno; }
+};
 
 extern unsigned
 StackUses(JSScript *script, jsbytecode *pc);
@@ -429,6 +524,44 @@ GetBytecodeLength(jsbytecode *pc)
     return js_GetVariableBytecodeLength(pc);
 }
 
+static inline bool
+BytecodeIsPopped(jsbytecode *pc)
+{
+    jsbytecode *next = pc + GetBytecodeLength(pc);
+    return JSOp(*next) == JSOP_POP;
+}
+
+static inline bool
+BytecodeFlowsToBitop(jsbytecode *pc)
+{
+    // Look for simple bytecode for integer conversions like (x | 0) or (x & -1).
+    jsbytecode *next = pc + GetBytecodeLength(pc);
+    if (*next == JSOP_BITOR || *next == JSOP_BITAND)
+        return true;
+    if (*next == JSOP_INT8 && GET_INT8(next) == -1) {
+        next += GetBytecodeLength(next);
+        if (*next == JSOP_BITAND)
+            return true;
+        return false;
+    }
+    if (*next == JSOP_ONE) {
+        next += GetBytecodeLength(next);
+        if (*next == JSOP_NEG) {
+            next += GetBytecodeLength(next);
+            if (*next == JSOP_BITAND)
+                return true;
+        }
+        return false;
+    }
+    if (*next == JSOP_ZERO) {
+        next += GetBytecodeLength(next);
+        if (*next == JSOP_BITOR)
+            return true;
+        return false;
+    }
+    return false;
+}
+
 extern bool
 IsValidBytecodeOffset(JSContext *cx, JSScript *script, size_t offset);
 
@@ -450,6 +583,12 @@ inline bool
 IsLocalOp(JSOp op)
 {
     return JOF_OPTYPE(op) == JOF_LOCAL;
+}
+
+inline bool
+IsAliasedVarOp(JSOp op)
+{
+    return JOF_OPTYPE(op) == JOF_SCOPECOORD;
 }
 
 inline bool
@@ -477,6 +616,28 @@ IsSetterPC(jsbytecode *pc)
     JSOp op = JSOp(*pc);
     return op == JSOP_SETPROP || op == JSOP_SETNAME || op == JSOP_SETGNAME;
 }
+
+inline bool
+IsCallPC(jsbytecode *pc)
+{
+    return js_CodeSpec[*pc].format & JOF_INVOKE;
+}
+
+static inline int32_t
+GetBytecodeInteger(jsbytecode *pc)
+{
+    switch (JSOp(*pc)) {
+      case JSOP_ZERO:   return 0;
+      case JSOP_ONE:    return 1;
+      case JSOP_UINT16: return GET_UINT16(pc);
+      case JSOP_UINT24: return GET_UINT24(pc);
+      case JSOP_INT8:   return GET_INT8(pc);
+      case JSOP_INT32:  return GET_INT32(pc);
+      default:
+        MOZ_ASSUME_UNREACHABLE("Bad op");
+    }
+}
+
 /*
  * Counts accumulated for a single opcode in a script. The counts tracked vary
  * between opcodes, and this structure ensures that counts are accessed in a
@@ -533,7 +694,7 @@ class PCCounts
             return true;
         int format = js_CodeSpec[op].format;
         return !!(format & (JOF_NAME | JOF_GNAME | JOF_ELEM | JOF_PROP))
-            && !(format & (JOF_SET | JOF_INCDEC));
+            && !(format & JOF_SET);
     }
 
     enum ElementCounts {
@@ -576,7 +737,7 @@ class PCCounts
     };
 
     static bool arithOp(JSOp op) {
-        return !!(js_CodeSpec[op].format & (JOF_INCDEC | JOF_ARITH));
+        return !!(js_CodeSpec[op].format & JOF_ARITH);
     }
 
     static size_t numCounts(JSOp op)
@@ -595,7 +756,7 @@ class PCCounts
 
     static const char *countName(JSOp op, size_t which);
 
-    double *rawCounts() { return counts; }
+    double *rawCounts() const { return counts; }
 
     double& get(size_t which) {
         JS_ASSERT(which < capacity);
@@ -630,17 +791,17 @@ unsigned
 js_Disassemble1(JSContext *cx, JS::Handle<JSScript*> script, jsbytecode *pc, unsigned loc,
                 JSBool lines, js::Sprinter *sp);
 
+#endif
+
 void
 js_DumpPCCounts(JSContext *cx, JS::Handle<JSScript*> script, js::Sprinter *sp);
 
 #ifdef JS_ION
 namespace js {
-namespace ion { struct IonScriptCounts; }
+namespace jit { struct IonScriptCounts; }
 void
-DumpIonScriptCounts(js::Sprinter *sp, ion::IonScriptCounts *ionCounts);
+DumpIonScriptCounts(js::Sprinter *sp, jit::IonScriptCounts *ionCounts);
 }
 #endif
 
-#endif
-
-#endif /* jsopcode_h___ */
+#endif /* jsopcode_h */

@@ -9,6 +9,7 @@
 
 #include "xpcprivate.h"
 #include "nsArrayEnumerator.h"
+#include "nsContentUtils.h"
 #include "nsWrapperCache.h"
 #include "XPCWrapper.h"
 #include "AccessCheck.h"
@@ -16,11 +17,12 @@
 #include "mozilla/Attributes.h"
 
 #include "jsapi.h"
+#include "jsfriendapi.h"
 
 using namespace xpc;
 using namespace JS;
 
-NS_IMPL_THREADSAFE_ISUPPORTS1(nsXPCWrappedJSClass, nsIXPCWrappedJSClass)
+NS_IMPL_ISUPPORTS1(nsXPCWrappedJSClass, nsIXPCWrappedJSClass)
 
 // the value of this variable is never used - we use its address as a sentinel
 static uint32_t zero_methods_descriptor;
@@ -125,7 +127,7 @@ nsXPCWrappedJSClass::GetNewOrUsed(JSContext* cx, REFNSIID aIID,
 
     if (!clazz) {
         nsCOMPtr<nsIInterfaceInfo> info;
-        nsXPConnect::GetXPConnect()->GetInfoForIID(&aIID, getter_AddRefs(info));
+        nsXPConnect::XPConnect()->GetInfoForIID(&aIID, getter_AddRefs(info));
         if (info) {
             bool canScript, isBuiltin;
             if (NS_SUCCEEDED(info->IsScriptable(&canScript)) && canScript &&
@@ -229,7 +231,7 @@ nsXPCWrappedJSClass::CallQueryInterfaceOnJSObject(JSContext* cx,
 
     // check upfront for the existence of the function property
     funid = mRuntime->GetStringID(XPCJSRuntime::IDX_QUERY_INTERFACE);
-    if (!JS_GetPropertyById(cx, jsobj, funid, fun.address()) || JSVAL_IS_PRIMITIVE(fun))
+    if (!JS_GetPropertyById(cx, jsobj, funid, &fun) || JSVAL_IS_PRIMITIVE(fun))
         return nullptr;
 
     // Ensure that we are asking for a scriptable interface.
@@ -240,7 +242,7 @@ nsXPCWrappedJSClass::CallQueryInterfaceOnJSObject(JSContext* cx,
     // We so often ask for nsISupports that we can short-circuit the test...
     if (!aIID.Equals(NS_GET_IID(nsISupports))) {
         nsCOMPtr<nsIInterfaceInfo> info;
-        nsXPConnect::GetXPConnect()->GetInfoForIID(&aIID, getter_AddRefs(info));
+        nsXPConnect::XPConnect()->GetInfoForIID(&aIID, getter_AddRefs(info));
         if (!info)
             return nullptr;
         bool canScript, isBuiltin;
@@ -276,7 +278,7 @@ nsXPCWrappedJSClass::CallQueryInterfaceOnJSObject(JSContext* cx,
                     // C++ QI failure. See if that is the case.
                     nsCOMPtr<nsIXPConnectWrappedNative> wrapper;
 
-                    nsXPConnect::GetXPConnect()->
+                    nsXPConnect::XPConnect()->
                         GetWrappedNativeOfJSObject(cx,
                                                    &jsexception.toObject(),
                                                    getter_AddRefs(wrapper));
@@ -329,11 +331,11 @@ GetNamedPropertyAsVariantRaw(XPCCallContext& ccx,
     nsXPTType type = nsXPTType((uint8_t)TD_INTERFACE_TYPE);
     RootedValue val(ccx);
 
-    return JS_GetPropertyById(ccx, aJSObj, aName, val.address()) &&
+    return JS_GetPropertyById(ccx, aJSObj, aName, &val) &&
            // Note that this always takes the T_INTERFACE path through
            // JSData2Native, so the value passed for useAllocator
            // doesn't really matter. We pass true for consistency.
-           XPCConvert::JSData2Native(ccx, aResult, val, type, true,
+           XPCConvert::JSData2Native(aResult, val, type, true,
                                      &NS_GET_IID(nsIVariant), pErr);
 }
 
@@ -684,7 +686,7 @@ nsXPCWrappedJSClass::DelegatedQueryInterface(nsXPCWrappedJS* self,
 
         *aInstancePtr = nullptr;
 
-        nsXPConnect *xpc = nsXPConnect::GetXPConnect();
+        nsXPConnect *xpc = nsXPConnect::XPConnect();
         nsCOMPtr<nsIScriptSecurityManager> secMan =
             do_QueryInterface(xpc->GetDefaultSecurityManager());
         if (!secMan)
@@ -699,8 +701,7 @@ nsXPCWrappedJSClass::DelegatedQueryInterface(nsXPCWrappedJS* self,
 
         bool isSystem;
         rv = secMan->IsSystemPrincipal(objPrin, &isSystem);
-        if ((NS_FAILED(rv) || !isSystem) &&
-            !IS_WRAPPER_CLASS(js::GetObjectClass(selfObj))) {
+        if ((NS_FAILED(rv) || !isSystem) && !IS_WN_REFLECTOR(selfObj)) {
             // A content object.
             nsRefPtr<SameOriginCheckedComponent> checked =
                 new SameOriginCheckedComponent(self);
@@ -727,7 +728,7 @@ nsXPCWrappedJSClass::DelegatedQueryInterface(nsXPCWrappedJS* self,
         // XPConvert::JSObject2NativeInterface() here to make sure we
         // get a new (or used) nsXPCWrappedJS.
         nsXPCWrappedJS* wrapper;
-        nsresult rv = nsXPCWrappedJS::GetNewOrUsed(ccx, jsobj, aIID, nullptr,
+        nsresult rv = nsXPCWrappedJS::GetNewOrUsed(jsobj, aIID, nullptr,
                                                    &wrapper);
         if (NS_SUCCEEDED(rv) && wrapper) {
             // We need to go through the QueryInterface logic to make
@@ -816,7 +817,7 @@ xpcWrappedJSErrorReporter(JSContext *cx, const char *message,
         return;
 
     nsCOMPtr<nsIException> e;
-    XPCConvert::JSErrorToXPCException(ccx, message, nullptr, nullptr, report,
+    XPCConvert::JSErrorToXPCException(message, nullptr, nullptr, report,
                                       getter_AddRefs(e));
     if (e)
         ccx.GetXPCContext()->SetException(e);
@@ -839,11 +840,10 @@ nsXPCWrappedJSClass::GetArraySizeFromParam(JSContext* cx,
         return false;
 
     const nsXPTParamInfo& arg_param = method->params[argnum];
-    const nsXPTType& arg_type = arg_param.GetType();
 
     // This should be enforced by the xpidl compiler, but it's not.
     // See bug 695235.
-    NS_ABORT_IF_FALSE(arg_type.TagPart() == nsXPTType::T_U32,
+    NS_ABORT_IF_FALSE(arg_param.GetType().TagPart() == nsXPTType::T_U32,
                       "size_is references parameter of invalid type.");
 
     if (arg_param.IsIndirect())
@@ -961,13 +961,13 @@ nsXPCWrappedJSClass::CheckForException(XPCCallContext & ccx,
     // to run on this JSContext
     nsresult pending_result = xpcc->GetPendingResult();
 
-    jsval js_exception;
-    JSBool is_js_exception = JS_GetPendingException(cx, &js_exception);
+    RootedValue js_exception(cx);
+    JSBool is_js_exception = JS_GetPendingException(cx, js_exception.address());
 
     /* JS might throw an expection whether the reporter was called or not */
     if (is_js_exception) {
         if (!xpc_exception)
-            XPCConvert::JSValToXPCException(ccx, js_exception, anInterfaceName,
+            XPCConvert::JSValToXPCException(&js_exception, anInterfaceName,
                                             aPropertyName,
                                             getter_AddRefs(xpc_exception));
 
@@ -1012,35 +1012,46 @@ nsXPCWrappedJSClass::CheckForException(XPCCallContext & ccx,
                     !strcmp(aPropertyName, "getInterface")) {
                     reportable = false;
                 }
+
+                // More special case, see bug 877760.
+                if (e_result == NS_ERROR_XPC_JSOBJECT_HAS_NO_FUNCTION_NAMED) {
+                    reportable = false;
+                }
             }
 
             // Try to use the error reporter set on the context to handle this
             // error if it came from a JS exception.
             if (reportable && is_js_exception &&
-                JS_GetErrorReporter(cx) != xpcWrappedJSErrorReporter) {
+                JS_GetErrorReporter(cx) != xpcWrappedJSErrorReporter)
+            {
+                // If the error reporter ignores the error, it will call
+                // xpc->MarkErrorUnreported().
+                xpcc->ClearUnreportedError();
                 reportable = !JS_ReportPendingException(cx);
+                if (!xpcc->WasErrorReported())
+                    reportable = true;
             }
 
             if (reportable) {
-#ifdef DEBUG
-                static const char line[] =
-                    "************************************************************\n";
-                static const char preamble[] =
-                    "* Call to xpconnect wrapped JSObject produced this error:  *\n";
-                static const char cant_get_text[] =
-                    "FAILED TO GET TEXT FROM EXCEPTION\n";
+                if (nsContentUtils::DOMWindowDumpEnabled()) {
+                    static const char line[] =
+                        "************************************************************\n";
+                    static const char preamble[] =
+                        "* Call to xpconnect wrapped JSObject produced this error:  *\n";
+                    static const char cant_get_text[] =
+                        "FAILED TO GET TEXT FROM EXCEPTION\n";
 
-                fputs(line, stdout);
-                fputs(preamble, stdout);
-                char* text;
-                if (NS_SUCCEEDED(xpc_exception->ToString(&text)) && text) {
-                    fputs(text, stdout);
-                    fputs("\n", stdout);
-                    nsMemory::Free(text);
-                } else
-                    fputs(cant_get_text, stdout);
-                fputs(line, stdout);
-#endif
+                    fputs(line, stdout);
+                    fputs(preamble, stdout);
+                    char* text;
+                    if (NS_SUCCEEDED(xpc_exception->ToString(&text)) && text) {
+                        fputs(text, stdout);
+                        fputs("\n", stdout);
+                        nsMemory::Free(text);
+                    } else
+                        fputs(cant_get_text, stdout);
+                    fputs(line, stdout);
+                }
 
                 // Log the exception to the JS Console, so that users can do
                 // something with it.
@@ -1161,7 +1172,6 @@ nsXPCWrappedJSClass::CallMethod(nsXPCWrappedJS* wrapper, uint16_t methodIndex,
     RootedObject thisObj(cx, obj);
 
     JSAutoCompartment ac(cx, obj);
-    ccx.SetScopeForNewJSObjects(obj);
 
     AutoValueVector args(cx);
     AutoScriptEvaluate scriptEval(cx);
@@ -1241,7 +1251,7 @@ nsXPCWrappedJSClass::CallMethod(nsXPCWrappedJS* wrapper, uint16_t methodIndex,
                                 xpcObjectHelper helper(newThis);
                                 JSBool ok =
                                   XPCConvert::NativeInterface2JSObject(
-                                      ccx, v.address(), nullptr, helper, nullptr,
+                                      v.address(), nullptr, helper, nullptr,
                                       nullptr, false, nullptr);
                                 if (!ok) {
                                     goto pre_call_clean_up;
@@ -1255,7 +1265,7 @@ nsXPCWrappedJSClass::CallMethod(nsXPCWrappedJS* wrapper, uint16_t methodIndex,
                 }
             }
         } else {
-            if (!JS_GetProperty(cx, obj, name, fval.address()))
+            if (!JS_GetProperty(cx, obj, name, &fval))
                 goto pre_call_clean_up;
             // XXX We really want to factor out the error reporting better and
             // specifically report the failure to find a function with this name.
@@ -1328,20 +1338,19 @@ nsXPCWrappedJSClass::CallMethod(nsXPCWrappedJS* wrapper, uint16_t methodIndex,
             }
 
             if (isArray) {
-                XPCLazyCallContext lccx(ccx);
-                if (!XPCConvert::NativeArray2JS(lccx, val.address(),
+                if (!XPCConvert::NativeArray2JS(val.address(),
                                                 (const void**)&pv->val,
                                                 datum_type, &param_iid,
                                                 array_count, nullptr))
                     goto pre_call_clean_up;
             } else if (isSizedString) {
-                if (!XPCConvert::NativeStringWithSize2JS(ccx, val.address(),
+                if (!XPCConvert::NativeStringWithSize2JS(val.address(),
                                                          (const void*)&pv->val,
                                                          datum_type,
                                                          array_count, nullptr))
                     goto pre_call_clean_up;
             } else {
-                if (!XPCConvert::NativeData2JS(ccx, val.address(), &pv->val, type,
+                if (!XPCConvert::NativeData2JS(val.address(), &pv->val, type,
                                                &param_iid, nullptr))
                     goto pre_call_clean_up;
             }
@@ -1358,7 +1367,7 @@ nsXPCWrappedJSClass::CallMethod(nsXPCWrappedJS* wrapper, uint16_t methodIndex,
             if (param.IsIn()) {
                 if (!JS_SetPropertyById(cx, out_obj,
                                         mRuntime->GetStringID(XPCJSRuntime::IDX_VALUE),
-                                        val.address())) {
+                                        val)) {
                     goto pre_call_clean_up;
                 }
             }
@@ -1423,10 +1432,10 @@ pre_call_clean_up:
 
     RootedValue rval(cx);
     if (XPT_MD_IS_GETTER(info->flags)) {
-        success = JS_GetProperty(cx, obj, name, rval.address());
+        success = JS_GetProperty(cx, obj, name, &rval);
     } else if (XPT_MD_IS_SETTER(info->flags)) {
-        success = JS_SetProperty(cx, obj, name, argv);
         rval = *argv;
+        success = JS_SetProperty(cx, obj, name, rval);
     } else {
         if (!JSVAL_IS_PRIMITIVE(fval)) {
             uint32_t oldOpts = JS_GetOptions(cx);
@@ -1506,7 +1515,7 @@ pre_call_clean_up:
         else if (JSVAL_IS_PRIMITIVE(argv[i]) ||
                  !JS_GetPropertyById(cx, JSVAL_TO_OBJECT(argv[i]),
                                      mRuntime->GetStringID(XPCJSRuntime::IDX_VALUE),
-                                     val.address()))
+                                     &val))
             break;
 
         // setup allocator and/or iid
@@ -1518,7 +1527,7 @@ pre_call_clean_up:
                 break;
         }
 
-        if (!XPCConvert::JSData2Native(ccx, &pv->val, val, type,
+        if (!XPCConvert::JSData2Native(&pv->val, val, type,
                                        !param.IsDipper(), &param_iid, nullptr))
             break;
     }
@@ -1550,7 +1559,7 @@ pre_call_clean_up:
                 val = rval;
             else if (!JS_GetPropertyById(cx, JSVAL_TO_OBJECT(argv[i]),
                                          mRuntime->GetStringID(XPCJSRuntime::IDX_VALUE),
-                                         val.address()))
+                                         &val))
                 break;
 
             // setup allocator and/or iid
@@ -1577,18 +1586,17 @@ pre_call_clean_up:
 
             if (isArray) {
                 if (array_count &&
-                    !XPCConvert::JSArray2Native(ccx, (void**)&pv->val, val,
+                    !XPCConvert::JSArray2Native((void**)&pv->val, val,
                                                 array_count, datum_type,
                                                 &param_iid, nullptr))
                     break;
             } else if (isSizedString) {
-                if (!XPCConvert::JSStringWithSize2Native(ccx,
-                                                         (void*)&pv->val, val,
+                if (!XPCConvert::JSStringWithSize2Native((void*)&pv->val, val,
                                                          array_count, datum_type,
                                                          nullptr))
                     break;
             } else {
-                if (!XPCConvert::JSData2Native(ccx, &pv->val, val, type,
+                if (!XPCConvert::JSData2Native(&pv->val, val, type,
                                                true, &param_iid,
                                                nullptr))
                     break;
@@ -1649,8 +1657,37 @@ nsXPCWrappedJSClass::GetInterfaceName()
     return mName;
 }
 
+static void
+FinalizeStub(JSFreeOp *fop, JSObject *obj)
+{
+}
+
+static JSClass XPCOutParamClass = {
+    "XPCOutParam",
+    0,
+    JS_PropertyStub,
+    JS_DeletePropertyStub,
+    JS_PropertyStub,
+    JS_StrictPropertyStub,
+    JS_EnumerateStub,
+    JS_ResolveStub,
+    JS_ConvertStub,
+    FinalizeStub,
+    NULL,   /* checkAccess */
+    NULL,   /* call */
+    NULL,   /* hasInstance */
+    NULL,   /* construct */
+    NULL    /* trace */
+};
+
+bool
+xpc::IsOutObject(JSContext* cx, JSObject* obj)
+{
+    return js::GetObjectJSClass(obj) == &XPCOutParamClass;
+}
+
 JSObject*
-nsXPCWrappedJSClass::NewOutObject(JSContext* cx, JSObject* scope)
+xpc::NewOutObject(JSContext* cx, JSObject* scope)
 {
     return JS_NewObject(cx, nullptr, nullptr, JS_GetGlobalForObject(cx, scope));
 }

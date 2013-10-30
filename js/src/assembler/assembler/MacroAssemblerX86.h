@@ -27,23 +27,21 @@
  * 
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef MacroAssemblerX86_h
-#define MacroAssemblerX86_h
+#ifndef assembler_assembler_MacroAssemblerX86_h
+#define assembler_assembler_MacroAssemblerX86_h
 
 #include "assembler/wtf/Platform.h"
 
 #if ENABLE_ASSEMBLER && WTF_CPU_X86
 
-#include "MacroAssemblerX86Common.h"
+#include "assembler/assembler/MacroAssemblerX86Common.h"
 
 namespace JSC {
 
 class MacroAssemblerX86 : public MacroAssemblerX86Common {
 public:
     MacroAssemblerX86()
-        : m_isSSE2Present(isSSE2Present())
-    {
-    }
+    { }
 
     static const Scale ScalePtr = TimesFour;
     static const unsigned int TotalRegisters = 8;
@@ -229,14 +227,12 @@ public:
         m_assembler.popa();
     }
 
-    bool supportsFloatingPoint() const { return m_isSSE2Present; }
+    static bool supportsFloatingPoint() { return isSSE2Present(); }
     // See comment on MacroAssemblerARMv7::supportsFloatingPointTruncate()
-    bool supportsFloatingPointTruncate() const { return m_isSSE2Present; }
-    bool supportsFloatingPointSqrt() const { return m_isSSE2Present; }
+    static bool supportsFloatingPointTruncate() { return isSSE2Present(); }
+    static bool supportsFloatingPointSqrt() { return isSSE2Present(); }
 
 private:
-    const bool m_isSSE2Present;
-
     friend class LinkBuffer;
     friend class RepatchBuffer;
 
@@ -260,4 +256,4 @@ private:
 
 #endif // ENABLE(ASSEMBLER)
 
-#endif // MacroAssemblerX86_h
+#endif /* assembler_assembler_MacroAssemblerX86_h */

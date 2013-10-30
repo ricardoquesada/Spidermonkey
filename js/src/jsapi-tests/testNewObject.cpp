@@ -5,10 +5,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-
-#include "tests.h"
-
 #include "jsfriendapi.h"
+
+#include "jsapi-tests/tests.h"
 
 const size_t N = 1000;
 static jsval argv[N];
@@ -19,7 +18,7 @@ constructHook(JSContext *cx, unsigned argc, jsval *vp)
     // Check that arguments were passed properly from JS_New.
     JS::RootedObject callee(cx, JSVAL_TO_OBJECT(JS_CALLEE(cx, vp)));
 
-    JS::RootedObject obj(cx, JS_NewObjectForConstructor(cx, js::Jsvalify(&js::ObjectClass), vp));
+    JS::RootedObject obj(cx, JS_NewObjectForConstructor(cx, js::Jsvalify(&JSObject::class_), vp));
     if (!obj) {
         JS_ReportError(cx, "test failed, could not construct object");
         return false;

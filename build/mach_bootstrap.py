@@ -7,13 +7,30 @@ from __future__ import print_function, unicode_literals
 import os
 import platform
 import sys
+import time
+
+
+STATE_DIR_FIRST_RUN = '''
+mach and the build system store shared state in a common directory on the
+filesystem. The following directory will be created:
+
+  {userdir}
+
+If you would like to use a different directory, hit CTRL+c and set the
+MOZBUILD_STATE_PATH environment variable to the directory you would like to
+use and re-run mach. For this change to take effect forever, you'll likely
+want to export this environment variable from your shell's init scripts.
+'''.lstrip()
+
 
 # TODO Bug 794506 Integrate with the in-tree virtualenv configuration.
 SEARCH_PATHS = [
     'python/mach',
     'python/mozboot',
     'python/mozbuild',
+    'python/mozversioncontrol',
     'python/blessings',
+    'python/configobj',
     'python/psutil',
     'python/which',
     'build/pymake',
@@ -34,12 +51,15 @@ SEARCH_PATHS = [
     'testing/mozbase/mozprofile',
     'testing/mozbase/mozrunner',
     'testing/mozbase/mozinfo',
+    'testing/mozbase/manifestdestiny',
+    'xpcom/idl-parser',
 ]
 
 # Individual files providing mach commands.
 MACH_MODULES = [
     'addon-sdk/mach_commands.py',
     'layout/tools/reftest/mach_commands.py',
+    'python/mach_commands.py',
     'python/mach/mach/commands/commandinfo.py',
     'python/mozboot/mozboot/mach_commands.py',
     'python/mozbuild/mozbuild/config.py',
@@ -48,6 +68,9 @@ MACH_MODULES = [
     'testing/marionette/mach_commands.py',
     'testing/mochitest/mach_commands.py',
     'testing/xpcshell/mach_commands.py',
+    'testing/talos/mach_commands.py',
+    'testing/xpcshell/mach_commands.py',
+    'tools/mercurial/mach_commands.py',
     'tools/mach_commands.py',
 ]
 
@@ -98,13 +121,53 @@ def bootstrap(topsrcdir, mozilla_dir=None):
         print('You are running Python', platform.python_version())
         sys.exit(1)
 
+    # Global build system and mach state is stored in a central directory. By
+    # default, this is ~/.mozbuild. However, it can be defined via an
+    # environment variable. We detect first run (by lack of this directory
+    # existing) and notify the user that it will be created. The logic for
+    # creation is much simpler for the "advanced" environment variable use
+    # case. For default behavior, we educate users and give them an opportunity
+    # to react. We always exit after creating the directory because users don't
+    # like surprises.
+    state_user_dir = os.path.expanduser('~/.mozbuild')
+    state_env_dir = os.environ.get('MOZBUILD_STATE_PATH', None)
+    if state_env_dir:
+        if not os.path.exists(state_env_dir):
+            print('Creating global state directory from environment variable: %s'
+                % state_env_dir)
+            os.makedirs(state_env_dir, mode=0o770)
+            print('Please re-run mach.')
+            sys.exit(1)
+        state_dir = state_env_dir
+    else:
+        if not os.path.exists(state_user_dir):
+            print(STATE_DIR_FIRST_RUN.format(userdir=state_user_dir))
+            try:
+                for i in range(20, -1, -1):
+                    time.sleep(1)
+                    sys.stdout.write('%d ' % i)
+                    sys.stdout.flush()
+            except KeyboardInterrupt:
+                sys.exit(1)
+
+            print('\nCreating default state directory: %s' % state_user_dir)
+            os.mkdir(state_user_dir)
+            print('Please re-run mach.')
+            sys.exit(1)
+        state_dir = state_user_dir
+
     try:
         import mach.main
     except ImportError:
         sys.path[0:0] = [os.path.join(mozilla_dir, path) for path in SEARCH_PATHS]
         import mach.main
 
+    def populate_context(context):
+        context.state_dir = state_dir
+
     mach = mach.main.Mach(topsrcdir)
+    mach.populate_context_handler = populate_context
+
     for category, meta in CATEGORIES.items():
         mach.define_category(category, meta['short'], meta['long'],
             meta['priority'])

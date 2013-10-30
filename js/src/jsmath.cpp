@@ -8,21 +8,32 @@
  * JS math package.
  */
 
+#if defined(XP_WIN)
+/* _CRT_RAND_S must be #defined before #including stdlib.h to get rand_s(). */
+#define _CRT_RAND_S
+#endif
+
 #include "jsmath.h"
 
 #include "mozilla/Constants.h"
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/MathAlgorithms.h"
+#include "mozilla/MemoryReporting.h"
 
-#include <stdlib.h>
-#include "jstypes.h"
-#include "prmjtime.h"
+#include <algorithm>  // for std::max
+#include <fcntl.h>
+
+#ifdef XP_UNIX
+# include <unistd.h>
+#endif
+
 #include "jsapi.h"
 #include "jsatom.h"
 #include "jscntxt.h"
-#include "jsversion.h"
-#include "jslibmath.h"
 #include "jscompartment.h"
+#include "jslibmath.h"
+#include "jstypes.h"
+#include "prmjtime.h"
 
 #include "jsobjinlines.h"
 
@@ -39,6 +50,7 @@ using mozilla::IsNegativeZero;
 using mozilla::PositiveInfinity;
 using mozilla::NegativeInfinity;
 using mozilla::SpecificNaN;
+using JS::ToNumber;
 
 #ifndef M_E
 #define M_E             2.7182818284590452354
@@ -62,7 +74,7 @@ using mozilla::SpecificNaN;
 #define M_SQRT1_2       0.70710678118654752440
 #endif
 
-static JSConstDoubleSpec math_constants[] = {
+static const JSConstDoubleSpec math_constants[] = {
     {M_E,       "E",            0, {0,0,0}},
     {M_LOG2E,   "LOG2E",        0, {0,0,0}},
     {M_LOG10E,  "LOG10E",       0, {0,0,0}},
@@ -84,7 +96,7 @@ MathCache::MathCache() {
 }
 
 size_t
-MathCache::sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf)
+MathCache::sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf)
 {
     return mallocSizeOf(this);
 }
@@ -104,17 +116,20 @@ Class js::MathClass = {
 JSBool
 js_math_abs(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    z = Abs(x);
-    vp->setNumber(z);
-    return JS_TRUE;
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    double z = Abs(x);
+    args.rval().setNumber(z);
+    return true;
 }
 
 double
@@ -130,20 +145,24 @@ js::math_acos_impl(MathCache *cache, double x)
 JSBool
 js::math_acos(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    MathCache *mathCache = cx->runtime->getMathCache(cx);
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    MathCache *mathCache = cx->runtime()->getMathCache(cx);
     if (!mathCache)
-        return JS_FALSE;
-    z = math_acos_impl(mathCache, x);
-    vp->setDouble(z);
-    return JS_TRUE;
+        return false;
+
+    double z = math_acos_impl(mathCache, x);
+    args.rval().setDouble(z);
+    return true;
 }
 
 double
@@ -159,20 +178,24 @@ js::math_asin_impl(MathCache *cache, double x)
 JSBool
 js::math_asin(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    MathCache *mathCache = cx->runtime->getMathCache(cx);
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    MathCache *mathCache = cx->runtime()->getMathCache(cx);
     if (!mathCache)
-        return JS_FALSE;
-    z = math_asin_impl(mathCache, x);
-    vp->setDouble(z);
-    return JS_TRUE;
+        return false;
+
+    double z = math_asin_impl(mathCache, x);
+    args.rval().setDouble(z);
+    return true;
 }
 
 double
@@ -184,66 +207,73 @@ js::math_atan_impl(MathCache *cache, double x)
 JSBool
 js::math_atan(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    MathCache *mathCache = cx->runtime->getMathCache(cx);
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    MathCache *mathCache = cx->runtime()->getMathCache(cx);
     if (!mathCache)
-        return JS_FALSE;
-    z = math_atan_impl(mathCache, x);
-    vp->setDouble(z);
-    return JS_TRUE;
+        return false;
+
+    double z = math_atan_impl(mathCache, x);
+    args.rval().setDouble(z);
+    return true;
 }
 
 double
-js::ecmaAtan2(double x, double y)
+js::ecmaAtan2(double y, double x)
 {
 #if defined(_MSC_VER)
     /*
      * MSVC's atan2 does not yield the result demanded by ECMA when both x
      * and y are infinite.
      * - The result is a multiple of pi/4.
-     * - The sign of x determines the sign of the result.
-     * - The sign of y determines the multiplicator, 1 or 3.
+     * - The sign of y determines the sign of the result.
+     * - The sign of x determines the multiplicator, 1 or 3.
      */
-    if (IsInfinite(x) && IsInfinite(y)) {
-        double z = js_copysign(M_PI / 4, x);
-        if (y < 0)
+    if (IsInfinite(y) && IsInfinite(x)) {
+        double z = js_copysign(M_PI / 4, y);
+        if (x < 0)
             z *= 3;
         return z;
     }
 #endif
 
 #if defined(SOLARIS) && defined(__GNUC__)
-    if (x == 0) {
-        if (MOZ_DOUBLE_IS_NEGZERO(y))
-            return js_copysign(M_PI, x);
-        if (y == 0)
-            return x;
+    if (y == 0) {
+        if (IsNegativeZero(x))
+            return js_copysign(M_PI, y);
+        if (x == 0)
+            return y;
     }
 #endif
-    return atan2(x, y);
+    return atan2(y, x);
 }
 
 JSBool
 js::math_atan2(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, y, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc <= 1) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() <= 1) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x) || !ToNumber(cx, vp[3], &y))
-        return JS_FALSE;
-    z = ecmaAtan2(x, y);
-    vp->setDouble(z);
-    return JS_TRUE;
+
+    double x, y;
+    if (!ToNumber(cx, args[0], &x) || !ToNumber(cx, args[1], &y))
+        return false;
+
+    double z = ecmaAtan2(x, y);
+    args.rval().setDouble(z);
+    return true;
 }
 
 double
@@ -259,17 +289,20 @@ js_math_ceil_impl(double x)
 JSBool
 js_math_ceil(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    z = js_math_ceil_impl(x);
-    vp->setNumber(z);
-    return JS_TRUE;
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    double z = js_math_ceil_impl(x);
+    args.rval().setNumber(z);
+    return true;
 }
 
 double
@@ -281,20 +314,24 @@ js::math_cos_impl(MathCache *cache, double x)
 JSBool
 js::math_cos(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    MathCache *mathCache = cx->runtime->getMathCache(cx);
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    MathCache *mathCache = cx->runtime()->getMathCache(cx);
     if (!mathCache)
-        return JS_FALSE;
-    z = math_cos_impl(mathCache, x);
-    vp->setDouble(z);
-    return JS_TRUE;
+        return false;
+
+    double z = math_cos_impl(mathCache, x);
+    args.rval().setDouble(z);
+    return true;
 }
 
 double
@@ -314,20 +351,24 @@ js::math_exp_impl(MathCache *cache, double x)
 JSBool
 js::math_exp(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    MathCache *mathCache = cx->runtime->getMathCache(cx);
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    MathCache *mathCache = cx->runtime()->getMathCache(cx);
     if (!mathCache)
-        return JS_FALSE;
-    z = math_exp_impl(mathCache, x);
-    vp->setNumber(z);
-    return JS_TRUE;
+        return false;
+
+    double z = math_exp_impl(mathCache, x);
+    args.rval().setNumber(z);
+    return true;
 }
 
 double
@@ -339,17 +380,20 @@ js_math_floor_impl(double x)
 JSBool
 js_math_floor(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    z = js_math_floor_impl(x);
-    vp->setNumber(z);
-    return JS_TRUE;
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    double z = js_math_floor_impl(x);
+    args.rval().setNumber(z);
+    return true;
 }
 
 JSBool
@@ -383,20 +427,24 @@ js::math_log_impl(MathCache *cache, double x)
 JSBool
 js::math_log(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    MathCache *mathCache = cx->runtime->getMathCache(cx);
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    MathCache *mathCache = cx->runtime()->getMathCache(cx);
     if (!mathCache)
-        return JS_FALSE;
-    z = math_log_impl(mathCache, x);
-    vp->setNumber(z);
-    return JS_TRUE;
+        return false;
+
+    double z = math_log_impl(mathCache, x);
+    args.rval().setNumber(z);
+    return true;
 }
 
 JSBool
@@ -404,9 +452,9 @@ js_math_max(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    double x;
     double maxval = NegativeInfinity();
     for (unsigned i = 0; i < args.length(); i++) {
+        double x;
         if (!ToNumber(cx, args[i], &x))
             return false;
         // Math.max(num, NaN) => NaN, Math.max(-0, +0) => +0
@@ -422,9 +470,9 @@ js_math_min(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    double x;
     double minval = PositiveInfinity();
     for (unsigned i = 0; i < args.length(); i++) {
+        double x;
         if (!ToNumber(cx, args[i], &x))
             return false;
         // Math.min(num, NaN) => NaN, Math.min(-0, +0) => -0
@@ -506,42 +554,82 @@ js::ecmaPow(double x, double y)
 JSBool
 js_math_pow(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, y;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc <= 1) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() <= 1) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x) || !ToNumber(cx, vp[3], &y))
-        return JS_FALSE;
+
+    double x, y;
+    if (!ToNumber(cx, args[0], &x) || !ToNumber(cx, args[1], &y))
+        return false;
+
     /*
      * Special case for square roots. Note that pow(x, 0.5) != sqrt(x)
      * when x = -0.0, so we have to guard for this.
      */
     if (IsFinite(x) && x != 0.0) {
         if (y == 0.5) {
-            vp->setNumber(sqrt(x));
-            return JS_TRUE;
+            args.rval().setNumber(sqrt(x));
+            return true;
         }
         if (y == -0.5) {
-            vp->setNumber(1.0/sqrt(x));
-            return JS_TRUE;
+            args.rval().setNumber(1.0/sqrt(x));
+            return true;
         }
     }
+
     /* pow(x, +-0) is always 1, even for x = NaN. */
     if (y == 0) {
-        vp->setInt32(1);
-        return JS_TRUE;
+        args.rval().setInt32(1);
+        return true;
     }
 
     double z = ecmaPow(x, y);
 
-    vp->setNumber(z);
-    return JS_TRUE;
+    args.rval().setNumber(z);
+    return true;
 }
 #if defined(_MSC_VER)
 # pragma optimize("", on)
 #endif
+
+static uint64_t
+random_generateSeed()
+{
+    union {
+        uint8_t     u8[8];
+        uint32_t    u32[2];
+        uint64_t    u64;
+    } seed;
+    seed.u64 = 0;
+
+#if defined(XP_WIN)
+    /*
+     * Our PRNG only uses 48 bits, so calling rand_s() twice to get 64 bits is
+     * probably overkill.
+     */
+    rand_s(&seed.u32[0]);
+#elif defined(XP_UNIX)
+    /*
+     * In the unlikely event we can't read /dev/urandom, there's not much we can
+     * do, so just mix in the fd error code and the current time.
+     */
+    int fd = open("/dev/urandom", O_RDONLY);
+    MOZ_ASSERT(fd >= 0, "Can't open /dev/urandom");
+    if (fd >= 0) {
+        read(fd, seed.u8, mozilla::ArrayLength(seed.u8));
+        close(fd);
+    }
+    seed.u32[0] ^= fd;
+#else
+# error "Platform needs to implement random_generateSeed()"
+#endif
+
+    seed.u32[1] ^= PRMJ_Now();
+    return seed.u64;
+}
 
 static const uint64_t RNG_MULTIPLIER = 0x5DEECE66DLL;
 static const uint64_t RNG_ADDEND = 0xBLL;
@@ -551,28 +639,25 @@ static const double RNG_DSCALE = double(1LL << 53);
 /*
  * Math.random() support, lifted from java.util.Random.java.
  */
-extern void
-random_setSeed(uint64_t *rngState, uint64_t seed)
+static void
+random_initState(uint64_t *rngState)
 {
+    /* Our PRNG only uses 48 bits, so squeeze our entropy into those bits. */
+    uint64_t seed = random_generateSeed();
+    seed ^= (seed >> 16);
     *rngState = (seed ^ RNG_MULTIPLIER) & RNG_MASK;
 }
 
-void
-js::InitRandom(JSRuntime *rt, uint64_t *rngState)
-{
-    /*
-     * Set the seed from current time. Since we have a RNG per compartment and
-     * we often bring up several compartments at the same time, mix in a
-     * different integer each time. This is only meant to prevent all the new
-     * compartments from getting the same sequence of pseudo-random
-     * numbers. There's no security guarantee.
-     */
-    random_setSeed(rngState, (uint64_t(PRMJ_Now()) << 8) ^ rt->nextRNGNonce());
-}
-
-extern uint64_t
+uint64_t
 random_next(uint64_t *rngState, int bits)
 {
+    MOZ_ASSERT((*rngState & 0xffff000000000000ULL) == 0, "Bad rngState");
+    MOZ_ASSERT(bits > 0 && bits <= 48, "bits is out of range");
+
+    if (*rngState == 0) {
+        random_initState(rngState);
+    }
+
     uint64_t nextstate = *rngState * RNG_MULTIPLIER;
     nextstate += RNG_ADDEND;
     nextstate &= RNG_MASK;
@@ -583,7 +668,7 @@ random_next(uint64_t *rngState, int bits)
 static inline double
 random_nextDouble(JSContext *cx)
 {
-    uint64_t *rng = &cx->compartment->rngState;
+    uint64_t *rng = &cx->compartment()->rngState;
     return double((random_next(rng, 26) << 27) + random_next(rng, 27)) / RNG_DSCALE;
 }
 
@@ -597,9 +682,10 @@ math_random_no_outparam(JSContext *cx)
 JSBool
 js_math_random(JSContext *cx, unsigned argc, Value *vp)
 {
+    CallArgs args = CallArgsFromVp(argc, vp);
     double z = random_nextDouble(cx);
-    vp->setDouble(z);
-    return JS_TRUE;
+    args.rval().setDouble(z);
+    return true;
 }
 
 JSBool /* ES5 15.8.2.15. */
@@ -641,39 +727,47 @@ js::math_sin_impl(MathCache *cache, double x)
 JSBool
 js::math_sin(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    MathCache *mathCache = cx->runtime->getMathCache(cx);
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    MathCache *mathCache = cx->runtime()->getMathCache(cx);
     if (!mathCache)
-        return JS_FALSE;
-    z = math_sin_impl(mathCache, x);
-    vp->setDouble(z);
-    return JS_TRUE;
+        return false;
+
+    double z = math_sin_impl(mathCache, x);
+    args.rval().setDouble(z);
+    return true;
 }
 
 JSBool
 js_math_sqrt(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    MathCache *mathCache = cx->runtime->getMathCache(cx);
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    MathCache *mathCache = cx->runtime()->getMathCache(cx);
     if (!mathCache)
-        return JS_FALSE;
-    z = mathCache->lookup(sqrt, x);
-    vp->setDouble(z);
-    return JS_TRUE;
+        return false;
+
+    double z = mathCache->lookup(sqrt, x);
+    args.rval().setDouble(z);
+    return true;
 }
 
 double
@@ -685,28 +779,468 @@ js::math_tan_impl(MathCache *cache, double x)
 JSBool
 js::math_tan(JSContext *cx, unsigned argc, Value *vp)
 {
-    double x, z;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 0) {
-        vp->setDouble(js_NaN);
-        return JS_TRUE;
+    if (args.length() == 0) {
+        args.rval().setDouble(js_NaN);
+        return true;
     }
-    if (!ToNumber(cx, vp[2], &x))
-        return JS_FALSE;
-    MathCache *mathCache = cx->runtime->getMathCache(cx);
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    MathCache *mathCache = cx->runtime()->getMathCache(cx);
     if (!mathCache)
-        return JS_FALSE;
-    z = math_tan_impl(mathCache, x);
-    vp->setDouble(z);
-    return JS_TRUE;
+        return false;
+
+    double z = math_tan_impl(mathCache, x);
+    args.rval().setDouble(z);
+    return true;
+}
+
+
+typedef double (*UnaryMathFunctionType)(MathCache *cache, double);
+
+template <UnaryMathFunctionType F>
+JSBool math_function(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() == 0) {
+        args.rval().setNumber(js_NaN);
+        return true;
+    }
+
+    double x;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    MathCache *mathCache = cx->runtime()->getMathCache(cx);
+    if (!mathCache)
+        return false;
+    double z = F(mathCache, x);
+    args.rval().setNumber(z);
+
+    return true;
+}
+
+
+
+double
+js::math_log10_impl(MathCache *cache, double x)
+{
+    return cache->lookup(log10, x);
+}
+
+JSBool
+js::math_log10(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_log10_impl>(cx, argc, vp);
+}
+
+#if !HAVE_LOG2
+double log2(double x)
+{
+    return log(x) / M_LN2;
+}
+#endif
+
+double
+js::math_log2_impl(MathCache *cache, double x)
+{
+    return cache->lookup(log2, x);
+}
+
+JSBool
+js::math_log2(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_log2_impl>(cx, argc, vp);
+}
+
+#if !HAVE_LOG1P
+double log1p(double x)
+{
+    if (fabs(x) < 1e-4) {
+        /*
+         * Use Taylor approx. log(1 + x) = x - x^2 / 2 + x^3 / 3 - x^4 / 4 with error x^5 / 5
+         * Since |x| < 10^-4, |x|^5 < 10^-20, relative error less than 10^-16
+         */
+        double z = -(x * x * x * x) / 4 + (x * x * x) / 3 - (x * x) / 2 + x;
+        return z;
+    } else {
+        /* For other large enough values of x use direct computation */
+        return log(1.0 + x);
+    }
+}
+#endif
+
+double
+js::math_log1p_impl(MathCache *cache, double x)
+{
+#ifdef __APPLE__
+    // Ensure that log1p(-0) is -0.
+    if (x == 0)
+        return x;
+#endif
+
+    return cache->lookup(log1p, x);
+}
+
+JSBool
+js::math_log1p(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_log1p_impl>(cx, argc, vp);
+}
+
+#if !HAVE_EXPM1
+double expm1(double x)
+{
+    /* Special handling for -0 */
+    if (x == 0.0)
+        return x;
+
+    if (fabs(x) < 1e-5) {
+        /*
+         * Use Taylor approx. exp(x) - 1 = x + x^2 / 2 + x^3 / 6 with error x^4 / 24
+         * Since |x| < 10^-5, |x|^4 < 10^-20, relative error less than 10^-15
+         */
+        double z = (x * x * x) / 6 + (x * x) / 2 + x;
+        return z;
+    } else {
+        /* For other large enough values of x use direct computation */
+        return exp(x) - 1.0;
+    }
+}
+#endif
+
+double
+js::math_expm1_impl(MathCache *cache, double x)
+{
+    return cache->lookup(expm1, x);
+}
+
+JSBool
+js::math_expm1(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_expm1_impl>(cx, argc, vp);
+}
+
+#if !HAVE_SQRT1PM1
+/* This algorithm computes sqrt(1+x)-1 for small x */
+double sqrt1pm1(double x)
+{
+    if (fabs(x) > 0.75)
+        return sqrt(1 + x) - 1;
+
+    return expm1(log1p(x) / 2);
+}
+#endif
+
+
+double
+js::math_cosh_impl(MathCache *cache, double x)
+{
+    return cache->lookup(cosh, x);
+}
+
+JSBool
+js::math_cosh(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_cosh_impl>(cx, argc, vp);
+}
+
+double
+js::math_sinh_impl(MathCache *cache, double x)
+{
+    return cache->lookup(sinh, x);
+}
+
+JSBool
+js::math_sinh(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_sinh_impl>(cx, argc, vp);
+}
+
+double
+js::math_tanh_impl(MathCache *cache, double x)
+{
+    return cache->lookup(tanh, x);
+}
+
+JSBool
+js::math_tanh(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_tanh_impl>(cx, argc, vp);
+}
+
+#if !HAVE_ACOSH
+double acosh(double x)
+{
+    const double SQUARE_ROOT_EPSILON = sqrt(std::numeric_limits<double>::epsilon());
+
+    if ((x - 1) >= SQUARE_ROOT_EPSILON) {
+        if (x > 1 / SQUARE_ROOT_EPSILON) {
+            /*
+             * http://functions.wolfram.com/ElementaryFunctions/ArcCosh/06/01/06/01/0001/
+             * approximation by laurent series in 1/x at 0+ order from -1 to 0
+             */
+            return log(x) + M_LN2;
+        } else if (x < 1.5) {
+            // This is just a rearrangement of the standard form below
+            // devised to minimize loss of precision when x ~ 1:
+            double y = x - 1;
+            return log1p(y + sqrt(y * y + 2 * y));
+        } else {
+            // http://functions.wolfram.com/ElementaryFunctions/ArcCosh/02/
+            return log(x + sqrt(x * x - 1));
+        }
+    } else {
+        // see http://functions.wolfram.com/ElementaryFunctions/ArcCosh/06/01/04/01/0001/
+        double y = x - 1;
+        // approximation by taylor series in y at 0 up to order 2.
+        // If x is less than 1, sqrt(2 * y) is NaN and the result is NaN.
+        return sqrt(2 * y) * (1 - y / 12 + 3 * y * y / 160);
+    }
+}
+#endif
+
+double
+js::math_acosh_impl(MathCache *cache, double x)
+{
+    return cache->lookup(acosh, x);
+}
+
+JSBool
+js::math_acosh(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_acosh_impl>(cx, argc, vp);
+}
+
+#if !HAVE_ASINH
+double asinh(double x)
+{
+    const double SQUARE_ROOT_EPSILON = sqrt(std::numeric_limits<double>::epsilon());
+    const double FOURTH_ROOT_EPSILON = sqrt(SQUARE_ROOT_EPSILON);
+
+    if (x >= FOURTH_ROOT_EPSILON) {
+        if (x > 1 / SQUARE_ROOT_EPSILON)
+            // http://functions.wolfram.com/ElementaryFunctions/ArcSinh/06/01/06/01/0001/
+            // approximation by laurent series in 1/x at 0+ order from -1 to 1
+            return M_LN2 + log(x) + 1 / (4 * x * x);
+        else if (x < 0.5)
+            return log1p(x + sqrt1pm1(x * x));
+        else
+            return log(x + sqrt(x * x + 1));
+    } else if (x <= -FOURTH_ROOT_EPSILON) {
+        return -asinh(-x);
+    } else {
+        // http://functions.wolfram.com/ElementaryFunctions/ArcSinh/06/01/03/01/0001/
+        // approximation by taylor series in x at 0 up to order 2
+        double result = x;
+
+        if (fabs(x) >= SQUARE_ROOT_EPSILON) {
+            double x3 = x * x * x;
+            // approximation by taylor series in x at 0 up to order 4
+            result -= x3 / 6;
+        }
+
+        return result;
+    }
+}
+#endif
+
+double
+js::math_asinh_impl(MathCache *cache, double x)
+{
+    return cache->lookup(asinh, x);
+}
+
+JSBool
+js::math_asinh(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_asinh_impl>(cx, argc, vp);
+}
+
+#if !HAVE_ATANH
+double atanh(double x)
+{
+    const double EPSILON = std::numeric_limits<double>::epsilon();
+    const double SQUARE_ROOT_EPSILON = sqrt(EPSILON);
+    const double FOURTH_ROOT_EPSILON = sqrt(SQUARE_ROOT_EPSILON);
+
+    if (fabs(x) >= FOURTH_ROOT_EPSILON) {
+        // http://functions.wolfram.com/ElementaryFunctions/ArcTanh/02/
+        if (fabs(x) < 0.5)
+            return (log1p(x) - log1p(-x)) / 2;
+
+        return log((1 + x) / (1 - x)) / 2;
+    } else {
+        // http://functions.wolfram.com/ElementaryFunctions/ArcTanh/06/01/03/01/
+        // approximation by taylor series in x at 0 up to order 2
+        double result = x;
+
+        if (fabs(x) >= SQUARE_ROOT_EPSILON) {
+            double x3 = x * x * x;
+            result += x3 / 3;
+        }
+
+        return result;
+    }
+}
+#endif
+
+double
+js::math_atanh_impl(MathCache *cache, double x)
+{
+    return cache->lookup(atanh, x);
+}
+
+JSBool
+js::math_atanh(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_atanh_impl>(cx, argc, vp);
+}
+
+// Math.hypot is disabled pending the resolution of spec issues (bug 896264).
+#if 0
+#if !HAVE_HYPOT
+double hypot(double x, double y)
+{
+    if (mozilla::IsInfinite(x) || mozilla::IsInfinite(y))
+        return js_PositiveInfinity;
+
+    if (mozilla::IsNaN(x) || mozilla::IsNaN(y))
+        return js_NaN;
+
+    double xabs = mozilla::Abs(x);
+    double yabs = mozilla::Abs(y);
+
+    double min = std::min(xabs, yabs);
+    double max = std::max(xabs, yabs);
+
+    if (min == 0) {
+        return max;
+    } else {
+        double u = min / max;
+        return max * sqrt(1 + u * u);
+    }
+}
+#endif
+
+double
+js::math_hypot_impl(double x, double y)
+{
+#ifdef XP_WIN
+    // On Windows, hypot(NaN, Infinity) is NaN. ES6 requires Infinity.
+    if (mozilla::IsInfinite(x) || mozilla::IsInfinite(y))
+        return js_PositiveInfinity;
+#endif
+    return hypot(x, y);
+}
+
+JSBool
+js::math_hypot(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() < 2) {
+        args.rval().setNumber(js_NaN);
+        return true;
+    }
+
+    double x, y;
+    if (!ToNumber(cx, args[0], &x))
+        return false;
+
+    if (!ToNumber(cx, args[1], &y))
+        return false;
+
+    if (args.length() == 2) {
+        args.rval().setNumber(math_hypot_impl(x, y));
+        return true;
+    }
+
+    /* args.length() > 2 */
+    double z;
+    if (!ToNumber(cx, args[2], &z)) {
+        return false;
+    }
+
+    args.rval().setNumber(math_hypot_impl(math_hypot_impl(x, y), z));
+    return true;
+}
+#endif
+
+#if !HAVE_TRUNC
+double trunc(double x)
+{
+    return x > 0 ? floor(x) : ceil(x);
+}
+#endif
+
+double
+js::math_trunc_impl(MathCache *cache, double x)
+{
+    return cache->lookup(trunc, x);
+}
+
+JSBool
+js::math_trunc(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_trunc_impl>(cx, argc, vp);
+}
+
+double sign(double x)
+{
+    if (mozilla::IsNaN(x))
+        return js_NaN;
+
+    return x == 0 ? x : x < 0 ? -1 : 1;
+}
+
+double
+js::math_sign_impl(MathCache *cache, double x)
+{
+    return cache->lookup(sign, x);
+}
+
+JSBool
+js::math_sign(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_sign_impl>(cx, argc, vp);
+}
+
+#if !HAVE_CBRT
+double cbrt(double x)
+{
+    if (x > 0) {
+        return pow(x, 1.0 / 3.0);
+    } else if (x == 0) {
+        return x;
+    } else {
+        return -pow(-x, 1.0 / 3.0);
+    }
+}
+#endif
+
+double
+js::math_cbrt_impl(MathCache *cache, double x)
+{
+    return cache->lookup(cbrt, x);
+}
+
+JSBool
+js::math_cbrt(JSContext *cx, unsigned argc, Value *vp)
+{
+    return math_function<math_cbrt_impl>(cx, argc, vp);
 }
 
 #if JS_HAS_TOSOURCE
 static JSBool
 math_toSource(JSContext *cx, unsigned argc, Value *vp)
 {
-    vp->setString(cx->names().Math);
-    return JS_TRUE;
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setString(cx->names().Math);
+    return true;
 }
 #endif
 
@@ -733,6 +1267,23 @@ static const JSFunctionSpec math_static_methods[] = {
     JS_FN("sin",            math_sin,             1, 0),
     JS_FN("sqrt",           js_math_sqrt,         1, 0),
     JS_FN("tan",            math_tan,             1, 0),
+    JS_FN("log10",          math_log10,           1, 0),
+    JS_FN("log2",           math_log2,            1, 0),
+    JS_FN("log1p",          math_log1p,           1, 0),
+    JS_FN("expm1",          math_expm1,           1, 0),
+    JS_FN("cosh",           math_cosh,            1, 0),
+    JS_FN("sinh",           math_sinh,            1, 0),
+    JS_FN("tanh",           math_tanh,            1, 0),
+    JS_FN("acosh",          math_acosh,           1, 0),
+    JS_FN("asinh",          math_asinh,           1, 0),
+    JS_FN("atanh",          math_atanh,           1, 0),
+// Math.hypot is disabled pending the resolution of spec issues (bug 896264).
+#if 0
+    JS_FN("hypot",          math_hypot,           2, 0),
+#endif
+    JS_FN("trunc",          math_trunc,           1, 0),
+    JS_FN("sign",           math_sign,            1, 0),
+    JS_FN("cbrt",           math_cbrt,            1, 0),
     JS_FS_END
 };
 

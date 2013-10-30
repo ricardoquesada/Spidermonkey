@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef RegExp_h___
-#define RegExp_h___
+#ifndef builtin_RegExp_h
+#define builtin_RegExp_h
 
 #include "jsprvtd.h"
 
@@ -22,9 +22,13 @@ js_InitRegExpClass(JSContext *cx, js::HandleObject obj);
 
 namespace js {
 
+// Whether RegExp statics should be updated with the input and results of a
+// regular expression execution.
+enum RegExpStaticsUpdate { UpdateRegExpStatics, DontUpdateRegExpStatics };
+
 RegExpRunStatus
 ExecuteRegExp(JSContext *cx, HandleObject regexp, HandleString string,
-              MatchConduit &matches);
+              MatchConduit &matches, RegExpStaticsUpdate staticsUpdate);
 
 /*
  * Legacy behavior of ExecuteRegExp(), which is baked into the JSAPI.
@@ -51,11 +55,31 @@ extern JSBool
 regexp_exec(JSContext *cx, unsigned argc, Value *vp);
 
 bool
-regexp_test_raw(JSContext *cx, HandleObject regexp, HandleString input, JSBool *result);
+regexp_test_raw(JSContext *cx, HandleObject regexp, HandleString input, bool *result);
 
 extern JSBool
 regexp_test(JSContext *cx, unsigned argc, Value *vp);
 
+/*
+ * The following functions are for use by self-hosted code.
+ */
+
+/*
+ * Behaves like regexp.exec(string), but doesn't set RegExp statics.
+ *
+ * Usage: match = regexp_exec_no_statics(regexp, string)
+ */
+extern JSBool
+regexp_exec_no_statics(JSContext *cx, unsigned argc, Value *vp);
+
+/*
+ * Behaves like regexp.test(string), but doesn't set RegExp statics.
+ *
+ * Usage: does_match = regexp_test_no_statics(regexp, string)
+ */
+extern JSBool
+regexp_test_no_statics(JSContext *cx, unsigned argc, Value *vp);
+
 } /* namespace js */
 
-#endif /* RegExp_h__ */
+#endif /* builtin_RegExp_h */

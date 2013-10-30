@@ -2,7 +2,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from mozpack.errors import ErrorMessage
 from mozpack.files import (
+    AbsoluteSymlinkFile,
     Dest,
     File,
     GeneratedFile,
@@ -12,6 +14,7 @@ from mozpack.files import (
     MinifiedProperties,
     FileFinder,
     JarFinder,
+    RequiredExistingFile,
 )
 from mozpack.mozjar import (
     JarReader,
@@ -24,6 +27,7 @@ from mozpack.chrome.manifest import (
     ManifestOverride,
 )
 import unittest
+import mozfile
 import mozunit
 import os
 import shutil
@@ -41,7 +45,7 @@ class TestWithTmpDir(unittest.TestCase):
         self.tmpdir = mkdtemp()
 
     def tearDown(self):
-        shutil.rmtree(self.tmpdir)
+        mozfile.rmtree(self.tmpdir)
 
     def tmppath(self, relpath):
         return os.path.normpath(os.path.join(self.tmpdir, relpath))
@@ -213,6 +217,127 @@ class TestFile(TestWithTmpDir):
         # skip_if_older=False is expected to force a copy in this situation.
         f.copy(dest, skip_if_older=False)
         self.assertEqual('fooo', open(dest, 'rb').read())
+
+
+class TestAbsoluteSymlinkFile(TestWithTmpDir):
+    def setUp(self):
+        TestWithTmpDir.setUp(self)
+
+        self.symlink_supported = False
+
+        if not hasattr(os, 'symlink'):
+            return
+
+        dummy_path = self.tmppath('dummy_file')
+        with open(dummy_path, 'a'):
+            pass
+
+        try:
+            os.symlink(dummy_path, self.tmppath('dummy_symlink'))
+            os.remove(self.tmppath('dummy_symlink'))
+        except EnvironmentError:
+            pass
+        finally:
+            os.remove(dummy_path)
+
+    def test_absolute_relative(self):
+        AbsoluteSymlinkFile('/foo')
+
+        with self.assertRaisesRegexp(ValueError, 'Symlink target not absolute'):
+            AbsoluteSymlinkFile('./foo')
+
+    def test_symlink_file(self):
+        source = self.tmppath('test_path')
+        with open(source, 'wt') as fh:
+            fh.write('Hello world')
+
+        s = AbsoluteSymlinkFile(source)
+        dest = self.tmppath('symlink')
+        self.assertTrue(s.copy(dest))
+
+        if self.symlink_supported:
+            self.assertTrue(os.path.islink(dest))
+            link = os.readlink(dest)
+            self.assertEqual(link, source)
+        else:
+            self.assertTrue(os.path.isfile(dest))
+            content = open(dest).read()
+            self.assertEqual(content, 'Hello world')
+
+    def test_replace_file_with_symlink(self):
+        # If symlinks are supported, an existing file should be replaced by a
+        # symlink.
+        source = self.tmppath('test_path')
+        with open(source, 'wt') as fh:
+            fh.write('source')
+
+        dest = self.tmppath('dest')
+        with open(dest, 'a'):
+            pass
+
+        s = AbsoluteSymlinkFile(source)
+        s.copy(dest, skip_if_older=False)
+
+        if self.symlink_supported:
+            self.assertTrue(os.path.islink(dest))
+            link = os.readlink(dest)
+            self.assertEqual(link, source)
+        else:
+            self.assertTrue(os.path.isfile(dest))
+            content = open(dest).read()
+            self.assertEqual(content, 'source')
+
+    def test_replace_symlink(self):
+        if not self.symlink_supported:
+            return
+
+        source= self.tmppath('source')
+        dest = self.tmppath('dest')
+
+        os.symlink(self.tmppath('bad'), dest)
+        self.assertTrue(os.path.islink(dest))
+
+        s = AbsoluteSymlinkFile(source)
+        self.assertTrue(s.copy(dest))
+
+        self.assertTrue(os.path.islink(dest))
+        link = os.readlink(dest)
+        self.assertEqual(link, source)
+
+    def test_noop(self):
+        if not hasattr(os, 'symlink'):
+            return
+
+        source = self.tmppath('source')
+        dest = self.tmppath('dest')
+
+        with open(source, 'a'):
+            pass
+
+        os.symlink(source, dest)
+        link = os.readlink(dest)
+        self.assertEqual(link, source)
+
+        s = AbsoluteSymlinkFile(source)
+        self.assertFalse(s.copy(dest))
+
+        link = os.readlink(dest)
+        self.assertEqual(link, source)
+
+
+class TestRequiredExistingFile(TestWithTmpDir):
+    def test_missing_dest(self):
+        with self.assertRaisesRegexp(ErrorMessage, 'Required existing file'):
+            f = RequiredExistingFile()
+            f.copy(self.tmppath('dest'))
+
+    def test_existing_dest(self):
+        p = self.tmppath('dest')
+        with open(p, 'a'):
+            pass
+
+        f = RequiredExistingFile()
+        f.copy(p)
 
 
 class TestGeneratedFile(TestWithTmpDir):

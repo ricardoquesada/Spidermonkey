@@ -4,22 +4,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef GlobalObject_h___
-#define GlobalObject_h___
+#ifndef vm_GlobalObject_h
+#define vm_GlobalObject_h
 
-#include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
 
 #include "jsarray.h"
 #include "jsbool.h"
 #include "jsexn.h"
 #include "jsfun.h"
-#include "jsiter.h"
 #include "jsnum.h"
 
-#include "js/Vector.h"
-
 #include "builtin/RegExp.h"
+#include "js/Vector.h"
 
 extern JSObject *
 js_InitObjectClass(JSContext *cx, js::HandleObject obj);
@@ -29,6 +26,9 @@ js_InitFunctionClass(JSContext *cx, js::HandleObject obj);
 
 extern JSObject *
 js_InitTypedArrayClasses(JSContext *cx, js::HandleObject obj);
+
+extern JSObject *
+js_InitBinaryDataClasses(JSContext *cx, js::HandleObject obj);
 
 namespace js {
 
@@ -54,11 +54,11 @@ class Debugger;
  *   whether eval is allowed (per the global's Content Security Policy).
  *
  * The first two ranges are necessary to implement js::FindClassObject,
- * FindClassPrototype, and spec language speaking in terms of "the original
- * Array prototype object", or "as if by the expression new Array()" referring
- * to the original Array constructor.  The third range stores the (writable and
- * even deletable) Object, Array, &c. properties (although a slot won't be used
- * again if its property is deleted and readded).
+ * and spec language speaking in terms of "the original Array prototype
+ * object", or "as if by the expression new Array()" referring to the original
+ * Array constructor. The third range stores the (writable and even deletable)
+ * Object, Array, &c. properties (although a slot won't be used again if its
+ * property is deleted and readded).
  */
 class GlobalObject : public JSObject
 {
@@ -69,8 +69,7 @@ class GlobalObject : public JSObject
     static const unsigned STANDARD_CLASS_SLOTS  = JSProto_LIMIT * 3;
 
     /* Various function values needed by the engine. */
-    static const unsigned BOOLEAN_VALUEOF         = STANDARD_CLASS_SLOTS;
-    static const unsigned EVAL                    = BOOLEAN_VALUEOF + 1;
+    static const unsigned EVAL                    = STANDARD_CLASS_SLOTS;
     static const unsigned CREATE_DATAVIEW_FOR_THIS = EVAL + 1;
     static const unsigned THROWTYPEERROR          = CREATE_DATAVIEW_FOR_THIS + 1;
     static const unsigned PROTO_GETTER            = THROWTYPEERROR + 1;
@@ -197,7 +196,6 @@ class GlobalObject : public JSObject
 
   public:
     /* XXX Privatize me! */
-    inline void setBooleanValueOf(Handle<JSFunction*> valueOfFun);
     inline void setCreateDataViewForThis(Handle<JSFunction*> fun);
 
     template<typename T>
@@ -332,6 +330,18 @@ class GlobalObject : public JSObject
         return &getPrototype(JSProto_Iterator).toObject();
     }
 
+    JSObject *getOrCreateDataObject(JSContext *cx) {
+        return getOrCreateObject(cx, JSProto_Data, initDataObject);
+    }
+
+    JSObject *getOrCreateTypeObject(JSContext *cx) {
+        return getOrCreateObject(cx, JSProto_Type, initTypeObject);
+    }
+
+    JSObject *getOrCreateArrayTypeObject(JSContext *cx) {
+        return getOrCreateObject(cx, JSProto_ArrayTypeObject, initArrayTypeObject);
+    }
+
   private:
     typedef bool (*ObjectInitOp)(JSContext *cx, Handle<GlobalObject*> global);
 
@@ -385,7 +395,7 @@ class GlobalObject : public JSObject
         RootedId id(cx, NameToId(name));
         if (HasDataProperty(cx, holder, id, value.address()))
             return true;
-        if (!cx->runtime->cloneSelfHostedValue(cx, name, value))
+        if (!cx->runtime()->cloneSelfHostedValue(cx, name, value))
             return false;
         mozilla::DebugOnly<bool> ok = JS_DefinePropertyById(cx, holder, id, value, NULL, NULL, 0);
         JS_ASSERT(ok);
@@ -399,11 +409,6 @@ class GlobalObject : public JSObject
     JSObject *getThrowTypeError() const {
         JS_ASSERT(functionObjectClassesInitialized());
         return &getSlot(THROWTYPEERROR).toObject();
-    }
-
-    Value booleanValueOf() const {
-        JS_ASSERT(booleanClassInitialized());
-        return getSlot(BOOLEAN_VALUEOF);
     }
 
     Value createDataViewForThis() const {
@@ -439,6 +444,11 @@ class GlobalObject : public JSObject
     static bool initNumberFormatProto(JSContext *cx, Handle<GlobalObject*> global);
     static bool initDateTimeFormatProto(JSContext *cx, Handle<GlobalObject*> global);
 
+    // Implemented in builtin/BinaryData.cpp
+    static bool initTypeObject(JSContext *cx, Handle<GlobalObject*> global);
+    static bool initDataObject(JSContext *cx, Handle<GlobalObject*> global);
+    static bool initArrayTypeObject(JSContext *cx, Handle<GlobalObject*> global);
+
     static bool initStandardClasses(JSContext *cx, Handle<GlobalObject*> global);
 
     typedef js::Vector<js::Debugger *, 0, js::SystemAllocPolicy> DebuggerVector;
@@ -457,6 +467,69 @@ class GlobalObject : public JSObject
 
     static bool addDebugger(JSContext *cx, Handle<GlobalObject*> global, Debugger *dbg);
 };
+
+template<>
+inline Value
+GlobalObject::createArrayFromBuffer<uint8_t>() const
+{
+    return createArrayFromBufferHelper(FROM_BUFFER_UINT8);
+}
+
+template<>
+inline Value
+GlobalObject::createArrayFromBuffer<int8_t>() const
+{
+    return createArrayFromBufferHelper(FROM_BUFFER_INT8);
+}
+
+template<>
+inline Value
+GlobalObject::createArrayFromBuffer<uint16_t>() const
+{
+    return createArrayFromBufferHelper(FROM_BUFFER_UINT16);
+}
+
+template<>
+inline Value
+GlobalObject::createArrayFromBuffer<int16_t>() const
+{
+    return createArrayFromBufferHelper(FROM_BUFFER_INT16);
+}
+
+template<>
+inline Value
+GlobalObject::createArrayFromBuffer<uint32_t>() const
+{
+    return createArrayFromBufferHelper(FROM_BUFFER_UINT32);
+}
+
+template<>
+inline Value
+GlobalObject::createArrayFromBuffer<int32_t>() const
+{
+    return createArrayFromBufferHelper(FROM_BUFFER_INT32);
+}
+
+template<>
+inline Value
+GlobalObject::createArrayFromBuffer<float>() const
+{
+    return createArrayFromBufferHelper(FROM_BUFFER_FLOAT32);
+}
+
+template<>
+inline Value
+GlobalObject::createArrayFromBuffer<double>() const
+{
+    return createArrayFromBufferHelper(FROM_BUFFER_FLOAT64);
+}
+
+template<>
+inline Value
+GlobalObject::createArrayFromBuffer<uint8_clamped>() const
+{
+    return createArrayFromBufferHelper(FROM_BUFFER_UINT8CLAMPED);
+}
 
 /*
  * Define ctor.prototype = proto as non-enumerable, non-configurable, and
@@ -478,17 +551,11 @@ typedef HashSet<GlobalObject *, DefaultHasher<GlobalObject *>, SystemAllocPolicy
 
 } // namespace js
 
+template<>
 inline bool
-JSObject::isGlobal() const
+JSObject::is<js::GlobalObject>() const
 {
     return !!(js::GetObjectClass(const_cast<JSObject*>(this))->flags & JSCLASS_IS_GLOBAL);
 }
 
-js::GlobalObject &
-JSObject::asGlobal()
-{
-    JS_ASSERT(isGlobal());
-    return *static_cast<js::GlobalObject *>(this);
-}
-
-#endif /* GlobalObject_h___ */
+#endif /* vm_GlobalObject_h */

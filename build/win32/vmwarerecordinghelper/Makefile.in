@@ -9,13 +9,10 @@ VPATH = @srcdir@
 
 include $(DEPTH)/config/autoconf.mk
 
-LIBRARY_NAME = vmwarerecordinghelper
 DEFFILE = $(srcdir)/$(LIBRARY_NAME).def
 
 FORCE_SHARED_LIB = 1
 USE_STATIC_LIBS = 1
-
-CPPSRCS = $(LIBRARY_NAME).cpp
 
 MOZ_GLUE_LDFLAGS =
 

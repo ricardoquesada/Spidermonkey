@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jsgc_barrier_h___
-#define jsgc_barrier_h___
+#ifndef gc_Barrier_h
+#define gc_Barrier_h
 
 #include "jsapi.h"
 
@@ -131,6 +131,11 @@ class EncapsulatedPtr
     explicit EncapsulatedPtr(const EncapsulatedPtr<T> &v) : value(v.value) {}
 
     ~EncapsulatedPtr() { pre(); }
+
+    void init(T *v) {
+        JS_ASSERT(!IsPoisonedPtr<T>(v));
+        this->value = v;
+    }
 
     /* Use to set the pointer to NULL. */
     void clear() {
@@ -384,8 +389,14 @@ class EncapsulatedValue : public ValueOperations<EncapsulatedValue>
     }
     inline ~EncapsulatedValue();
 
-    inline void init(const Value &v);
-    inline void init(JSRuntime *rt, const Value &v);
+    void init(const Value &v) {
+        JS_ASSERT(!IsPoisonedValue(v));
+        value = v;
+    }
+    void init(JSRuntime *rt, const Value &v) {
+        JS_ASSERT(!IsPoisonedValue(v));
+        value = v;
+    }
 
     inline EncapsulatedValue &operator=(const Value &v);
     inline EncapsulatedValue &operator=(const EncapsulatedValue &v);
@@ -491,12 +502,13 @@ class HeapSlot : public EncapsulatedValue
     inline void set(JSObject *owner, Kind kind, uint32_t slot, const Value &v);
     inline void set(Zone *zone, JSObject *owner, Kind kind, uint32_t slot, const Value &v);
 
-    static inline void writeBarrierPost(JSObject *obj, Kind kind, uint32_t slot);
-    static inline void writeBarrierPost(JSRuntime *rt, JSObject *obj, Kind kind, uint32_t slot);
+    static inline void writeBarrierPost(JSObject *obj, Kind kind, uint32_t slot, Value target);
+    static inline void writeBarrierPost(JSRuntime *rt, JSObject *obj, Kind kind, uint32_t slot,
+                                        Value target);
 
   private:
-    inline void post(JSObject *owner, Kind kind, uint32_t slot);
-    inline void post(JSRuntime *rt, JSObject *owner, Kind kind, uint32_t slot);
+    inline void post(JSObject *owner, Kind kind, uint32_t slot, Value target);
+    inline void post(JSRuntime *rt, JSObject *owner, Kind kind, uint32_t slot, Value target);
 };
 
 /*
@@ -648,15 +660,6 @@ class ReadBarrieredValue
     inline JSObject &toObject() const;
 };
 
-namespace tl {
-
-template <class T> struct IsRelocatableHeapType<HeapPtr<T> >
-                                                    { static const bool result = false; };
-template <> struct IsRelocatableHeapType<HeapSlot>  { static const bool result = false; };
-template <> struct IsRelocatableHeapType<HeapValue> { static const bool result = false; };
-template <> struct IsRelocatableHeapType<HeapId>    { static const bool result = false; };
-
-} /* namespace tl */
 } /* namespace js */
 
-#endif /* jsgc_barrier_h___ */
+#endif /* gc_Barrier_h */

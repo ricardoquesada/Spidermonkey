@@ -441,6 +441,7 @@ gssapi/gssapi_generic.h
 gssapi/gssapi.h
 gssapi.h
 gtk/gtk.h
+gtk/gtkx.h
 gtk/gtkprinter.h
 gtk/gtkprintjob.h
 gtk/gtkprintunixdialog.h
@@ -467,6 +468,7 @@ IOKit/IOKitLib.h
 IOKit/IOMessage.h
 IOKit/pwr_mgt/IOPMLib.h
 iomanip
+ios
 iostream
 iostream.h
 iterator
@@ -677,6 +679,7 @@ OpenTransport.h
 os2.h
 OS.h
 osreldate.h
+ostream
 OSUtils.h
 Packages.h
 Palettes.h
@@ -1127,3 +1130,5 @@ sys/thr.h
 sys/user.h
 kvm.h
 spawn.h
+err.h
+xlocale.h

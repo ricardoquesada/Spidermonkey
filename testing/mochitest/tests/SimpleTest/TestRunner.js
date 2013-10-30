@@ -73,6 +73,7 @@ var TestRunner = {};
 TestRunner.logEnabled = false;
 TestRunner._currentTest = 0;
 TestRunner._lastTestFinished = -1;
+TestRunner._loopIsRestarting = false;
 TestRunner.currentTestURL = "";
 TestRunner.originalTestURL = "";
 TestRunner._urls = [];
@@ -83,6 +84,8 @@ TestRunner._expectedMaxAsserts = 0;
 TestRunner.timeout = 5 * 60 * 1000; // 5 minutes.
 TestRunner.maxTimeouts = 4; // halt testing after too many timeouts
 TestRunner.runSlower = false;
+TestRunner.slowestTestTime = 0;
+TestRunner.slowestTestURL = "";
 
 TestRunner._expectingProcessCrash = false;
 
@@ -148,7 +151,7 @@ TestRunner.requestLongerTimeout = function(factor) {
  * This is used to loop tests
 **/
 TestRunner.repeat = 0;
-TestRunner._currentLoop = 0;
+TestRunner._currentLoop = 1;
 
 TestRunner.expectAssertions = function(min, max) {
     if (typeof(max) == "undefined") {
@@ -301,39 +304,6 @@ TestRunner.resetTests = function(listURLs) {
   TestRunner.runNextTest();
 }
 
-/*
- * Used to run a single test in a loop and update the UI with the results
- */
-TestRunner.loopTest = function(testPath) {
-  //must set the following line so that TestHarness.updateUI finds the right div to update
-  document.getElementById("current-test-path").innerHTML = testPath;
-  var numLoops = TestRunner.repeat;
-  var completed = 0; // keep track of how many tests have finished
-
-  // function to kick off the test and to check when the test is complete
-  function checkComplete() {
-    var testWindow = window.open(testPath, 'test window'); // kick off the test or find the active window
-    if (testWindow.document.readyState == "complete") {
-      // the test is complete -> mark as complete
-      TestRunner.currentTestURL = testPath;
-      TestRunner.updateUI(testWindow.SimpleTest._tests);
-      testWindow.close();
-      if (TestRunner.repeat == completed  && TestRunner.onComplete) {
-        TestRunner.onComplete();
-      }
-      completed++;
-    }
-    else {
-      // wait and check later
-      setTimeout(checkComplete, 1000);
-    }
-  }
-  while (numLoops >= 0) {
-    checkComplete();
-    numLoops--;
-  }
-}
-
 /**
  * Run the next test. If no test remains, calls onComplete().
  **/
@@ -377,9 +347,10 @@ TestRunner.runNextTest = function() {
         SpecialPowers.unregisterProcessCrashObservers();
 
         TestRunner.log("TEST-START | Shutdown"); // used by automation.py
-        TestRunner.log("Passed: " + $("pass-count").innerHTML);
-        TestRunner.log("Failed: " + $("fail-count").innerHTML);
-        TestRunner.log("Todo:   " + $("todo-count").innerHTML);
+        TestRunner.log("Passed:  " + $("pass-count").innerHTML);
+        TestRunner.log("Failed:  " + $("fail-count").innerHTML);
+        TestRunner.log("Todo:    " + $("todo-count").innerHTML);
+        TestRunner.log("Slowest: " + TestRunner.slowestTestTime + 'ms - ' + TestRunner.slowestTestURL);
         // If we are looping, don't send this cause it closes the log file
         if (TestRunner.repeat == 0) {
           TestRunner.log("SimpleTest FINISHED");
@@ -389,9 +360,13 @@ TestRunner.runNextTest = function() {
              TestRunner.onComplete();
          }
 
-        if (TestRunner._currentLoop < TestRunner.repeat) {
+        var failCount = parseInt($("fail-count").innerHTML);
+        var stopLooping = failCount > 0 && TestRunner.runUntilFailure;
+
+        if (TestRunner._currentLoop <= TestRunner.repeat && !stopLooping) {
           TestRunner._currentLoop++;
           TestRunner.resetTests(TestRunner._urls);
+          TestRunner._loopIsRestarting = true;
         } else {
           // Loops are finished
           if (TestRunner.logEnabled) {
@@ -416,7 +391,8 @@ TestRunner.expectChildProcessCrash = function() {
 TestRunner.testFinished = function(tests) {
     // Prevent a test from calling finish() multiple times before we
     // have a chance to unload it.
-    if (TestRunner._currentTest == TestRunner._lastTestFinished) {
+    if (TestRunner._currentTest == TestRunner._lastTestFinished &&
+        !TestRunner._loopIsRestarting) {
         TestRunner.error("TEST-UNEXPECTED-FAIL | " +
                          TestRunner.currentTestURL +
                          " | called finish() multiple times");
@@ -424,6 +400,7 @@ TestRunner.testFinished = function(tests) {
         return;
     }
     TestRunner._lastTestFinished = TestRunner._currentTest;
+    TestRunner._loopIsRestarting = false;
 
     function cleanUpCrashDumpFiles() {
         if (!SpecialPowers.removeExpectedCrashDumpFiles(TestRunner._expectingProcessCrash)) {
@@ -462,6 +439,10 @@ TestRunner.testFinished = function(tests) {
         TestRunner.log("TEST-END | " +
                        TestRunner.currentTestURL +
                        " | finished in " + runtime + "ms");
+        if (TestRunner.slowestTestTime < runtime && TestRunner._timeoutFactor == 1) {
+          TestRunner.slowestTestTime = runtime;
+          TestRunner.slowestTestURL = TestRunner.currentTestURL;
+        }
 
         TestRunner.updateUI(tests);
 

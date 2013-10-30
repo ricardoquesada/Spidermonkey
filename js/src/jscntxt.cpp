@@ -8,55 +8,50 @@
  * JS execution context.
  */
 
-#include "jscntxt.h"
+#include "jscntxtinlines.h"
+
+#include "mozilla/DebugOnly.h"
+#include "mozilla/MemoryReporting.h"
+#include "mozilla/Util.h"
 
 #include <locale.h>
 #include <stdarg.h>
 #include <string.h>
-
-#include "mozilla/DebugOnly.h"
-
 #ifdef ANDROID
 # include <android/log.h>
 # include <fstream>
 # include <string>
 #endif  // ANDROID
 
-#include "mozilla/Util.h"
-
-#include "jstypes.h"
-#include "jsprf.h"
 #include "jsatom.h"
+#include "jscompartment.h"
 #include "jsdbgapi.h"
 #include "jsexn.h"
 #include "jsfun.h"
 #include "jsgc.h"
 #include "jsiter.h"
-#include "jslock.h"
 #include "jsmath.h"
 #include "jsobj.h"
 #include "jsopcode.h"
+#include "jsprf.h"
 #include "jspubtd.h"
 #include "jsscript.h"
 #include "jsstr.h"
+#include "jstypes.h"
 #include "jsworkers.h"
-#ifdef JS_ION
-#include "ion/Ion.h"
-#endif
 
-#ifdef JS_METHODJIT
-# include "methodjit/MethodJIT.h"
-#endif
 #include "gc/Marking.h"
+#ifdef JS_ION
+#include "jit/Ion.h"
+#endif
 #include "js/CharacterEncoding.h"
 #include "js/MemoryMetrics.h"
-#include "frontend/ParseMaps.h"
 #include "vm/Shape.h"
 #include "yarr/BumpPointerAllocator.h"
 
-#include "jscntxtinlines.h"
-#include "jscompartment.h"
 #include "jsobjinlines.h"
+
+#include "vm/Stack-inl.h"
 
 using namespace js;
 using namespace js::gc;
@@ -102,132 +97,6 @@ js::TraceCycleDetectionSet(JSTracer *trc, js::ObjectSet &set)
 }
 
 void
-JSRuntime::sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf, JS::RuntimeSizes *rtSizes)
-{
-    rtSizes->object = mallocSizeOf(this);
-
-    rtSizes->atomsTable = atoms.sizeOfExcludingThis(mallocSizeOf);
-
-    rtSizes->contexts = 0;
-    for (ContextIter acx(this); !acx.done(); acx.next())
-        rtSizes->contexts += acx->sizeOfIncludingThis(mallocSizeOf);
-
-    rtSizes->dtoa = mallocSizeOf(dtoaState);
-
-    rtSizes->temporary = tempLifoAlloc.sizeOfExcludingThis(mallocSizeOf);
-
-    rtSizes->code = JS::CodeSizes();
-    if (execAlloc_)
-        execAlloc_->sizeOfCode(&rtSizes->code);
-
-    rtSizes->regexpData = bumpAlloc_ ? bumpAlloc_->sizeOfNonHeapData() : 0;
-
-    rtSizes->stack = stackSpace.sizeOf();
-
-    rtSizes->gcMarker = gcMarker.sizeOfExcludingThis(mallocSizeOf);
-
-    rtSizes->mathCache = mathCache_ ? mathCache_->sizeOfIncludingThis(mallocSizeOf) : 0;
-
-    rtSizes->scriptData = scriptDataTable.sizeOfExcludingThis(mallocSizeOf);
-    for (ScriptDataTable::Range r = scriptDataTable.all(); !r.empty(); r.popFront())
-        rtSizes->scriptData += mallocSizeOf(r.front());
-}
-
-void
-JSRuntime::triggerOperationCallback()
-{
-    AutoLockForOperationCallback lock(this);
-
-    /*
-     * Invalidate ionTop to trigger its over-recursion check. Note this must be
-     * set before interrupt, to avoid racing with js_InvokeOperationCallback,
-     * into a weird state where interrupt is stuck at 0 but ionStackLimit is
-     * MAXADDR.
-     */
-    mainThread.setIonStackLimit(-1);
-
-    /*
-     * Use JS_ATOMIC_SET in the hope that it ensures the write will become
-     * immediately visible to other processors polling the flag.
-     */
-    JS_ATOMIC_SET(&interrupt, 1);
-
-#ifdef JS_ION
-    /* asm.js code uses a separate mechanism to halt running code. */
-    TriggerOperationCallbackForAsmJSCode(this);
-#endif
-}
-
-void
-JSRuntime::setJitHardening(bool enabled)
-{
-    jitHardening = enabled;
-    if (execAlloc_)
-        execAlloc_->setRandomize(enabled);
-}
-
-JSC::ExecutableAllocator *
-JSRuntime::createExecutableAllocator(JSContext *cx)
-{
-    JS_ASSERT(!execAlloc_);
-    JS_ASSERT(cx->runtime == this);
-
-    JSC::AllocationBehavior randomize =
-        jitHardening ? JSC::AllocationCanRandomize : JSC::AllocationDeterministic;
-    execAlloc_ = js_new<JSC::ExecutableAllocator>(randomize);
-    if (!execAlloc_)
-        js_ReportOutOfMemory(cx);
-    return execAlloc_;
-}
-
-WTF::BumpPointerAllocator *
-JSRuntime::createBumpPointerAllocator(JSContext *cx)
-{
-    JS_ASSERT(!bumpAlloc_);
-    JS_ASSERT(cx->runtime == this);
-
-    bumpAlloc_ = js_new<WTF::BumpPointerAllocator>();
-    if (!bumpAlloc_)
-        js_ReportOutOfMemory(cx);
-    return bumpAlloc_;
-}
-
-MathCache *
-JSRuntime::createMathCache(JSContext *cx)
-{
-    JS_ASSERT(!mathCache_);
-    JS_ASSERT(cx->runtime == this);
-
-    MathCache *newMathCache = js_new<MathCache>();
-    if (!newMathCache) {
-        js_ReportOutOfMemory(cx);
-        return NULL;
-    }
-
-    mathCache_ = newMathCache;
-    return mathCache_;
-}
-
-#ifdef JS_METHODJIT
-mjit::JaegerRuntime *
-JSRuntime::createJaegerRuntime(JSContext *cx)
-{
-    JS_ASSERT(!jaegerRuntime_);
-    JS_ASSERT(cx->runtime == this);
-
-    mjit::JaegerRuntime *jr = js_new<mjit::JaegerRuntime>();
-    if (!jr || !jr->init(cx)) {
-        js_ReportOutOfMemory(cx);
-        js_delete(jr);
-        return NULL;
-    }
-
-    jaegerRuntime_ = jr;
-    return jaegerRuntime_;
-}
-#endif
-
-void
 JSCompartment::sweepCallsiteClones()
 {
     if (callsiteClones.initialized()) {
@@ -251,7 +120,7 @@ js::CloneFunctionAtCallsite(JSContext *cx, HandleFunction fun, HandleScript scri
     typedef CallsiteCloneKey Key;
     typedef CallsiteCloneTable Table;
 
-    Table &table = cx->compartment->callsiteClones;
+    Table &table = cx->compartment()->callsiteClones;
     if (!table.initialized() && !table.init())
         return NULL;
 
@@ -302,8 +171,6 @@ js::NewContext(JSRuntime *rt, size_t stackChunkSize)
     if (!cx)
         return NULL;
 
-    JS_ASSERT(cx->findVersion() == JSVERSION_DEFAULT);
-
     if (!cx->cycleDetectorSet.init()) {
         js_delete(cx);
         return NULL;
@@ -344,7 +211,7 @@ js::NewContext(JSRuntime *rt, size_t stackChunkSize)
     }
 
     JSContextCallback cxCallback = rt->cxCallback;
-    if (cxCallback && !cxCallback(cx, JSCONTEXT_NEW)) {
+    if (cxCallback && !cxCallback(cx, JSCONTEXT_NEW, rt->cxCallbackData)) {
         DestroyContext(cx, DCM_NEW_FAILED);
         return NULL;
     }
@@ -355,12 +222,17 @@ js::NewContext(JSRuntime *rt, size_t stackChunkSize)
 void
 js::DestroyContext(JSContext *cx, DestroyContextMode mode)
 {
-    JSRuntime *rt = cx->runtime;
+    JSRuntime *rt = cx->runtime();
     JS_AbortIfWrongThread(rt);
 
 #ifdef JS_THREADSAFE
     if (cx->outstandingRequests != 0)
         MOZ_CRASH();
+#endif
+
+#if (defined(JSGC_ROOT_ANALYSIS) || defined(JSGC_USE_EXACT_ROOTING)) && defined(DEBUG)
+    for (int i = 0; i < THING_ROOT_LIMIT; ++i)
+        JS_ASSERT(cx->thingGCRooters[i] == NULL);
 #endif
 
     if (mode != DCM_NEW_FAILED) {
@@ -369,7 +241,8 @@ js::DestroyContext(JSContext *cx, DestroyContextMode mode)
              * JSCONTEXT_DESTROY callback is not allowed to fail and must
              * return true.
              */
-            JS_ALWAYS_TRUE(cxCallback(cx, JSCONTEXT_DESTROY));
+            JS_ALWAYS_TRUE(cxCallback(cx, JSCONTEXT_DESTROY,
+                                      rt->cxCallbackData));
         }
     }
 
@@ -385,9 +258,10 @@ js::DestroyContext(JSContext *cx, DestroyContextMode mode)
         for (CompartmentsIter c(rt); !c.done(); c.next())
             c->types.print(cx, false);
 
-        /* Off thread ion compilations depend on atoms still existing. */
+        /* Off thread compilation and parsing depend on atoms still existing. */
         for (CompartmentsIter c(rt); !c.done(); c.next())
             CancelOffThreadIonCompile(c, NULL);
+        WaitForOffThreadParsingToFinish(rt);
 
         /* Unpin all common names before final GC. */
         FinishCommonNames(rt);
@@ -400,10 +274,14 @@ js::DestroyContext(JSContext *cx, DestroyContextMode mode)
         /* Clear the statics table to remove GC roots. */
         rt->staticStrings.finish();
 
-        rt->finishSelfHosting();
-
         JS::PrepareForFullGC(rt);
         GC(rt, GC_NORMAL, JS::gcreason::LAST_CONTEXT);
+
+        /*
+         * Clear the self-hosted global and delete self-hosted classes *after*
+         * GC, as finalizers for objects check for clasp->finalize during GC.
+         */
+        rt->finishSelfHosting();
     } else if (mode == DCM_FORCE_GC) {
         JS_ASSERT(!rt->isHeapBusy());
         JS::PrepareForFullGC(rt);
@@ -451,7 +329,7 @@ ReportError(JSContext *cx, const char *message, JSErrorReport *reportp,
     if (!JS_IsRunning(cx) ||
         !js_ErrorToException(cx, message, reportp, callback, userRef)) {
         js_ReportErrorAgain(cx, message, reportp);
-    } else if (JSDebugErrorHook hook = cx->runtime->debugHooks.debugErrorHook) {
+    } else if (JSDebugErrorHook hook = cx->runtime()->debugHooks.debugErrorHook) {
         /*
          * If we've already chewed up all the C stack, don't call into the
          * error reporter since this may trigger an infinite recursion where
@@ -462,7 +340,7 @@ ReportError(JSContext *cx, const char *message, JSErrorReport *reportp,
             return;
 
         if (cx->errorReporter)
-            hook(cx, message, reportp, cx->runtime->debugHooks.debugErrorHookData);
+            hook(cx, message, reportp, cx->runtime()->debugHooks.debugErrorHookData);
     }
 }
 
@@ -483,7 +361,7 @@ PopulateReportBlame(JSContext *cx, JSErrorReport *report)
 
     report->filename = iter.script()->filename();
     report->lineno = PCToLineNumber(iter.script(), iter.pc(), &report->column);
-    report->originPrincipals = iter.script()->originPrincipals;
+    report->originPrincipals = iter.script()->originPrincipals();
 }
 
 /*
@@ -496,9 +374,13 @@ PopulateReportBlame(JSContext *cx, JSErrorReport *report)
  * not occur, so GC must be avoided or suppressed.
  */
 void
-js_ReportOutOfMemory(JSContext *cx)
+js_ReportOutOfMemory(ThreadSafeContext *cxArg)
 {
-    cx->runtime->hadOutOfMemory = true;
+    if (!cxArg->isJSContext())
+        return;
+    JSContext *cx = cxArg->asJSContext();
+
+    cx->runtime()->hadOutOfMemory = true;
 
     if (JS_IsRunning(cx)) {
         cx->setPendingException(StringValue(cx->names().outOfMemory));
@@ -522,6 +404,18 @@ js_ReportOutOfMemory(JSContext *cx)
         AutoSuppressGC suppressGC(cx);
         onError(cx, msg, &report);
     }
+
+    /*
+     * We would like to enforce the invariant that any exception reported
+     * during an OOM situation does not require wrapping. Besides avoiding
+     * allocation when memory is low, this reduces the number of places where
+     * we might need to GC.
+     *
+     * When JS code is running, we set the pending exception to an atom, which
+     * does not need wrapping. If no JS code is running, no exception should be
+     * set at all.
+     */
+    JS_ASSERT(!cx->isExceptionPending());
 }
 
 JS_FRIEND_API(void)
@@ -543,12 +437,20 @@ js_ReportOverRecursed(JSContext *maybecx)
 }
 
 void
-js_ReportAllocationOverflow(JSContext *maybecx)
+js_ReportOverRecursed(ThreadSafeContext *cx)
 {
-    if (maybecx) {
-        AutoSuppressGC suppressGC(maybecx);
-        JS_ReportErrorNumber(maybecx, js_GetErrorMessage, NULL, JSMSG_ALLOC_OVERFLOW);
-    }
+    js_ReportOverRecursed(cx->maybeJSContext());
+}
+
+void
+js_ReportAllocationOverflow(ThreadSafeContext *cxArg)
+{
+    if (!cxArg || !cxArg->isJSContext())
+        return;
+    JSContext *cx = cxArg->asJSContext();
+
+    AutoSuppressGC suppressGC(cx);
+    JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_ALLOC_OVERFLOW);
 }
 
 /*
@@ -562,20 +464,20 @@ checkReportFlags(JSContext *cx, unsigned *flags)
 {
     if (JSREPORT_IS_STRICT_MODE_ERROR(*flags)) {
         /*
-         * Error in strict code; warning with strict option; okay otherwise.
-         * We assume that if the top frame is a native, then it is strict if
-         * the nearest scripted frame is strict, see bug 536306.
+         * Error in strict code; warning with extra warnings option; okay
+         * otherwise.  We assume that if the top frame is a native, then it is
+         * strict if the nearest scripted frame is strict, see bug 536306.
          */
-        JSScript *script = cx->stack.currentScript();
+        JSScript *script = cx->currentScript();
         if (script && script->strict)
             *flags &= ~JSREPORT_WARNING;
-        else if (cx->hasStrictOption())
+        else if (cx->hasExtraWarningsOption())
             *flags |= JSREPORT_WARNING;
         else
             return true;
     } else if (JSREPORT_IS_STRICT(*flags)) {
         /* Warning/error only when JSOPTION_STRICT is set. */
-        if (!cx->hasStrictOption())
+        if (!cx->hasExtraWarningsOption())
             return true;
     }
 
@@ -630,7 +532,7 @@ js::ReportUsageError(JSContext *cx, HandleObject callee, const char *msg)
     JS_ASSERT(shape->hasDefaultGetter());
 
     RootedValue usage(cx);
-    if (!JS_LookupProperty(cx, callee, "usage", usage.address()))
+    if (!JS_LookupProperty(cx, callee, "usage", &usage))
         return;
 
     if (JSVAL_IS_VOID(usage)) {
@@ -983,8 +885,8 @@ js_ReportErrorAgain(JSContext *cx, const char *message, JSErrorReport *reportp)
      * sending the error on to the regular ErrorReporter.
      */
     if (onError) {
-        JSDebugErrorHook hook = cx->runtime->debugHooks.debugErrorHook;
-        if (hook && !hook(cx, message, reportp, cx->runtime->debugHooks.debugErrorHookData))
+        JSDebugErrorHook hook = cx->runtime()->debugHooks.debugErrorHook;
+        if (hook && !hook(cx, message, reportp, cx->runtime()->debugHooks.debugErrorHookData))
             onError = NULL;
     }
     if (onError)
@@ -1041,7 +943,7 @@ js_ReportMissingArg(JSContext *cx, HandleValue v, unsigned arg)
     JS_snprintf(argbuf, sizeof argbuf, "%u", arg);
     bytes = NULL;
     if (IsFunctionObject(v)) {
-        atom = v.toObject().toFunction()->atom();
+        atom = v.toObject().as<JSFunction>().atom();
         bytes = DecompileValueGenerator(cx, JSDVG_SEARCH_STACK,
                                         v, atom);
         if (!bytes)
@@ -1093,7 +995,7 @@ js_InvokeOperationCallback(JSContext *cx)
 {
     JS_ASSERT_REQUEST_DEPTH(cx);
 
-    JSRuntime *rt = cx->runtime;
+    JSRuntime *rt = cx->runtime();
     JS_ASSERT(rt->interrupt != 0);
 
     /*
@@ -1103,7 +1005,7 @@ js_InvokeOperationCallback(JSContext *cx)
      */
     JS_ATOMIC_SET(&rt->interrupt, 0);
 
-    /* IonMonkey sets its stack limit to NULL to trigger operaton callbacks. */
+    /* IonMonkey sets its stack limit to UINTPTR_MAX to trigger operaton callbacks. */
     rt->resetIonStackLimit();
 
     if (rt->gcIsNeeded)
@@ -1119,7 +1021,7 @@ js_InvokeOperationCallback(JSContext *cx)
      * A worker thread may have set the callback after finishing an Ion
      * compilation.
      */
-    ion::AttachFinishedCompilations(cx);
+    jit::AttachFinishedCompilations(cx);
 #endif
 
     /*
@@ -1131,31 +1033,45 @@ js_InvokeOperationCallback(JSContext *cx)
     return !cb || cb(cx);
 }
 
-JSBool
+bool
 js_HandleExecutionInterrupt(JSContext *cx)
 {
-    JSBool result = JS_TRUE;
-    if (cx->runtime->interrupt)
-        result = js_InvokeOperationCallback(cx) && result;
-    return result;
+    if (cx->runtime()->interrupt)
+        return js_InvokeOperationCallback(cx);
+    return true;
+}
+
+js::ThreadSafeContext::ThreadSafeContext(JSRuntime *rt, PerThreadData *pt, ContextKind kind)
+  : ContextFriendFields(rt),
+    contextKind_(kind),
+    perThreadData(pt),
+    allocator_(NULL)
+{ }
+
+bool
+ThreadSafeContext::isForkJoinSlice() const
+{
+    return contextKind_ == Context_ForkJoin;
+}
+
+ForkJoinSlice *
+ThreadSafeContext::asForkJoinSlice()
+{
+    JS_ASSERT(isForkJoinSlice());
+    return reinterpret_cast<ForkJoinSlice *>(this);
 }
 
 JSContext::JSContext(JSRuntime *rt)
-  : ContextFriendFields(rt),
-    defaultVersion(JSVERSION_DEFAULT),
-    hasVersionOverride(false),
+  : ExclusiveContext(rt, &rt->mainThread, Context_JS),
     throwing(false),
     exception(UndefinedValue()),
     options_(0),
     reportGranularity(JS_DEFAULT_JITREPORT_GRANULARITY),
     resolvingList(NULL),
     generatingError(false),
-    enterCompartmentDepth_(0),
     savedFrameChains_(),
     defaultCompartmentObject_(NULL),
-    stack(thisDuringConstruction()),
-    parseMapPool_(NULL),
-    cycleDetectorSet(thisDuringConstruction()),
+    cycleDetectorSet(MOZ_THIS_IN_INITIALIZER_LIST()),
     errorReporter(NULL),
     operationCallback(NULL),
     data(NULL),
@@ -1165,81 +1081,24 @@ JSContext::JSContext(JSRuntime *rt)
 #endif
     resolveFlags(0),
     iterValue(MagicValue(JS_NO_ITER_VALUE)),
-#ifdef JS_METHODJIT
-    methodJitEnabled(false),
     jitIsBroken(false),
-#endif
 #ifdef MOZ_TRACE_JSCALLS
     functionCallback(NULL),
 #endif
-    innermostGenerator_(NULL),
-#ifdef DEBUG
-    stackIterAssertionEnabled(true),
-#endif
-    activeCompilations(0)
+    innermostGenerator_(NULL)
 {
+#ifdef DEBUG
+    stackIterAssertionEnabled = true;
+#endif
+
     JS_ASSERT(static_cast<ContextFriendFields*>(this) ==
               ContextFriendFields::get(this));
-
-#if defined(JSGC_ROOT_ANALYSIS) || defined(JSGC_USE_EXACT_ROOTING)
-    PodArrayZero(thingGCRooters);
-#endif
-#if defined(DEBUG) && defined(JS_GC_ZEAL) && defined(JSGC_ROOT_ANALYSIS) && !defined(JS_THREADSAFE)
-    skipGCRooters = NULL;
-#endif
 }
 
 JSContext::~JSContext()
 {
     /* Free the stuff hanging off of cx. */
-    if (parseMapPool_)
-        js_delete(parseMapPool_);
-
     JS_ASSERT(!resolvingList);
-}
-
-bool
-JSRuntime::setDefaultLocale(const char *locale)
-{
-    if (!locale)
-        return false;
-    resetDefaultLocale();
-    defaultLocale = JS_strdup(this, locale);
-    return defaultLocale != NULL;
-}
-
-void
-JSRuntime::resetDefaultLocale()
-{
-    js_free(defaultLocale);
-    defaultLocale = NULL;
-}
-
-const char *
-JSRuntime::getDefaultLocale()
-{
-    if (defaultLocale)
-        return defaultLocale;
-
-    char *locale, *lang, *p;
-#ifdef HAVE_SETLOCALE
-    locale = setlocale(LC_ALL, NULL);
-#else
-    locale = getenv("LANG");
-#endif
-    // convert to a well-formed BCP 47 language tag
-    if (!locale || !strcmp(locale, "C"))
-        locale = const_cast<char*>("und");
-    lang = JS_strdup(this, locale);
-    if (!lang)
-        return NULL;
-    if ((p = strchr(lang, '.')))
-        *p = '\0';
-    while ((p = strchr(lang, '_')))
-        *p = '-';
-
-    defaultLocale = lang;
-    return defaultLocale;
 }
 
 /*
@@ -1252,7 +1111,7 @@ JSContext::wrapPendingException()
 {
     RootedValue value(this, getPendingException());
     clearPendingException();
-    if (compartment->wrap(this, &value))
+    if (!IsAtomsCompartment(compartment()) && compartment()->wrap(this, &value))
         setPendingException(value);
 }
 
@@ -1277,28 +1136,21 @@ JSContext::leaveGenerator(JSGenerator *gen)
 bool
 JSContext::runningWithTrustedPrincipals() const
 {
-    return !compartment || compartment->principals == runtime->trustedPrincipals();
+    return !compartment() || compartment()->principals == runtime()->trustedPrincipals();
 }
 
 bool
 JSContext::saveFrameChain()
 {
-    if (!stack.saveFrameChain())
+    if (!savedFrameChains_.append(SavedFrameChain(compartment(), enterCompartmentDepth_)))
         return false;
 
-    if (!savedFrameChains_.append(SavedFrameChain(compartment, enterCompartmentDepth_))) {
-        stack.restoreFrameChain();
-        return false;
-    }
+    if (Activation *act = mainThread().activation())
+        act->saveFrameChain();
 
-    if (defaultCompartmentObject_)
-        setCompartment(defaultCompartmentObject_->compartment());
-    else
-        setCompartment(NULL);
+    setCompartment(NULL);
     enterCompartmentDepth_ = 0;
 
-    if (isExceptionPending())
-        wrapPendingException();
     return true;
 }
 
@@ -1309,90 +1161,27 @@ JSContext::restoreFrameChain()
     setCompartment(sfc.compartment);
     enterCompartmentDepth_ = sfc.enterCompartmentCount;
 
-    stack.restoreFrameChain();
+    if (Activation *act = mainThread().activation())
+        act->restoreFrameChain();
 
     if (isExceptionPending())
         wrapPendingException();
 }
 
-void
-JSRuntime::setGCMaxMallocBytes(size_t value)
+bool
+JSContext::currentlyRunning() const
 {
-    /*
-     * For compatibility treat any value that exceeds PTRDIFF_T_MAX to
-     * mean that value.
-     */
-    gcMaxMallocBytes = (ptrdiff_t(value) >= 0) ? value : size_t(-1) >> 1;
-    for (ZonesIter zone(this); !zone.done(); zone.next())
-        zone->setGCMaxMallocBytes(value);
-}
-
-void
-JSRuntime::updateMallocCounter(size_t nbytes)
-{
-    updateMallocCounter(NULL, nbytes);
-}
-
-void
-JSRuntime::updateMallocCounter(JS::Zone *zone, size_t nbytes)
-{
-    /* We tolerate any thread races when updating gcMallocBytes. */
-    ptrdiff_t oldCount = gcMallocBytes;
-    ptrdiff_t newCount = oldCount - ptrdiff_t(nbytes);
-    gcMallocBytes = newCount;
-    if (JS_UNLIKELY(newCount <= 0 && oldCount > 0))
-        onTooMuchMalloc();
-    else if (zone)
-        zone->updateMallocCounter(nbytes);
-}
-
-JS_FRIEND_API(void)
-JSRuntime::onTooMuchMalloc()
-{
-    TriggerGC(this, JS::gcreason::TOO_MUCH_MALLOC);
-}
-
-JS_FRIEND_API(void *)
-JSRuntime::onOutOfMemory(void *p, size_t nbytes)
-{
-    return onOutOfMemory(p, nbytes, NULL);
-}
-
-JS_FRIEND_API(void *)
-JSRuntime::onOutOfMemory(void *p, size_t nbytes, JSContext *cx)
-{
-    if (isHeapBusy())
-        return NULL;
-
-    /*
-     * Retry when we are done with the background sweeping and have stopped
-     * all the allocations and released the empty GC chunks.
-     */
-    JS::ShrinkGCBuffers(this);
-    gcHelperThread.waitBackgroundSweepOrAllocEnd();
-    if (!p)
-        p = js_malloc(nbytes);
-    else if (p == reinterpret_cast<void *>(1))
-        p = js_calloc(nbytes);
-    else
-      p = js_realloc(p, nbytes);
-    if (p)
-        return p;
-    if (cx)
-        js_ReportOutOfMemory(cx);
-    return NULL;
-}
-
-void
-JSContext::purge()
-{
-    if (!activeCompilations) {
-        js_delete(parseMapPool_);
-        parseMapPool_ = NULL;
+    for (ActivationIterator iter(runtime()); !iter.done(); ++iter) {
+        if (iter.activation()->cx() == this) {
+            if (iter.activation()->hasSavedFrameChain())
+                return false;
+            return true;
+        }
     }
+
+    return false;
 }
 
-#if defined(JS_METHODJIT)
 static bool
 ComputeIsJITBroken()
 {
@@ -1463,19 +1252,15 @@ IsJITBrokenHere()
     }
     return isBroken;
 }
-#endif
 
 void
 JSContext::updateJITEnabled()
 {
-#ifdef JS_METHODJIT
     jitIsBroken = IsJITBrokenHere();
-    methodJitEnabled = (options_ & JSOPTION_METHODJIT) && !jitIsBroken;
-#endif
 }
 
 size_t
-JSContext::sizeOfIncludingThis(JSMallocSizeOfFun mallocSizeOf) const
+JSContext::sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const
 {
     /*
      * There are other JSContext members that could be measured; the following
@@ -1501,20 +1286,59 @@ JSContext::mark(JSTracer *trc)
     MarkValueRoot(trc, &iterValue, "iterValue");
 }
 
+JSVersion
+JSContext::findVersion() const
+{
+    if (JSScript *script = currentScript(NULL, ALLOW_CROSS_COMPARTMENT))
+        return script->getVersion();
+
+    if (compartment() && compartment()->options().version != JSVERSION_UNKNOWN)
+        return compartment()->options().version;
+
+    return runtime()->defaultVersion();
+}
+
 #if defined JS_THREADSAFE && defined DEBUG
 
 JS::AutoCheckRequestDepth::AutoCheckRequestDepth(JSContext *cx)
     : cx(cx)
 {
-    JS_ASSERT(cx->runtime->requestDepth || cx->runtime->isHeapBusy());
-    cx->runtime->assertValidThread();
-    cx->runtime->checkRequestDepth++;
+    JS_ASSERT(cx->runtime()->requestDepth || cx->runtime()->isHeapBusy());
+    cx->runtime()->assertValidThread();
+    cx->runtime()->checkRequestDepth++;
+}
+
+JS::AutoCheckRequestDepth::AutoCheckRequestDepth(ContextFriendFields *cxArg)
+    : cx(static_cast<ThreadSafeContext *>(cxArg)->maybeJSContext())
+{
+    if (cx) {
+        JS_ASSERT(cx->runtime()->requestDepth || cx->runtime()->isHeapBusy());
+        cx->runtime()->assertValidThread();
+        cx->runtime()->checkRequestDepth++;
+    }
 }
 
 JS::AutoCheckRequestDepth::~AutoCheckRequestDepth()
 {
-    JS_ASSERT(cx->runtime->checkRequestDepth != 0);
-    cx->runtime->checkRequestDepth--;
+    if (cx) {
+        JS_ASSERT(cx->runtime()->checkRequestDepth != 0);
+        cx->runtime()->checkRequestDepth--;
+    }
 }
 
 #endif
+
+#ifdef JS_CRASH_DIAGNOSTICS
+void CompartmentChecker::check(StackFrame *fp)
+{
+    if (fp)
+        check(fp->scopeChain());
+}
+
+void CompartmentChecker::check(AbstractFramePtr frame)
+{
+    if (frame)
+        check(frame.scopeChain());
+}
+#endif
+

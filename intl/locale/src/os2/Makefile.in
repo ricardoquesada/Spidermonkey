@@ -1,0 +1,28 @@
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+DEPTH		= @DEPTH@
+topsrcdir	= @top_srcdir@
+srcdir		= @srcdir@
+VPATH		= @srcdir@
+
+include $(DEPTH)/config/autoconf.mk
+
+EXPORT_LIBRARY = 1
+LIBXUL_LIBRARY  = 1
+
+
+include $(topsrcdir)/config/rules.mk
+
+INCLUDES	+= -I$(srcdir)/..
+
+nsOS2Charset.$(OBJ_SUFFIX): os2charset.properties.h
+
+os2charset.properties.h: $(srcdir)/../props2arrays.py os2charset.properties
+	$(PYTHON) $^ $@
+
+GARBAGE += \
+	os2charset.properties.h \
+	$(NULL)

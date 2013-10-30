@@ -11,7 +11,7 @@
 #include "nsISupports.idl"
 #include "nsIConsoleMessage.idl"
 
-[scriptable, uuid(ec640482-be5f-49a0-a9cb-c87eacce9291)]
+[scriptable, uuid(cac9d8e8-0d53-4fa8-9903-bb367e4fa1fe)]
 interface nsIScriptError : nsIConsoleMessage
 {
     /** pseudo-flag for default case */
@@ -45,18 +45,9 @@ interface nsIScriptError : nsIConsoleMessage
      * Categories I know about -
      * XUL javascript
      * content javascript (both of these from nsDocShell, currently)
-     * component javascript (errors in JS components)
+     * system javascript (errors in JS components and other system JS)
      */
     readonly attribute string category;
-
-    /*
-       The time (in milliseconds from the Epoch) that the script error instance
-       was initialised, and thus the time when the error occurred.
-       Currently used to display date and time of the message in Error console.
-       The timestamp is initialized as JS_now/1000 so that it can be
-       compared to Date.now in Javascript.
-     */
-    readonly attribute long long timeStamp;
 
     /* Get the window id this was initialized with.  Zero will be
        returned if init() was used instead of initWithWindowID(). */
@@ -85,15 +76,31 @@ interface nsIScriptError : nsIConsoleMessage
                           in uint32_t lineNumber,
                           in uint32_t columnNumber,
                           in uint32_t flags,
-                          in string category,
+                          in ACString category,
                           in unsigned long long innerWindowID);
+%{C++
+    // This overload allows passing a literal string for category.
+    template<uint32_t N>
+    nsresult InitWithWindowID(const nsAString& message,
+                              const nsAString& sourceName,
+                              const nsAString& sourceLine,
+                              uint32_t lineNumber,
+                              uint32_t columnNumber,
+                              uint32_t flags,
+                              const char (&c)[N],
+                              uint64_t aInnerWindowID)
+    {
+        nsDependentCString category(c, N - 1);
+        return InitWithWindowID(message, sourceName, sourceLine, lineNumber,
+                                columnNumber, flags, category, aInnerWindowID);
+    }
+%}
 
-    AUTF8String toString();
 };
 
 %{ C++
 #define NS_SCRIPTERROR_CID \
-{ 0xe38e53b9, 0x5bb0, 0x456a, { 0xb5, 0x53, 0x57, 0x93, 0x70, 0xcb, 0x15, 0x67 }}
+{ 0x1950539a, 0x90f0, 0x4d22, { 0xb5, 0xaf, 0x71, 0x32, 0x9c, 0x68, 0xfa, 0x35 }}
 
 #define NS_SCRIPTERROR_CONTRACTID "@mozilla.org/scripterror;1"
 %}

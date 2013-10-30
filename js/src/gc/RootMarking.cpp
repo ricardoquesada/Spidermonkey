@@ -4,9 +4,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Util.h"
+
+#ifdef MOZ_VALGRIND
+# include <valgrind/memcheck.h>
+#endif
 
 #include "jsapi.h"
 #include "jscntxt.h"
@@ -16,23 +19,18 @@
 #include "jswatchpoint.h"
 
 #include "builtin/MapObject.h"
-#include "frontend/Parser.h"
+#include "frontend/BytecodeCompiler.h"
 #include "gc/GCInternals.h"
 #include "gc/Marking.h"
 #ifdef JS_ION
-# include "ion/IonMacroAssembler.h"
-# include "ion/IonFrameIterator.h"
+# include "jit/IonFrameIterator.h"
+# include "jit/IonMacroAssembler.h"
 #endif
 #include "js/HashTable.h"
 #include "vm/Debugger.h"
 
 #include "jsgcinlines.h"
 #include "jsobjinlines.h"
-#include "ion/IonCode.h"
-
-#ifdef MOZ_VALGRIND
-# include <valgrind/memcheck.h>
-#endif
 
 using namespace js;
 using namespace js::gc;
@@ -62,13 +60,13 @@ MarkExactStackRoot(JSTracer *trc, Rooted<void*> *rooter, ThingRootKind kind)
       case THING_ROOT_BASE_SHAPE:  MarkBaseShapeRoot(trc, (BaseShape **)addr, "exact-baseshape"); break;
       case THING_ROOT_TYPE:        MarkTypeRoot(trc, (types::Type *)addr, "exact-type"); break;
       case THING_ROOT_TYPE_OBJECT: MarkTypeObjectRoot(trc, (types::TypeObject **)addr, "exact-typeobject"); break;
-      case THING_ROOT_ION_CODE:    MarkIonCodeRoot(trc, (ion::IonCode **)addr, "exact-ioncode"); break;
+      case THING_ROOT_ION_CODE:    MarkIonCodeRoot(trc, (jit::IonCode **)addr, "exact-ioncode"); break;
       case THING_ROOT_VALUE:       MarkValueRoot(trc, (Value *)addr, "exact-value"); break;
       case THING_ROOT_ID:          MarkIdRoot(trc, (jsid *)addr, "exact-id"); break;
       case THING_ROOT_PROPERTY_ID: MarkIdRoot(trc, &((js::PropertyId *)addr)->asId(), "exact-propertyid"); break;
       case THING_ROOT_BINDINGS:    ((Bindings *)addr)->trace(trc); break;
       case THING_ROOT_PROPERTY_DESCRIPTOR: ((JSPropertyDescriptor *)addr)->trace(trc); break;
-      default: JS_NOT_REACHED("Invalid THING_ROOT kind"); break;
+      default: MOZ_ASSUME_UNREACHABLE("Invalid THING_ROOT kind"); break;
     }
 }
 
@@ -275,15 +273,15 @@ MarkRangeConservativelyAndSkipIon(JSTracer *trc, JSRuntime *rt, const uintptr_t 
     const uintptr_t *i = begin;
 
 #if JS_STACK_GROWTH_DIRECTION < 0 && defined(JS_ION)
-    // Walk only regions in between Ion activations. Note that non-volatile
-    // registers are spilled to the stack before the entry Ion frame, ensuring
+    // Walk only regions in between JIT activations. Note that non-volatile
+    // registers are spilled to the stack before the entry frame, ensuring
     // that the conservative scanner will still see them.
-    for (ion::IonActivationIterator ion(rt); ion.more(); ++ion) {
-        uintptr_t *ionMin, *ionEnd;
-        ion.ionStackRange(ionMin, ionEnd);
+    for (jit::JitActivationIterator iter(rt); !iter.done(); ++iter) {
+        uintptr_t *jitMin, *jitEnd;
+        iter.jitStackRange(jitMin, jitEnd);
 
-        MarkRangeConservatively(trc, i, ionMin);
-        i = ionEnd;
+        MarkRangeConservatively(trc, i, jitMin);
+        i = jitEnd;
     }
 #endif
 
@@ -388,7 +386,7 @@ AutoGCRooter::trace(JSTracer *trc)
 {
     switch (tag_) {
       case PARSER:
-        static_cast<frontend::Parser<frontend::FullParseHandler> *>(this)->trace(trc);
+        frontend::MarkParser(trc, this);
         return;
 
       case IDARRAY: {
@@ -451,6 +449,12 @@ AutoGCRooter::trace(JSTracer *trc)
         return;
       }
 
+      case FUNVECTOR: {
+        AutoFunctionVector::VectorImpl &vector = static_cast<AutoFunctionVector *>(this)->vector;
+        MarkObjectRootRange(trc, vector.length(), vector.begin(), "js::AutoFunctionVector.vector");
+        return;
+      }
+
       case STRINGVECTOR: {
         AutoStringVector::VectorImpl &vector = static_cast<AutoStringVector *>(this)->vector;
         MarkStringRootRange(trc, vector.length(), vector.begin(), "js::AutoStringVector.vector");
@@ -478,10 +482,12 @@ AutoGCRooter::trace(JSTracer *trc)
       case OBJOBJHASHMAP: {
         AutoObjectObjectHashMap::HashMapImpl &map = static_cast<AutoObjectObjectHashMap *>(this)->map;
         for (AutoObjectObjectHashMap::Enum e(map); !e.empty(); e.popFront()) {
-            mozilla::DebugOnly<JSObject *> key = e.front().key;
-            MarkObjectRoot(trc, const_cast<JSObject **>(&e.front().key), "AutoObjectObjectHashMap key");
-            JS_ASSERT(key == e.front().key);  // Needs rewriting for moving GC, see bug 726687.
             MarkObjectRoot(trc, &e.front().value, "AutoObjectObjectHashMap value");
+            JS_SET_TRACING_LOCATION(trc, (void *)&e.front().key);
+            JSObject *key = e.front().key;
+            MarkObjectRoot(trc, &key, "AutoObjectObjectHashMap key");
+            if (key != e.front().key)
+                e.rekeyFront(key);
         }
         return;
       }
@@ -516,14 +522,14 @@ AutoGCRooter::trace(JSTracer *trc)
 
       case IONMASM: {
 #ifdef JS_ION
-        static_cast<js::ion::MacroAssembler::AutoRooter *>(this)->masm()->trace(trc);
+        static_cast<js::jit::MacroAssembler::AutoRooter *>(this)->masm()->trace(trc);
 #endif
         return;
       }
 
       case IONALLOC: {
 #ifdef JS_ION
-        static_cast<js::ion::AutoTempAllocatorRooter *>(this)->trace(trc);
+        static_cast<js::jit::AutoTempAllocatorRooter *>(this)->trace(trc);
 #endif
         return;
       }
@@ -568,47 +574,21 @@ AutoGCRooter::trace(JSTracer *trc)
 /* static */ void
 AutoGCRooter::traceAll(JSTracer *trc)
 {
-    for (js::AutoGCRooter *gcr = trc->runtime->autoGCRooters; gcr; gcr = gcr->down)
-        gcr->trace(trc);
-}
-
-/* static */ void
-AutoGCRooter::traceAllWrappers(JSTracer *trc)
-{
-    for (js::AutoGCRooter *gcr = trc->runtime->autoGCRooters; gcr; gcr = gcr->down) {
-        if (gcr->tag_ == WRAPVECTOR || gcr->tag_ == WRAPPER)
+    for (ContextIter cx(trc->runtime); !cx.done(); cx.next()) {
+        for (js::AutoGCRooter *gcr = cx->autoGCRooters; gcr; gcr = gcr->down)
             gcr->trace(trc);
     }
 }
 
 /* static */ void
-JS::CustomAutoRooter::traceObject(JSTracer *trc, JSObject **thingp, const char *name)
+AutoGCRooter::traceAllWrappers(JSTracer *trc)
 {
-    MarkObjectRoot(trc, thingp, name);
-}
-
-/* static */ void
-JS::CustomAutoRooter::traceScript(JSTracer *trc, JSScript **thingp, const char *name)
-{
-    MarkScriptRoot(trc, thingp, name);
-}
-
-/* static */ void
-JS::CustomAutoRooter::traceString(JSTracer *trc, JSString **thingp, const char *name)
-{
-    MarkStringRoot(trc, thingp, name);
-}
-
-/* static */ void
-JS::CustomAutoRooter::traceId(JSTracer *trc, jsid *thingp, const char *name)
-{
-    MarkIdRoot(trc, thingp, name);
-}
-
-/* static */ void
-JS::CustomAutoRooter::traceValue(JSTracer *trc, JS::Value *thingp, const char *name)
-{
-    MarkValueRoot(trc, thingp, name);
+    for (ContextIter cx(trc->runtime); !cx.done(); cx.next()) {
+        for (js::AutoGCRooter *gcr = cx->autoGCRooters; gcr; gcr = gcr->down) {
+            if (gcr->tag_ == WRAPVECTOR || gcr->tag_ == WRAPPER)
+                gcr->trace(trc);
+        }
+    }
 }
 
 void
@@ -720,7 +700,7 @@ js::gc::MarkRuntime(JSTracer *trc, bool useSavedRoots)
 #ifdef JS_ION
         /* Any Ion wrappers survive until the runtime is being torn down. */
         if (rt->hasContexts())
-            ion::IonRuntime::Mark(trc);
+            jit::IonRuntime::Mark(trc);
 #endif
     }
 
@@ -739,7 +719,7 @@ js::gc::MarkRuntime(JSTracer *trc, bool useSavedRoots)
         }
 
         /* Do not discard scripts with counts while profiling. */
-        if (rt->profilingScripts) {
+        if (rt->profilingScripts && !rt->isHeapMinorCollecting()) {
             for (CellIterUnderGC i(zone, FINALIZE_SCRIPT); !i.done(); i.next()) {
                 JSScript *script = i.get<JSScript>();
                 if (script->hasScriptCounts) {
@@ -769,29 +749,32 @@ js::gc::MarkRuntime(JSTracer *trc, bool useSavedRoots)
             c->debugScopes->mark(trc);
     }
 
-#ifdef JS_METHODJIT
-    /* We need to expand inline frames before stack scanning. */
-    for (ZonesIter zone(rt); !zone.done(); zone.next())
-        mjit::ExpandInlineFrames(zone);
-#endif
-
-    rt->stackSpace.mark(trc);
+    MarkInterpreterActivations(rt, trc);
 
 #ifdef JS_ION
-    ion::MarkIonActivations(rt, trc);
+    jit::MarkJitActivations(rt, trc);
 #endif
 
-    for (CompartmentsIter c(rt); !c.done(); c.next())
-        c->mark(trc);
+    if (!rt->isHeapMinorCollecting()) {
+        /*
+         * All JSCompartment::mark does is mark the globals for compartements
+         * which have been entered. Globals aren't nursery allocated so there's
+         * no need to do this for minor GCs.
+         */
+        for (CompartmentsIter c(rt); !c.done(); c.next())
+            c->mark(trc);
+    }
 
     /* The embedding can register additional roots here. */
-    if (JSTraceDataOp op = rt->gcBlackRootsTraceOp)
-        (*op)(trc, rt->gcBlackRootsData);
+    for (size_t i = 0; i < rt->gcBlackRootTracers.length(); i++) {
+        const JSRuntime::ExtraTracer &e = rt->gcBlackRootTracers[i];
+        (*e.op)(trc, e.data);
+    }
 
     /* During GC, we don't mark gray roots at this stage. */
-    if (JSTraceDataOp op = rt->gcGrayRootsTraceOp) {
-        if (!IS_GC_MARKING_TRACER(trc))
-            (*op)(trc, rt->gcGrayRootsData);
+    if (JSTraceDataOp op = rt->gcGrayRootTracer.op) {
+        if (!IS_GC_MARKING_TRACER(trc) && !trc->runtime->isHeapMinorCollecting())
+            (*op)(trc, rt->gcGrayRootTracer.data);
     }
 }
 
@@ -799,9 +782,9 @@ void
 js::gc::BufferGrayRoots(GCMarker *gcmarker)
 {
     JSRuntime *rt = gcmarker->runtime;
-    if (JSTraceDataOp op = rt->gcGrayRootsTraceOp) {
+    if (JSTraceDataOp op = rt->gcGrayRootTracer.op) {
         gcmarker->startBufferingGrayRoots();
-        (*op)(gcmarker, rt->gcGrayRootsData);
+        (*op)(gcmarker, rt->gcGrayRootTracer.data);
         gcmarker->endBufferingGrayRoots();
     }
 }

@@ -10,6 +10,7 @@
 
 #include "jsapi.h"
 #include "jscrashformat.h"
+#include "jsutil.h"
 
 using namespace js;
 using namespace js::crash;
@@ -79,9 +80,9 @@ GetStack(uint64_t *stack, uint64_t *stack_len, CrashRegisters *regs, char *buffe
 
 #elif 0
 
-#include <unistd.h>
-#include <ucontext.h>
 #include <sys/mman.h>
+#include <ucontext.h>
+#include <unistd.h>
 
 static bool
 GetStack(uint64_t *stack, uint64_t *stack_len, CrashRegisters *regs, char *buffer, size_t size)

@@ -10,19 +10,27 @@ from mozpack.files import (
 )
 import mozpack.path
 import errno
-from collections import OrderedDict
+from collections import (
+    OrderedDict,
+)
 
 
 def ensure_parent_dir(file):
     '''Ensures the directory parent to the given file exists'''
     dir = os.path.dirname(file)
-    if not dir or os.path.exists(dir):
+    if not dir:
         return
+
     try:
         os.makedirs(dir)
     except OSError as error:
         if error.errno != errno.EEXIST:
             raise
+
+    if not os.access(dir, os.W_OK):
+        umask = os.umask(0077)
+        os.umask(umask)
+        os.chmod(dir, 0777 & ~umask)
 
 
 class FileRegistry(object):
@@ -125,6 +133,32 @@ class FileRegistry(object):
         return self._files.iteritems()
 
 
+class FileCopyResult(object):
+    """Represents results of a FileCopier.copy operation."""
+
+    def __init__(self):
+        self.updated_files = set()
+        self.existing_files = set()
+        self.removed_files = set()
+        self.removed_directories = set()
+
+    @property
+    def updated_files_count(self):
+        return len(self.updated_files)
+
+    @property
+    def existing_files_count(self):
+        return len(self.existing_files)
+
+    @property
+    def removed_files_count(self):
+        return len(self.removed_files)
+
+    @property
+    def removed_directories_count(self):
+        return len(self.removed_directories)
+
+
 class FileCopier(FileRegistry):
     '''
     FileRegistry with the ability to copy the registered files to a separate
@@ -139,26 +173,79 @@ class FileCopier(FileRegistry):
         don't need to (see mozpack.files for details on file.copy), and files
         existing in the destination directory that aren't registered are
         removed.
+
+        Returns a FileCopyResult that details what changed.
         '''
         assert isinstance(destination, basestring)
         assert not os.path.exists(destination) or os.path.isdir(destination)
+        result = FileCopyResult()
         destination = os.path.normpath(destination)
         dest_files = set()
         for path, file in self:
             destfile = os.path.normpath(os.path.join(destination, path))
             dest_files.add(destfile)
             ensure_parent_dir(destfile)
-            file.copy(destfile, skip_if_older)
+            if file.copy(destfile, skip_if_older):
+                result.updated_files.add(destfile)
+            else:
+                result.existing_files.add(destfile)
 
         actual_dest_files = set()
         for root, dirs, files in os.walk(destination):
             for f in files:
                 actual_dest_files.add(os.path.normpath(os.path.join(root, f)))
+
         for f in actual_dest_files - dest_files:
+            # Windows requires write access to remove files.
+            if os.name == 'nt' and not os.access(f, os.W_OK):
+                # It doesn't matter what we set the permissions to since we
+                # will remove this file shortly.
+                os.chmod(f, 0600)
+
             os.remove(f)
+            result.removed_files.add(f)
+
         for root, dirs, files in os.walk(destination):
-            if not files and not dirs:
-                os.removedirs(root)
+            if files or dirs:
+                continue
+
+            # Like files, permissions may not allow deletion. So, ensure write
+            # access is in place before attempting delete.
+            os.chmod(root, 0700)
+            os.removedirs(root)
+            result.removed_directories.add(root)
+
+        return result
+
+
+class FilePurger(FileCopier):
+    """A variation of FileCopier that is used to purge untracked files.
+
+    Callers create an instance then call .add() to register files/paths that
+    should exist. Once the canonical set of files that may exist is defined,
+    .purge() is called against a target directory. All files and empty
+    directories in the target directory that aren't in the registry will be
+    deleted.
+    """
+    class FakeFile(BaseFile):
+        def copy(self, dest, skip_if_older=True):
+            return True
+
+    def add(self, path):
+        """Record that a path should exist.
+
+        We currently do not track what kind of entity should be behind that
+        path. We presumably could add type tracking later and have purging
+        delete entities if there is a type mismatch.
+        """
+        return FileCopier.add(self, path, FilePurger.FakeFile())
+
+    def purge(self, dest):
+        """Deletes all files and empty directories not in the registry."""
+        return FileCopier.copy(self, dest)
+
+    def copy(self, *args, **kwargs):
+        raise Exception('copy() disabled on FilePurger. Use purge().')
 
 
 class Jarrer(FileRegistry, BaseFile):

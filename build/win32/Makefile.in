@@ -14,7 +14,6 @@ NO_PROFILE_GUIDED_OPTIMIZE = 1
 ifdef ENABLE_TESTS
 
 USE_STATIC_LIBS = 1
-CPPSRCS = crashinject.cpp
 
 endif # ENABLE_TESTS
 
@@ -54,6 +53,13 @@ ifeq (1700,$(_MSC_VER))
 REDIST_FILES = \
   msvcp110.dll \
   msvcr110.dll \
+  $(NULL)
+endif
+
+ifeq (1800,$(_MSC_VER))
+REDIST_FILES = \
+  msvcp120.dll \
+  msvcr120.dll \
   $(NULL)
 endif
 

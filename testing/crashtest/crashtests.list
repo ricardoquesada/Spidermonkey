@@ -29,7 +29,7 @@ include ../../dom/bindings/crashtests/crashtests.list
 include ../../dom/indexedDB/crashtests/crashtests.list
 
 # Bug 811873 - mozRTCPeerConnection doesn't support remote browser yet
-skip-if(Android||B2G||browserIsRemote) include ../../dom/media/tests/crashtests/crashtests.list
+skip-if(B2G||browserIsRemote) include ../../dom/media/tests/crashtests/crashtests.list
 
 include ../../dom/src/offline/crashtests/crashtests.list
 include ../../dom/src/jsurl/crashtests/crashtests.list
@@ -44,6 +44,7 @@ include ../../js/xpconnect/crashtests/crashtests.list
 include ../../layout/base/crashtests/crashtests.list
 include ../../layout/forms/crashtests/crashtests.list
 include ../../layout/generic/crashtests/crashtests.list
+include ../../layout/printing/crashtests/crashtests.list
 include ../../layout/mathml/crashtests/crashtests.list
 include ../../layout/style/crashtests/crashtests.list
 include ../../layout/svg/crashtests/crashtests.list

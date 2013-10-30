@@ -89,7 +89,7 @@ class RemoteAutomation(Automation):
     def checkForJavaException(self, logcat):
         found_exception = False
         for i, line in enumerate(logcat):
-            if "REPORTING UNCAUGHT EXCEPTION" in line:
+            if "REPORTING UNCAUGHT EXCEPTION" in line or "FATAL EXCEPTION" in line:
                 # Strip away the date, time, logcat tag and pid from the next two lines and
                 # concatenate the remainder to form a concise summary of the exception. 
                 #
@@ -105,7 +105,7 @@ class RemoteAutomation(Automation):
                 #
                 #   -> java.lang.NullPointerException at org.mozilla.gecko.GeckoApp$21.run(GeckoApp.java:1833)
                 found_exception = True
-                logre = re.compile(r".*\):\s(.*)")
+                logre = re.compile(r".*\): \t?(.*)")
                 m = logre.search(logcat[i+1])
                 if m and m.group(1):
                     top_frame = m.group(1)
@@ -116,7 +116,33 @@ class RemoteAutomation(Automation):
                 break
         return found_exception
 
+    def deleteANRs(self):
+        # delete ANR traces.txt file; usually need root permissions
+        traces = "/data/anr/traces.txt"
+        try:
+            self._devicemanager.shellCheckOutput(['rm', traces], root=True)
+        except DMError:
+            print "Error deleting %s" % traces
+            pass
+
+    def checkForANRs(self):
+        traces = "/data/anr/traces.txt"
+        if self._devicemanager.fileExists(traces):
+            try:
+                t = self._devicemanager.pullFile(traces)
+                print "Contents of %s:" % traces
+                print t
+                # Once reported, delete traces
+                self.deleteANRs()
+            except DMError:
+                print "Error pulling %s" % traces
+                pass
+        else:
+            print "%s not found" % traces
+
     def checkForCrashes(self, directory, symbolsPath):
+        self.checkForANRs()
+
         logcat = self._devicemanager.getLogcat(filterOutRegexps=fennecLogcatFilters)
         javaException = self.checkForJavaException(logcat)
         if javaException:
@@ -240,14 +266,13 @@ class RemoteAutomation(Automation):
             """
             if self.dm.fileExists(self.proc):
                 try:
-                    t = self.dm.pullFile(self.proc)
+                    newLogContent = self.dm.pullFile(self.proc, self.stdoutlen)
                 except DMError:
                     # we currently don't retry properly in the pullFile
                     # function in dmSUT, so an error here is not necessarily
                     # the end of the world
                     return ''
-                newLogContent = t[self.stdoutlen:]
-                self.stdoutlen = len(t)
+                self.stdoutlen += len(newLogContent)
                 # Match the test filepath from the last TEST-START line found in the new
                 # log content. These lines are in the form:
                 # 1234 INFO TEST-START | /filepath/we/wish/to/capture.html\n
@@ -264,14 +289,18 @@ class RemoteAutomation(Automation):
 
         def wait(self, timeout = None):
             timer = 0
-            interval = 5
+            interval = 20 
 
             if timeout == None:
                 timeout = self.timeout
 
             while (self.dm.getTopActivity() == self.procName):
-                t = self.stdout
-                if t != '': print t
+                # retrieve log updates every 60 seconds
+                if timer % 60 == 0: 
+                    t = self.stdout
+                    if t != '':
+                        print t
+
                 time.sleep(interval)
                 timer += interval
                 if (timer > timeout):

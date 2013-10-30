@@ -10,17 +10,12 @@ VPATH		= @srcdir@
 
 include $(DEPTH)/config/autoconf.mk
 
+FAIL_ON_WARNINGS := 1
 SDK_BINARY	= $(PROGRAM)
-
-CPPSRCS		= xpcshell.cpp
 
 LOCAL_INCLUDES += \
   -I$(topsrcdir)/toolkit/xre \
   $(NULL)
-
-ifeq (cocoa,$(MOZ_WIDGET_TOOLKIT))
-CMMSRCS += xpcshellMacUtils.mm
-endif
 
 ifeq (windows,$(MOZ_WIDGET_TOOLKIT))
   ifdef MOZ_APP_PROFILE
@@ -61,8 +56,8 @@ ifdef _MSC_VER
 WIN32_EXE_LDFLAGS += -ENTRY:wmainCRTStartup
 endif
 
-include $(topsrcdir)/ipc/chromium/chromium-config.mk
 include $(topsrcdir)/config/rules.mk
+include $(topsrcdir)/ipc/chromium/chromium-config.mk
 
 DEFINES		+= -DJS_THREADSAFE
 

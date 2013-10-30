@@ -10,6 +10,9 @@
 
 #include "jsd.h"
 #include "jsfriendapi.h"
+#include "nsCxPusher.h"
+
+using mozilla::AutoPushJSContext;
 
 #ifdef DEBUG
 void JSD_ASSERT_VALID_THREAD_STATE(JSDThreadState* jsdthreadstate)
@@ -93,7 +96,7 @@ jsd_NewThreadState(JSDContext* jsdc, JSContext *cx )
     while(!iter.done())
     {
         JSAbstractFramePtr frame = iter.abstractFramePtr();
-        JSScript* script = frame.script();
+        JS::RootedScript script(cx, frame.script());
         uintptr_t  pc = (uintptr_t)iter.pc();
         JS::RootedValue dummyThis(cx);
 
@@ -282,7 +285,7 @@ jsd_GetScopeChainForStackFrame(JSDContext* jsdc,
                                JSDThreadState* jsdthreadstate,
                                JSDStackFrameInfo* jsdframe)
 {
-    JSObject* obj;
+    JS::RootedObject obj(jsdthreadstate->context);
     JSDValue* jsdval = NULL;
 
     JSD_LOCK_THREADSTATES(jsdc);
@@ -398,7 +401,6 @@ jsd_EvaluateUCScriptInStackFrame(JSDContext* jsdc,
     JSBool retval;
     JSBool valid;
     JSExceptionState* exceptionState = NULL;
-    JSContext* cx;
 
     JS_ASSERT(JSD_CURRENT_THREAD() == jsdthreadstate->thread);
 
@@ -409,7 +411,7 @@ jsd_EvaluateUCScriptInStackFrame(JSDContext* jsdc,
     if( ! valid )
         return JS_FALSE;
 
-    cx = jsdthreadstate->context;
+    AutoPushJSContext cx(jsdthreadstate->context);
     JS_ASSERT(cx);
 
     if (eatExceptions)
@@ -436,7 +438,6 @@ jsd_EvaluateScriptInStackFrame(JSDContext* jsdc,
     JSBool retval;
     JSBool valid;
     JSExceptionState* exceptionState = NULL;
-    JSContext *cx;
 
     JS_ASSERT(JSD_CURRENT_THREAD() == jsdthreadstate->thread);
 
@@ -447,7 +448,7 @@ jsd_EvaluateScriptInStackFrame(JSDContext* jsdc,
     if (!valid)
         return JS_FALSE;
 
-    cx = jsdthreadstate->context;
+    AutoPushJSContext cx(jsdthreadstate->context);
     JS_ASSERT(cx);
 
     if (eatExceptions)

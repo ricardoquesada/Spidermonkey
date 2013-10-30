@@ -1,0 +1,23 @@
+# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# vim: set filetype=python:
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+MODULE = 'ucvja'
+
+EXPORTS += [
+    'nsUCVJA2CID.h',
+    'nsUCVJACID.h',
+]
+
+CPP_SOURCES += [
+    'nsJapaneseToUnicode.cpp',
+    'nsUnicodeToEUCJP.cpp',
+    'nsUnicodeToISO2022JP.cpp',
+    'nsUnicodeToJISx0201.cpp',
+    'nsUnicodeToSJIS.cpp',
+]
+
+LIBRARY_NAME = 'ucvja_s'
+

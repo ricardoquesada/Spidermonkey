@@ -4,22 +4,22 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "builtin/TestingFunctions.h"
+
 #include "jsapi.h"
-#include "jsbool.h"
 #include "jscntxt.h"
-#include "jscompartment.h"
 #include "jsfriendapi.h"
 #include "jsgc.h"
 #include "jsobj.h"
-#include "jsobjinlines.h"
 #include "jsprf.h"
 #include "jswrapper.h"
 
-#include "builtin/TestingFunctions.h"
-#include "methodjit/MethodJIT.h"
+#include "jit/AsmJS.h"
+#include "jit/AsmJSLink.h"
 #include "vm/ForkJoin.h"
+#include "vm/Interpreter.h"
 
-#include "vm/Stack-inl.h"
+#include "vm/ObjectImpl-inl.h"
 
 using namespace js;
 using namespace JS;
@@ -32,14 +32,14 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
     RootedObject info(cx, JS_NewObject(cx, NULL, NULL, NULL));
     if (!info)
         return false;
-    Value value;
+    RootedValue value(cx);
 
 #ifdef JSGC_ROOT_ANALYSIS
     value = BooleanValue(true);
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "rooting-analysis", &value))
+    if (!JS_SetProperty(cx, info, "rooting-analysis", value))
         return false;
 
 #ifdef JSGC_USE_EXACT_ROOTING
@@ -47,7 +47,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "exact-rooting", &value))
+    if (!JS_SetProperty(cx, info, "exact-rooting", value))
         return false;
 
 #ifdef DEBUG
@@ -55,7 +55,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "debug", &value))
+    if (!JS_SetProperty(cx, info, "debug", value))
         return false;
 
 #ifdef JS_HAS_CTYPES
@@ -63,7 +63,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "has-ctypes", &value))
+    if (!JS_SetProperty(cx, info, "has-ctypes", value))
         return false;
 
 #ifdef JS_CPU_X86
@@ -71,7 +71,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "x86", &value))
+    if (!JS_SetProperty(cx, info, "x86", value))
         return false;
 
 #ifdef JS_CPU_X64
@@ -79,7 +79,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "x64", &value))
+    if (!JS_SetProperty(cx, info, "x64", value))
         return false;
 
 #ifdef MOZ_ASAN
@@ -87,7 +87,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "asan", &value))
+    if (!JS_SetProperty(cx, info, "asan", value))
         return false;
 
 #ifdef JS_GC_ZEAL
@@ -95,7 +95,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "has-gczeal", &value))
+    if (!JS_SetProperty(cx, info, "has-gczeal", value))
         return false;
 
 #ifdef JS_THREADSAFE
@@ -103,7 +103,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "threadsafe", &value))
+    if (!JS_SetProperty(cx, info, "threadsafe", value))
         return false;
 
 #ifdef JS_MORE_DETERMINISTIC
@@ -111,7 +111,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "more-deterministic", &value))
+    if (!JS_SetProperty(cx, info, "more-deterministic", value))
         return false;
 
 #ifdef MOZ_PROFILING
@@ -119,7 +119,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "profiling", &value))
+    if (!JS_SetProperty(cx, info, "profiling", value))
         return false;
 
 #ifdef INCLUDE_MOZILLA_DTRACE
@@ -127,7 +127,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "dtrace", &value))
+    if (!JS_SetProperty(cx, info, "dtrace", value))
         return false;
 
 #ifdef MOZ_TRACE_JSCALLS
@@ -135,7 +135,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "trace-jscalls-api", &value))
+    if (!JS_SetProperty(cx, info, "trace-jscalls-api", value))
         return false;
 
 #ifdef JSGC_INCREMENTAL
@@ -143,7 +143,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "incremental-gc", &value))
+    if (!JS_SetProperty(cx, info, "incremental-gc", value))
         return false;
 
 #ifdef JSGC_GENERATIONAL
@@ -151,7 +151,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "generational-gc", &value))
+    if (!JS_SetProperty(cx, info, "generational-gc", value))
         return false;
 
 #ifdef MOZ_VALGRIND
@@ -159,7 +159,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "valgrind", &value))
+    if (!JS_SetProperty(cx, info, "valgrind", value))
         return false;
 
 #ifdef JS_OOM_DO_BACKTRACES
@@ -167,15 +167,7 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "oom-backtraces", &value))
-        return false;
-
-#ifdef JS_METHODJIT
-    value = BooleanValue(true);
-#else
-    value = BooleanValue(false);
-#endif
-    if (!JS_SetProperty(cx, info, "methodjit", &value))
+    if (!JS_SetProperty(cx, info, "oom-backtraces", value))
         return false;
 
 #ifdef ENABLE_PARALLEL_JS
@@ -183,7 +175,15 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
 #else
     value = BooleanValue(false);
 #endif
-    if (!JS_SetProperty(cx, info, "parallelJS", &value))
+    if (!JS_SetProperty(cx, info, "parallelJS", value))
+        return false;
+
+#ifdef ENABLE_BINARYDATA
+    value = BooleanValue(true);
+#else
+    value = BooleanValue(false);
+#endif
+    if (!JS_SetProperty(cx, info, "binary-data", value))
         return false;
 
     *vp = ObjectValue(*info);
@@ -212,24 +212,38 @@ GC(JSContext *cx, unsigned argc, jsval *vp)
     }
 
 #ifndef JS_MORE_DETERMINISTIC
-    size_t preBytes = cx->runtime->gcBytes;
+    size_t preBytes = cx->runtime()->gcBytes;
 #endif
 
     if (compartment)
-        PrepareForDebugGC(cx->runtime);
+        PrepareForDebugGC(cx->runtime());
     else
-        PrepareForFullGC(cx->runtime);
-    GCForReason(cx->runtime, gcreason::API);
+        PrepareForFullGC(cx->runtime());
+    GCForReason(cx->runtime(), gcreason::API);
 
     char buf[256] = { '\0' };
 #ifndef JS_MORE_DETERMINISTIC
     JS_snprintf(buf, sizeof(buf), "before %lu, after %lu\n",
-                (unsigned long)preBytes, (unsigned long)cx->runtime->gcBytes);
+                (unsigned long)preBytes, (unsigned long)cx->runtime()->gcBytes);
 #endif
     JSString *str = JS_NewStringCopyZ(cx, buf);
     if (!str)
         return false;
     *vp = STRING_TO_JSVAL(str);
+    return true;
+}
+
+static JSBool
+MinorGC(JSContext *cx, unsigned argc, jsval *vp)
+{
+#ifdef JSGC_GENERATIONAL
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (args.get(0) == BooleanValue(true))
+        cx->runtime()->gcStoreBuffer.setAboutToOverflow();
+
+    MinorGC(cx->runtime(), gcreason::API);
+#endif
     return true;
 }
 
@@ -241,7 +255,8 @@ static const struct ParamPair {
     {"maxMallocBytes",      JSGC_MAX_MALLOC_BYTES},
     {"gcBytes",             JSGC_BYTES},
     {"gcNumber",            JSGC_NUMBER},
-    {"sliceTimeBudget",     JSGC_SLICE_TIME_BUDGET}
+    {"sliceTimeBudget",     JSGC_SLICE_TIME_BUDGET},
+    {"markStackLimit",      JSGC_MARK_STACK_LIMIT}
 };
 
 static JSBool
@@ -277,7 +292,7 @@ GCParameter(JSContext *cx, unsigned argc, jsval *vp)
     JSGCParamKey param = paramMap[paramIndex].param;
 
     if (argc == 1) {
-        uint32_t value = JS_GetGCParameter(cx->runtime, param);
+        uint32_t value = JS_GetGCParameter(cx->runtime(), param);
         vp[0] = JS_NumberValue(value);
         return true;
     }
@@ -298,7 +313,7 @@ GCParameter(JSContext *cx, unsigned argc, jsval *vp)
     }
 
     if (param == JSGC_MAX_BYTES) {
-        uint32_t gcBytes = JS_GetGCParameter(cx->runtime, JSGC_BYTES);
+        uint32_t gcBytes = JS_GetGCParameter(cx->runtime(), JSGC_BYTES);
         if (value < gcBytes) {
             JS_ReportError(cx,
                            "attempt to set maxBytes to the value less than the current "
@@ -308,7 +323,7 @@ GCParameter(JSContext *cx, unsigned argc, jsval *vp)
         }
     }
 
-    JS_SetGCParameter(cx->runtime, param, value);
+    JS_SetGCParameter(cx->runtime(), param, value);
     *vp = JSVAL_VOID;
     return true;
 }
@@ -325,7 +340,7 @@ IsProxy(JSContext *cx, unsigned argc, jsval *vp)
         args.rval().setBoolean(false);
         return true;
     }
-    args.rval().setBoolean(args[0].toObject().isProxy());
+    args.rval().setBoolean(args[0].toObject().is<ProxyObject>());
     return true;
 }
 
@@ -364,7 +379,7 @@ GCPreserveCode(JSContext *cx, unsigned argc, jsval *vp)
         return JS_FALSE;
     }
 
-    cx->runtime->alwaysPreserveCode = true;
+    cx->runtime()->alwaysPreserveCode = true;
 
     *vp = JSVAL_VOID;
     return JS_TRUE;
@@ -423,7 +438,7 @@ ScheduleGC(JSContext *cx, unsigned argc, jsval *vp)
 static JSBool
 SelectForGC(JSContext *cx, unsigned argc, jsval *vp)
 {
-    JSRuntime *rt = cx->runtime;
+    JSRuntime *rt = cx->runtime();
 
     for (unsigned i = 0; i < argc; i++) {
         Value arg(JS_ARGV(cx, vp)[i]);
@@ -447,7 +462,7 @@ VerifyPreBarriers(JSContext *cx, unsigned argc, jsval *vp)
         ReportUsageError(cx, callee, "Too many arguments");
         return JS_FALSE;
     }
-    gc::VerifyBarriers(cx->runtime, gc::PreBarrierVerifier);
+    gc::VerifyBarriers(cx->runtime(), gc::PreBarrierVerifier);
     *vp = JSVAL_VOID;
     return JS_TRUE;
 }
@@ -460,7 +475,7 @@ VerifyPostBarriers(JSContext *cx, unsigned argc, jsval *vp)
         ReportUsageError(cx, callee, "Too many arguments");
         return JS_FALSE;
     }
-    gc::VerifyBarriers(cx->runtime, gc::PostBarrierVerifier);
+    gc::VerifyBarriers(cx->runtime(), gc::PostBarrierVerifier);
     *vp = JSVAL_VOID;
     return JS_TRUE;
 }
@@ -477,7 +492,7 @@ GCState(JSContext *cx, unsigned argc, jsval *vp)
     }
 
     const char *state;
-    gc::State globalState = cx->runtime->gcIncrementalState;
+    gc::State globalState = cx->runtime()->gcIncrementalState;
     if (globalState == gc::NO_INCREMENTAL)
         state = "none";
     else if (globalState == gc::MARK)
@@ -485,7 +500,7 @@ GCState(JSContext *cx, unsigned argc, jsval *vp)
     else if (globalState == gc::SWEEP)
         state = "sweep";
     else
-        JS_NOT_REACHED("Unobserveable global GC state");
+        MOZ_ASSUME_UNREACHABLE("Unobserveable global GC state");
 
     JSString *str = JS_NewStringCopyZ(cx, state);
     if (!str)
@@ -531,7 +546,7 @@ GCSlice(JSContext *cx, unsigned argc, jsval *vp)
         limit = false;
     }
 
-    GCDebugSlice(cx->runtime, limit, budget);
+    GCDebugSlice(cx->runtime(), limit, budget);
     *vp = JSVAL_VOID;
     return JS_TRUE;
 }
@@ -740,6 +755,29 @@ CountHeap(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
+#ifdef DEBUG
+static JSBool
+OOMAfterAllocations(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() != 1) {
+        JS_ReportError(cx, "count argument required");
+        return false;
+    }
+
+    int32_t count;
+    if (!JS_ValueToInt32(cx, args[0], &count))
+        return false;
+    if (count <= 0) {
+        JS_ReportError(cx, "count argument must be positive");
+        return false;
+    }
+
+    OOM_maxAllocations = OOM_counter + count;
+    return true;
+}
+#endif
+
 static unsigned finalizeCount = 0;
 
 static void
@@ -763,7 +801,7 @@ static JSClass FinalizeCounterClass = {
 static JSBool
 MakeFinalizeObserver(JSContext *cx, unsigned argc, jsval *vp)
 {
-    RootedObject scope(cx, JS_GetGlobalForScopeChain(cx));
+    RootedObject scope(cx, JS::CurrentGlobalOrNull(cx));
     if (!scope)
         return false;
 
@@ -816,45 +854,6 @@ DumpHeapComplete(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-JSBool
-MJitChunkLimit(JSContext *cx, unsigned argc, jsval *vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-
-    if (argc != 1) {
-        RootedObject callee(cx, &args.callee());
-        ReportUsageError(cx, callee, "Wrong number of arguments");
-        return JS_FALSE;
-    }
-
-    if (cx->runtime->alwaysPreserveCode) {
-        JS_ReportError(cx, "Can't change chunk limit after gcPreserveCode()");
-        return JS_FALSE;
-    }
-
-    for (CompartmentsIter c(cx->runtime); !c.done(); c.next()) {
-        if (c->lastAnimationTime != 0) {
-            JS_ReportError(cx, "Can't change chunk limit if code may be preserved");
-            return JS_FALSE;
-        }
-    }
-
-    double t;
-    if (!JS_ValueToNumber(cx, args[0], &t))
-        return JS_FALSE;
-
-#ifdef JS_METHODJIT
-    mjit::SetChunkLimit((uint32_t) t);
-#endif
-
-    // Clear out analysis information which might refer to code compiled with
-    // the previous chunk limit.
-    JS_GC(cx->runtime);
-
-    vp->setUndefined();
-    return true;
-}
-
 static JSBool
 Terminate(JSContext *cx, unsigned arg, jsval *vp)
 {
@@ -875,9 +874,9 @@ EnableSPSProfilingAssertions(JSContext *cx, unsigned argc, jsval *vp)
     static ProfileEntry stack[1000];
     static uint32_t stack_size = 0;
 
-    SetRuntimeProfilingStack(cx->runtime, stack, &stack_size, 1000);
-    cx->runtime->spsProfiler.enableSlowAssertions(args[0].toBoolean());
-    cx->runtime->spsProfiler.enable(true);
+    SetRuntimeProfilingStack(cx->runtime(), stack, &stack_size, 1000);
+    cx->runtime()->spsProfiler.enableSlowAssertions(args[0].toBoolean());
+    cx->runtime()->spsProfiler.enable(true);
 
     JS_SET_RVAL(cx, vp, JSVAL_VOID);
     return true;
@@ -886,8 +885,8 @@ EnableSPSProfilingAssertions(JSContext *cx, unsigned argc, jsval *vp)
 static JSBool
 DisableSPSProfiling(JSContext *cx, unsigned argc, jsval *vp)
 {
-    if (cx->runtime->spsProfiler.installed())
-        cx->runtime->spsProfiler.enable(false);
+    if (cx->runtime()->spsProfiler.installed())
+        cx->runtime()->spsProfiler.enable(false);
     return true;
 }
 
@@ -895,15 +894,15 @@ static JSBool
 DisplayName(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    if (argc == 0 || !args[0].isObject() || !args[0].toObject().isFunction()) {
+    if (argc == 0 || !args[0].isObject() || !args[0].toObject().is<JSFunction>()) {
         RootedObject arg(cx, &args.callee());
         ReportUsageError(cx, arg, "Must have one function argument");
         return false;
     }
 
-    JSFunction *fun = args[0].toObject().toFunction();
+    JSFunction *fun = &args[0].toObject().as<JSFunction>();
     JSString *str = fun->displayAtom();
-    vp->setString(str == NULL ? cx->runtime->emptyString : str);
+    vp->setString(str == NULL ? cx->runtime()->emptyString : str);
     return true;
 }
 
@@ -917,38 +916,94 @@ js::testingFunc_inParallelSection(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-#ifndef JS_ION
-JSBool
-js::IsAsmJSCompilationAvailable(JSContext *cx, unsigned argc, Value *vp)
+static JSObject *objectMetadataFunction = NULL;
+
+static bool
+ShellObjectMetadataCallback(JSContext *cx, JSObject **pmetadata)
+{
+    Value thisv = UndefinedValue();
+
+    RootedValue rval(cx);
+    if (!Invoke(cx, thisv, ObjectValue(*objectMetadataFunction), 0, NULL, &rval))
+        return false;
+
+    if (rval.isObject())
+        *pmetadata = &rval.toObject();
+
+    return true;
+}
+
+static JSBool
+SetObjectMetadataCallback(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    args.rval().set(BooleanValue(false));
+
+    args.rval().setUndefined();
+
+    if (argc == 0 || !args[0].isObject() || !args[0].toObject().is<JSFunction>()) {
+        if (objectMetadataFunction)
+            JS_RemoveObjectRoot(cx, &objectMetadataFunction);
+        objectMetadataFunction = NULL;
+        js::SetObjectMetadataCallback(cx, NULL);
+        return true;
+    }
+
+    if (!objectMetadataFunction && !JS_AddObjectRoot(cx, &objectMetadataFunction))
+        return false;
+
+    objectMetadataFunction = &args[0].toObject();
+    js::SetObjectMetadataCallback(cx, ShellObjectMetadataCallback);
+    return true;
+}
+
+static JSBool
+SetObjectMetadata(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (argc != 2 || !args[0].isObject() || !args[1].isObject()) {
+        JS_ReportError(cx, "Both arguments must be objects");
+        return false;
+    }
+
+    args.rval().setUndefined();
+
+    RootedObject obj(cx, &args[0].toObject());
+    RootedObject metadata(cx, &args[1].toObject());
+    return SetObjectMetadata(cx, obj, metadata);
+}
+
+static JSBool
+GetObjectMetadata(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (argc != 1 || !args[0].isObject()) {
+        JS_ReportError(cx, "Argument must be an object");
+        return false;
+    }
+
+    args.rval().setObjectOrNull(GetObjectMetadata(&args[0].toObject()));
     return true;
 }
 
 JSBool
-js::IsAsmJSModule(JSContext *cx, unsigned argc, Value *vp)
+js::testingFunc_bailout(JSContext *cx, unsigned argc, jsval *vp)
 {
-    CallArgs args = CallArgsFromVp(argc, vp);
-    args.rval().set(BooleanValue(false));
+    // NOP when not in IonMonkey
+    JS_SET_RVAL(cx, vp, JSVAL_VOID);
     return true;
 }
 
-JSBool
-js::IsAsmJSFunction(JSContext *cx, unsigned argc, Value *vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-    args.rval().set(BooleanValue(false));
-    return true;
-}
-#endif
-
-static JSFunctionSpecWithHelp TestingFunctions[] = {
+static const JSFunctionSpecWithHelp TestingFunctions[] = {
     JS_FN_HELP("gc", ::GC, 0, 0,
 "gc([obj] | 'compartment')",
 "  Run the garbage collector. When obj is given, GC only its compartment.\n"
 "  If 'compartment' is given, GC any compartments that were scheduled for\n"
 "  GC via schedulegc."),
+
+    JS_FN_HELP("minorgc", ::MinorGC, 0, 0,
+"minorgc([aboutToOverflow])",
+"  Run a minor collector on the Nursery. When aboutToOverflow is true, marks\n"
+"  the store buffer as about-to-overflow before collecting."),
 
     JS_FN_HELP("gcparam", GCParameter, 2, 0,
 "gcparam(name [, value])",
@@ -966,6 +1021,13 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
 "  start when it is given and is not null. kind is either 'all' (default) to\n"
 "  count all things or one of 'object', 'double', 'string', 'function'\n"
 "  to count only things of that kind."),
+
+#ifdef DEBUG
+    JS_FN_HELP("oomAfterAllocations", OOMAfterAllocations, 1, 0,
+"oomAfterAllocations(count)",
+"  After 'count' js_malloc memory allocations, fail every following allocation\n"
+"  (return NULL)."),
+#endif
 
     JS_FN_HELP("makeFinalizeObserver", MakeFinalizeObserver, 0, 0,
 "makeFinalizeObserver()",
@@ -1056,10 +1118,6 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
 "dumpHeapComplete([filename])",
 "  Dump reachable and unreachable objects to a file."),
 
-    JS_FN_HELP("mjitChunkLimit", MJitChunkLimit, 1, 0,
-"mjitChunkLimit(N)",
-"  Specify limit on compiled chunk size during mjit compilation."),
-
     JS_FN_HELP("terminate", Terminate, 0, 0,
 "terminate()",
 "  Terminate JavaScript execution, as if we had run out of\n"
@@ -1093,13 +1151,29 @@ static JSFunctionSpecWithHelp TestingFunctions[] = {
 "  validated according to the asm.js spec."),
 
     JS_FN_HELP("isAsmJSFunction", IsAsmJSFunction, 1, 0,
-"isAsmJSModule(fn)",
+"isAsmJSFunction(fn)",
 "  Returns whether the given value is a nested function in an asm.js module that has been\n"
 "  both compile- and link-time validated."),
 
     JS_FN_HELP("inParallelSection", testingFunc_inParallelSection, 0, 0,
 "inParallelSection()",
 "  True if this code is executing within a parallel section."),
+
+    JS_FN_HELP("setObjectMetadataCallback", SetObjectMetadataCallback, 1, 0,
+"setObjectMetadataCallback(fn)",
+"  Specify function to supply metadata for all newly created objects."),
+
+    JS_FN_HELP("setObjectMetadata", SetObjectMetadata, 2, 0,
+"setObjectMetadata(obj, metadataObj)",
+"  Change the metadata for an object."),
+
+    JS_FN_HELP("getObjectMetadata", GetObjectMetadata, 1, 0,
+"getObjectMetadata(obj)",
+"  Get the metadata for an object."),
+
+    JS_FN_HELP("bailout", testingFunc_bailout, 0, 0,
+"bailout()",
+"  Force a bailout out of ionmonkey (if running in ionmonkey)."),
 
     JS_FS_HELP_END
 };

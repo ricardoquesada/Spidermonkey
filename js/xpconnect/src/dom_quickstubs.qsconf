@@ -19,7 +19,6 @@ members = [
     #
     # Note that many implementations of interfaces in this directory
     # use GetCurrentNativeCallContext, notably:
-    #   - nsIDOMCrypto.{generateCRMFRequest,signText}
     #   - nsIDOMLocation.reload
     #   - nsIDOMNSHistory.go
     #   - nsIDOMJSPluginArray.refresh
@@ -53,23 +52,6 @@ members = [
     # dom/interfaces/core
     'nsIDOMDOMStringList.*',
 
-    'nsIDOMKeyEvent.*',
-    'nsIDOMDragEvent.*',
-    'nsIDOMProgressEvent.lengthComputable',
-    'nsIDOMProgressEvent.loaded',
-    'nsIDOMProgressEvent.total',
-    #XXX Can't quickstub initProgressEvent because it has long long parameters.
-
-    'nsIDOMTouchList.*',
-
-    # dom/interfaces/html
-    'nsIDOMHTMLFormElement.elements',
-    'nsIDOMHTMLFormElement.name',
-    'nsIDOMHTMLFormElement.submit',
-    'nsIDOMHTMLFormElement.length',
-    'nsIDOMHTMLFormElement.target',
-    'nsIDOMHTMLFormElement.action',
-
     # dom/interfaces/storage
     'nsIDOMToString.toString',
     'nsIDOMStorage.setItem',
@@ -101,20 +83,8 @@ members = [
     'nsIBoxObject.height',
 
     # dom/indexedDB
-    'nsIIDBCursor.*',
-    'nsIIDBCursorWithValue.*',
-    'nsIIDBDatabase.*',
-    'nsIIDBFileHandle.*',
-    'nsIIDBIndex.*',
     'nsIIDBKeyRange.*',
-    'nsIIDBObjectStore.*',
-    'nsIIDBRequest.*',
-    'nsIIDBTransaction.*',
-    'nsIIDBOpenDBRequest.*',
-    'nsIIDBVersionChangeEvent.*',
     'nsIIndexedDatabaseManager.*',
-
-    'nsIDOMDOMError.*',
 
     # dom/file
     'nsIDOMLockedFile.*',
@@ -134,27 +104,15 @@ members = [
 irregularFilenames = {
     # stowaways
     'nsIDOMBlob': 'nsIDOMFile',
-
     'nsIIndexedDatabaseUsageCallback': 'nsIIndexedDatabaseManager',
-
-    'nsIDOMTouch': 'nsIDOMTouchEvent',
-    'nsIDOMTouchList': 'nsIDOMTouchEvent',
-
     'nsITelephoneCallback': 'nsITelephone',
-
     'nsIDOMWindowPerformance': 'nsIDOMWindow',
     }
 
 customIncludes = [
     'nsDOMQS.h',
-    'mozilla/dom/NodeBinding.h',
-    'mozilla/dom/ElementBinding.h',
-    'mozilla/dom/HTMLElementBinding.h',
     'nsPerformance.h',
     'mozilla/dom/EventTargetBinding.h',
-    'mozilla/dom/EventBinding.h',
-    'mozilla/dom/MouseEventBinding.h',
-    'mozilla/dom/UIEventBinding.h',
     ]
 
 nsIDOMStorage_Clear_customMethodCallCode = """
@@ -193,11 +151,5 @@ customMethodCalls = {
 newBindingProperties = {
     # Once the last entry here goes away, we can make the sNativePropertyHooks
     # of bindings static.
-    'nsIDOMNode': 'mozilla::dom::NodeBinding::sNativePropertyHooks.mNativeProperties.regular',
-    'nsIDOMElement': 'mozilla::dom::ElementBinding::sNativePropertyHooks.mNativeProperties.regular',
-    'nsIDOMHTMLElement': 'mozilla::dom::HTMLElementBinding::sNativePropertyHooks.mNativeProperties.regular',
     'nsIDOMEventTarget': 'mozilla::dom::EventTargetBinding::sNativePropertyHooks.mNativeProperties.regular',
-    'nsIDOMEvent': 'mozilla::dom::EventBinding::sNativePropertyHooks.mNativeProperties.regular',
-    'nsIDOMMouseEvent': 'mozilla::dom::MouseEventBinding::sNativePropertyHooks.mNativeProperties.regular',
-    'nsIDOMUIEvent': 'mozilla::dom::UIEventBinding::sNativePropertyHooks.mNativeProperties.regular',
     }

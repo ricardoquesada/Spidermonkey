@@ -69,7 +69,7 @@ case "$target" in
 
         kernel_name=`uname -s | tr "[[:upper:]]" "[[:lower:]]"`
 
-        for version in $android_gnu_compiler_version 4.6 4.4.3 ; do
+        for version in $android_gnu_compiler_version 4.7 4.6 4.4.3 ; do
             case "$target_cpu" in
             arm)
                 target_name=arm-linux-androideabi-$version
@@ -244,27 +244,15 @@ if test "$OS_TARGET" = "Android" -a -z "$gonkdir"; then
             else
                 AC_MSG_ERROR([Couldn't find path to gnu-libstdc++ in the android ndk])
             fi
-        elif test -e "$android_ndk/sources/cxx-stl/stlport/src/iostream.cpp" ; then
-            if test -e "$android_ndk/sources/cxx-stl/stlport/libs/$ANDROID_CPU_ARCH/libstlport_static.a"; then
-                STLPORT_LDFLAGS="-L$_objdir/build/stlport -L$android_ndk/sources/cxx-stl/stlport/libs/$ANDROID_CPU_ARCH/"
-            elif test -e "$android_ndk/tmp/ndk-digit/build/install/sources/cxx-stl/stlport/libs/$ANDROID_CPU_ARCH/libstlport_static.a"; then
-                STLPORT_LDFLAGS="-L$_objdir/build/stlport -L$android_ndk/tmp/ndk-digit/build/install/sources/cxx-stl/stlport/libs/$ANDROID_CPU_ARCH/"
-            else
-                AC_MSG_ERROR([Couldn't find path to stlport in the android ndk])
-            fi
-            STLPORT_SOURCES="$android_ndk/sources/cxx-stl/stlport"
-            STLPORT_CPPFLAGS="-I$_objdir/build/stlport -I$android_ndk/sources/cxx-stl/stlport/stlport"
-            STLPORT_LIBS="-lstlport_static -static-libstdc++"
-        elif test "$target" != "arm-android-eabi"; then
-            dnl fail if we're not building with NDKr4
-            AC_MSG_ERROR([Couldn't find path to stlport in the android ndk])
+        else
+            STLPORT_CPPFLAGS="-I$_topsrcdir/build/stlport/stlport -I$android_ndk/sources/cxx-stl/system/include"
+            STLPORT_LIBS="$_objdir/build/stlport/libstlport_static.a -static-libstdc++"
         fi
     fi
     CXXFLAGS="$CXXFLAGS $STLPORT_CPPFLAGS"
-    LDFLAGS="$LDFLAGS $STLPORT_LDFLAGS"
-    LIBS="$LIBS $STLPORT_LIBS"
 fi
-AC_SUBST([STLPORT_SOURCES])
+AC_SUBST([MOZ_ANDROID_LIBSTDCXX])
+AC_SUBST([STLPORT_LIBS])
 
 ])
 
@@ -301,9 +289,23 @@ case "$target" in
         fi
     fi
 
+    android_tools="$android_sdk"/../../tools
     android_platform_tools="$android_sdk"/../../platform-tools
     if test ! -d "$android_platform_tools" ; then
         android_platform_tools="$android_sdk"/tools # SDK Tools < r8
+    fi
+    # The build tools got moved around to different directories in
+    # SDK Tools r22.  Try to locate them.
+    android_build_tools=""
+    for suffix in 18.0.1 18.0.0 17.0.0 android-4.2.2; do
+        tools_directory="$android_sdk/../../build-tools/$suffix"
+        if test -d "$tools_directory" ; then
+            android_build_tools="$tools_directory"
+            break
+        fi
+    done
+    if test -z "$android_build_tools" ; then
+        android_build_tools="$android_platform_tools" # SDK Tools < r22
     fi
     ANDROID_SDK="${android_sdk}"
     if test -e "${android_sdk}/../../extras/android/compatibility/v4/android-support-v4.jar" ; then
@@ -311,13 +313,36 @@ case "$target" in
     else
         ANDROID_COMPAT_LIB="${android_sdk}/../../extras/android/support/v4/android-support-v4.jar";
     fi
+    ANDROID_TOOLS="${android_tools}"
     ANDROID_PLATFORM_TOOLS="${android_platform_tools}"
+    ANDROID_BUILD_TOOLS="${android_build_tools}"
     AC_SUBST(ANDROID_SDK)
     AC_SUBST(ANDROID_COMPAT_LIB)
     if ! test -e $ANDROID_COMPAT_LIB ; then
         AC_MSG_ERROR([You must download the Android support library when targeting Android.   Run the Android SDK tool and install Android Support Library under Extras.  See https://developer.android.com/tools/extras/support-library.html for more info. (looked for $ANDROID_COMPAT_LIB)])
     fi
-    AC_SUBST(ANDROID_PLATFORM_TOOLS)
+
+    MOZ_PATH_PROG(ZIPALIGN, zipalign, :, [$ANDROID_TOOLS])
+    MOZ_PATH_PROG(DX, dx, :, [$ANDROID_BUILD_TOOLS])
+    MOZ_PATH_PROG(AAPT, aapt, :, [$ANDROID_BUILD_TOOLS])
+    MOZ_PATH_PROG(AIDL, aidl, :, [$ANDROID_BUILD_TOOLS])
+    MOZ_PATH_PROG(ADB, adb, :, [$ANDROID_PLATFORM_TOOLS])
+
+    if test -z "$ZIPALIGN" -o "$ZIPALIGN" = ":"; then
+      AC_MSG_ERROR([The program zipalign was not found.  Use --with-android-sdk={android-sdk-dir}.])
+    fi
+    if test -z "$DX" -o "$DX" = ":"; then
+      AC_MSG_ERROR([The program dx was not found.  Use --with-android-sdk={android-sdk-dir}.])
+    fi
+    if test -z "$AAPT" -o "$AAPT" = ":"; then
+      AC_MSG_ERROR([The program aapt was not found.  Use --with-android-sdk={android-sdk-dir}.])
+    fi
+    if test -z "$AIDL" -o "$AIDL" = ":"; then
+      AC_MSG_ERROR([The program aidl was not found.  Use --with-android-sdk={android-sdk-dir}.])
+    fi
+    if test -z "$ADB" -o "$ADB" = ":"; then
+      AC_MSG_ERROR([The program adb was not found.  Use --with-android-sdk={android-sdk-dir}.])
+    fi
     ;;
 esac
 

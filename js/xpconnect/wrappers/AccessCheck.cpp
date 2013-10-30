@@ -179,8 +179,8 @@ IsFrameId(JSContext *cx, JSObject *objArg, jsid idArg)
 
     obj = JS_ObjectToInnerObject(cx, obj);
     MOZ_ASSERT(!js::IsWrapper(obj));
-    XPCWrappedNative *wn = IS_WN_WRAPPER(obj) ? XPCWrappedNative::Get(obj)
-                                              : nullptr;
+    XPCWrappedNative *wn = IS_WN_REFLECTOR(obj) ? XPCWrappedNative::Get(obj)
+                                                : nullptr;
     if (!wn) {
         return false;
     }
@@ -222,11 +222,19 @@ AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapperArg, j
         return true;
 
     if (act == Wrapper::CALL)
-        return true;
+        return false;
 
     RootedId id(cx, idArg);
     RootedObject wrapper(cx, wrapperArg);
     RootedObject obj(cx, Wrapper::wrappedObject(wrapper));
+
+    // Enumerate-like operations pass JSID_VOID to |enter|, since there isn't
+    // another sane value to pass. For XOWs, we generally want to deny such
+    // operations but fail silently (see CrossOriginAccessiblePropertiesOnly::
+    // deny). We could just fall through here and rely on the fact that none
+    // of the whitelisted properties below will match JSID_VOID, but EIBTI.
+    if (id == JSID_VOID)
+        return false;
 
     const char *name;
     js::Class *clasp = js::GetObjectClass(obj);
@@ -264,10 +272,10 @@ AccessCheck::needsSystemOnlyWrapper(JSObject *obj)
     if (dom::GetSameCompartmentWrapperForDOMBinding(wrapper))
         return wrapper != obj;
 
-    if (!IS_WN_WRAPPER(obj))
+    if (!IS_WN_REFLECTOR(obj))
         return false;
 
-    XPCWrappedNative *wn = static_cast<XPCWrappedNative *>(js::GetObjectPrivate(obj));
+    XPCWrappedNative *wn = XPCWrappedNative::Get(obj);
     return wn->NeedsSOW();
 }
 
@@ -319,7 +327,7 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapperArg, jsid idArg, Wr
         return true;
 
     RootedValue exposedProps(cx);
-    if (!JS_LookupPropertyById(cx, wrappedObject, exposedPropsId, exposedProps.address()))
+    if (!JS_LookupPropertyById(cx, wrappedObject, exposedPropsId, &exposedProps))
         return false;
 
     if (exposedProps.isNullOrUndefined())

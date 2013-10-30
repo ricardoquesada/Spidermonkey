@@ -172,7 +172,7 @@ strncasecomp (const char* one, const char * two, int n)
     }
 }
 
-static char file_url_prefix[]    = "file:";
+static const char file_url_prefix[] = "file:";
 #define FILE_URL_PREFIX_LEN     (sizeof file_url_prefix - 1)
 
 char*
@@ -344,11 +344,8 @@ jsd_NewSourceText(JSDContext* jsdc, const char* url)
 
     JSD_LOCK_SOURCE_TEXT(jsdc);
 
-#ifdef LIVEWIRE
-    new_url_string = url; /* we take ownership of alloc'd string */
-#else
     new_url_string = jsd_BuildNormalizedURL(url);
-#endif
+
     if( ! new_url_string )
         return NULL;
 

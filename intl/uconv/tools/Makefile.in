@@ -1,0 +1,30 @@
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+DEPTH		= @DEPTH@
+topsrcdir	= @top_srcdir@
+srcdir		= @srcdir@
+VPATH		= @srcdir@
+
+include $(DEPTH)/config/autoconf.mk
+
+DISABLED_CSRCS		= \
+		umaptable.c \
+		$(NULL)
+
+SIMPLE_PROGRAMS	= $(DISABLED_CSRCS:.c=$(BIN_SUFFIX))
+
+include $(topsrcdir)/config/rules.mk
+
+INCLUDES	+= \
+		$(NULL)
+
+# needed for mac linux
+ifeq ($(OS_ARCH),Linux)
+ifneq ($(OS_RELEASE),1.2)
+OS_LIBS		+= /usr/lib/libdl.so
+endif
+endif
+

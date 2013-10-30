@@ -7,11 +7,23 @@
 #include "nsISupports.idl"
 
 [ptr] native JSRuntime(JSRuntime);
-native JSGCCallback(JSGCCallback);
+[ptr] native JSContext(JSContext);
+native xpcGCCallback(xpcGCCallback);
+native xpcContextCallback(xpcContextCallback);
+
+%{C++
+
+typedef void
+(* xpcGCCallback)(JSGCStatus status);
+
+typedef bool
+(* xpcContextCallback)(JSContext* cx, unsigned operation);
+
+%}
 
 interface nsIBackstagePass;
 
-[uuid(991c0749-a22e-476b-9428-a373df037455)]
+[uuid( 2ac111f2-e492-488e-85df-353c453e98f3)]
 interface nsIJSRuntimeService : nsISupports
 {
     readonly attribute JSRuntime        runtime;
@@ -20,6 +32,13 @@ interface nsIJSRuntimeService : nsISupports
      * Register additional GC callback which will run after the
      * standard XPConnect callback.
      */
-    [noscript, notxpcom] void registerGCCallback(in JSGCCallback func);
-    [noscript, notxpcom] void unregisterGCCallback(in JSGCCallback func);
+    [noscript, notxpcom] void registerGCCallback(in xpcGCCallback func);
+    [noscript, notxpcom] void unregisterGCCallback(in xpcGCCallback func);
+
+    /**
+     * Register additional context callback which will run after the
+     * standard XPConnect callback.
+     */
+    [noscript, notxpcom] void registerContextCallback(in xpcContextCallback func);
+    [noscript, notxpcom] void unregisterContextCallback(in xpcContextCallback func);
 };

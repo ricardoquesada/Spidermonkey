@@ -1,0 +1,39 @@
+# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# vim: set filetype=python:
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+MODULE = 'ucvibm'
+
+EXPORTS += [
+    'nsUCvIBMCID.h',
+]
+
+CPP_SOURCES += [
+    'nsCP850ToUnicode.cpp',
+    'nsCP852ToUnicode.cpp',
+    'nsCP855ToUnicode.cpp',
+    'nsCP857ToUnicode.cpp',
+    'nsCP862ToUnicode.cpp',
+    'nsCP864ToUnicode.cpp',
+    'nsUnicodeToCP850.cpp',
+    'nsUnicodeToCP852.cpp',
+    'nsUnicodeToCP855.cpp',
+    'nsUnicodeToCP857.cpp',
+    'nsUnicodeToCP862.cpp',
+    'nsUnicodeToCP864.cpp',
+]
+
+if CONFIG['OS_ARCH'] == 'OS2':
+    CPP_SOURCES += [
+        'nsCP869ToUnicode.cpp',
+        'nsUnicodeToCP869.cpp',
+        'nsCP1125ToUnicode.cpp',
+        'nsUnicodeToCP1125.cpp',
+        'nsCP1131ToUnicode.cpp',
+        'nsUnicodeToCP1131.cpp',
+    ]
+
+LIBRARY_NAME = 'ucvibm_s'
+

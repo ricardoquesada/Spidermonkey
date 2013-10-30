@@ -116,10 +116,6 @@ endif
 
 OS_CONFIG	:= $(OS_ARCH)$(OS_RELEASE)
 
-FINAL_LINK_LIBS = $(DEPTH)/config/final-link-libs
-FINAL_LINK_COMPS = $(DEPTH)/config/final-link-comps
-FINAL_LINK_COMP_NAMES = $(DEPTH)/config/final-link-comp-names
-
 MOZ_UNICHARUTIL_LIBS = $(LIBXUL_DIST)/lib/$(LIB_PREFIX)unicharutil_s.$(LIB_SUFFIX)
 MOZ_WIDGET_SUPPORT_LIBS    = $(DIST)/lib/$(LIB_PREFIX)widgetsupport_s.$(LIB_SUFFIX)
 
@@ -239,11 +235,12 @@ _ENABLE_PIC=1
 
 ifdef LIBXUL_LIBRARY
 ifdef IS_COMPONENT
-ifdef MODULE_NAME
-DEFINES += -DXPCOM_TRANSLATE_NSGM_ENTRY_POINT=1
-else
+ifndef MODULE_NAME
 $(error Component makefile does not specify MODULE_NAME.)
 endif
+endif
+ifdef FORCE_STATIC_LIB
+$(error Makefile sets FORCE_STATIC_LIB which was already implied by LIBXUL_LIBRARY)
 endif
 FORCE_STATIC_LIB=1
 ifneq ($(SHORT_LIBNAME),)
@@ -272,6 +269,13 @@ endif
 ifndef STATIC_LIBRARY_NAME
 ifdef LIBRARY_NAME
 STATIC_LIBRARY_NAME=$(LIBRARY_NAME)
+endif
+endif
+
+# PGO on MSVC is opt-in
+ifdef _MSC_VER
+ifndef MSVC_ENABLE_PGO
+NO_PROFILE_GUIDED_OPTIMIZE = 1
 endif
 endif
 
@@ -322,14 +326,7 @@ endif
 # building libxul libraries
 ifdef LIBXUL_LIBRARY
 DEFINES += \
-		-D_IMPL_NS_COM \
-		-DEXPORT_XPT_API \
-		-DEXPORT_XPTC_API \
-		-D_IMPL_NS_GFX \
-		-D_IMPL_NS_WIDGET \
-		-DIMPL_XREAPI \
-		-DIMPL_NS_NET \
-		-DIMPL_THEBES \
+	  -DIMPL_LIBXUL \
 		$(NULL)
 
 ifndef JS_SHARED_LIBRARY
@@ -351,12 +348,10 @@ ifdef BOTH_MANIFESTS
 MAKE_JARS_FLAGS += --both-manifests
 endif
 
-TAR_CREATE_FLAGS = -cvhf
-TAR_CREATE_FLAGS_QUIET = -chf
+TAR_CREATE_FLAGS = -chf
 
 ifeq ($(OS_ARCH),OS2)
-TAR_CREATE_FLAGS = -cvf
-TAR_CREATE_FLAGS_QUIET = -cf
+TAR_CREATE_FLAGS = -cf
 endif
 
 #
@@ -740,8 +735,8 @@ CREATE_PRECOMPLETE_CMD = $(PYTHON) $(call core_abspath,$(topsrcdir)/config/creat
 # MDDEPDIR is the subdirectory where dependency files are stored
 MDDEPDIR := .deps
 
-EXPAND_LIBS_EXEC = $(PYTHON) $(topsrcdir)/config/expandlibs_exec.py $(if $@,--depend $(MDDEPDIR)/$(@F).pp --target $@)
-EXPAND_LIBS_GEN = $(PYTHON) $(topsrcdir)/config/expandlibs_gen.py $(if $@,--depend $(MDDEPDIR)/$(@F).pp)
+EXPAND_LIBS_EXEC = $(PYTHON) $(topsrcdir)/config/expandlibs_exec.py $(if $@,--depend $(MDDEPDIR)/$(dir $@)/$(@F).pp --target $@)
+EXPAND_LIBS_GEN = $(PYTHON) $(topsrcdir)/config/expandlibs_gen.py $(if $@,--depend $(MDDEPDIR)/$(dir $@)/$(@F).pp)
 EXPAND_AR = $(EXPAND_LIBS_EXEC) --extract -- $(AR)
 EXPAND_CC = $(EXPAND_LIBS_EXEC) --uselist -- $(CC)
 EXPAND_CCC = $(EXPAND_LIBS_EXEC) --uselist -- $(CCC)
@@ -752,13 +747,17 @@ EXPAND_MKSHLIB_ARGS += --symbol-order $(SYMBOL_ORDER)
 endif
 EXPAND_MKSHLIB = $(EXPAND_LIBS_EXEC) $(EXPAND_MKSHLIB_ARGS) -- $(MKSHLIB)
 
-ifdef STDCXX_COMPAT
+ifneq (,$(MOZ_LIBSTDCXX_TARGET_VERSION)$(MOZ_LIBSTDCXX_HOST_VERSION))
 ifneq ($(OS_ARCH),Darwin)
 CHECK_STDCXX = objdump -p $(1) | grep -e 'GLIBCXX_3\.4\.\(9\|[1-9][0-9]\)' > /dev/null && echo "TEST-UNEXPECTED-FAIL | | We don't want these libstdc++ symbols to be used:" && objdump -T $(1) | grep -e 'GLIBCXX_3\.4\.\(9\|[1-9][0-9]\)' && exit 1 || exit 0
 endif
 
+ifdef MOZ_LIBSTDCXX_TARGET_VERSION
 EXTRA_LIBS += $(call EXPAND_LIBNAME_PATH,stdc++compat,$(DEPTH)/build/unix/stdc++compat)
+endif
+ifdef MOZ_LIBSTDCXX_HOST_VERSION
 HOST_EXTRA_LIBS += $(call EXPAND_LIBNAME_PATH,host_stdc++compat,$(DEPTH)/build/unix/stdc++compat)
+endif
 endif
 
 # autoconf.mk sets OBJ_SUFFIX to an error to avoid use before including
@@ -809,3 +808,11 @@ MOZ_GTK2_CFLAGS := -I$(topsrcdir)/widget/gtk2/compat $(MOZ_GTK2_CFLAGS)
 endif
 
 DEFINES += -DNO_NSPR_10_SUPPORT
+
+# Run a named Python build action. The first argument is the name of the build
+# action. The second argument are the arguments to pass to the action (space
+# delimited arguments). e.g.
+#
+#   libs::
+#       $(call py_action,purge_manifests,_build_manifests/purge/foo.manifest)
+py_action = $(PYTHON) -m mozbuild.action.$(1) $(2)

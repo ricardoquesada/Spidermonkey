@@ -4,13 +4,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "jscntxt.h"
-#include "jscompartment.h"
-#include "FullParseHandler.h"
-#include "SyntaxParseHandler.h"
+#include "frontend/ParseMaps-inl.h"
 
-#include "ParseMaps-inl.h"
-#include "vm/String-inl.h"
+#include "jscntxt.h"
+
+#include "frontend/FullParseHandler.h"
+#include "frontend/SyntaxParseHandler.h"
 
 using namespace js;
 using namespace js::frontend;
@@ -50,7 +49,7 @@ ParseMapPool::allocateFresh()
     if (!all.reserve(newAllLength) || !recyclable.reserve(newAllLength))
         return NULL;
 
-    AtomMapT *map = cx->new_<AtomMapT>(cx);
+    AtomMapT *map = js_new<AtomMapT>();
     if (!map)
         return NULL;
 
@@ -59,9 +58,9 @@ ParseMapPool::allocateFresh()
 }
 
 DefinitionList::Node *
-DefinitionList::allocNode(JSContext *cx, uintptr_t head, Node *tail)
+DefinitionList::allocNode(ExclusiveContext *cx, LifoAlloc &alloc, uintptr_t head, Node *tail)
 {
-    Node *result = cx->tempLifoAlloc().new_<Node>(head, tail);
+    Node *result = alloc.new_<Node>(head, tail);
     if (!result)
         js_ReportOutOfMemory(cx);
     return result;
@@ -106,11 +105,11 @@ AtomDecls<ParseHandler>::addShadow(JSAtom *atom, typename ParseHandler::Definiti
     if (!p)
         return map->add(p, atom, DefinitionList(ParseHandler::definitionToBits(defn)));
 
-    return p.value().pushFront<ParseHandler>(cx, defn);
+    return p.value().pushFront<ParseHandler>(cx, alloc, defn);
 }
 
 void
-frontend::InitAtomMap(JSContext *cx, frontend::AtomIndexMap *indices, HeapPtrAtom *atoms)
+frontend::InitAtomMap(frontend::AtomIndexMap *indices, HeapPtrAtom *atoms)
 {
     if (indices->isMap()) {
         typedef AtomIndexMap::WordMap WordMap;
@@ -133,5 +132,5 @@ frontend::InitAtomMap(JSContext *cx, frontend::AtomIndexMap *indices, HeapPtrAto
     }
 }
 
-template class AtomDecls<FullParseHandler>;
-template class AtomDecls<SyntaxParseHandler>;
+template class js::frontend::AtomDecls<FullParseHandler>;
+template class js::frontend::AtomDecls<SyntaxParseHandler>;

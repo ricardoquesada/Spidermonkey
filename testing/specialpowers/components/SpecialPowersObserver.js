@@ -25,9 +25,8 @@ var loader = Components.classes["@mozilla.org/moz/jssubscript-loader;1"]
                        .getService(Components.interfaces.mozIJSSubScriptLoader);
 loader.loadSubScript("chrome://specialpowers/content/SpecialPowersObserverAPI.js");
 
-
 /* XPCOM gunk */
-function SpecialPowersObserver() {
+this.SpecialPowersObserver = function SpecialPowersObserver() {
   this._isFrameScriptLoaded = false;
   this._messageManager = Cc["@mozilla.org/globalmessagemanager;1"].
                          getService(Ci.nsIMessageBroadcaster);
@@ -59,6 +58,7 @@ SpecialPowersObserver.prototype = new SpecialPowersObserverAPI();
           this._messageManager.addMessageListener("SpecialPowers.Focus", this);
           this._messageManager.addMessageListener("SPPermissionManager", this);
           this._messageManager.addMessageListener("SPWebAppService", this);
+          this._messageManager.addMessageListener("SPObserverService", this);
 
           this._messageManager.loadFrameScript(CHILD_LOGGER_SCRIPT, true);
           this._messageManager.loadFrameScript(CHILD_SCRIPT_API, true);

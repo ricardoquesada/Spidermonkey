@@ -16,7 +16,7 @@ SpecialPowersException.prototype.toString = function() {
   return this.name + ': "' + this.message + '"';
 };
 
-function SpecialPowersObserverAPI() {
+this.SpecialPowersObserverAPI = function SpecialPowersObserverAPI() {
   this._crashDumpDir = null;
   this._processCrashObserversRegistered = false;
 }
@@ -265,6 +265,18 @@ SpecialPowersObserverAPI.prototype = {
             return val;
           default:
             throw new SpecialPowersException("Invalid operation for SPWebAppsService");
+        }
+        break;
+
+      case "SPObserverService":
+        switch (aMessage.json.op) {
+          case "notify":
+            let topic = aMessage.json.observerTopic;
+            let data = aMessage.json.observerData
+            Services.obs.notifyObservers(null, topic, data);
+            break;
+          default:
+            throw new SpecialPowersException("Invalid operation for SPObserverervice");
         }
         break;
 

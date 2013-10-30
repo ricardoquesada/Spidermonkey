@@ -2,9 +2,12 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+import errno
 import os
 import re
 import shutil
+import stat
+import uuid
 from mozpack.executables import (
     is_executable,
     may_strip,
@@ -14,7 +17,10 @@ from mozpack.executables import (
 )
 from mozpack.chrome.manifest import ManifestEntry
 from io import BytesIO
-from mozpack.errors import ErrorMessage
+from mozpack.errors import (
+    ErrorMessage,
+    errors,
+)
 from mozpack.mozjar import JarReader
 import mozpack.path
 from collections import OrderedDict
@@ -157,6 +163,122 @@ class ExecutableFile(File):
             os.remove(dest)
             raise
         return True
+
+
+class AbsoluteSymlinkFile(File):
+    '''File class that is copied by symlinking (if available).
+
+    This class only works if the target path is absolute.
+    '''
+
+    def __init__(self, path):
+        if not os.path.isabs(path):
+            raise ValueError('Symlink target not absolute: %s' % path)
+
+        File.__init__(self, path)
+
+    def copy(self, dest, skip_if_older=True):
+        assert isinstance(dest, basestring)
+
+        # The logic in this function is complicated by the fact that symlinks
+        # aren't universally supported. So, where symlinks aren't supported, we
+        # fall back to file copying. Keep in mind that symlink support is
+        # per-filesystem, not per-OS.
+
+        # Handle the simple case where symlinks are definitely not supported by
+        # falling back to file copy.
+        if not hasattr(os, 'symlink'):
+            return File.copy(self, dest, skip_if_older=skip_if_older)
+
+        # Always verify the symlink target path exists.
+        if not os.path.exists(self.path):
+            raise ErrorMessage('Symlink target path does not exist: %s' % self.path)
+
+        st = None
+
+        try:
+            st = os.lstat(dest)
+        except OSError as ose:
+            if ose.errno != errno.ENOENT:
+                raise
+
+        # If the dest is a symlink pointing to us, we have nothing to do.
+        # If it's the wrong symlink, the filesystem must support symlinks,
+        # so we replace with a proper symlink.
+        if st and stat.S_ISLNK(st.st_mode):
+            link = os.readlink(dest)
+            if link == self.path:
+                return False
+
+            os.remove(dest)
+            os.symlink(self.path, dest)
+            return True
+
+        # If the destination doesn't exist, we try to create a symlink. If that
+        # fails, we fall back to copy code.
+        if not st:
+            try:
+                os.symlink(self.path, dest)
+                return True
+            except OSError:
+                return File.copy(self, dest, skip_if_older=skip_if_older)
+
+        # Now the complicated part. If the destination exists, we could be
+        # replacing a file with a symlink. Or, the filesystem may not support
+        # symlinks. We want to minimize I/O overhead for performance reasons,
+        # so we keep the existing destination file around as long as possible.
+        # A lot of the system calls would be eliminated if we cached whether
+        # symlinks are supported. However, even if we performed a single
+        # up-front test of whether the root of the destination directory
+        # supports symlinks, there's no guarantee that all operations for that
+        # dest (or source) would be on the same filesystem and would support
+        # symlinks.
+        #
+        # Our strategy is to attempt to create a new symlink with a random
+        # name. If that fails, we fall back to copy mode. If that works, we
+        # remove the old destination and move the newly-created symlink into
+        # its place.
+
+        temp_dest = os.path.join(os.path.dirname(dest), str(uuid.uuid4()))
+        try:
+            os.symlink(self.path, temp_dest)
+        # TODO Figure out exactly how symlink creation fails and only trap
+        # that.
+        except EnvironmentError:
+            return File.copy(self, dest, skip_if_older=skip_if_older)
+
+        # If removing the original file fails, don't forget to clean up the
+        # temporary symlink.
+        try:
+            os.remove(dest)
+        except EnvironmentError:
+            os.remove(temp_dest)
+            raise
+
+        os.rename(temp_dest, dest)
+        return True
+
+
+class RequiredExistingFile(BaseFile):
+    '''
+    File class that represents a file that must exist in the destination.
+
+    The purpose of this class is to account for files that are installed
+    via external means.
+
+    When asked to copy, this class does nothing because nothing is known about
+    the source file/data. However, since this file is required, we do validate
+    that the destination path exists.
+    '''
+    def copy(self, dest, skip_if_older=True):
+        if isinstance(dest, basestring):
+            dest = Dest(dest)
+        else:
+            assert isinstance(dest, Dest)
+
+        if not dest.exists():
+            errors.fatal("Required existing file doesn't exist: %s" %
+                dest.path)
 
 
 class GeneratedFile(BaseFile):
@@ -392,11 +514,15 @@ class FileFinder(BaseFinder):
     '''
     Helper to get appropriate BaseFile instances from the file system.
     '''
-    def __init__(self, base, **kargs):
+    def __init__(self, base, find_executables=True, **kargs):
         '''
         Create a FileFinder for files under the given base directory.
+        The find_executables argument determines whether the finder needs to
+        try to guess whether files are executables. Disabling this guessing
+        when not necessary can speed up the finder significantly.
         '''
         BaseFinder.__init__(self, base, **kargs)
+        self.find_executables = find_executables
 
     def _find(self, pattern):
         '''
@@ -434,7 +560,7 @@ class FileFinder(BaseFinder):
         if not os.path.exists(srcpath):
             return
 
-        if is_executable(srcpath):
+        if self.find_executables and is_executable(srcpath):
             yield path, ExecutableFile(srcpath)
         else:
             yield path, File(srcpath)
@@ -462,7 +588,7 @@ class FileFinder(BaseFinder):
             for p in os.listdir(os.path.join(self.base, base)):
                 if p.startswith('.') and not pattern[0].startswith('.'):
                     continue
-                if re.match(mozpack.path.translate(pattern[0]), p):
+                if mozpack.path.match(p, pattern[0]):
                     for p_, f in self._find_glob(mozpack.path.join(base, p),
                                                  pattern[1:]):
                         yield p_, f

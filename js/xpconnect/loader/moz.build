@@ -6,3 +6,15 @@
 
 MODULE = 'jsloader'
 
+CPP_SOURCES += [
+    'mozJSComponentLoader.cpp',
+    'mozJSLoaderUtils.cpp',
+    'mozJSSubScriptLoader.cpp',
+]
+
+LIBRARY_NAME = 'jsloader_s'
+
+EXTRA_JS_MODULES += [
+    'ISO8601DateUtils.jsm',
+    'XPCOMUtils.jsm',
+]

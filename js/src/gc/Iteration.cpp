@@ -5,14 +5,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jsapi.h"
-#include "jscntxt.h"
 #include "jsgc.h"
-#include "jsprf.h"
 
-#include "js/HashTable.h"
 #include "gc/GCInternals.h"
+#include "js/HashTable.h"
+#include "vm/Runtime.h"
 
-#include "jsobjinlines.h"
 #include "jsgcinlines.h"
 
 using namespace js;

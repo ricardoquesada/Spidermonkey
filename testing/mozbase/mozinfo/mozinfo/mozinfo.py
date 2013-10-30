@@ -4,19 +4,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-"""
-file for interface to transform introspected system information to a format
-pallatable to Mozilla
-
-Information:
-- os : what operating system ['win', 'mac', 'linux', ...]
-- bits : 32 or 64
-- processor : processor architecture ['x86', 'x86_64', 'ppc', ...]
-- version : operating system version string
-
-For windows, the service pack information is also included
-"""
-
 # TODO: it might be a good idea of adding a system name (e.g. 'Ubuntu' for
 # linux) to the information; I certainly wouldn't want anyone parsing this
 # information and having behaviour depend on it
@@ -25,6 +12,13 @@ import os
 import platform
 import re
 import sys
+
+try:
+    import json
+except ImportError:
+    import simplejson as json
+
+import mozfile
 
 # keep a copy of the os module since updating globals overrides this
 _os = os
@@ -58,7 +52,10 @@ if system in ["Microsoft", "Windows"]:
         service_pack = os.sys.getwindowsversion()[4]
         info['service_pack'] = service_pack
 elif system == "Linux":
-    (distro, version, codename) = platform.dist()
+    if hasattr(platform, "linux_distribution"):
+        (distro, version, codename) = platform.linux_distribution()
+    else:
+        (distro, version, codename) = platform.dist()
     version = "%s %s" % (distro, version)
     if not processor:
         processor = machine
@@ -111,7 +108,18 @@ def sanitize(info):
 
 # method for updating information
 def update(new_info):
-    """update the info"""
+    """
+    Update the info.
+
+    :param new_info: Either a dict containing the new info or a path/url
+                     to a json file containing the new info.
+    """
+
+    if isinstance(new_info, basestring):
+        f = mozfile.load(new_info)
+        new_info = json.loads(f.read())
+        f.close()
+
     info.update(new_info)
     sanitize(info)
     globals().update(info)
@@ -123,13 +131,50 @@ def update(new_info):
     if isLinux or isBsd:
         globals()['isUnix'] = True
 
+def find_and_update_from_json(*dirs):
+    """
+    Find a mozinfo.json file, load it, and update the info with the
+    contents.
+
+    :param dirs: Directories in which to look for the file. They will be
+                 searched after first looking in the root of the objdir
+                 if the current script is being run from a Mozilla objdir.
+
+    Returns the full path to mozinfo.json if it was found, or None otherwise.
+    """
+    # First, see if we're in an objdir
+    try:
+        from mozbuild.base import MozbuildObject
+        build = MozbuildObject.from_environment()
+        json_path = _os.path.join(build.topobjdir, "mozinfo.json")
+        if _os.path.isfile(json_path):
+            update(json_path)
+            return json_path
+    except ImportError:
+        pass
+
+    for d in dirs:
+        d = _os.path.abspath(d)
+        json_path = _os.path.join(d, "mozinfo.json")
+        if _os.path.isfile(json_path):
+            update(json_path)
+            return json_path
+
+    return None
+
 update({})
 
 # exports
 __all__ = info.keys()
 __all__ += ['is' + os_name.title() for os_name in choices['os']]
-__all__ += ['info', 'unknown', 'main', 'choices', 'update']
-
+__all__ += [
+    'info',
+    'unknown',
+    'main',
+    'choices',
+    'update',
+    'find_and_update_from_json',
+    ]
 
 def main(args=None):
 
@@ -144,21 +189,12 @@ def main(args=None):
 
     # args are JSON blobs to override info
     if args:
-        try:
-            from json import loads
-        except ImportError:
-            try:
-                from simplejson import loads
-            except ImportError:
-                def loads(string):
-                    """*really* simple json; will not work with unicode"""
-                    return eval(string, {'true': True, 'false': False, 'null': None})
         for arg in args:
             if _os.path.exists(arg):
                 string = file(arg).read()
             else:
                 string = arg
-            update(loads(string))
+            update(json.loads(string))
 
     # print out choices if requested
     flag = False

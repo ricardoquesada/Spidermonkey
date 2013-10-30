@@ -3,6 +3,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#ifndef editline_editline_h
+#define editline_editline_h
+
 /*
  * Copyright 1992,1993 Simmule Turner and Rich Salz.  All rights reserved.
  *
@@ -50,14 +53,7 @@ typedef unsigned char	CHAR;
 #define STATIC	/* NULL */
 #endif	/* !defined(HIDE) */
 
-#if	!defined(CONST)
-#if	defined(__STDC__)
 #define CONST	const
-#else
-#define CONST
-#endif	/* defined(__STDC__) */
-#endif	/* !defined(CONST) */
-
 
 #define MEM_INC		64
 #define SCREEN_INC	256
@@ -99,3 +95,4 @@ extern int	strlen();
 extern int	strncmp();
 #endif	/* !defined(HAVE_STDLIB) */
 
+#endif /* editline_editline_h */
