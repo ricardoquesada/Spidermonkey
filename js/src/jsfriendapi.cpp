@@ -1133,7 +1133,8 @@ js_ReportIsNotFunction(JSContext *cx, const JS::Value& v)
     return ReportIsNotFunction(cx, v);
 }
 
-#ifdef DEBUG
+// XXX: Needed for cocos2d JS Bindings
+//#ifdef DEBUG
 JS_PUBLIC_API(bool)
 js::IsInRequest(JSContext *cx)
 {
@@ -1143,7 +1144,7 @@ js::IsInRequest(JSContext *cx)
     return true;
 #endif
 }
-#endif
+//#endif
 
 #ifdef JSGC_GENERATIONAL
 JS_FRIEND_API(void)
