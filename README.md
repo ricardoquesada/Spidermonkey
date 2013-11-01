@@ -37,8 +37,7 @@
 
 ## About the patches
  
- - Patches for [v21](https://github.com/ricardoquesada/Spidermonkey/wiki/Migrating-to-v21)
- - Patches for [v20](https://github.com/ricardoquesada/Spidermonkey/wiki/Migrating-to-v20)
+ - Patches for [SpiderMonkey](https://github.com/ricardoquesada/Spidermonkey/wiki/)
  
 
 
