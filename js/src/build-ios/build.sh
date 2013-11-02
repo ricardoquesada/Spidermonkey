@@ -59,6 +59,19 @@ if (( $? )) ; then
 fi
 mv libjs_static.a libjs_static.armv7s.a
 
+#
+# create ios version (arm64)
+#
+
+#../configure --with-ios-target=iPhoneOS --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION --with-ios-arch=arm64 \
+#            --disable-shared-js --disable-tests --disable-ion --disable-jm --disable-tm --enable-llvm-hacks --disable-methodjit --disable-monoic --disable-polyic --disable-yarr-jit \
+#            --enable-optimize=-O3 --with-thumb=yes --enable-strip --enable-install-strip --enable-intl-api=no
+#make -j$cpus
+#if (( $? )) ; then
+#    echo "error when compiling iOS version of the library"
+#    exit
+#fi
+#mv libjs_static.a libjs_static.arm64.a
 
 #
 # lipo create
