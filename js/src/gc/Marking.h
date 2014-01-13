@@ -7,19 +7,8 @@
 #ifndef gc_Marking_h
 #define gc_Marking_h
 
-#include "jsgc.h"
-#include "jslock.h"
-
 #include "gc/Barrier.h"
-#include "gc/Nursery.h"
-#include "jit/IonCode.h"
-
-extern "C" {
-struct JSContext;
-class JSFunction;
-class JSObject;
-class JSScript;
-}
+#include "js/TypeDecls.h"
 
 class JSAtom;
 class JSLinearString;
@@ -30,11 +19,25 @@ class ArgumentsObject;
 class ArrayBufferObject;
 class ArrayBufferViewObject;
 class BaseShape;
+class DebugScopeObject;
+struct GCMarker;
 class GlobalObject;
-class UnownedBaseShape;
+class LazyScript;
+class ScopeObject;
 class Shape;
+class UnownedBaseShape;
 
 template<class, typename> class HeapPtr;
+
+namespace jit {
+class IonCode;
+class IonScript;
+class VMFunction;
+}
+
+namespace types {
+class Type;
+}
 
 namespace gc {
 
@@ -228,10 +231,6 @@ MarkCrossCompartmentSlot(JSTracer *trc, JSObject *src, HeapSlot *dst_slot, const
  */
 void
 MarkObject(JSTracer *trc, HeapPtr<GlobalObject, JSScript *> *thingp, const char *name);
-
-/* Direct value access used by the write barriers and the methodjit. */
-void
-MarkValueUnbarriered(JSTracer *trc, Value *v, const char *name);
 
 /*
  * MarkChildren<JSObject> is exposed solely for preWriteBarrier on

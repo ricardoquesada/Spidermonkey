@@ -7,16 +7,10 @@
 from __future__ import with_statement
 import sys, os, tempfile, shutil
 from optparse import OptionParser
-import mozprocess, mozinfo, mozlog, mozcrash
+import mozprocess, mozinfo, mozlog, mozcrash, mozfile
 from contextlib import contextmanager
 
 log = mozlog.getLogger('cppunittests')
-
-@contextmanager
-def TemporaryDirectory():
-    tempdir = tempfile.mkdtemp()
-    yield tempdir
-    shutil.rmtree(tempdir)
 
 class CPPUnitTests(object):
     # Time (seconds) to wait for test process to complete
@@ -38,7 +32,7 @@ class CPPUnitTests(object):
         """
         basename = os.path.basename(prog)
         log.info("Running test %s", basename)
-        with TemporaryDirectory() as tempdir:
+        with mozfile.TemporaryDirectory() as tempdir:
             proc = mozprocess.ProcessHandler([prog],
                                              cwd=tempdir,
                                              env=env)
@@ -95,6 +89,12 @@ class CPPUnitTests(object):
                 env[pathvar] = "%s%s%s" % (self.xre_path, os.pathsep, env[pathvar])
             else:
                 env[pathvar] = self.xre_path
+
+        # Use llvm-symbolizer for ASan if available/required
+        llvmsym = os.path.join(self.xre_path, "llvm-symbolizer")
+        if os.path.isfile(llvmsym):
+          env["ASAN_SYMBOLIZER_PATH"] = llvmsym
+
         return env
 
     def run_tests(self, programs, xre_path, symbols_path=None):
@@ -112,11 +112,19 @@ class CPPUnitTests(object):
         """
         self.xre_path = xre_path
         env = self.build_environment()
-        result = True
+        pass_count = 0
+        fail_count = 0
         for prog in programs:
             single_result = self.run_one_test(prog, env, symbols_path)
-            result = result and single_result
-        return result
+            if single_result:
+                pass_count += 1
+            else:
+                fail_count += 1
+
+        log.info("Result summary:")
+        log.info("Passed: %d" % pass_count)
+        log.info("Failed: %d" % fail_count)
+        return fail_count == 0
 
 class CPPUnittestOptions(OptionParser):
     def __init__(self):

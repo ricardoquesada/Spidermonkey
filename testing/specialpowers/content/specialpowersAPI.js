@@ -494,6 +494,56 @@ SpecialPowersAPI.prototype = {
     return MockPermissionPrompt
   },
 
+  loadChromeScript: function (url) {
+    // Create a unique id for this chrome script
+    let uuidGenerator = Cc["@mozilla.org/uuid-generator;1"]
+                          .getService(Ci.nsIUUIDGenerator);
+    let id = uuidGenerator.generateUUID().toString();
+
+    // Tells chrome code to evaluate this chrome script
+    this._sendSyncMessage("SPLoadChromeScript",
+                          { url: url, id: id });
+
+    // Returns a MessageManager like API in order to be
+    // able to communicate with this chrome script
+    let listeners = [];
+    let chromeScript = {
+      addMessageListener: (name, listener) => {
+        listeners.push({ name: name, listener: listener });
+      },
+
+      removeMessageListener: (name, listener) => {
+        listeners = listeners.filter(
+          o => (o.name != name || o.listener != listener)
+        );
+      },
+
+      sendAsyncMessage: (name, message) => {
+        this._sendSyncMessage("SPChromeScriptMessage",
+                              { id: id, name: name, message: message });
+      },
+
+      destroy: () => {
+        listeners = [];
+        this._removeMessageListener("SPChromeScriptMessage", chromeScript);
+      },
+
+      receiveMessage: (aMessage) => {
+        let messageId = aMessage.json.id;
+        let name = aMessage.json.name;
+        let message = aMessage.json.message;
+        // Ignore message from other chrome script
+        if (messageId != id)
+          return;
+
+        listeners.filter(o => (o.name == name))
+                 .forEach(o => o.listener(this.wrap(message)));
+      }
+    };
+    this._addMessageListener("SPChromeScriptMessage", chromeScript);
+    return this.wrap(chromeScript);
+  },
+
   get Services() {
     return wrapPrivileged(Services);
   },
@@ -561,7 +611,7 @@ SpecialPowersAPI.prototype = {
      [{'type': 'SystemXHR', 'allow': 1, 'context': document}, 
       {'type': 'SystemXHR', 'allow': Ci.nsIPermissionManager.PROMPT_ACTION, 'context': document}]
 
-    allow is a boolean and can be true/false or 1/0
+     Allow can be a boolean value of true/false or ALLOW_ACTION/DENY_ACTION/PROMPT_ACTION/UNKNOWN_ACTION
   */
   pushPermissions: function(inPermissions, callback) {
     var pendingPermissions = [];
@@ -588,10 +638,18 @@ SpecialPowersAPI.prototype = {
                              : Ci.nsIPermissionManager.DENY_ACTION;
         }
 
+        if (permission.remove == true)
+          perm = Ci.nsIPermissionManager.UNKNOWN_ACTION;
+
         if (originalValue == perm) {
           continue;
         }
-        pendingPermissions.push({'op': 'add', 'type': permission.type, 'permission': perm, 'value': perm, 'url': url, 'appId': appId, 'isInBrowserElement': isInBrowserElement});
+
+        var todo = {'op': 'add', 'type': permission.type, 'permission': perm, 'value': perm, 'url': url, 'appId': appId, 'isInBrowserElement': isInBrowserElement};
+        if (permission.remove == true)
+          todo.op = 'remove';
+
+        pendingPermissions.push(todo);
 
         /* Push original permissions value or clear into cleanup array */
         var cleanupTodo = {'op': 'add', 'type': permission.type, 'permission': perm, 'value': perm, 'url': url, 'appId': appId, 'isInBrowserElement': isInBrowserElement};
@@ -1174,6 +1232,11 @@ SpecialPowersAPI.prototype = {
     Cu.forceCC();
   },
 
+  // Due to various dependencies between JS objects and C++ objects, an ordinary
+  // forceGC doesn't necessarily clear all unused objects, thus the GC and CC
+  // needs to run several times and when no other JS is running.
+  // The current number of iterations has been determined according to massive
+  // cross platform testing.
   exactGC: function(win, callback) {
     var self = this;
     let count = 0;
@@ -1291,6 +1354,12 @@ SpecialPowersAPI.prototype = {
       addCategoryEntry(category, entry, value, persists, replace);
   },
 
+  deleteCategoryEntry: function(category, entry, persists) {
+    Components.classes["@mozilla.org/categorymanager;1"].
+      getService(Components.interfaces.nsICategoryManager).
+      deleteCategoryEntry(category, entry, persists);
+  },
+
   copyString: function(str, doc) {
     Components.classes["@mozilla.org/widget/clipboardhelper;1"].
       getService(Components.interfaces.nsIClipboardHelper).
@@ -1346,17 +1415,19 @@ SpecialPowersAPI.prototype = {
     sendAsyncMessage("SpecialPowers.Focus", {});
   },
 
-  getClipboardData: function(flavor) {
+  getClipboardData: function(flavor, whichClipboard) {
     if (this._cb == null)
       this._cb = Components.classes["@mozilla.org/widget/clipboard;1"].
                             getService(Components.interfaces.nsIClipboard);
+    if (whichClipboard === undefined)
+      whichClipboard = this._cb.kGlobalClipboard;
 
     var xferable = Components.classes["@mozilla.org/widget/transferable;1"].
                    createInstance(Components.interfaces.nsITransferable);
     xferable.init(this._getDocShell(content.window)
                       .QueryInterface(Components.interfaces.nsILoadContext));
     xferable.addDataFlavor(flavor);
-    this._cb.getData(xferable, this._cb.kGlobalClipboard);
+    this._cb.getData(xferable, whichClipboard);
     var data = {};
     try {
       xferable.getTransferData(flavor, data, {});

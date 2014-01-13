@@ -8,9 +8,7 @@
 
 #include "nsIScriptContext.h"
 #include "mozilla/dom/EventTarget.h"
-#include "nsJSUtils.h"
 #include "nsDOMJSUtils.h"
-#include "mozilla/Util.h"
 #include "xpcprivate.h"
 
 using mozilla::dom::EventTarget;
@@ -102,7 +100,7 @@ nsCxPusher::Pop()
 
 namespace mozilla {
 
-AutoCxPusher::AutoCxPusher(JSContext* cx, bool allowNull) : mScriptIsRunning(false)
+AutoCxPusher::AutoCxPusher(JSContext* cx, bool allowNull)
 {
   MOZ_ASSERT_IF(!allowNull, cx);
 
@@ -112,15 +110,7 @@ AutoCxPusher::AutoCxPusher(JSContext* cx, bool allowNull) : mScriptIsRunning(fal
   if (cx)
     mScx = GetScriptContextFromJSContext(cx);
 
-  // NB: The GetDynamicScriptContext is historical and might not be sane.
   XPCJSContextStack *stack = XPCJSRuntime::Get()->GetJSContextStack();
-  if (cx && nsJSUtils::GetDynamicScriptContext(cx) && stack->HasJSContext(cx))
-  {
-    // If the context is on the stack, that means that a script
-    // is running at the moment in the context.
-    mScriptIsRunning = true;
-  }
-
   if (!stack->Push(cx)) {
     MOZ_CRASH();
   }
@@ -132,20 +122,29 @@ AutoCxPusher::AutoCxPusher(JSContext* cx, bool allowNull) : mScriptIsRunning(fal
 
   // Enter a request and a compartment for the duration that the cx is on the
   // stack if non-null.
-  //
-  // NB: We call UnmarkGrayContext so that this can obsolete the need for the
-  // old XPCAutoRequest as well.
   if (cx) {
     mAutoRequest.construct(cx);
-    if (js::DefaultObjectForContextOrNull(cx))
-      mAutoCompartment.construct(cx, js::DefaultObjectForContextOrNull(cx));
-    xpc_UnmarkGrayContext(cx);
+
+    // DOM JSContexts don't store their default compartment object on the cx.
+    JSObject *compartmentObject = mScx ? mScx->GetWindowProxy()
+                                       : js::DefaultObjectForContextOrNull(cx);
+    if (compartmentObject)
+      mAutoCompartment.construct(cx, compartmentObject);
   }
 }
 
 NS_EXPORT
 AutoCxPusher::~AutoCxPusher()
 {
+  // GC when we pop a script entry point. This is a useful heuristic that helps
+  // us out on certain (flawed) benchmarks like sunspider, because it lets us
+  // avoid GCing during the timing loop.
+  //
+  // NB: We need to take care to only do this if we're in a compartment,
+  // otherwise JS_MaybeGC will segfault.
+  if (mScx && !mAutoCompartment.empty())
+    JS_MaybeGC(nsXPConnect::XPConnect()->GetCurrentJSContext());
+
   // Leave the compartment and request before popping.
   mAutoCompartment.destroyIfConstructed();
   mAutoRequest.destroyIfConstructed();
@@ -160,16 +159,7 @@ AutoCxPusher::~AutoCxPusher()
   DebugOnly<JSContext*> stackTop;
   MOZ_ASSERT(mPushedContext == nsXPConnect::XPConnect()->GetCurrentJSContext());
   XPCJSRuntime::Get()->GetJSContextStack()->Pop();
-
-  if (!mScriptIsRunning && mScx) {
-    // No JS is running in the context, but executing the event handler might have
-    // caused some JS to run. Tell the script context that it's done.
-
-    mScx->ScriptEvaluated(true);
-  }
-
   mScx = nullptr;
-  mScriptIsRunning = false;
 }
 
 AutoJSContext::AutoJSContext(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_IN_IMPL)

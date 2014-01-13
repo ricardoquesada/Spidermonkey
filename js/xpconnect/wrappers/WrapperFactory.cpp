@@ -20,6 +20,7 @@
 #include "mozilla/Likely.h"
 #include "nsContentUtils.h"
 
+using namespace JS;
 using namespace js;
 using namespace mozilla;
 
@@ -58,7 +59,12 @@ WrapperFactory::GetXrayWaiver(JSObject *obj)
 
     if (!scope->mWaiverWrapperMap)
         return NULL;
-    return xpc_UnmarkGrayObject(scope->mWaiverWrapperMap->Find(obj));
+
+    JSObject* xrayWaiver = scope->mWaiverWrapperMap->Find(obj);
+    if (xrayWaiver)
+        JS::ExposeObjectToActiveJS(xrayWaiver);
+
+    return xrayWaiver;
 }
 
 JSObject *
@@ -295,7 +301,7 @@ WrapperFactory::PrepareForWrapping(JSContext *cx, HandleObject scope,
     NS_ENSURE_SUCCESS(rv, nullptr);
 
     obj = JSVAL_TO_OBJECT(v);
-    NS_ASSERTION(IS_WN_REFLECTOR(obj), "bad object");
+    MOZ_ASSERT(IS_WN_REFLECTOR(obj), "bad object");
 
     // Because the underlying native didn't have a PreCreate hook, we had
     // to a new (or possibly pre-existing) XPCWN in our compartment.
@@ -605,32 +611,6 @@ WrapperFactory::WrapComponentsObject(JSContext *cx, HandleObject obj)
     return wrapperObj;
 }
 
-JSObject *
-WrapperFactory::WrapForSameCompartmentXray(JSContext *cx, JSObject *obj)
-{
-    // We should be same-compartment here.
-    MOZ_ASSERT(js::IsObjectInContextCompartment(obj, cx));
-
-    // Sort out what kind of Xray we can do. If we can't Xray, bail.
-    XrayType type = GetXrayType(obj);
-    if (type == NotXray)
-        return NULL;
-
-    // Select the appropriate proxy handler.
-    Wrapper *wrapper = NULL;
-    if (type == XrayForWrappedNative)
-        wrapper = &SCPermissiveXrayXPCWN::singleton;
-    else if (type == XrayForDOMObject)
-        wrapper = &SCPermissiveXrayDOM::singleton;
-    else
-        MOZ_ASSUME_UNREACHABLE("Bad Xray type");
-
-    // Make the Xray.
-    JSObject *parent = JS_GetGlobalForObject(cx, obj);
-    return Wrapper::New(cx, obj, NULL, parent, wrapper);
-}
-
-
 bool
 WrapperFactory::XrayWrapperNotShadowing(JSObject *wrapper, jsid id)
 {
@@ -683,25 +663,6 @@ TransplantObject(JSContext *cx, JS::HandleObject origobj, JS::HandleObject targe
     if (!FixWaiverAfterTransplant(cx, oldWaiver, newIdentity))
         return NULL;
     return newIdentity;
-}
-
-JSObject *
-TransplantObjectWithWrapper(JSContext *cx,
-                            HandleObject origobj, HandleObject origwrapper,
-                            HandleObject targetobj, HandleObject targetwrapper)
-{
-    RootedObject oldWaiver(cx, WrapperFactory::GetXrayWaiver(origobj));
-    RootedObject newSameCompartmentWrapper(cx,
-      js_TransplantObjectWithWrapper(cx, origobj, origwrapper, targetobj,
-                                     targetwrapper));
-    if (!newSameCompartmentWrapper || !oldWaiver)
-        return newSameCompartmentWrapper;
-
-    RootedObject newIdentity(cx, Wrapper::wrappedObject(newSameCompartmentWrapper));
-    MOZ_ASSERT(js::IsWrapper(newIdentity));
-    if (!FixWaiverAfterTransplant(cx, oldWaiver, newIdentity))
-        return NULL;
-    return newSameCompartmentWrapper;
 }
 
 nsIGlobalObject *

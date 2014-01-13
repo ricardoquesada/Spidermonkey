@@ -19,7 +19,7 @@
 #include "vm/Debugger.h"
 #include "vm/TypedArrayObject.h"
 
-#include "vm/ObjectImpl-inl.h"
+#include "jsgcinlines.h"
 
 using namespace js;
 using namespace gc;
@@ -179,6 +179,15 @@ js::Nursery::reallocateElements(JSContext *cx, JSObject *obj, ObjectElements *ol
     HeapSlot *slots = reallocateSlots(cx, obj, reinterpret_cast<HeapSlot *>(oldHeader),
                                       oldCount, newCount);
     return reinterpret_cast<ObjectElements *>(slots);
+}
+
+void
+js::Nursery::freeSlots(JSContext *cx, HeapSlot *slots)
+{
+    if (!isInside(slots)) {
+        hugeSlots.remove(slots);
+        js_free(slots);
+    }
 }
 
 HeapSlot *
@@ -352,7 +361,7 @@ js::Nursery::collectToFixedPoint(MinorCollectionTracer *trc)
 JS_ALWAYS_INLINE void
 js::Nursery::traceObject(MinorCollectionTracer *trc, JSObject *obj)
 {
-    Class *clasp = obj->getClass();
+    const Class *clasp = obj->getClass();
     if (clasp->trace)
         clasp->trace(trc, obj);
 
@@ -547,12 +556,12 @@ js::Nursery::collect(JSRuntime *rt, JS::gcreason::Reason reason)
     if (!isEnabled())
         return;
 
+    AutoStopVerifyingBarriers av(rt, false);
+
     if (position() == start())
         return;
 
     rt->gcHelperThread.waitBackgroundSweepEnd();
-
-    AutoStopVerifyingBarriers av(rt, false);
 
     /* Move objects pointed to by roots from the nursery to the major heap. */
     MinorCollectionTracer trc(rt, this);

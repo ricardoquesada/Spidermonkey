@@ -5,7 +5,7 @@
 # This file contains code for populating the virtualenv environment for
 # Mozilla's build system. It is typically called as part of configure.
 
-from __future__ import print_function, unicode_literals, with_statement
+from __future__ import print_function, unicode_literals
 
 import distutils.sysconfig
 import os
@@ -113,7 +113,7 @@ class VirtualenvManager(object):
         env.pop('PYTHONDONTWRITEBYTECODE', None)
 
         args = [sys.executable, self.virtualenv_script_path,
-            '--system-site-packages', self.virtualenv_root]
+            self.virtualenv_root]
 
         result = subprocess.call(args, stdout=self.log_handle,
             stderr=subprocess.STDOUT, env=env)

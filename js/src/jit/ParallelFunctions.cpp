@@ -8,9 +8,7 @@
 
 #include "jit/IonSpewer.h"
 #include "vm/ArrayObject.h"
-#include "vm/Interpreter.h"
 
-#include "jsfuninlines.h"
 #include "jsgcinlines.h"
 #include "jsobjinlines.h"
 
@@ -134,7 +132,7 @@ jit::CheckOverRecursedPar(ForkJoinSlice *slice)
 
     uintptr_t realStackLimit;
     if (slice->isMainThread())
-        realStackLimit = js::GetNativeStackLimit(slice->runtime());
+        realStackLimit = GetNativeStackLimit(slice);
     else
         realStackLimit = slice->perThreadData->ionStackLimit;
 
@@ -211,7 +209,7 @@ jit::IntToStringPar(ForkJoinSlice *slice, int i, MutableHandleString out)
 ParallelResult
 jit::DoubleToStringPar(ForkJoinSlice *slice, double d, MutableHandleString out)
 {
-    JSString *str = js_NumberToString<NoGC>(slice, d);
+    JSString *str = NumberToString<NoGC>(slice, d);
     if (!str)
         return TP_RETRY_SEQUENTIALLY;
     out.set(str);
@@ -457,7 +455,7 @@ jit::BitRshPar(ForkJoinSlice *slice, HandleValue lhs, HandleValue rhs, int32_t *
 
 ParallelResult
 jit::UrshValuesPar(ForkJoinSlice *slice, HandleValue lhs, HandleValue rhs,
-                   MutableHandleValue out)
+                   Value *out)
 {
     uint32_t left;
     int32_t right;
@@ -466,7 +464,7 @@ jit::UrshValuesPar(ForkJoinSlice *slice, HandleValue lhs, HandleValue rhs,
     if (!NonObjectToUint32(slice, lhs, &left) || !NonObjectToInt32(slice, rhs, &right))
         return TP_FATAL;
     left >>= right & 31;
-    out.setNumber(uint32_t(left));
+    out->setNumber(uint32_t(left));
     return TP_SUCCESS;
 }
 
@@ -514,13 +512,19 @@ jit::PropagateAbortPar(JSScript *outermostScript, JSScript *currentScript)
 }
 
 void
-jit::CallToUncompiledScriptPar(JSFunction *func)
+jit::CallToUncompiledScriptPar(JSObject *obj)
 {
     JS_ASSERT(InParallelSection());
 
 #ifdef DEBUG
     static const int max_bound_function_unrolling = 5;
 
+    if (!obj->is<JSFunction>()) {
+        Spew(SpewBailouts, "Call to non-function");
+        return;
+    }
+
+    JSFunction *func = &obj->as<JSFunction>();
     if (func->hasScript()) {
         JSScript *script = func->nonLazyScript();
         Spew(SpewBailouts, "Call to uncompiled script: %p:%s:%d",

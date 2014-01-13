@@ -16,6 +16,8 @@
 
 #include "gc/Barrier.h"
 #include "gc/Heap.h"
+#include "gc/Marking.h"
+#include "gc/Rooting.h"
 #include "js/CharacterEncoding.h"
 #include "js/RootingAPI.h"
 
@@ -24,7 +26,6 @@ class JSExtensibleString;
 class JSExternalString;
 class JSInlineString;
 class JSStableString;
-class JSString;
 class JSRope;
 
 namespace js {
@@ -265,34 +266,34 @@ class JSString : public js::gc::Cell
      * getCharsZ additionally ensures the array is null terminated.
      */
 
-    inline const jschar *getChars(JSContext *cx);
-    inline const jschar *getCharsZ(JSContext *cx);
-    inline bool getChar(JSContext *cx, size_t index, jschar *code);
+    inline const jschar *getChars(js::ExclusiveContext *cx);
+    inline const jschar *getCharsZ(js::ExclusiveContext *cx);
+    inline bool getChar(js::ExclusiveContext *cx, size_t index, jschar *code);
 
     /*
-     * Returns chars() if the string is already linear or flat. Otherwise
-     * returns NULL if a new array of chars must be allocated.
+     * A string has "pure" chars if it can return a pointer to its chars
+     * infallibly without mutating anything so they are safe to be from off the
+     * main thread. If a string does not have pure chars, the caller can call
+     * copyNonPureChars to allocate a copy of the chars which is also a
+     * non-mutating threadsafe operation. Beware, this is an O(n) operation
+     * (involving a DAG traversal for ropes).
      */
-    inline const jschar *maybeChars() const;
-    inline const jschar *maybeCharsZ() const;
-
-    /*
-     * Fallible operations to get an array of chars non-destructively. These
-     * operations are thread safe.
-     */
-
-    inline bool getCharsNonDestructive(js::ThreadSafeContext *cx,
-                                       js::ScopedJSFreePtr<jschar> &out) const;
-    inline bool getCharsZNonDestructive(js::ThreadSafeContext *cx,
-                                        js::ScopedJSFreePtr<jschar> &out) const;
+    bool hasPureChars() const { return isLinear(); }
+    bool hasPureCharsZ() const { return isFlat(); }
+    inline const jschar *pureChars() const;
+    inline const jschar *pureCharsZ() const;
+    inline bool copyNonPureChars(js::ThreadSafeContext *cx,
+                                 js::ScopedJSFreePtr<jschar> &out) const;
+    inline bool copyNonPureCharsZ(js::ThreadSafeContext *cx,
+                                  js::ScopedJSFreePtr<jschar> &out) const;
 
     /* Fallible conversions to more-derived string types. */
 
-    inline JSLinearString *ensureLinear(JSContext *cx);
-    inline JSFlatString *ensureFlat(JSContext *cx);
-    inline JSStableString *ensureStable(JSContext *cx);
+    inline JSLinearString *ensureLinear(js::ExclusiveContext *cx);
+    inline JSFlatString *ensureFlat(js::ExclusiveContext *cx);
+    inline JSStableString *ensureStable(js::ExclusiveContext *cx);
 
-    static bool ensureLinear(JSContext *cx, JSString *str) {
+    static bool ensureLinear(js::ExclusiveContext *cx, JSString *str) {
         return str->ensureLinear(cx) != NULL;
     }
 
@@ -427,15 +428,47 @@ class JSString : public js::gc::Cell
     }
 
     JS::Zone *zone() const { return tenuredZone(); }
+    JS::shadow::Zone *shadowZone() const { return JS::shadow::Zone::asShadowZone(zone()); }
+
     bool isInsideZone(JS::Zone *zone_) { return tenuredIsInsideZone(zone_); }
     js::gc::AllocKind getAllocKind() const { return tenuredGetAllocKind(); }
 
-    static inline void writeBarrierPre(JSString *str);
+    static void writeBarrierPre(JSString *str) {
+#ifdef JSGC_INCREMENTAL
+        if (!str || !str->shadowRuntimeFromAnyThread()->needsBarrier())
+            return;
+
+        JS::shadow::Zone *shadowZone = str->shadowZone();
+        if (shadowZone->needsBarrier()) {
+            JSString *tmp = str;
+            js::gc::MarkStringUnbarriered(shadowZone->barrierTracer(), &tmp, "write barrier");
+            JS_ASSERT(tmp == str);
+        }
+#endif
+    }
+
     static void writeBarrierPost(JSString *str, void *addr) {}
     static void writeBarrierPostRelocate(JSString *str, void *addr) {}
     static void writeBarrierPostRemove(JSString *str, void *addr) {}
-    static inline bool needWriteBarrierPre(JS::Zone *zone);
-    static inline void readBarrier(JSString *str);
+
+    static bool needWriteBarrierPre(JS::Zone *zone) {
+#ifdef JSGC_INCREMENTAL
+        return JS::shadow::Zone::asShadowZone(zone)->needsBarrier();
+#else
+        return false;
+#endif
+    }
+
+    static void readBarrier(JSString *str) {
+#ifdef JSGC_INCREMENTAL
+        JS::shadow::Zone *shadowZone = str->shadowZone();
+        if (shadowZone->needsBarrier()) {
+            JSString *tmp = str;
+            js::gc::MarkStringUnbarriered(shadowZone->barrierTracer(), &tmp, "read barrier");
+            JS_ASSERT(tmp == str);
+        }
+#endif
+    }
 
     static inline js::ThingRootKind rootKind() { return js::THING_ROOT_STRING; }
 
@@ -453,21 +486,18 @@ class JSString : public js::gc::Cell
 
 class JSRope : public JSString
 {
-    bool getCharsNonDestructiveInternal(js::ThreadSafeContext *cx,
-                                        js::ScopedJSFreePtr<jschar> &out,
-                                        bool nullTerminate) const;
-
-    bool getCharsNonDestructive(js::ThreadSafeContext *cx,
-                                js::ScopedJSFreePtr<jschar> &out) const;
-    bool getCharsZNonDestructive(js::ThreadSafeContext *cx,
-                                 js::ScopedJSFreePtr<jschar> &out) const;
+    bool copyNonPureCharsInternal(js::ThreadSafeContext *cx,
+                                  js::ScopedJSFreePtr<jschar> &out,
+                                  bool nullTerminate) const;
+    bool copyNonPureChars(js::ThreadSafeContext *cx, js::ScopedJSFreePtr<jschar> &out) const;
+    bool copyNonPureCharsZ(js::ThreadSafeContext *cx, js::ScopedJSFreePtr<jschar> &out) const;
 
     enum UsingBarrier { WithIncrementalBarrier, NoBarrier };
     template<UsingBarrier b>
-    JSFlatString *flattenInternal(JSContext *cx);
+    JSFlatString *flattenInternal(js::ExclusiveContext *cx);
 
     friend class JSString;
-    JSFlatString *flatten(JSContext *cx);
+    JSFlatString *flatten(js::ExclusiveContext *cx);
 
     void init(js::ThreadSafeContext *cx, JSString *left, JSString *right, size_t length);
 
@@ -526,11 +556,10 @@ JS_STATIC_ASSERT(sizeof(JSLinearString) == sizeof(JSString));
 
 class JSDependentString : public JSLinearString
 {
-    bool getCharsZNonDestructive(js::ThreadSafeContext *cx,
-                                 js::ScopedJSFreePtr<jschar> &out) const;
+    bool copyNonPureCharsZ(js::ThreadSafeContext *cx, js::ScopedJSFreePtr<jschar> &out) const;
 
     friend class JSString;
-    JSFlatString *undepend(JSContext *cx);
+    JSFlatString *undepend(js::ExclusiveContext *cx);
 
     void init(js::ThreadSafeContext *cx, JSLinearString *base, const jschar *chars,
               size_t length);
@@ -702,7 +731,7 @@ class JSInlineString : public JSFlatString
 
     inline jschar *init(size_t length);
 
-    JSStableString *uninline(JSContext *cx);
+    JSStableString *uninline(js::ExclusiveContext *cx);
 
     inline void resetLength(size_t length);
 
@@ -1008,7 +1037,7 @@ class AutoNameVector : public AutoVectorRooter<PropertyName *>
 /* Avoid requiring vm/String-inl.h just to call getChars. */
 
 JS_ALWAYS_INLINE const jschar *
-JSString::getChars(JSContext *cx)
+JSString::getChars(js::ExclusiveContext *cx)
 {
     if (JSLinearString *str = ensureLinear(cx))
         return str->chars();
@@ -1016,7 +1045,7 @@ JSString::getChars(JSContext *cx)
 }
 
 JS_ALWAYS_INLINE bool
-JSString::getChar(JSContext *cx, size_t index, jschar *code)
+JSString::getChar(js::ExclusiveContext *cx, size_t index, jschar *code)
 {
     JS_ASSERT(index < length());
 
@@ -1050,7 +1079,7 @@ JSString::getChar(JSContext *cx, size_t index, jschar *code)
 }
 
 JS_ALWAYS_INLINE const jschar *
-JSString::getCharsZ(JSContext *cx)
+JSString::getCharsZ(js::ExclusiveContext *cx)
 {
     if (JSFlatString *str = ensureFlat(cx))
         return str->chars();
@@ -1058,43 +1087,37 @@ JSString::getCharsZ(JSContext *cx)
 }
 
 JS_ALWAYS_INLINE const jschar *
-JSString::maybeChars() const
+JSString::pureChars() const
 {
-    if (isLinear())
-        return asLinear().chars();
-    return NULL;
+    JS_ASSERT(hasPureChars());
+    return asLinear().chars();
 }
 
 JS_ALWAYS_INLINE const jschar *
-JSString::maybeCharsZ() const
+JSString::pureCharsZ() const
 {
-    if (isFlat())
-        return asFlat().chars();
-    return NULL;
+    JS_ASSERT(hasPureCharsZ());
+    return asFlat().charsZ();
 }
 
 JS_ALWAYS_INLINE bool
-JSString::getCharsNonDestructive(js::ThreadSafeContext *cx,
-                                 js::ScopedJSFreePtr<jschar> &out) const
+JSString::copyNonPureChars(js::ThreadSafeContext *cx, js::ScopedJSFreePtr<jschar> &out) const
 {
-    /* If string is already linear, use maybeChars instead. */
-    JS_ASSERT(!isLinear());
-    return asRope().getCharsNonDestructive(cx, out);
+    JS_ASSERT(!hasPureChars());
+    return asRope().copyNonPureChars(cx, out);
 }
 
 JS_ALWAYS_INLINE bool
-JSString::getCharsZNonDestructive(js::ThreadSafeContext *cx,
-                                  js::ScopedJSFreePtr<jschar> &out) const
+JSString::copyNonPureCharsZ(js::ThreadSafeContext *cx, js::ScopedJSFreePtr<jschar> &out) const
 {
-    /* If string is already flat, use maybeCharsZ instead. */
-    JS_ASSERT(!isFlat());
+    JS_ASSERT(!hasPureChars());
     if (isDependent())
-        return asDependent().getCharsZNonDestructive(cx, out);
-    return asRope().getCharsZNonDestructive(cx, out);
+        return asDependent().copyNonPureCharsZ(cx, out);
+    return asRope().copyNonPureCharsZ(cx, out);
 }
 
 JS_ALWAYS_INLINE JSLinearString *
-JSString::ensureLinear(JSContext *cx)
+JSString::ensureLinear(js::ExclusiveContext *cx)
 {
     return isLinear()
            ? &asLinear()
@@ -1102,7 +1125,7 @@ JSString::ensureLinear(JSContext *cx)
 }
 
 JS_ALWAYS_INLINE JSFlatString *
-JSString::ensureFlat(JSContext *cx)
+JSString::ensureFlat(js::ExclusiveContext *cx)
 {
     return isFlat()
            ? &asFlat()
@@ -1112,7 +1135,7 @@ JSString::ensureFlat(JSContext *cx)
 }
 
 JS_ALWAYS_INLINE JSStableString *
-JSString::ensureStable(JSContext *maybecx)
+JSString::ensureStable(js::ExclusiveContext *maybecx)
 {
     if (isRope()) {
         JSFlatString *flat = asRope().flatten(maybecx);

@@ -6,15 +6,12 @@
 
 #include "jit/ParallelSafetyAnalysis.h"
 
-#include <stdio.h>
-
 #include "jit/Ion.h"
 #include "jit/IonAnalysis.h"
 #include "jit/IonSpewer.h"
 #include "jit/MIR.h"
 #include "jit/MIRGraph.h"
 #include "jit/UnreachableCodeElimination.h"
-#include "vm/Stack.h"
 
 #include "jsinferinlines.h"
 
@@ -111,7 +108,6 @@ class ParallelSafetyVisitor : public MInstructionVisitor
     SAFE_OP(Constant)
     SAFE_OP(Parameter)
     SAFE_OP(Callee)
-    SAFE_OP(ForceUse)
     SAFE_OP(TableSwitch)
     SAFE_OP(Goto)
     SAFE_OP(Test)
@@ -130,11 +126,13 @@ class ParallelSafetyVisitor : public MInstructionVisitor
     UNSAFE_OP(CreateArgumentsObject)
     UNSAFE_OP(GetArgumentsObjectArg)
     UNSAFE_OP(SetArgumentsObjectArg)
+    UNSAFE_OP(ComputeThis)
     SAFE_OP(PrepareCall)
     SAFE_OP(PassArg)
     CUSTOM_OP(Call)
     UNSAFE_OP(ApplyArgs)
     UNSAFE_OP(Bail)
+    UNSAFE_OP(AssertFloat32)
     UNSAFE_OP(GetDynamicName)
     UNSAFE_OP(FilterArguments)
     UNSAFE_OP(CallDirectEval)
@@ -151,7 +149,7 @@ class ParallelSafetyVisitor : public MInstructionVisitor
     SAFE_OP(Abs)
     SAFE_OP(Sqrt)
     UNSAFE_OP(Atan2)
-    SAFE_OP(MathFunction)
+    CUSTOM_OP(MathFunction)
     SPECIALIZED_OP(Add, PERMIT_NUMERIC)
     SPECIALIZED_OP(Sub, PERMIT_NUMERIC)
     SPECIALIZED_OP(Mul, PERMIT_NUMERIC)
@@ -167,6 +165,7 @@ class ParallelSafetyVisitor : public MInstructionVisitor
     SAFE_OP(Unbox)
     SAFE_OP(GuardObject)
     SAFE_OP(ToDouble)
+    SAFE_OP(ToFloat32)
     SAFE_OP(ToInt32)
     SAFE_OP(TruncateToInt32)
     SAFE_OP(MaybeToDoubleElement)
@@ -204,6 +203,7 @@ class ParallelSafetyVisitor : public MInstructionVisitor
     SAFE_OP(GuardShape)
     SAFE_OP(GuardObjectType)
     SAFE_OP(GuardClass)
+    SAFE_OP(AssertRange)
     SAFE_OP(ArrayLength)
     SAFE_OP(TypedArrayLength)
     SAFE_OP(TypedArrayElements)
@@ -236,6 +236,7 @@ class ParallelSafetyVisitor : public MInstructionVisitor
     UNSAFE_OP(CallInitElementArray)
     UNSAFE_OP(CallSetProperty)
     UNSAFE_OP(DeleteProperty)
+    UNSAFE_OP(DeleteElement)
     UNSAFE_OP(SetPropertyCache)
     UNSAFE_OP(IteratorStart)
     UNSAFE_OP(IteratorNext)
@@ -274,7 +275,6 @@ class ParallelSafetyVisitor : public MInstructionVisitor
     SAFE_OP(GuardThreadLocalObject)
     SAFE_OP(CheckInterruptPar)
     SAFE_OP(CheckOverRecursedPar)
-    SAFE_OP(PolyInlineDispatch)
     SAFE_OP(FunctionDispatch)
     SAFE_OP(TypeObjectDispatch)
     SAFE_OP(IsCallable)
@@ -554,6 +554,12 @@ ParallelSafetyVisitor::visitRest(MRest *ins)
 }
 
 bool
+ParallelSafetyVisitor::visitMathFunction(MMathFunction *ins)
+{
+    return replace(ins, MMathFunction::New(ins->input(), ins->function(), NULL));
+}
+
+bool
 ParallelSafetyVisitor::visitConcat(MConcat *ins)
 {
     return replace(ins, MConcatPar::New(forkJoinSlice(), ins));
@@ -767,7 +773,7 @@ ParallelSafetyVisitor::visitThrow(MThrow *thr)
 
 static bool
 GetPossibleCallees(JSContext *cx, HandleScript script, jsbytecode *pc,
-                   types::StackTypeSet *calleeTypes, CallTargetVector &targets);
+                   types::TemporaryTypeSet *calleeTypes, CallTargetVector &targets);
 
 static bool
 AddCallTarget(HandleScript script, CallTargetVector &targets);
@@ -798,7 +804,7 @@ jit::AddPossibleCallees(MIRGraph &graph, CallTargetVector &targets)
                 continue;
             }
 
-            types::StackTypeSet *calleeTypes = callIns->getFunction()->resultTypeSet();
+            types::TemporaryTypeSet *calleeTypes = callIns->getFunction()->resultTypeSet();
             RootedScript script(cx, callIns->block()->info().script());
             if (!GetPossibleCallees(cx,
                                     script,
@@ -816,7 +822,7 @@ static bool
 GetPossibleCallees(JSContext *cx,
                    HandleScript script,
                    jsbytecode *pc,
-                   types::StackTypeSet *calleeTypes,
+                   types::TemporaryTypeSet *calleeTypes,
                    CallTargetVector &targets)
 {
     if (!calleeTypes || calleeTypes->baseFlags() != 0)

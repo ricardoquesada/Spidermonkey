@@ -4,11 +4,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "jsdbgapi.h"
-#include "jslock.h"
+#include "jsfriendapi.h"
 #include "jsd_xpc.h"
 
 #include "js/GCAPI.h"
+#include "js/OldDebugAPI.h"
 
 #include "nsIXPConnect.h"
 #include "mozilla/ModuleUtils.h"
@@ -30,6 +30,7 @@
 
 /* XXX DOM dependency */
 #include "nsIScriptContext.h"
+#include "nsDOMJSUtils.h"
 #include "SandboxPrivate.h"
 #include "nsJSPrincipals.h"
 #include "nsContentUtils.h"
@@ -537,7 +538,7 @@ jsds_ErrorHookProc (JSDContext *jsdc, JSContext *cx, const char *message,
     return JSD_ERROR_REPORTER_PASS_ALONG;
 }
 
-static JSBool
+static bool
 jsds_CallHookProc (JSDContext* jsdc, JSDThreadState* jsdthreadstate,
                    unsigned type, void* callerdata)
 {
@@ -560,10 +561,10 @@ jsds_CallHookProc (JSDContext* jsdc, JSDThreadState* jsdthreadstate,
     }
     
     if (!hook)
-        return JS_TRUE;
+        return true;
 
     if (!jsds_FilterHook (jsdc, jsdthreadstate))
-        return JS_FALSE;
+        return false;
 
     JSDStackFrameInfo *native_frame = JSD_GetStackFrame (jsdc, jsdthreadstate);
     nsCOMPtr<jsdIStackFrame> frame =
@@ -573,7 +574,7 @@ jsds_CallHookProc (JSDContext* jsdc, JSDThreadState* jsdthreadstate,
     gJsds->DoUnPause(nullptr, true);
     jsdStackFrame::InvalidateAll();
 
-    return JS_TRUE;
+    return true;
 }
 
 static uint32_t
@@ -652,7 +653,7 @@ jsds_ExecutionHookProc (JSDContext* jsdc, JSDThreadState* jsdthreadstate,
 }
 
 static void
-jsds_ScriptHookProc (JSDContext* jsdc, JSDScript* jsdscript, JSBool creating,
+jsds_ScriptHookProc (JSDContext* jsdc, JSDScript* jsdscript, bool creating,
                      void* callerdata)
 {
 #ifdef CAUTIOUS_SCRIPTHOOK
@@ -897,12 +898,13 @@ jsdProperty::GetValue(jsdIValue **_rval)
 NS_IMPL_ISUPPORTS2(jsdScript, jsdIScript, jsdIEphemeral)
 
 static NS_IMETHODIMP
-AssignToJSString(JSDContext *aCx, nsACString *x, JSString *str)
+AssignToJSString(JSDContext *aCx, nsACString *x, JSString *str_)
 {
-    if (!str) {
+    if (!str_) {
         x->SetLength(0);
         return NS_OK;
     }
+    JS::RootedString str(JSD_GetJSRuntime(aCx), str_);
     AutoSafeJSContext cx;
     JSAutoCompartment ac(cx, JSD_GetDefaultGlobal(aCx)); // Just in case.
     size_t length = JS_GetStringEncodingLength(cx, str);
@@ -1261,7 +1263,7 @@ jsdScript::GetParameterNames(uint32_t* count, PRUnichar*** paramNames)
 NS_IMETHODIMP
 jsdScript::GetFunctionObject(jsdIValue **_rval)
 {
-    JSFunction *fun = JSD_GetJSFunction(mCx, mScript);
+    JS::RootedFunction fun(JSD_GetJSRuntime(mCx), JSD_GetJSFunction(mCx, mScript));
     if (!fun)
         return NS_ERROR_NOT_AVAILABLE;
 
@@ -1695,7 +1697,7 @@ NS_IMETHODIMP
 jsdContext::GetGlobalObject (jsdIValue **_rval)
 {
     ASSERT_VALID_EPHEMERAL;
-    JSObject *glob = js::DefaultObjectForContextOrNull(mJSCx);
+    JSObject *glob = GetDefaultScopeFromJSContext(mJSCx);
     JSDValue *jsdv = JSD_NewValue (mJSDCx, OBJECT_TO_JSVAL(glob));
     if (!jsdv)
         return NS_ERROR_FAILURE;
@@ -2114,10 +2116,8 @@ NS_IMETHODIMP
 jsdValue::GetJsType (uint32_t *_rval)
 {
     ASSERT_VALID_EPHEMERAL;
-    jsval val;
+    JS::RootedValue val(JSD_GetJSRuntime(mCx), JSD_GetValueWrappedJSVal (mCx, mValue));
 
-    val = JSD_GetValueWrappedJSVal (mCx, mValue);
-    
     if (JSVAL_IS_NULL(val))
         *_rval = TYPE_NULL;
     else if (JSVAL_IS_BOOLEAN(val))
@@ -3343,7 +3343,7 @@ global_finalize(JSFreeOp *aFop, JSObject *aObj)
 }
 
 JSObject *
-CreateJSDGlobal(JSContext *aCx, JSClass *aClasp)
+CreateJSDGlobal(JSContext *aCx, const JSClass *aClasp)
 {
     nsresult rv;
     nsCOMPtr<nsIPrincipal> nullPrin = do_CreateInstance("@mozilla.org/nullprincipal;1", &rv);

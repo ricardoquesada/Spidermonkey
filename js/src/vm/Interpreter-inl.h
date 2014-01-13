@@ -9,25 +9,22 @@
 
 #include "vm/Interpreter.h"
 
-#include "jsapi.h"
-#include "jsbool.h"
 #include "jscompartment.h"
 #include "jsinfer.h"
-#include "jslibmath.h"
 #include "jsnum.h"
 #include "jsstr.h"
 
 #include "jit/Ion.h"
 #include "jit/IonCompartment.h"
+#include "vm/ArgumentsObject.h"
 #include "vm/ForkJoin.h"
 
 #include "jsatominlines.h"
-#include "jsfuninlines.h"
 #include "jsinferinlines.h"
-#include "jsopcodeinlines.h"
+#include "jsobjinlines.h"
 
-#include "vm/GlobalObject-inl.h"
 #include "vm/Stack-inl.h"
+#include "vm/String-inl.h"
 
 namespace js {
 
@@ -52,11 +49,12 @@ ComputeThis(JSContext *cx, AbstractFramePtr frame)
          */
         JS_ASSERT_IF(frame.isEvalFrame(), thisv.isUndefined() || thisv.isNull());
     }
-    bool modified;
-    if (!BoxNonStrictThis(cx, &thisv, &modified))
+
+    JSObject *thisObj = BoxNonStrictThis(cx, thisv);
+    if (!thisObj)
         return false;
 
-    frame.thisValue() = thisv;
+    frame.thisValue().setObject(*thisObj);
     return true;
 }
 
@@ -278,27 +276,27 @@ DefVarOrConstOperation(JSContext *cx, HandleObject varobj, HandlePropertyName dn
                                       JS_StrictPropertyStub, attrs)) {
             return false;
         }
-    } else {
+    } else if (attrs & JSPROP_READONLY) {
         /*
          * Extension: ordinarily we'd be done here -- but for |const|.  If we
          * see a redeclaration that's |const|, we consider it a conflict.
          */
         unsigned oldAttrs;
-        if (!JSObject::getPropertyAttributes(cx, varobj, dn, &oldAttrs))
+        RootedId id(cx, NameToId(dn));
+        if (!JSObject::getGenericAttributes(cx, varobj, id, &oldAttrs))
             return false;
-        if (attrs & JSPROP_READONLY) {
-            JSAutoByteString bytes;
-            if (AtomToPrintableString(cx, dn, &bytes)) {
-                JS_ALWAYS_FALSE(JS_ReportErrorFlagsAndNumber(cx, JSREPORT_ERROR,
-                                                             js_GetErrorMessage,
-                                                             NULL, JSMSG_REDECLARED_VAR,
-                                                             (oldAttrs & JSPROP_READONLY)
-                                                             ? "const"
-                                                             : "var",
-                                                             bytes.ptr()));
-            }
-            return false;
+
+        JSAutoByteString bytes;
+        if (AtomToPrintableString(cx, dn, &bytes)) {
+            JS_ALWAYS_FALSE(JS_ReportErrorFlagsAndNumber(cx, JSREPORT_ERROR,
+                                                         js_GetErrorMessage,
+                                                         NULL, JSMSG_REDECLARED_VAR,
+                                                         (oldAttrs & JSPROP_READONLY)
+                                                         ? "const"
+                                                         : "var",
+                                                         bytes.ptr()));
         }
+        return false;
     }
 
     return true;
@@ -357,20 +355,8 @@ GetObjectElementOperation(JSContext *cx, JSOp op, JSObject *objArg, bool wasObje
                           HandleValue rref, MutableHandleValue res)
 {
     do {
-        // Don't call GetPcScript (needed for analysis) from inside Ion since it's expensive.
-        bool analyze = cx->currentlyRunningInInterpreter();
-
         uint32_t index;
         if (IsDefinitelyIndex(rref, &index)) {
-            if (analyze && !objArg->isNative() && !objArg->is<TypedArrayObject>()) {
-                JSScript *script = NULL;
-                jsbytecode *pc = NULL;
-                types::TypeScript::GetPcScript(cx, &script, &pc);
-
-                if (script->hasAnalysis())
-                    script->analysis()->getCode(pc).nonNativeGetElement = true;
-            }
-
             if (JSObject::getElementNoGC(cx, objArg, objArg, index, res.address()))
                 break;
 
@@ -379,22 +365,6 @@ GetObjectElementOperation(JSContext *cx, JSOp op, JSObject *objArg, bool wasObje
                 return false;
             objArg = obj;
             break;
-        }
-
-        if (analyze) {
-            JSScript *script = NULL;
-            jsbytecode *pc = NULL;
-            types::TypeScript::GetPcScript(cx, &script, &pc);
-
-            if (script->hasAnalysis()) {
-                script->analysis()->getCode(pc).getStringElement = true;
-
-                if (!objArg->is<ArrayObject>() && !objArg->isNative() &&
-                    !objArg->is<TypedArrayObject>())
-                {
-                    script->analysis()->getCode(pc).nonNativeGetElement = true;
-                }
-            }
         }
 
         if (ValueMightBeSpecial(rref)) {
@@ -502,10 +472,17 @@ GetElementOperation(JSContext *cx, JSOp op, MutableHandleValue lref, HandleValue
 }
 
 static JS_ALWAYS_INLINE JSString *
-TypeOfOperation(JSContext *cx, HandleValue v)
+TypeOfOperation(const Value &v, JSRuntime *rt)
 {
-    JSType type = JS_TypeOfValue(cx, v);
-    return TypeName(type, cx);
+    JSType type = js::TypeOfValue(v);
+    return TypeName(type, rt);
+}
+
+static inline JSString *
+TypeOfObjectOperation(JSObject *obj, JSRuntime *rt)
+{
+    JSType type = js::TypeOfObject(obj);
+    return TypeName(type, rt);
 }
 
 static JS_ALWAYS_INLINE bool

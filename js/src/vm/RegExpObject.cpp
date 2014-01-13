@@ -4,7 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "vm/RegExpObject-inl.h"
+#include "vm/RegExpObject.h"
 
 #include "mozilla/MemoryReporting.h"
 
@@ -13,6 +13,7 @@
 #include "vm/RegExpStatics.h"
 #include "vm/StringBuffer.h"
 #include "vm/Xdr.h"
+#include "yarr/YarrSyntaxChecker.h"
 
 #include "jsobjinlines.h"
 
@@ -208,7 +209,7 @@ regexp_trace(JSTracer *trc, JSObject *obj)
         obj->setPrivate(NULL);
 }
 
-Class RegExpObject::class_ = {
+const Class RegExpObject::class_ = {
     js_RegExp_str,
     JSCLASS_HAS_PRIVATE | JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_RESERVED_SLOTS(RegExpObject::RESERVED_SLOTS) |
@@ -264,7 +265,7 @@ RegExpObject::createShared(ExclusiveContext *cx, RegExpGuard *g)
     Rooted<RegExpObject*> self(cx, this);
 
     JS_ASSERT(!maybeShared());
-    if (!cx->regExps().get(cx, getSource(), getFlags(), g))
+    if (!cx->compartment()->regExps.get(cx, getSource(), getFlags(), g))
         return false;
 
     self->setShared(cx, **g);
@@ -392,8 +393,7 @@ RegExpShared::~RegExpShared()
 #if ENABLE_YARR_JIT
     codeBlock.release();
 #endif
-    if (bytecode)
-        js_delete<BytecodePattern>(bytecode);
+    js_delete<BytecodePattern>(bytecode);
 }
 
 void
@@ -678,6 +678,13 @@ RegExpCompartment::sweep(JSRuntime *rt)
             e.removeFront();
         }
     }
+}
+
+void
+RegExpCompartment::clearTables()
+{
+    JS_ASSERT(inUse_.empty());
+    map_.clear();
 }
 
 bool

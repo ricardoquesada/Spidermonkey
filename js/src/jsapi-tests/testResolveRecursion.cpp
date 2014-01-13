@@ -14,7 +14,7 @@
 
 BEGIN_TEST(testResolveRecursion)
 {
-    static JSClass my_resolve_class = {
+    static const JSClass my_resolve_class = {
         "MyResolve",
         JSCLASS_NEW_RESOLVE | JSCLASS_HAS_PRIVATE,
 
@@ -132,7 +132,7 @@ doResolve(JS::HandleObject obj, JS::HandleId id, unsigned flags, JS::MutableHand
     return false;
 }
 
-static JSBool
+static bool
 my_resolve(JSContext *cx, JS::HandleObject obj, JS::HandleId id, unsigned flags,
            JS::MutableHandleObject objp)
 {

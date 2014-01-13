@@ -9,11 +9,7 @@
 
 #include <stdio.h>
 
-#include "jsscript.h"
-
-#include "js/RootingAPI.h"
-
-class JSScript;
+#include "js/TypeDecls.h"
 
 namespace js {
 namespace jit {

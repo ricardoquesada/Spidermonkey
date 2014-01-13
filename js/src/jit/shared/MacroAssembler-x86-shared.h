@@ -10,10 +10,6 @@
 #include "mozilla/Casting.h"
 #include "mozilla/DebugOnly.h"
 
-#include "jsopcode.h"
-
-#include "jit/IonCaches.h"
-#include "jit/IonFrames.h"
 #if defined(JS_CPU_X86)
 # include "jit/x86/Assembler-x86.h"
 #elif defined(JS_CPU_X64)
@@ -66,6 +62,34 @@ class MacroAssemblerX86Shared : public Assembler
         j(ConditionFromDoubleCondition(cond), label);
     }
 
+    void compareFloat(DoubleCondition cond, const FloatRegister &lhs, const FloatRegister &rhs) {
+        if (cond & DoubleConditionBitInvert)
+            ucomiss(rhs, lhs);
+        else
+            ucomiss(lhs, rhs);
+    }
+    void branchFloat(DoubleCondition cond, const FloatRegister &lhs,
+                      const FloatRegister &rhs, Label *label)
+    {
+        compareFloat(cond, lhs, rhs);
+
+        if (cond == DoubleEqual) {
+            Label unordered;
+            j(Parity, &unordered);
+            j(Equal, label);
+            bind(&unordered);
+            return;
+        }
+        if (cond == DoubleNotEqualOrUnordered) {
+            j(NotEqual, label);
+            j(Parity, label);
+            return;
+        }
+
+        JS_ASSERT(!(cond & DoubleConditionBitSpecial));
+        j(ConditionFromDoubleCondition(cond), label);
+    }
+
     void move32(const Imm32 &imm, const Register &dest) {
         if (imm.value == 0)
             xorl(dest, dest);
@@ -74,6 +98,9 @@ class MacroAssemblerX86Shared : public Assembler
     }
     void move32(const Imm32 &imm, const Operand &dest) {
         movl(imm, dest);
+    }
+    void move32(const Register &src, const Register &dest) {
+        movl(src, dest);
     }
     void and32(const Imm32 &imm, const Register &dest) {
         andl(imm, dest);
@@ -178,6 +205,9 @@ class MacroAssemblerX86Shared : public Assembler
         framePushed_ += sizeof(word.value);
         return pushWithPatch(word);
     }
+    CodeOffsetLabel PushWithPatch(const ImmPtr &imm) {
+        return PushWithPatch(ImmWord(uintptr_t(imm.value)));
+    }
 
     template <typename T>
     void Pop(const T &t) {
@@ -214,6 +244,12 @@ class MacroAssemblerX86Shared : public Assembler
     }
     void convertInt32ToDouble(const Address &src, FloatRegister dest) {
         cvtsi2sd(Operand(src), dest);
+    }
+    void convertInt32ToFloat32(const Register &src, const FloatRegister &dest) {
+        cvtsi2ss(src, dest);
+    }
+    void convertInt32ToFloat32(const Address &src, FloatRegister dest) {
+        cvtsi2ss(Operand(src), dest);
     }
     Condition testDoubleTruthy(bool truthy, const FloatRegister &reg) {
         xorpd(ScratchFloatReg, ScratchFloatReg);
@@ -297,6 +333,13 @@ class MacroAssemblerX86Shared : public Assembler
         // XOR the float in a float register with -0.0.
         xorpd(ScratchFloatReg, reg); // s ^ 0x80000000000000
     }
+    void negateFloat(FloatRegister reg) {
+        pcmpeqw(ScratchFloatReg, ScratchFloatReg);
+        psllq(Imm32(31), ScratchFloatReg);
+
+        // XOR the float in a float register with -0.0.
+        xorps(ScratchFloatReg, reg); // s ^ 0x80000000
+    }
     void addDouble(FloatRegister src, FloatRegister dest) {
         addsd(src, dest);
     }
@@ -308,6 +351,9 @@ class MacroAssemblerX86Shared : public Assembler
     }
     void divDouble(FloatRegister src, FloatRegister dest) {
         divsd(src, dest);
+    }
+    void convertFloatToDouble(const FloatRegister &src, const FloatRegister &dest) {
+        cvtss2sd(src, dest);
     }
     void convertDoubleToFloat(const FloatRegister &src, const FloatRegister &dest) {
         cvtsd2ss(src, dest);
@@ -328,11 +374,26 @@ class MacroAssemblerX86Shared : public Assembler
         movss(src, dest);
         cvtss2sd(dest, dest);
     }
+    void loadFloat(const Register &src, FloatRegister dest) {
+        movss(Operand(src), dest);
+    }
+    void loadFloat(const Address &src, FloatRegister dest) {
+        movss(Operand(src), dest);
+    }
+    void loadFloat(const BaseIndex &src, FloatRegister dest) {
+        movss(Operand(src), dest);
+    }
+    void loadFloat(const Operand &src, FloatRegister dest) {
+        movss(src, dest);
+    }
     void storeFloat(FloatRegister src, const Address &dest) {
         movss(src, Operand(dest));
     }
     void storeFloat(FloatRegister src, const BaseIndex &dest) {
         movss(src, Operand(dest));
+    }
+    void moveFloat(FloatRegister src, FloatRegister dest) {
+        movss(src, dest);
     }
 
     // Checks whether a double is representable as a 32-bit integer. If so, the
@@ -368,26 +429,47 @@ class MacroAssemblerX86Shared : public Assembler
         }
     }
 
-    void clampIntToUint8(Register src, Register dest) {
-        Label inRange, done;
-        branchTest32(Assembler::Zero, src, Imm32(0xffffff00), &inRange);
+    // Checks whether a float32 is representable as a 32-bit integer. If so, the
+    // integer is written to the output register. Otherwise, a bailout is taken to
+    // the given snapshot. This function overwrites the scratch float register.
+    void convertFloat32ToInt32(FloatRegister src, Register dest, Label *fail,
+                               bool negativeZeroCheck = true)
+    {
+        cvttss2si(src, dest);
+        convertInt32ToFloat32(dest, ScratchFloatReg);
+        ucomiss(src, ScratchFloatReg);
+        j(Assembler::Parity, fail);
+        j(Assembler::NotEqual, fail);
+
+        // Check for -0
+        if (negativeZeroCheck) {
+            Label notZero;
+            branchTest32(Assembler::NonZero, dest, dest, &notZero);
+
+            if (Assembler::HasSSE41()) {
+                ptest(src, src);
+                j(Assembler::NonZero, fail);
+            } else {
+                // bit 0 = sign of low float
+                // bits 1 to 3 = signs of higher floats
+                movmskps(src, dest);
+                andl(Imm32(1), dest);
+                j(Assembler::NonZero, fail);
+            }
+
+            bind(&notZero);
+        }
+    }
+
+    void clampIntToUint8(Register reg) {
+        Label inRange;
+        branchTest32(Assembler::Zero, reg, Imm32(0xffffff00), &inRange);
         {
-            Label negative;
-            branchTest32(Assembler::Signed, src, src, &negative);
-            {
-                movl(Imm32(255), dest);
-                jump(&done);
-            }
-            bind(&negative);
-            {
-                xorl(dest, dest);
-                jump(&done);
-            }
+            sarl(Imm32(31), reg);
+            notl(reg);
+            andl(Imm32(255), reg);
         }
         bind(&inRange);
-        if (src != dest)
-            movl(src, dest);
-        bind(&done);
     }
 
     bool maybeInlineDouble(double d, const FloatRegister &dest) {
@@ -484,7 +566,7 @@ class MacroAssemblerX86Shared : public Assembler
     bool buildOOLFakeExitFrame(void *fakeReturnAddr) {
         uint32_t descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
         Push(Imm32(descriptor));
-        Push(ImmWord(fakeReturnAddr));
+        Push(ImmPtr(fakeReturnAddr));
         return true;
     }
 

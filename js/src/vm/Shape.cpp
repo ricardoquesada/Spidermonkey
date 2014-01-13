@@ -22,6 +22,7 @@
 #include "jscntxtinlines.h"
 #include "jsobjinlines.h"
 
+#include "vm/ObjectImpl-inl.h"
 #include "vm/Runtime-inl.h"
 
 using namespace js;
@@ -66,6 +67,41 @@ ShapeTable::init(ExclusiveContext *cx, Shape *lastProp)
             SHAPE_STORE_PRESERVING_COLLISION(spp, &shape);
     }
     return true;
+}
+
+void
+Shape::removeFromDictionary(ObjectImpl *obj)
+{
+    JS_ASSERT(inDictionary());
+    JS_ASSERT(obj->inDictionaryMode());
+    JS_ASSERT(listp);
+
+    JS_ASSERT(obj->shape_->inDictionary());
+    JS_ASSERT(obj->shape_->listp == &obj->shape_);
+
+    if (parent)
+        parent->listp = listp;
+    *listp = parent;
+    listp = NULL;
+}
+
+void
+Shape::insertIntoDictionary(HeapPtrShape *dictp)
+{
+    // Don't assert inDictionaryMode() here because we may be called from
+    // JSObject::toDictionaryMode via JSObject::newDictionaryShape.
+    JS_ASSERT(inDictionary());
+    JS_ASSERT(!listp);
+
+    JS_ASSERT_IF(*dictp, (*dictp)->inDictionary());
+    JS_ASSERT_IF(*dictp, (*dictp)->listp == dictp);
+    JS_ASSERT_IF(*dictp, compartment() == (*dictp)->compartment());
+
+    setParent(dictp->get());
+    if (parent)
+        parent->listp = &parent;
+    listp = (HeapPtrShape *) dictp;
+    *dictp = this;
 }
 
 bool
@@ -275,7 +311,7 @@ Shape::getChildBinding(ExclusiveContext *cx, const StackShape &child)
     gc::AllocKind kind = gc::GetGCObjectKind(slots);
     uint32_t nfixed = gc::GetGCKindSlots(kind);
 
-    return cx->propertyTree().getChild(cx, this, nfixed, child);
+    return cx->compartment()->propertyTree.getChild(cx, this, nfixed, child);
 }
 
 /* static */ Shape *
@@ -302,7 +338,8 @@ Shape::replaceLastProperty(ExclusiveContext *cx, const StackBaseShape &base,
         child.base = nbase;
     }
 
-    return cx->propertyTree().getChild(cx, shape->parent, shape->numFixedSlots(), child);
+    return cx->compartment()->propertyTree.getChild(cx, shape->parent,
+                                                    shape->numFixedSlots(), child);
 }
 
 /*
@@ -349,7 +386,7 @@ JSObject::getChildProperty(ExclusiveContext *cx,
         }
         shape->initDictionaryShape(child, obj->numFixedSlots(), &obj->shape_);
     } else {
-        shape = cx->propertyTree().getChild(cx, parent, obj->numFixedSlots(), child);
+        shape = cx->compartment()->propertyTree.getChild(cx, parent, obj->numFixedSlots(), child);
         if (!shape)
             return NULL;
         //JS_ASSERT(shape->parent == parent);
@@ -937,7 +974,7 @@ JSObject::clear(JSContext *cx, HandleObject obj)
 }
 
 void
-JSObject::rollbackProperties(JSContext *cx, uint32_t slotSpan)
+JSObject::rollbackProperties(ExclusiveContext *cx, uint32_t slotSpan)
 {
     /*
      * Remove properties from this object until it has a matching slot span.
@@ -1240,7 +1277,7 @@ StackBaseShape::AutoRooter::trace(JSTracer *trc)
 /* static */ UnownedBaseShape*
 BaseShape::getUnowned(ExclusiveContext *cx, const StackBaseShape &base)
 {
-    BaseShapeSet &table = cx->baseShapes();
+    BaseShapeSet &table = cx->compartment()->baseShapes;
 
     if (!table.initialized() && !table.init())
         return NULL;
@@ -1267,9 +1304,27 @@ BaseShape::getUnowned(ExclusiveContext *cx, const StackBaseShape &base)
 }
 
 void
+BaseShape::assertConsistency()
+{
+#ifdef DEBUG
+    if (isOwned()) {
+        UnownedBaseShape *unowned = baseUnowned();
+        JS_ASSERT(hasGetterObject() == unowned->hasGetterObject());
+        JS_ASSERT(hasSetterObject() == unowned->hasSetterObject());
+        JS_ASSERT_IF(hasGetterObject(), getterObject() == unowned->getterObject());
+        JS_ASSERT_IF(hasSetterObject(), setterObject() == unowned->setterObject());
+        JS_ASSERT(getObjectParent() == unowned->getObjectParent());
+        JS_ASSERT(getObjectMetadata() == unowned->getObjectMetadata());
+        JS_ASSERT(getObjectFlags() == unowned->getObjectFlags());
+    }
+#endif
+}
+
+void
 JSCompartment::sweepBaseShapeTable()
 {
-    gcstats::AutoPhase ap(rt->gcStats, gcstats::PHASE_SWEEP_TABLES_BASE_SHAPE);
+    gcstats::AutoPhase ap(runtimeFromMainThread()->gcStats,
+                          gcstats::PHASE_SWEEP_TABLES_BASE_SHAPE);
 
     if (baseShapes.initialized()) {
         for (BaseShapeSet::Enum e(baseShapes); !e.empty(); e.popFront()) {
@@ -1329,14 +1384,14 @@ InitialShapeEntry::match(const InitialShapeEntry &key, const Lookup &lookup)
 }
 
 /* static */ Shape *
-EmptyShape::getInitialShape(ExclusiveContext *cx, Class *clasp, TaggedProto proto,
+EmptyShape::getInitialShape(ExclusiveContext *cx, const Class *clasp, TaggedProto proto,
                             JSObject *parent, JSObject *metadata,
                             size_t nfixed, uint32_t objectFlags)
 {
     JS_ASSERT_IF(proto.isObject(), cx->isInsideCurrentCompartment(proto.toObject()));
     JS_ASSERT_IF(parent, cx->isInsideCurrentCompartment(parent));
 
-    InitialShapeSet &table = cx->initialShapes();
+    InitialShapeSet &table = cx->compartment()->initialShapes;
 
     if (!table.initialized() && !table.init())
         return NULL;
@@ -1358,7 +1413,7 @@ EmptyShape::getInitialShape(ExclusiveContext *cx, Class *clasp, TaggedProto prot
     if (!nbase)
         return NULL;
 
-    Shape *shape = cx->propertyTree().newShape(cx);
+    Shape *shape = cx->compartment()->propertyTree.newShape(cx);
     if (!shape)
         return NULL;
     new (shape) EmptyShape(nbase, nfixed);
@@ -1373,7 +1428,7 @@ EmptyShape::getInitialShape(ExclusiveContext *cx, Class *clasp, TaggedProto prot
 }
 
 /* static */ Shape *
-EmptyShape::getInitialShape(ExclusiveContext *cx, Class *clasp, TaggedProto proto,
+EmptyShape::getInitialShape(ExclusiveContext *cx, const Class *clasp, TaggedProto proto,
                             JSObject *parent, JSObject *metadata,
                             AllocKind kind, uint32_t objectFlags)
 {
@@ -1383,7 +1438,7 @@ EmptyShape::getInitialShape(ExclusiveContext *cx, Class *clasp, TaggedProto prot
 void
 NewObjectCache::invalidateEntriesForShape(JSContext *cx, HandleShape shape, HandleObject proto)
 {
-    Class *clasp = shape->getObjectClass();
+    const Class *clasp = shape->getObjectClass();
 
     gc::AllocKind kind = gc::GetGCObjectKind(shape->numFixedSlots());
     if (CanBeFinalizedInBackground(kind, clasp))
@@ -1408,7 +1463,7 @@ EmptyShape::insertInitialShape(ExclusiveContext *cx, HandleShape shape, HandleOb
                                      shape->getObjectParent(), shape->getObjectMetadata(),
                                      shape->numFixedSlots(), shape->getObjectFlags());
 
-    InitialShapeSet::Ptr p = cx->initialShapes().lookup(lookup);
+    InitialShapeSet::Ptr p = cx->compartment()->initialShapes.lookup(lookup);
     JS_ASSERT(p);
 
     InitialShapeEntry &entry = const_cast<InitialShapeEntry &>(*p);
@@ -1466,7 +1521,8 @@ JSCompartment::markAllInitialShapeTableEntries(JSTracer *trc)
 void
 JSCompartment::sweepInitialShapeTable()
 {
-    gcstats::AutoPhase ap(rt->gcStats, gcstats::PHASE_SWEEP_TABLES_INITIAL_SHAPE);
+    gcstats::AutoPhase ap(runtimeFromMainThread()->gcStats,
+                          gcstats::PHASE_SWEEP_TABLES_INITIAL_SHAPE);
 
     if (initialShapes.initialized()) {
         for (InitialShapeSet::Enum e(initialShapes); !e.empty(); e.popFront()) {

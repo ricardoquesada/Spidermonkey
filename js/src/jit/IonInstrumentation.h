@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef jit_IonInstrumentation_h
-#define jit_IonInstrumentation_h
+#ifndef jit_IonInstrumentatjit_h
+#define jit_IonInstrumentatjit_h
 
 namespace js {
 
@@ -37,4 +37,4 @@ class IonInstrumentation : public BaseInstrumentation
 } // namespace jit
 } // namespace js
 
-#endif /* jit_IonInstrumentation_h */
+#endif /* jit_IonInstrumentatjit_h */

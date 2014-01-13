@@ -14,10 +14,10 @@
 #include "frontend/SharedContext.h"
 #include "vm/StringBuffer.h"
 
-#include "jsfuninlines.h"
-
 using namespace js;
 using namespace js::frontend;
+
+namespace {
 
 class NameResolver
 {
@@ -147,13 +147,9 @@ class NameResolver
 
               case PNK_COLON:
                 /*
-                 * If this is a PNK_COLON, but our parent is not a PNK_OBJECT,
-                 * then this is a label and we're done naming. Otherwise we
-                 * record the PNK_COLON but skip the PNK_OBJECT so we're not
+                 * Record the PNK_COLON but skip the PNK_OBJECT so we're not
                  * flagged as a contributor.
                  */
-                if (pos == 0 || !parents[pos - 1]->isKind(PNK_OBJECT))
-                    return NULL;
                 pos--;
                 /* fallthrough */
 
@@ -327,6 +323,8 @@ class NameResolver
         nparents--;
     }
 };
+
+} /* anonymous namespace */
 
 bool
 frontend::NameFunctions(JSContext *cx, ParseNode *pn)

@@ -1,5 +1,3 @@
-INCLUDED_AUTOCONF_MK = 1
-
 includedir := $(includedir)/$(MOZ_APP_NAME)-$(MOZ_APP_VERSION)
 idldir = $(datadir)/idl/$(MOZ_APP_NAME)-$(MOZ_APP_VERSION)
 installdir = $(libdir)/$(MOZ_APP_NAME)-$(MOZ_APP_VERSION)
@@ -23,3 +21,9 @@ ifeq (1_a,$(.PYMAKE)_$(firstword a$(subst /, ,$(srcdir))))
 $(error MSYS-style srcdir being used with Pymake. Did you mean to run GNU Make instead? [see-also: https://developer.mozilla.org/    en/Gmake_vs._Pymake])
 endif
 endif # WINNT
+
+ifdef .PYMAKE
+include_deps = $(eval -includedeps $(1))
+else
+include_deps = $(eval -include $(1))
+endif

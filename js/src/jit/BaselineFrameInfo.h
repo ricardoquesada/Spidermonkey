@@ -9,8 +9,7 @@
 
 #ifdef JS_ION
 
-#include "jscntxt.h"
-#include "jscompartment.h"
+#include "mozilla/Alignment.h"
 
 #include "jit/BaselineFrame.h"
 #include "jit/BaselineJIT.h"

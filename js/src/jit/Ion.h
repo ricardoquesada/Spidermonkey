@@ -13,11 +13,9 @@
 
 #include "jscntxt.h"
 #include "jscompartment.h"
-#include "jsinfer.h"
 
 #include "jit/CompileInfo.h"
 #include "jit/IonCode.h"
-#include "vm/Interpreter.h"
 
 namespace js {
 namespace jit {
@@ -79,6 +77,12 @@ struct IonOptions
     // Default: true
     bool rangeAnalysis;
 
+    // Whether to enable extra code to perform dynamic validation of
+    // RangeAnalysis results.
+    //
+    // Default: false
+    bool checkRangeAnalysis;
+
     // Toggles whether Unreachable Code Elimination is performed.
     //
     // Default: true
@@ -89,10 +93,13 @@ struct IonOptions
     // Default: true
     bool eaa;
 
-    // Toggles whether compilation occurs off the main thread.
+#ifdef CHECK_OSIPOINT_REGISTERS
+    // Emit extra code to verify live regs at the start of a VM call
+    // are not modified before its OsiPoint.
     //
-    // Default: true iff there are at least two CPUs available
-    bool parallelCompilation;
+    // Default: false
+    bool checkOsiPointRegisters;
+#endif
 
     // How many invocations or loop iterations are needed before functions
     // are compiled with the baseline compiler.
@@ -123,6 +130,17 @@ struct IonOptions
     //
     // Default: 10
     uint32_t frequentBailoutThreshold;
+
+    // Number of exception bailouts (resuming into catch/finally block) before
+    // we invalidate and forbid Ion compilation.
+    //
+    // Default: 10
+    uint32_t exceptionBailoutThreshold;
+
+    // Whether Ion should compile try-catch statements.
+    //
+    // Default: true
+    bool compileTryCatch;
 
     // How many actual arguments are accepted on the C stack.
     //
@@ -183,8 +201,6 @@ struct IonOptions
         eagerCompilation = true;
         usesBeforeCompile = 0;
         baselineUsesBeforeCompile = 0;
-
-        parallelCompilation = false;
     }
 
     IonOptions()
@@ -197,14 +213,19 @@ struct IonOptions
         inlining(true),
         edgeCaseAnalysis(true),
         rangeAnalysis(true),
+        checkRangeAnalysis(false),
         uce(true),
         eaa(true),
-        parallelCompilation(false),
+#ifdef CHECK_OSIPOINT_REGISTERS
+        checkOsiPointRegisters(false),
+#endif
         baselineUsesBeforeCompile(10),
         usesBeforeCompile(1000),
         usesBeforeInliningFactor(.125),
         osrPcMismatchesBeforeRecompile(6000),
         frequentBailoutThreshold(10),
+        exceptionBailoutThreshold(10),
+        compileTryCatch(true),
         maxStackArgs(4096),
         maxInlineDepth(3),
         smallFunctionMaxInlineDepth(10),
@@ -234,6 +255,7 @@ enum AbortReason {
     AbortReason_Alloc,
     AbortReason_Inlining,
     AbortReason_Disable,
+    AbortReason_Error,
     AbortReason_NoAbort
 };
 
@@ -246,7 +268,8 @@ class IonContext
 {
   public:
     IonContext(JSContext *cx, TempAllocator *temp);
-    IonContext(JSCompartment *comp, TempAllocator *temp);
+    IonContext(ExclusiveContext *cx, TempAllocator *temp);
+    IonContext(JSRuntime *rt, JSCompartment *comp, TempAllocator *temp);
     IonContext(JSRuntime *rt);
     ~IonContext();
 
@@ -351,7 +374,7 @@ IsIonInlinablePC(jsbytecode *pc) {
     // CALL, FUNCALL, FUNAPPLY, EVAL, NEW (Normal Callsites)
     // GETPROP, CALLPROP, and LENGTH. (Inlined Getters)
     // SETPROP, SETNAME, SETGNAME (Inlined Setters)
-    return IsCallPC(pc) || IsGetterPC(pc) || IsSetterPC(pc);
+    return IsCallPC(pc) || IsGetPropPC(pc) || IsSetPropPC(pc);
 }
 
 void ForbidCompilation(JSContext *cx, JSScript *script);
@@ -362,6 +385,8 @@ void PurgeCaches(JSScript *script, JS::Zone *zone);
 size_t SizeOfIonData(JSScript *script, mozilla::MallocSizeOf mallocSizeOf);
 void DestroyIonScripts(FreeOp *fop, JSScript *script);
 void TraceIonScripts(JSTracer* trc, JSScript *script);
+
+void TriggerOperationCallbackForIonCode(JSRuntime *rt, JSRuntime::OperationCallbackTrigger trigger);
 
 } // namespace jit
 } // namespace js

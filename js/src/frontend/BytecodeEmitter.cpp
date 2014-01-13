@@ -18,6 +18,7 @@
 
 #include "jsapi.h"
 #include "jsatom.h"
+#include "jsautooplen.h"
 #include "jscntxt.h"
 #include "jsfun.h"
 #include "jsnum.h"
@@ -38,6 +39,7 @@
 
 #include "frontend/ParseMaps-inl.h"
 #include "frontend/ParseNode-inl.h"
+#include "vm/ScopeObject-inl.h"
 
 using namespace js;
 using namespace js::gc;
@@ -1177,48 +1179,53 @@ TryConvertFreeName(BytecodeEmitter *bce, ParseNode *pn)
         }
     }
 
-    /*
-     * Try to convert free names in global scope to GNAME opcodes.
-     *
-     * This conversion is not made if we are in strict mode. In eval code nested
-     * within (strict mode) eval code, access to an undeclared "global" might
-     * merely be to a binding local to that outer eval:
-     *
-     *   "use strict";
-     *   var x = "global";
-     *   eval('var x = "eval"; eval("x");'); // 'eval', not 'global'
-     *
-     * Outside eval code, access to an undeclared global is a strict mode error:
-     *
-     *   "use strict";
-     *   function foo()
-     *   {
-     *     undeclared = 17; // throws ReferenceError
-     *   }
-     *   foo();
-     */
-    if (bce->script->compileAndGo &&
-        bce->hasGlobalScope &&
-        !(bce->sc->isFunctionBox() && bce->sc->asFunctionBox()->mightAliasLocals()) &&
-        !pn->isDeoptimized() &&
-        !(bce->sc->strict && bce->insideEval))
-    {
-        // If you change anything here, you might also need to change
-        // js::ReportIfUndeclaredVarAssignment.
-        JSOp op;
-        switch (pn->getOp()) {
-          case JSOP_NAME:     op = JSOP_GETGNAME; break;
-          case JSOP_SETNAME:  op = JSOP_SETGNAME; break;
-          case JSOP_SETCONST:
-            /* Not supported. */
+    // Unbound names aren't recognizable global-property references if the
+    // script isn't running against its global object.
+    if (!bce->script->compileAndGo || !bce->hasGlobalScope)
+        return false;
+
+    // Deoptimized names also aren't necessarily globals.
+    if (pn->isDeoptimized())
+        return false;
+
+    if (bce->sc->isFunctionBox()) {
+        // Unbound names in function code may not be globals if new locals can
+        // be added to this function (or an enclosing one) to alias a global
+        // reference.
+        FunctionBox *funbox = bce->sc->asFunctionBox();
+        if (funbox->mightAliasLocals())
             return false;
-          default: MOZ_ASSUME_UNREACHABLE("gname");
-        }
-        pn->setOp(op);
-        return true;
     }
 
-    return false;
+    // If this is eval code, being evaluated inside strict mode eval code,
+    // an "unbound" name might be a binding local to that outer eval:
+    //
+    //   var x = "GLOBAL";
+    //   eval('"use strict"; ' +
+    //        'var x; ' +
+    //        'eval("print(x)");'); // "undefined", not "GLOBAL"
+    //
+    // Given the enclosing eval code's strictness and its bindings (neither is
+    // readily available now), we could exactly check global-ness, but it's not
+    // worth the trouble for doubly-nested eval code.  So we conservatively
+    // approximate.  If the outer eval code is strict, then this eval code will
+    // be: thus, don't optimize if we're compiling strict code inside an eval.
+    if (bce->insideEval && bce->sc->strict)
+        return false;
+
+    // Beware: if you change anything here, you might also need to change
+    // js::ReportIfUndeclaredVarAssignment.
+    JSOp op;
+    switch (pn->getOp()) {
+      case JSOP_NAME:     op = JSOP_GETGNAME; break;
+      case JSOP_SETNAME:  op = JSOP_SETGNAME; break;
+      case JSOP_SETCONST:
+        // Not supported.
+        return false;
+      default: MOZ_ASSUME_UNREACHABLE("gname");
+    }
+    pn->setOp(op);
+    return true;
 }
 
 /*
@@ -1786,6 +1793,62 @@ BytecodeEmitter::reportStrictModeError(ParseNode *pn, unsigned errorNumber, ...)
                                                                errorNumber, args);
     va_end(args);
     return result;
+}
+
+static bool
+IteratorResultShape(ExclusiveContext *cx, BytecodeEmitter *bce, unsigned *shape)
+{
+    RootedObject obj(cx);
+    gc::AllocKind kind = GuessObjectGCKind(2);
+    obj = NewBuiltinClassInstance(cx, &JSObject::class_, kind);
+    if (!obj)
+        return false;
+
+    Rooted<jsid> value_id(cx, AtomToId(cx->names().value));
+    Rooted<jsid> done_id(cx, AtomToId(cx->names().done));
+    RootedValue undefined(cx, UndefinedValue());
+    if (!DefineNativeProperty(cx, obj, value_id, undefined, NULL, NULL, JSPROP_ENUMERATE, 0, 0))
+        return false;
+    if (!DefineNativeProperty(cx, obj, done_id, undefined, NULL, NULL, JSPROP_ENUMERATE, 0, 0))
+        return false;
+
+    ObjectBox *objbox = bce->parser->newObjectBox(obj);
+    if (!objbox)
+        return false;
+
+    *shape = bce->objectList.add(objbox);
+
+    return true;
+}
+
+static bool
+EmitPrepareIteratorResult(ExclusiveContext *cx, BytecodeEmitter *bce)
+{
+    unsigned shape;
+    if (!IteratorResultShape(cx, bce, &shape))
+        return false;
+    return EmitIndex32(cx, JSOP_NEWOBJECT, shape, bce);
+}
+
+static bool
+EmitFinishIteratorResult(ExclusiveContext *cx, BytecodeEmitter *bce, bool done)
+{
+    jsatomid value_id;
+    if (!bce->makeAtomIndex(cx->names().value, &value_id))
+        return UINT_MAX;
+    jsatomid done_id;
+    if (!bce->makeAtomIndex(cx->names().done, &done_id))
+        return UINT_MAX;
+
+    if (!EmitIndex32(cx, JSOP_INITPROP, value_id, bce))
+        return false;
+    if (Emit1(cx, bce, done ? JSOP_TRUE : JSOP_FALSE) < 0)
+        return false;
+    if (!EmitIndex32(cx, JSOP_INITPROP, done_id, bce))
+        return false;
+    if (Emit1(cx, bce, JSOP_ENDINIT) < 0)
+        return false;
+    return true;
 }
 
 static bool
@@ -2570,6 +2633,21 @@ frontend::EmitFunctionScript(ExclusiveContext *cx, BytecodeEmitter *bce, ParseNo
 
     if (!EmitTree(cx, bce, body))
         return false;
+
+    // If we fall off the end of an ES6 generator, return a boxed iterator
+    // result object of the form { value: undefined, done: true }.
+    if (bce->sc->isFunctionBox() && bce->sc->asFunctionBox()->isStarGenerator()) {
+        if (!EmitPrepareIteratorResult(cx, bce))
+            return false;
+        if (Emit1(cx, bce, JSOP_UNDEFINED) < 0)
+            return false;
+        if (!EmitFinishIteratorResult(cx, bce, true))
+            return false;
+
+        // No need to check for finally blocks, etc as in EmitReturn.
+        if (Emit1(cx, bce, JSOP_RETURN) < 0)
+            return false;
+    }
 
     /*
      * Always end the script with a JSOP_STOP. Some other parts of the codebase
@@ -3541,7 +3619,8 @@ ParseNode::getConstantValue(ExclusiveContext *cx, bool strictChecks, MutableHand
         return true;
       }
       case PNK_OBJECT: {
-        JS_ASSERT(isOp(JSOP_NEWINIT) && !(pn_xflags & PNX_NONCONST));
+        JS_ASSERT(isOp(JSOP_NEWINIT));
+        JS_ASSERT(!(pn_xflags & PNX_NONCONST));
 
         gc::AllocKind kind = GuessObjectGCKind(pn_count);
         RootedObject obj(cx, NewBuiltinClassInstance(cx, &JSObject::class_, kind, MaybeSingletonObject));
@@ -3618,6 +3697,8 @@ EmitSingletonInitialiser(ExclusiveContext *cx, BytecodeEmitter *bce, ParseNode *
 JS_STATIC_ASSERT(JSOP_NOP_LENGTH == 1);
 JS_STATIC_ASSERT(JSOP_POP_LENGTH == 1);
 
+namespace {
+
 class EmitLevelManager
 {
     BytecodeEmitter *bce;
@@ -3625,6 +3706,8 @@ class EmitLevelManager
     EmitLevelManager(BytecodeEmitter *bce) : bce(bce) { bce->emitLevel++; }
     ~EmitLevelManager() { bce->emitLevel--; }
 };
+
+} /* anonymous namespace */
 
 static bool
 EmitCatch(ExclusiveContext *cx, BytecodeEmitter *bce, ParseNode *pn)
@@ -4494,8 +4577,7 @@ EmitFunc(ExclusiveContext *cx, BytecodeEmitter *bce, ParseNode *pn)
      */
     if (fun->isInterpreted()) {
         bool singleton =
-            cx->isJSContext() &&
-            cx->asJSContext()->typeInferenceEnabled() &&
+            cx->typeInferenceEnabled() &&
             bce->script->compileAndGo &&
             fun->isInterpreted() &&
             (bce->checkSingletonContext() ||
@@ -4766,6 +4848,11 @@ EmitReturn(ExclusiveContext *cx, BytecodeEmitter *bce, ParseNode *pn)
     if (!UpdateSourceCoordNotes(cx, bce, pn->pn_pos.begin))
         return false;
 
+    if (bce->sc->isFunctionBox() && bce->sc->asFunctionBox()->isStarGenerator()) {
+        if (!EmitPrepareIteratorResult(cx, bce))
+            return false;
+    }
+
     /* Push a return value */
     if (ParseNode *pn2 = pn->pn_kid) {
         if (!EmitTree(cx, bce, pn2))
@@ -4773,6 +4860,11 @@ EmitReturn(ExclusiveContext *cx, BytecodeEmitter *bce, ParseNode *pn)
     } else {
         /* No explicit return value provided */
         if (Emit1(cx, bce, JSOP_UNDEFINED) < 0)
+            return false;
+    }
+
+    if (bce->sc->isFunctionBox() && bce->sc->asFunctionBox()->isStarGenerator()) {
+        if (!EmitFinishIteratorResult(cx, bce, true))
             return false;
     }
 
@@ -5665,7 +5757,8 @@ frontend::EmitTree(ExclusiveContext *cx, BytecodeEmitter *bce, ParseNode *pn)
                 }
             }
         }
-        if (fun->hasDefaults()) {
+        bool hasDefaults = bce->sc->asFunctionBox()->hasDefaults();
+        if (hasDefaults) {
             ParseNode *rest = NULL;
             bool restIsDefn = false;
             if (fun->hasRest()) {
@@ -5714,7 +5807,7 @@ frontend::EmitTree(ExclusiveContext *cx, BytecodeEmitter *bce, ParseNode *pn)
                 continue;
             if (!BindNameToSlot(cx, bce, pn2))
                 return false;
-            if (pn2->pn_next == pnlast && fun->hasRest() && !fun->hasDefaults()) {
+            if (pn2->pn_next == pnlast && fun->hasRest() && !hasDefaults) {
                 // Fill rest parameter. We handled the case with defaults above.
                 JS_ASSERT(!bce->sc->asFunctionBox()->argumentsHasLocalBinding());
                 bce->switchToProlog();
@@ -5786,11 +5879,19 @@ frontend::EmitTree(ExclusiveContext *cx, BytecodeEmitter *bce, ParseNode *pn)
 
       case PNK_YIELD:
         JS_ASSERT(bce->sc->isFunctionBox());
+        if (bce->sc->asFunctionBox()->isStarGenerator()) {
+            if (!EmitPrepareIteratorResult(cx, bce))
+                return false;
+        }
         if (pn->pn_kid) {
             if (!EmitTree(cx, bce, pn->pn_kid))
                 return false;
         } else {
             if (Emit1(cx, bce, JSOP_UNDEFINED) < 0)
+                return false;
+        }
+        if (bce->sc->asFunctionBox()->isStarGenerator()) {
+            if (!EmitFinishIteratorResult(cx, bce, false))
                 return false;
         }
         if (pn->pn_hidden && NewSrcNote(cx, bce, SRC_HIDDEN) < 0)

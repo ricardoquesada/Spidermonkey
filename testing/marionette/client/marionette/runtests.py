@@ -3,8 +3,6 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 from datetime import datetime
-import imp
-import inspect
 import logging
 from optparse import OptionParser
 import os
@@ -13,10 +11,9 @@ import socket
 import sys
 import time
 import traceback
-import platform
+import random
 import moznetwork
 import xml.dom.minidom as dom
-from functools import wraps
 
 from manifestparser import TestManifest
 from mozhttpd import MozHttpd
@@ -95,7 +92,7 @@ class MarionetteTestResult(unittest._TextTestResult):
                         break
                 if skip_log:
                     return
-                self.stream.writeln('START LOG:')
+                self.stream.writeln('\nSTART LOG:')
                 for line in testcase.loglines:
                     self.stream.writeln(' '.join(line).encode('ascii', 'replace'))
                 self.stream.writeln('END LOG:')
@@ -162,8 +159,8 @@ class MarionetteTextTestRunner(unittest.TextTestRunner):
                 stopTestRun()
         stopTime = time.time()
         timeTaken = stopTime - startTime
-        result.printErrors()
         result.printLogs(test)
+        result.printErrors()
         if hasattr(result, 'separator2'):
             self.stream.writeln(result.separator2)
         run = result.testsRun
@@ -210,11 +207,12 @@ class MarionetteTestRunner(object):
 
     def __init__(self, address=None, emulator=None, emulatorBinary=None,
                  emulatorImg=None, emulator_res='480x800', homedir=None,
-                 app=None, bin=None, profile=None, autolog=False, revision=None,
-                 logger=None, testgroup="marionette", noWindow=False,
+                 app=None, app_args=None, bin=None, profile=None, autolog=False,
+                 revision=None, logger=None, testgroup="marionette", noWindow=False,
                  logcat_dir=None, xml_output=None, repeat=0, gecko_path=None,
                  testvars=None, tree=None, type=None, device_serial=None,
-                 symbols_path=None, timeout=None, es_servers=None, **kwargs):
+                 symbols_path=None, timeout=None, es_servers=None, shuffle=False,
+                 sdcard=None, **kwargs):
         self.address = address
         self.emulator = emulator
         self.emulatorBinary = emulatorBinary
@@ -222,6 +220,7 @@ class MarionetteTestRunner(object):
         self.emulator_res = emulator_res
         self.homedir = homedir
         self.app = app
+        self.app_args = app_args or []
         self.bin = bin
         self.profile = profile
         self.autolog = autolog
@@ -247,6 +246,8 @@ class MarionetteTestRunner(object):
         self._capabilities = None
         self._appName = None
         self.es_servers = es_servers
+        self.shuffle = shuffle
+        self.sdcard = sdcard
 
         if testvars:
             if not os.path.exists(testvars):
@@ -327,10 +328,12 @@ class MarionetteTestRunner(object):
             self.marionette = Marionette(host=host,
                                          port=int(port),
                                          app=self.app,
+                                         app_args=self.app_args,
                                          bin=self.bin,
                                          profile=self.profile,
                                          baseurl=self.baseurl,
-                                         timeout=self.timeout)
+                                         timeout=self.timeout,
+                                         device_serial=self.device_serial)
         elif self.address:
             host, port = self.address.split(':')
             try:
@@ -367,7 +370,8 @@ class MarionetteTestRunner(object):
                                          logcat_dir=self.logcat_dir,
                                          gecko_path=self.gecko_path,
                                          symbols_path=self.symbols_path,
-                                         timeout=self.timeout)
+                                         timeout=self.timeout,
+                                         sdcard=self.sdcard)
         else:
             raise Exception("must specify binary, address or emulator")
 
@@ -419,6 +423,9 @@ class MarionetteTestRunner(object):
         self.reset_test_stats()
         starttime = datetime.utcnow()
         while self.repeat >=0:
+            self.logger.info('\nROUND %d\n-------' % self.repeat)
+            if self.shuffle:
+                random.shuffle(tests)
             for test in tests:
                 self.run_test(test)
             self.repeat -= 1
@@ -465,6 +472,8 @@ class MarionetteTestRunner(object):
 
         if os.path.isdir(filepath):
             for root, dirs, files in os.walk(filepath):
+                if self.shuffle:
+                    random.shuffle(files)
                 for filename in files:
                     if ((filename.startswith('test_') or filename.startswith('browser_')) and
                         (filename.endswith('.py') or filename.endswith('.js'))):
@@ -507,7 +516,10 @@ class MarionetteTestRunner(object):
                                   self.appName))
                 self.todo += 1
 
-            for i in manifest.get(tests=manifest_tests, **testargs):
+            target_tests = manifest.get(tests=manifest_tests, **testargs)
+            if self.shuffle:
+                random.shuffle(target_tests)
+            for i in target_tests:
                 self.run_test(i["path"])
                 if self.marionette.check_for_crash():
                     return
@@ -662,6 +674,10 @@ class MarionetteTestOptions(OptionParser):
                         type='str',
                         help='set a custom resolution for the emulator'
                              'Example: "480x800"')
+        self.add_option('--sdcard',
+                        action='store',
+                        dest='sdcard',
+                        help='size of sdcard to create for the emulator')
         self.add_option('--no-window',
                         action='store_true',
                         dest='noWindow',
@@ -696,6 +712,11 @@ class MarionetteTestOptions(OptionParser):
                         dest='app',
                         action='store',
                         help='application to use')
+        self.add_option('--app-arg',
+                        dest='app_args',
+                        action='append',
+                        default=[],
+                        help='specify a command line argument to be passed onto the application')
         self.add_option('--binary',
                         dest='bin',
                         action='store',
@@ -740,6 +761,11 @@ class MarionetteTestOptions(OptionParser):
                         dest='es_servers',
                         action='append',
                         help='the ElasticSearch server to use for autolog submission')
+        self.add_option('--shuffle',
+                        action='store_true',
+                        dest='shuffle',
+                        default=False,
+                        help='run tests in a random order')
 
     def verify_usage(self, options, tests):
         if not tests:

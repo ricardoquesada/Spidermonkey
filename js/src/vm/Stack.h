@@ -9,14 +9,17 @@
 
 #include "mozilla/MemoryReporting.h"
 
-#include "jsautooplen.h"
 #include "jsfun.h"
 #include "jsscript.h"
 
 #include "jit/IonFrameIterator.h"
+#ifdef CHECK_OSIPOINT_REGISTERS
+#include "jit/Registers.h" // for RegisterDump
+#endif
+#include "js/OldDebugAPI.h"
 
-struct JSContext;
 struct JSCompartment;
+struct JSGenerator;
 
 namespace js {
 
@@ -233,7 +236,22 @@ class StackFrame
 
         /* Frame subtypes */
         EVAL               =        0x4,  /* frame pushed for eval() or debugger eval */
-        DEBUGGER           =        0x8,  /* frame pushed for debugger eval */
+
+
+        /*
+         * Frame pushed for debugger eval.
+         * - Don't bother to JIT it, because it's probably short-lived.
+         * - It is required to have a scope chain object outside the
+         *   js::ScopeObject hierarchy: either a global object, or a
+         *   DebugScopeObject (not a ScopeObject, despite the name)
+         * - If evalInFramePrev_ is set, then this frame was created for an
+         *   "eval in frame" call, which can push a successor to any live
+         *   frame; so its logical "prev" frame is not necessarily the
+         *   previous frame in memory. Iteration should treat
+         *   evalInFramePrev_ as this frame's previous frame.
+         */
+        DEBUGGER           =        0x8,
+
         GENERATOR          =       0x10,  /* frame is associated with a generator */
         CONSTRUCTING       =       0x20,  /* frame is for a constructor invocation */
 
@@ -299,7 +317,13 @@ class StackFrame
     Value               *prevsp_;
 
     void                *hookData_;     /* if HAS_HOOK_DATA, closure returned by call hook */
-    AbstractFramePtr    evalInFramePrev_; /* for an eval/debugger frame, the prev frame */
+
+    /*
+     * For an eval-in-frame DEBUGGER frame, the frame in whose scope we're
+     * evaluating code. Iteration treats this as our previous frame.
+     */
+    AbstractFramePtr    evalInFramePrev_;
+
     Value               *argv_;         /* If hasArgs(), points to frame's arguments. */
     LifoAlloc::Mark     mark_;          /* Used to release memory for this frame. */
 
@@ -1016,12 +1040,7 @@ class FrameRegs
         fp_ = &fp;
     }
 
-    void setToEndOfScript() {
-        JSScript *script = fp()->script();
-        sp = fp()->base();
-        pc = script->code + script->length - JSOP_STOP_LENGTH;
-        JS_ASSERT(*pc == JSOP_STOP);
-    }
+    void setToEndOfScript();
 
     MutableHandleValue stackHandleAt(int i) {
         return MutableHandleValue::fromMarkedLocation(&sp[i]);
@@ -1039,7 +1058,7 @@ class InterpreterStack
     friend class FrameGuard;
     friend class InterpreterActivation;
 
-    const static size_t DEFAULT_CHUNK_SIZE = 4 * 1024;
+    static const size_t DEFAULT_CHUNK_SIZE = 4 * 1024;
     LifoAlloc allocator_;
 
     // Number of interpreter frames on the stack, for over-recursion checks.
@@ -1218,6 +1237,11 @@ class Activation
     void operator=(const Activation &other) MOZ_DELETE;
 };
 
+// The value to assign to InterpreterActivation's *switchMask_ to enable
+// interrupts. This value is greater than the greatest opcode, and is chosen
+// such that the bitwise or of this value with any opcode is this value.
+static const jsbytecode EnableInterruptsPseudoOpcode = -1;
+
 class InterpreterFrameIterator;
 
 class InterpreterActivation : public Activation
@@ -1225,15 +1249,16 @@ class InterpreterActivation : public Activation
     friend class js::InterpreterFrameIterator;
 
     StackFrame *const entry_; // Entry frame for this activation.
-    StackFrame *current_;     // The most recent frame.
     FrameRegs &regs_;
+    jsbytecode *const switchMask_; // For debugger interrupts, see js::Interpret.
 
 #ifdef DEBUG
     size_t oldFrameCount_;
 #endif
 
   public:
-    inline InterpreterActivation(JSContext *cx, StackFrame *entry, FrameRegs &regs);
+    inline InterpreterActivation(JSContext *cx, StackFrame *entry, FrameRegs &regs,
+                                 jsbytecode *const switchMask);
     inline ~InterpreterActivation();
 
     inline bool pushInlineFrame(const CallArgs &args, HandleScript script,
@@ -1241,11 +1266,19 @@ class InterpreterActivation : public Activation
     inline void popInlineFrame(StackFrame *frame);
 
     StackFrame *current() const {
-        JS_ASSERT(current_);
-        return current_;
+        return regs_.fp();
     }
     FrameRegs &regs() const {
         return regs_;
+    }
+
+    // If this js::Interpret frame is running |script|, enable interrupts.
+    void enableInterruptsIfRunning(JSScript *script) {
+        if (regs_.fp()->script() == script)
+            enableInterruptsUnconditionally();
+    }
+    void enableInterruptsUnconditionally() {
+        *switchMask_ = EnableInterruptsPseudoOpcode;
     }
 };
 
@@ -1287,6 +1320,14 @@ class JitActivation : public Activation
     bool firstFrameIsConstructing_;
     bool active_;
 
+#ifdef CHECK_OSIPOINT_REGISTERS
+  protected:
+    // Used to verify that live registers don't change between a VM call and
+    // the OsiPoint that follows it. Protected to silence Clang warning.
+    uint32_t checkRegs_;
+    RegisterDump regs_;
+#endif
+
   public:
     JitActivation(JSContext *cx, bool firstFrameIsConstructing, bool active = true);
     ~JitActivation();
@@ -1305,6 +1346,18 @@ class JitActivation : public Activation
     bool firstFrameIsConstructing() const {
         return firstFrameIsConstructing_;
     }
+
+#ifdef CHECK_OSIPOINT_REGISTERS
+    void setCheckRegs(bool check) {
+        checkRegs_ = check;
+    }
+    static size_t offsetOfCheckRegs() {
+        return offsetof(JitActivation, checkRegs_);
+    }
+    static size_t offsetOfRegs() {
+        return offsetof(JitActivation, regs_);
+    }
+#endif
 };
 
 // A filtering of the ActivationIterator to only stop at JitActivations.

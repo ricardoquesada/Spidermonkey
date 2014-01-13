@@ -22,7 +22,6 @@
 #include "jit/IonInstrumentation.h"
 #include "jit/ParallelFunctions.h"
 #include "jit/VMFunctions.h"
-#include "vm/ForkJoin.h"
 #include "vm/ProxyObject.h"
 #include "vm/Shape.h"
 #include "vm/TypedArrayObject.h"
@@ -68,6 +67,10 @@ class MacroAssembler : public MacroAssemblerSpecific
     // CodeGeneratorShared and is the manager of when instrumentation is
     // actually emitted or not. If NULL, then no instrumentation is emitted.
     IonInstrumentation *sps_;
+
+    // Labels for handling exceptions and failures.
+    NonAssertingLabel sequentialFailureLabel_;
+    NonAssertingLabel parallelFailureLabel_;
 
   public:
     // If instrumentation should be emitted, then the sps parameter should be
@@ -159,6 +162,9 @@ class MacroAssembler : public MacroAssemblerSpecific
     template <typename Source, typename TypeSet>
     void guardTypeSet(const Source &address, const TypeSet *types, Register scratch,
                       Label *matched, Label *miss);
+    template <typename TypeSet>
+    void guardObjectType(Register obj, const TypeSet *types,
+                         Register scratch, Label *matched, Label *miss);
     template <typename Source>
     void guardType(const Source &address, types::Type type, Register scratch,
                    Label *matched, Label *miss);
@@ -175,16 +181,23 @@ class MacroAssembler : public MacroAssemblerSpecific
         loadPtr(Address(objReg, JSObject::offsetOfType()), dest);
         loadPtr(Address(dest, offsetof(types::TypeObject, clasp)), dest);
     }
-    void branchTestObjClass(Condition cond, Register obj, Register scratch, js::Class *clasp,
+    void branchTestObjClass(Condition cond, Register obj, Register scratch, const js::Class *clasp,
                             Label *label) {
         loadPtr(Address(obj, JSObject::offsetOfType()), scratch);
-        branchPtr(cond, Address(scratch, offsetof(types::TypeObject, clasp)), ImmWord(clasp), label);
+        branchPtr(cond, Address(scratch, offsetof(types::TypeObject, clasp)), ImmPtr(clasp), label);
     }
     void branchTestObjShape(Condition cond, Register obj, const Shape *shape, Label *label) {
         branchPtr(cond, Address(obj, JSObject::offsetOfShape()), ImmGCPtr(shape), label);
     }
     void branchTestObjShape(Condition cond, Register obj, Register shape, Label *label) {
         branchPtr(cond, Address(obj, JSObject::offsetOfShape()), shape, label);
+    }
+    void branchTestProxyHandlerFamily(Condition cond, Register proxy, Register scratch,
+                                      void *handlerp, Label *label) {
+        Address handlerAddr(proxy, ProxyObject::offsetOfHandler());
+        loadPrivate(handlerAddr, scratch);
+        Address familyAddr(scratch, BaseProxyHandler::offsetOfFamily());
+        branchPtr(cond, familyAddr, ImmPtr(handlerp), label);
     }
 
     template <typename Value>
@@ -239,11 +252,11 @@ class MacroAssembler : public MacroAssemblerSpecific
     }
 
     void loadJSContext(const Register &dest) {
-        movePtr(ImmWord(GetIonContext()->runtime), dest);
+        movePtr(ImmPtr(GetIonContext()->runtime), dest);
         loadPtr(Address(dest, offsetof(JSRuntime, mainThread.ionJSContext)), dest);
     }
     void loadJitActivation(const Register &dest) {
-        movePtr(ImmWord(GetIonContext()->runtime), dest);
+        movePtr(ImmPtr(GetIonContext()->runtime), dest);
         size_t offset = offsetof(JSRuntime, mainThread) + PerThreadData::offsetOfActivation();
         loadPtr(Address(dest, offset), dest);
     }
@@ -272,12 +285,16 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     template <typename T>
     void storeTypedOrValue(TypedOrValueRegister src, const T &dest) {
-        if (src.hasValue())
+        if (src.hasValue()) {
             storeValue(src.valueReg(), dest);
-        else if (src.type() == MIRType_Double)
-            storeDouble(src.typedReg().fpu(), dest);
-        else
+        } else if (IsFloatingPointType(src.type())) {
+            FloatRegister reg = src.typedReg().fpu();
+            if (src.type() == MIRType_Float32)
+                convertFloatToDouble(reg, reg);
+            storeDouble(reg, dest);
+        } else {
             storeValue(ValueTypeFromMIRType(src.type()), src.typedReg().gpr(), dest);
+        }
     }
 
     template <typename T>
@@ -382,6 +399,8 @@ class MacroAssembler : public MacroAssemblerSpecific
         branchTest32(Assembler::NonZero, address, Imm32(bit), label);
     }
 
+    void branchIfNotInterpretedConstructor(Register fun, Register scratch, Label *label);
+
     using MacroAssemblerSpecific::Push;
     using MacroAssemblerSpecific::Pop;
 
@@ -407,18 +426,21 @@ class MacroAssembler : public MacroAssemblerSpecific
                 Push(ImmGCPtr(str));
             }
         } else {
-            size_t idbits = JSID_BITS(id);
-            Push(ImmWord(idbits));
+            Push(ImmWord(JSID_BITS(id)));
         }
     }
 
     void Push(TypedOrValueRegister v) {
-        if (v.hasValue())
+        if (v.hasValue()) {
             Push(v.valueReg());
-        else if (v.type() == MIRType_Double)
-            Push(v.typedReg().fpu());
-        else
+        } else if (IsFloatingPointType(v.type())) {
+            FloatRegister reg = v.typedReg().fpu();
+            if (v.type() == MIRType_Float32)
+                convertFloatToDouble(reg, reg);
+            Push(reg);
+        } else {
             Push(ValueTypeFromMIRType(v.type()), v.typedReg().gpr());
+        }
     }
 
     void Push(ConstantOrRegister v) {
@@ -484,7 +506,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     void branchTestNeedsBarrier(Condition cond, const Register &scratch, Label *label) {
         JS_ASSERT(cond == Zero || cond == NonZero);
         JS::Zone *zone = GetIonContext()->compartment->zone();
-        movePtr(ImmWord(zone), scratch);
+        movePtr(ImmPtr(zone), scratch);
         Address needsBarrierAddr(scratch, JS::Zone::OffsetOfNeedsBarrier());
         branchTest32(cond, needsBarrierAddr, Imm32(0x1), label);
     }
@@ -546,6 +568,14 @@ class MacroAssembler : public MacroAssemblerSpecific
         bind(&notNaN);
     }
 
+    void canonicalizeFloat(FloatRegister reg) {
+        static float js_NaN_float = js_NaN;
+        Label notNaN;
+        branchFloat(DoubleOrdered, reg, reg, &notNaN);
+        loadStaticFloat32(&js_NaN_float, reg);
+        bind(&notNaN);
+    }
+
     template<typename T>
     void loadFromTypedArray(int arrayType, const T &src, AnyRegister dest, Register temp, Label *fail);
 
@@ -556,17 +586,17 @@ class MacroAssembler : public MacroAssemblerSpecific
     template<typename S, typename T>
     void storeToTypedIntArray(int arrayType, const S &value, const T &dest) {
         switch (arrayType) {
-          case TypedArrayObject::TYPE_INT8:
-          case TypedArrayObject::TYPE_UINT8:
-          case TypedArrayObject::TYPE_UINT8_CLAMPED:
+          case ScalarTypeRepresentation::TYPE_INT8:
+          case ScalarTypeRepresentation::TYPE_UINT8:
+          case ScalarTypeRepresentation::TYPE_UINT8_CLAMPED:
             store8(value, dest);
             break;
-          case TypedArrayObject::TYPE_INT16:
-          case TypedArrayObject::TYPE_UINT16:
+          case ScalarTypeRepresentation::TYPE_INT16:
+          case ScalarTypeRepresentation::TYPE_UINT16:
             store16(value, dest);
             break;
-          case TypedArrayObject::TYPE_INT32:
-          case TypedArrayObject::TYPE_UINT32:
+          case ScalarTypeRepresentation::TYPE_INT32:
+          case ScalarTypeRepresentation::TYPE_UINT32:
             store32(value, dest);
             break;
           default:
@@ -574,20 +604,8 @@ class MacroAssembler : public MacroAssemblerSpecific
         }
     }
 
-    template<typename S, typename T>
-    void storeToTypedFloatArray(int arrayType, const S &value, const T &dest) {
-        switch (arrayType) {
-          case TypedArrayObject::TYPE_FLOAT32:
-            convertDoubleToFloat(value, ScratchFloatReg);
-            storeFloat(ScratchFloatReg, dest);
-            break;
-          case TypedArrayObject::TYPE_FLOAT64:
-            storeDouble(value, dest);
-            break;
-          default:
-            MOZ_ASSUME_UNREACHABLE("Invalid typed array type");
-        }
-    }
+    void storeToTypedFloatArray(int arrayType, const FloatRegister &value, const BaseIndex &dest);
+    void storeToTypedFloatArray(int arrayType, const FloatRegister &value, const Address &dest);
 
     Register extractString(const Address &address, Register scratch) {
         return extractObject(address, scratch);
@@ -596,13 +614,31 @@ class MacroAssembler : public MacroAssemblerSpecific
         return extractObject(value, scratch);
     }
 
+    using MacroAssemblerSpecific::extractTag;
+    Register extractTag(const TypedOrValueRegister &reg, Register scratch) {
+        if (reg.hasValue()) {
+            return extractTag(reg.valueReg(), scratch);
+        }
+        mov(ImmWord(ValueTypeFromMIRType(reg.type())), scratch);
+        return scratch;
+    }
+
+    using MacroAssemblerSpecific::extractObject;
+    Register extractObject(const TypedOrValueRegister &reg, Register scratch) {
+        if (reg.hasValue())
+            return extractObject(reg.valueReg(), scratch);
+        JS_ASSERT(reg.type() == MIRType_Object);
+        return reg.typedReg().gpr();
+    }
+
     // Inline version of js_TypedArray_uint8_clamp_double.
     // This function clobbers the input register.
     void clampDoubleToUint8(FloatRegister input, Register output);
 
     using MacroAssemblerSpecific::ensureDouble;
 
-    void ensureDouble(const Address &source, FloatRegister dest, Label *failure) {
+    template <typename S>
+    void ensureDouble(const S &source, FloatRegister dest, Label *failure) {
         Label isDouble, done;
         branchTestDouble(Assembler::Equal, source, &isDouble);
         branchTestInt32(Assembler::NotEqual, source, failure);
@@ -618,7 +654,7 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     // Emit type case branch on tag matching if the type tag in the definition
     // might actually be that type.
-    void branchEqualTypeIfNeeded(MIRType type, MDefinition *def, const Register &tag,
+    void branchEqualTypeIfNeeded(MIRType type, MDefinition *maybeDef, const Register &tag,
                                  Label *label);
 
     // Inline allocation.
@@ -662,12 +698,12 @@ class MacroAssembler : public MacroAssemblerSpecific
         // Push the ioncode. (Bailout or VM wrapper)
         exitCodePatch_ = PushWithPatch(ImmWord(-1));
         // Push VMFunction pointer, to mark arguments.
-        Push(ImmWord(f));
+        Push(ImmPtr(f));
     }
     void enterFakeExitFrame(IonCode *codeVal = NULL) {
         linkExitFrame();
-        Push(ImmWord(uintptr_t(codeVal)));
-        Push(ImmWord(uintptr_t(NULL)));
+        Push(ImmPtr(codeVal));
+        Push(ImmPtr(NULL));
     }
 
     void loadForkJoinSlice(Register slice, Register scratch);
@@ -701,8 +737,8 @@ class MacroAssembler : public MacroAssemblerSpecific
         // be unset if the code never needed to push its IonCode*.
         if (hasEnteredExitFrame()) {
             patchDataWithValueCheck(CodeLocationLabel(code, exitCodePatch_),
-                                    ImmWord(uintptr_t(code)),
-                                    ImmWord(uintptr_t(-1)));
+                                    ImmPtr(code),
+                                    ImmPtr((void*)-1));
         }
 
     }
@@ -730,12 +766,6 @@ class MacroAssembler : public MacroAssemblerSpecific
         MacroAssemblerSpecific::callWithABI(fun, result);
         reenterSPSFrame();
     }
-
-    void handleException() {
-        handleFailure(SequentialExecution);
-    }
-
-    void handleFailure(ExecutionMode executionMode);
 
     // see above comment for what is returned
     uint32_t callIon(const Register &callee) {
@@ -771,9 +801,9 @@ class MacroAssembler : public MacroAssemblerSpecific
         // of the JSObject::isWrapper test performed in EmulatesUndefined.  If none
         // of the branches are taken, we can check class flags directly.
         loadObjClass(objReg, scratch);
-        branchPtr(Assembler::Equal, scratch, ImmWord(&ObjectProxyObject::class_), slowCheck);
-        branchPtr(Assembler::Equal, scratch, ImmWord(&OuterWindowProxyObject::class_), slowCheck);
-        branchPtr(Assembler::Equal, scratch, ImmWord(&FunctionProxyObject::class_), slowCheck);
+        branchPtr(Assembler::Equal, scratch, ImmPtr(&ObjectProxyObject::class_), slowCheck);
+        branchPtr(Assembler::Equal, scratch, ImmPtr(&OuterWindowProxyObject::class_), slowCheck);
+        branchPtr(Assembler::Equal, scratch, ImmPtr(&FunctionProxyObject::class_), slowCheck);
 
         test32(Address(scratch, Class::offsetOfFlags()), Imm32(JSCLASS_EMULATES_UNDEFINED));
         return truthy ? Assembler::Zero : Assembler::NonZero;
@@ -818,7 +848,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     void spsProfileEntryAddress(SPSProfiler *p, int offset, Register temp,
                                 Label *full)
     {
-        movePtr(ImmWord(p->sizePointer()), temp);
+        movePtr(ImmPtr(p->sizePointer()), temp);
         load32(Address(temp, 0), temp);
         if (offset != 0)
             add32(Imm32(offset), temp);
@@ -827,7 +857,7 @@ class MacroAssembler : public MacroAssemblerSpecific
         // 4 * sizeof(void*) * idx = idx << (2 + log(sizeof(void*)))
         JS_STATIC_ASSERT(sizeof(ProfileEntry) == 4 * sizeof(void*));
         lshiftPtr(Imm32(2 + (sizeof(void*) == 4 ? 2 : 3)), temp);
-        addPtr(ImmWord(p->stack()), temp);
+        addPtr(ImmPtr(p->stack()), temp);
     }
 
     // The safe version of the above method refrains from assuming that the fields
@@ -839,7 +869,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     void spsProfileEntryAddressSafe(SPSProfiler *p, int offset, Register temp,
                                     Label *full)
     {
-        movePtr(ImmWord(p->addressOfSizePointer()), temp);
+        movePtr(ImmPtr(p->addressOfSizePointer()), temp);
 
         // Load size pointer
         loadPtr(Address(temp, 0), temp);
@@ -856,7 +886,7 @@ class MacroAssembler : public MacroAssemblerSpecific
         JS_STATIC_ASSERT(sizeof(ProfileEntry) == 4 * sizeof(void*));
         lshiftPtr(Imm32(2 + (sizeof(void*) == 4 ? 2 : 3)), temp);
         push(temp);
-        movePtr(ImmWord(p->addressOfStack()), temp);
+        movePtr(ImmPtr(p->addressOfStack()), temp);
         loadPtr(Address(temp, 0), temp);
         addPtr(Address(StackPointer, 0), temp);
         addPtr(Imm32(sizeof(size_t)), StackPointer);
@@ -886,14 +916,14 @@ class MacroAssembler : public MacroAssemblerSpecific
         Label stackFull;
         spsProfileEntryAddress(p, 0, temp, &stackFull);
 
-        storePtr(ImmWord(str),    Address(temp, ProfileEntry::offsetOfString()));
-        storePtr(ImmGCPtr(s),     Address(temp, ProfileEntry::offsetOfScript()));
-        storePtr(ImmWord((void*) NULL), Address(temp, ProfileEntry::offsetOfStackAddress()));
+        storePtr(ImmPtr(str),  Address(temp, ProfileEntry::offsetOfString()));
+        storePtr(ImmGCPtr(s),  Address(temp, ProfileEntry::offsetOfScript()));
+        storePtr(ImmPtr(NULL), Address(temp, ProfileEntry::offsetOfStackAddress()));
         store32(Imm32(ProfileEntry::NullPCIndex), Address(temp, ProfileEntry::offsetOfPCIdx()));
 
         /* Always increment the stack size, whether or not we actually pushed. */
         bind(&stackFull);
-        movePtr(ImmWord(p->sizePointer()), temp);
+        movePtr(ImmPtr(p->sizePointer()), temp);
         add32(Imm32(1), Address(temp, 0));
     }
 
@@ -909,7 +939,7 @@ class MacroAssembler : public MacroAssemblerSpecific
         loadPtr(script, temp2);
         storePtr(temp2, Address(temp, ProfileEntry::offsetOfScript()));
 
-        storePtr(ImmWord((void*) 0), Address(temp, ProfileEntry::offsetOfStackAddress()));
+        storePtr(ImmPtr(NULL), Address(temp, ProfileEntry::offsetOfStackAddress()));
 
         // Store 0 for PCIdx because that's what interpreter does.
         // (See Probes::enterScript, which calls spsProfiler.enter, which pushes an entry
@@ -918,19 +948,19 @@ class MacroAssembler : public MacroAssemblerSpecific
 
         /* Always increment the stack size, whether or not we actually pushed. */
         bind(&stackFull);
-        movePtr(ImmWord(p->addressOfSizePointer()), temp);
+        movePtr(ImmPtr(p->addressOfSizePointer()), temp);
         loadPtr(Address(temp, 0), temp);
         add32(Imm32(1), Address(temp, 0));
     }
 
     void spsPopFrame(SPSProfiler *p, Register temp) {
-        movePtr(ImmWord(p->sizePointer()), temp);
+        movePtr(ImmPtr(p->sizePointer()), temp);
         add32(Imm32(-1), Address(temp, 0));
     }
 
     // spsPropFrameSafe does not assume |profiler->sizePointer()| will stay constant.
     void spsPopFrameSafe(SPSProfiler *p, Register temp) {
-        movePtr(ImmWord(p->addressOfSizePointer()), temp);
+        movePtr(ImmPtr(p->addressOfSizePointer()), temp);
         loadPtr(Address(temp, 0), temp);
         add32(Imm32(-1), Address(temp, 0));
     }
@@ -945,6 +975,25 @@ class MacroAssembler : public MacroAssemblerSpecific
         push(scratch);
     }
 
+  private:
+    void handleFailure(ExecutionMode executionMode);
+
+  public:
+    Label *exceptionLabel() {
+        // Exceptions are currently handled the same way as sequential failures.
+        return &sequentialFailureLabel_;
+    }
+
+    Label *failureLabel(ExecutionMode executionMode) {
+        switch (executionMode) {
+          case SequentialExecution: return &sequentialFailureLabel_;
+          case ParallelExecution: return &parallelFailureLabel_;
+          default: MOZ_ASSUME_UNREACHABLE("Unexpected execution mode");
+        }
+    }
+
+    void finish();
+
     void printf(const char *output);
     void printf(const char *output, Register value);
 
@@ -954,9 +1003,214 @@ class MacroAssembler : public MacroAssemblerSpecific
     void tracelogLog(TraceLogging::Type type);
 #endif
 
+#define DISPATCH_FLOATING_POINT_OP(method, type, arg1d, arg1f, arg2)    \
+    JS_ASSERT(IsFloatingPointType(type));                               \
+    if (type == MIRType_Double)                                         \
+        method##Double(arg1d, arg2);                                    \
+    else                                                                \
+        method##Float32(arg1f, arg2);                                   \
+
+    void loadStaticFloatingPoint(const double *dp, const float *fp, FloatRegister dest,
+                                 MIRType destType)
+    {
+        DISPATCH_FLOATING_POINT_OP(loadStatic, destType, dp, fp, dest);
+    }
+    void loadConstantFloatingPoint(double d, float f, FloatRegister dest, MIRType destType) {
+        DISPATCH_FLOATING_POINT_OP(loadConstant, destType, d, f, dest);
+    }
+    void boolValueToFloatingPoint(ValueOperand value, FloatRegister dest, MIRType destType) {
+        DISPATCH_FLOATING_POINT_OP(boolValueTo, destType, value, value, dest);
+    }
+    void int32ValueToFloatingPoint(ValueOperand value, FloatRegister dest, MIRType destType) {
+        DISPATCH_FLOATING_POINT_OP(int32ValueTo, destType, value, value, dest);
+    }
+    void convertInt32ToFloatingPoint(Register src, FloatRegister dest, MIRType destType) {
+        DISPATCH_FLOATING_POINT_OP(convertInt32To, destType, src, src, dest);
+    }
+
+#undef DISPATCH_FLOATING_POINT_OP
+
+    void convertValueToFloatingPoint(ValueOperand value, FloatRegister output, Label *fail,
+                                     MIRType outputType);
+    bool convertValueToFloatingPoint(JSContext *cx, const Value &v, FloatRegister output,
+                                     Label *fail, MIRType outputType);
+    bool convertConstantOrRegisterToFloatingPoint(JSContext *cx, ConstantOrRegister src,
+                                                  FloatRegister output, Label *fail,
+                                                  MIRType outputType);
+    void convertTypedOrValueToFloatingPoint(TypedOrValueRegister src, FloatRegister output,
+                                            Label *fail, MIRType outputType);
+
     void convertInt32ValueToDouble(const Address &address, Register scratch, Label *done);
-    void convertValueToDouble(ValueOperand value, FloatRegister output, Label *fail);
-    void convertValueToInt32(ValueOperand value, FloatRegister temp, Register output, Label *fail);
+    void convertValueToDouble(ValueOperand value, FloatRegister output, Label *fail) {
+        convertValueToFloatingPoint(value, output, fail, MIRType_Double);
+    }
+    bool convertValueToDouble(JSContext *cx, const Value &v, FloatRegister output, Label *fail) {
+        return convertValueToFloatingPoint(cx, v, output, fail, MIRType_Double);
+    }
+    bool convertConstantOrRegisterToDouble(JSContext *cx, ConstantOrRegister src,
+                                           FloatRegister output, Label *fail)
+    {
+        return convertConstantOrRegisterToFloatingPoint(cx, src, output, fail, MIRType_Double);
+    }
+    void convertTypedOrValueToDouble(TypedOrValueRegister src, FloatRegister output, Label *fail) {
+        convertTypedOrValueToFloatingPoint(src, output, fail, MIRType_Double);
+    }
+
+    void convertValueToFloat(ValueOperand value, FloatRegister output, Label *fail) {
+        convertValueToFloatingPoint(value, output, fail, MIRType_Float32);
+    }
+    bool convertValueToFloat(JSContext *cx, const Value &v, FloatRegister output, Label *fail) {
+        return convertValueToFloatingPoint(cx, v, output, fail, MIRType_Float32);
+    }
+    bool convertConstantOrRegisterToFloat(JSContext *cx, ConstantOrRegister src,
+                                          FloatRegister output, Label *fail)
+    {
+        return convertConstantOrRegisterToFloatingPoint(cx, src, output, fail, MIRType_Float32);
+    }
+    void convertTypedOrValueToFloat(TypedOrValueRegister src, FloatRegister output, Label *fail) {
+        convertTypedOrValueToFloatingPoint(src, output, fail, MIRType_Float32);
+    }
+
+    enum IntConversionBehavior {
+        IntConversion_Normal,
+        IntConversion_NegativeZeroCheck,
+        IntConversion_Truncate,
+        IntConversion_ClampToUint8,
+    };
+
+    //
+    // Functions for converting values to int.
+    //
+    void convertDoubleToInt(FloatRegister src, Register output, FloatRegister temp,
+                            Label *truncateFail, Label *fail, IntConversionBehavior behavior);
+
+    // Strings may be handled by providing labels to jump to when the behavior
+    // is truncation or clamping. The subroutine, usually an OOL call, is
+    // passed the unboxed string in |stringReg| and should convert it to a
+    // double store into |temp|.
+    void convertValueToInt(ValueOperand value, MDefinition *input,
+                           Label *handleStringEntry, Label *handleStringRejoin,
+                           Label *truncateDoubleSlow,
+                           Register stringReg, FloatRegister temp, Register output,
+                           Label *fail, IntConversionBehavior behavior);
+    void convertValueToInt(ValueOperand value, FloatRegister temp, Register output, Label *fail,
+                           IntConversionBehavior behavior)
+    {
+        convertValueToInt(value, NULL, NULL, NULL, NULL, InvalidReg, temp, output, fail, behavior);
+    }
+    bool convertValueToInt(JSContext *cx, const Value &v, Register output, Label *fail,
+                           IntConversionBehavior behavior);
+    bool convertConstantOrRegisterToInt(JSContext *cx, ConstantOrRegister src, FloatRegister temp,
+                                        Register output, Label *fail, IntConversionBehavior behavior);
+    void convertTypedOrValueToInt(TypedOrValueRegister src, FloatRegister temp, Register output,
+                                  Label *fail, IntConversionBehavior behavior);
+
+    //
+    // Convenience functions for converting values to int32.
+    //
+    void convertValueToInt32(ValueOperand value, FloatRegister temp, Register output, Label *fail,
+                             bool negativeZeroCheck)
+    {
+        convertValueToInt(value, temp, output, fail, negativeZeroCheck
+                          ? IntConversion_NegativeZeroCheck
+                          : IntConversion_Normal);
+    }
+    void convertValueToInt32(ValueOperand value, MDefinition *input,
+                             FloatRegister temp, Register output, Label *fail,
+                             bool negativeZeroCheck)
+    {
+        convertValueToInt(value, input, NULL, NULL, NULL, InvalidReg, temp, output, fail,
+                          negativeZeroCheck
+                          ? IntConversion_NegativeZeroCheck
+                          : IntConversion_Normal);
+    }
+    bool convertValueToInt32(JSContext *cx, const Value &v, Register output, Label *fail,
+                             bool negativeZeroCheck)
+    {
+        return convertValueToInt(cx, v, output, fail, negativeZeroCheck
+                                 ? IntConversion_NegativeZeroCheck
+                                 : IntConversion_Normal);
+    }
+    bool convertConstantOrRegisterToInt32(JSContext *cx, ConstantOrRegister src, FloatRegister temp,
+                                          Register output, Label *fail, bool negativeZeroCheck)
+    {
+        return convertConstantOrRegisterToInt(cx, src, temp, output, fail, negativeZeroCheck
+                                              ? IntConversion_NegativeZeroCheck
+                                              : IntConversion_Normal);
+    }
+    void convertTypedOrValueToInt32(TypedOrValueRegister src, FloatRegister temp, Register output,
+                                    Label *fail, bool negativeZeroCheck)
+    {
+        convertTypedOrValueToInt(src, temp, output, fail, negativeZeroCheck
+                                 ? IntConversion_NegativeZeroCheck
+                                 : IntConversion_Normal);
+    }
+
+    //
+    // Convenience functions for truncating values to int32.
+    //
+    void truncateValueToInt32(ValueOperand value, FloatRegister temp, Register output, Label *fail) {
+        convertValueToInt(value, temp, output, fail, IntConversion_Truncate);
+    }
+    void truncateValueToInt32(ValueOperand value, MDefinition *input,
+                              Label *handleStringEntry, Label *handleStringRejoin,
+                              Label *truncateDoubleSlow,
+                              Register stringReg, FloatRegister temp, Register output, Label *fail)
+    {
+        convertValueToInt(value, input, handleStringEntry, handleStringRejoin, truncateDoubleSlow,
+                          stringReg, temp, output, fail, IntConversion_Truncate);
+    }
+    void truncateValueToInt32(ValueOperand value, MDefinition *input,
+                              FloatRegister temp, Register output, Label *fail)
+    {
+        convertValueToInt(value, input, NULL, NULL, NULL, InvalidReg, temp, output, fail,
+                          IntConversion_Truncate);
+    }
+    bool truncateValueToInt32(JSContext *cx, const Value &v, Register output, Label *fail) {
+        return convertValueToInt(cx, v, output, fail, IntConversion_Truncate);
+    }
+    bool truncateConstantOrRegisterToInt32(JSContext *cx, ConstantOrRegister src, FloatRegister temp,
+                                           Register output, Label *fail)
+    {
+        return convertConstantOrRegisterToInt(cx, src, temp, output, fail, IntConversion_Truncate);
+    }
+    void truncateTypedOrValueToInt32(TypedOrValueRegister src, FloatRegister temp, Register output,
+                                     Label *fail)
+    {
+        convertTypedOrValueToInt(src, temp, output, fail, IntConversion_Truncate);
+    }
+
+    // Convenience functions for clamping values to uint8.
+    void clampValueToUint8(ValueOperand value, FloatRegister temp, Register output, Label *fail) {
+        convertValueToInt(value, temp, output, fail, IntConversion_ClampToUint8);
+    }
+    void clampValueToUint8(ValueOperand value, MDefinition *input,
+                           Label *handleStringEntry, Label *handleStringRejoin,
+                           Register stringReg, FloatRegister temp, Register output, Label *fail)
+    {
+        convertValueToInt(value, input, handleStringEntry, handleStringRejoin, NULL,
+                          stringReg, temp, output, fail, IntConversion_ClampToUint8);
+    }
+    void clampValueToUint8(ValueOperand value, MDefinition *input,
+                           FloatRegister temp, Register output, Label *fail)
+    {
+        convertValueToInt(value, input, NULL, NULL, NULL, InvalidReg, temp, output, fail,
+                          IntConversion_ClampToUint8);
+    }
+    bool clampValueToUint8(JSContext *cx, const Value &v, Register output, Label *fail) {
+        return convertValueToInt(cx, v, output, fail, IntConversion_ClampToUint8);
+    }
+    bool clampConstantOrRegisterToUint8(JSContext *cx, ConstantOrRegister src, FloatRegister temp,
+                                        Register output, Label *fail)
+    {
+        return convertConstantOrRegisterToInt(cx, src, temp, output, fail,
+                                              IntConversion_ClampToUint8);
+    }
+    void clampTypedOrValueToUint8(TypedOrValueRegister src, FloatRegister temp, Register output,
+                                  Label *fail)
+    {
+        convertTypedOrValueToInt(src, temp, output, fail, IntConversion_ClampToUint8);
+    }
 };
 
 static inline Assembler::DoubleCondition

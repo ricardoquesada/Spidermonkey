@@ -6,12 +6,11 @@
 #ifndef __NSAUTOJSVALHOLDER_H__
 #define __NSAUTOJSVALHOLDER_H__
 
+#include "nsDebug.h"
 #include "jsapi.h"
 
-#include "nsDebug.h"
-
 /**
- * Simple class that looks and acts like a jsval except that it unroots
+ * Simple class that looks and acts like a JS::Value except that it unroots
  * itself automatically if Root() is ever called. Designed to be rooted on the
  * context or runtime (but not both!).
  */
@@ -46,7 +45,7 @@ public:
       else {
         this->Release();
       }
-      *this = static_cast<jsval>(aOther);
+      *this = static_cast<JS::Value>(aOther);
     }
     return *this;
   }
@@ -78,10 +77,10 @@ public:
 
   /**
    * Manually release, nullifying mVal, and mRt, but returning
-   * the original jsval.
+   * the original JS::Value.
    */
-  jsval Release() {
-    jsval oldval = mVal;
+  JS::Value Release() {
+    JS::Value oldval = mVal;
 
     if (mRt) {
       JS_RemoveValueRootRT(mRt, &mVal); // infallible
@@ -109,23 +108,23 @@ public:
          : nullptr;
   }
 
-  jsval* ToJSValPtr() {
+  JS::Value* ToJSValPtr() {
     return &mVal;
   }
 
   /**
-   * Pretend to be a jsval.
+   * Pretend to be a JS::Value.
    */
-  operator jsval() const { return mVal; }
+  operator JS::Value() const { return mVal; }
 
   nsAutoJSValHolder &operator=(JSObject* aOther) {
     return *this = OBJECT_TO_JSVAL(aOther);
   }
 
-  nsAutoJSValHolder &operator=(jsval aOther) {
+  nsAutoJSValHolder &operator=(JS::Value aOther) {
 #ifdef DEBUG
     if (JSVAL_IS_GCTHING(aOther) && !JSVAL_IS_NULL(aOther)) {
-      NS_ASSERTION(IsHeld(), "Not rooted!");
+      MOZ_ASSERT(IsHeld(), "Not rooted!");
     }
 #endif
     mVal = aOther;
@@ -133,7 +132,7 @@ public:
   }
 
 private:
-  jsval mVal;
+  JS::Value mVal;
   JSRuntime* mRt;
 };
 

@@ -4,7 +4,7 @@
 
 #include "jsapi-tests/tests.h"
 
-static JSClass ObjectEmulatingUndefinedClass = {
+static const JSClass ObjectEmulatingUndefinedClass = {
     "ObjectEmulatingUndefined",
     JSCLASS_EMULATES_UNDEFINED,
     JS_PropertyStub,
@@ -16,7 +16,7 @@ static JSClass ObjectEmulatingUndefinedClass = {
     JS_ConvertStub
 };
 
-static JSBool
+static bool
 ObjectEmulatingUndefinedConstructor(JSContext *cx, unsigned argc, jsval *vp)
 {
     JSObject *obj = JS_NewObjectForConstructor(cx, &ObjectEmulatingUndefinedClass, vp);

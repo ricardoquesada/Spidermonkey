@@ -9,15 +9,13 @@
 
 #include "jsapi-tests/tests.h"
 
-#include "vm/ObjectImpl-inl.h"
-
 const unsigned BufferSize = 20;
 static unsigned FinalizeCalls = 0;
 static JSFinalizeStatus StatusBuffer[BufferSize];
 static bool IsCompartmentGCBuffer[BufferSize];
 
 static void
-FinalizeCallback(JSFreeOp *fop, JSFinalizeStatus status, JSBool isCompartmentGC)
+FinalizeCallback(JSFreeOp *fop, JSFinalizeStatus status, bool isCompartmentGC)
 {
     if (FinalizeCalls < BufferSize) {
         StatusBuffer[FinalizeCalls] = status;

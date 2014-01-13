@@ -10,9 +10,10 @@
 #include "mozilla/GuardObjects.h"
 #include "mozilla/TypeTraits.h"
 
-#include "js/Utility.h"
-
 #include "jspubtd.h"
+
+#include "js/TypeDecls.h"
+#include "js/Utility.h"
 
 /*
  * Moving GC Stack Rooting
@@ -97,7 +98,6 @@
 
 namespace js {
 
-class Module;
 class ScriptSourceObject;
 
 template <typename T>
@@ -142,9 +142,6 @@ struct Cell;
 namespace JS {
 
 template <typename T> class Rooted;
-
-template <typename T> class Handle;
-template <typename T> class MutableHandle;
 
 /* This is exposing internal state of the GC for inlining purposes. */
 JS_FRIEND_API(bool) isGCEnabled();
@@ -466,15 +463,6 @@ class MOZ_NONHEAP_CLASS Handle : public js::HandleBase<T>
     void operator=(S v) MOZ_DELETE;
 };
 
-typedef Handle<JSObject*>                   HandleObject;
-typedef Handle<js::Module*>                 HandleModule;
-typedef Handle<js::ScriptSourceObject *>    HandleScriptSource;
-typedef Handle<JSFunction*>                 HandleFunction;
-typedef Handle<JSScript*>                   HandleScript;
-typedef Handle<JSString*>                   HandleString;
-typedef Handle<jsid>                        HandleId;
-typedef Handle<Value>                       HandleValue;
-
 /*
  * Similar to a handle, but the underlying storage can be changed. This is
  * useful for outparams.
@@ -525,13 +513,6 @@ class MOZ_STACK_CLASS MutableHandle : public js::MutableHandleBase<T>
     template <typename S> void operator=(S v) MOZ_DELETE;
     void operator=(MutableHandle other) MOZ_DELETE;
 };
-
-typedef MutableHandle<JSObject*>   MutableHandleObject;
-typedef MutableHandle<JSFunction*> MutableHandleFunction;
-typedef MutableHandle<JSScript*>   MutableHandleScript;
-typedef MutableHandle<JSString*>   MutableHandleString;
-typedef MutableHandle<jsid>        MutableHandleId;
-typedef MutableHandle<Value>       MutableHandleValue;
 
 #ifdef JSGC_GENERATIONAL
 JS_PUBLIC_API(void) HeapCellPostBarrier(js::gc::Cell **cellp);
@@ -628,12 +609,11 @@ struct GCMethods<T *>
 #endif
 };
 
-// XXX: Needed for cocos2d JS Bindings
-//#if defined(DEBUG)
+#if defined(DEBUG)
 /* This helper allows us to assert that Rooted<T> is scoped within a request. */
 extern JS_PUBLIC_API(bool)
 IsInRequest(JSContext *cx);
-//#endif
+#endif
 
 } /* namespace js */
 
@@ -803,8 +783,6 @@ class Rooted<JSStableString *>;
 #endif
 
 typedef Rooted<JSObject*>                   RootedObject;
-typedef Rooted<js::Module*>                 RootedModule;
-typedef Rooted<js::ScriptSourceObject *>    RootedScriptSource;
 typedef Rooted<JSFunction*>                 RootedFunction;
 typedef Rooted<JSScript*>                   RootedScript;
 typedef Rooted<JSString*>                   RootedString;
@@ -857,6 +835,10 @@ class SkipRoot
     void init(js::ContextFriendFields *cx, const T *ptr, size_t count) {}
 
   public:
+    ~SkipRoot() {
+        // An empty destructor is needed to avoid warnings from clang about
+        // unused local variables of this type.
+    }
 
 #endif /* DEBUG && JSGC_ROOT_ANALYSIS */
 

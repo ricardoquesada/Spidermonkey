@@ -7,8 +7,6 @@
 #ifndef jit_shared_BaselineCompiler_shared_h
 #define jit_shared_BaselineCompiler_shared_h
 
-#include "jscntxt.h"
-
 #include "jit/BaselineFrameInfo.h"
 #include "jit/BaselineIC.h"
 #include "jit/IonInstrumentation.h"
@@ -130,7 +128,7 @@ class BaselineCompilerShared
         masm.Push(BaselineFrameReg);
     }
 
-    bool callVM(const VMFunction &fun);
+    bool callVM(const VMFunction &fun, bool preInitialize=false);
 
   public:
     BytecodeAnalysis &analysis() {

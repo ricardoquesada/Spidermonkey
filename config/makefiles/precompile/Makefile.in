@@ -5,30 +5,26 @@
 # This make file defines the precompile tier. This tier effectively fans out
 # to other make files and specialized targets.
 
-DEPTH := @DEPTH@
-topsrcdir := @top_srcdir@
-srcdir := @srcdir@
-
-include $(DEPTH)/config/autoconf.mk
-
 SUPPRESS_DEFAULT_RULES := 1
 
-include $(topsrcdir)/config/rules.mk
+default::
+	+$(MAKE) export
 
-define make_subtier_dir
-@echo "BUILDSTATUS SUBTIER_START precompile $(1)"
-$(MAKE) -C $(2) $(3)
-@echo "BUILDSTATUS SUBTIER_FINISH precompile $(1)"
-
-endef
-
-export::
-	@echo "BUILDSTATUS SUBTIERS IPDL WebIDL"
-
+ifndef LIBXUL_SDK
 export:: ipdl webidl
 
 ipdl:
-	$(call make_subtier_dir,IPDL,$(DEPTH)/ipc/ipdl,ipdl)
+	$(call SUBMAKE,ipdl,$(DEPTH)/ipc/ipdl)
 
 webidl:
-	$(call make_subtier_dir,WebIDL,$(DEPTH)/dom/bindings,webidl)
+	$(call SUBMAKE,webidl,$(DEPTH)/dom/bindings)
+endif
+
+export:: xpidl
+
+xpidl:
+ifndef LIBXUL_SDK
+	$(call SUBMAKE,xpidl-parser,$(DEPTH)/xpcom/idl-parser)
+endif
+	$(call py_action,process_install_manifest,$(DIST)/idl $(DEPTH)/_build_manifests/install/dist_idl)
+	$(call SUBMAKE,xpidl,$(DEPTH)/config/makefiles/xpidl)

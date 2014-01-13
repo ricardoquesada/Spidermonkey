@@ -6,10 +6,14 @@
 
 #include "jit/BaselineInspector.h"
 
+#include "mozilla/DebugOnly.h"
+
 #include "jit/BaselineIC.h"
 
 using namespace js;
 using namespace js::jit;
+
+using mozilla::DebugOnly;
 
 bool
 SetElemICInspector::sawOOBDenseWrite() const
@@ -50,6 +54,20 @@ SetElemICInspector::sawDenseWrite() const
     // Check for a SetElem_DenseAdd or SetElem_Dense stub.
     for (ICStub *stub = icEntry_->firstStub(); stub; stub = stub->next()) {
         if (stub->isSetElem_DenseAdd() || stub->isSetElem_Dense())
+            return true;
+    }
+    return false;
+}
+
+bool
+SetElemICInspector::sawTypedArrayWrite() const
+{
+    if (!icEntry_)
+        return false;
+
+    // Check for a SetElem_TypedArray stub.
+    for (ICStub *stub = icEntry_->firstStub(); stub; stub = stub->next()) {
+        if (stub->isSetElem_TypedArray())
             return true;
     }
     return false;
@@ -228,7 +246,7 @@ TryToSpecializeBinaryArithOp(ICStub **stubs,
                              uint32_t nstubs,
                              MIRType *result)
 {
-    bool sawInt32 = false;
+    DebugOnly<bool> sawInt32 = false;
     bool sawDouble = false;
     bool sawOther = false;
 
@@ -268,8 +286,19 @@ TryToSpecializeBinaryArithOp(ICStub **stubs,
 MIRType
 BaselineInspector::expectedBinaryArithSpecialization(jsbytecode *pc)
 {
+    if (!hasBaselineScript())
+        return MIRType_None;
+
     MIRType result;
     ICStub *stubs[2];
+
+    const ICEntry &entry = icEntryFromPC(pc);
+    ICStub *stub = entry.fallbackStub();
+    if (stub->isBinaryArith_Fallback() &&
+        stub->toBinaryArith_Fallback()->hadUnoptimizableOperands())
+    {
+        return MIRType_None;
+    }
 
     stubs[0] = monomorphicStub(pc);
     if (stubs[0]) {

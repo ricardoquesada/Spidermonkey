@@ -572,7 +572,7 @@ struct RIS
     {
         JS_ASSERT(ShiftAmount == imm);
     }
-    explicit RIS(Reg r) : ShiftAmount(ShiftAmount) { }
+    explicit RIS(Reg r) : ShiftAmount(r.ShiftAmount) {}
 };
 
 struct RRS
@@ -1128,7 +1128,7 @@ class Assembler
 {
   public:
     // ARM conditional constants
-    typedef enum {
+    enum ARMCondition {
         EQ = 0x00000000, // Zero
         NE = 0x10000000, // Non-zero
         CS = 0x20000000,
@@ -1144,7 +1144,7 @@ class Assembler
         GT = 0xc0000000,
         LE = 0xd0000000,
         AL = 0xe0000000
-    } ARMCondition;
+    };
 
     enum Condition {
         Equal = EQ,
@@ -1779,8 +1779,8 @@ class Assembler
     static uint32_t patchWrite_NearCallSize();
     static uint32_t nopSize() { return 4; }
     static void patchWrite_NearCall(CodeLocationLabel start, CodeLocationLabel toCall);
-    static void patchDataWithValueCheck(CodeLocationLabel label, ImmWord newValue,
-                                        ImmWord expectedValue);
+    static void patchDataWithValueCheck(CodeLocationLabel label, ImmPtr newValue,
+                                        ImmPtr expectedValue);
     static void patchWrite_Imm32(CodeLocationLabel label, Imm32 imm);
     static uint32_t alignDoubleArg(uint32_t offset) {
         return (offset+1)&~1;
@@ -1795,7 +1795,9 @@ class Assembler
 
     static void updateBoundsCheck(uint32_t logHeapSize, Instruction *inst);
     void processCodeLabels(uint8_t *rawCode);
-
+    bool bailed() {
+        return m_buffer.bail();
+    }
 }; // Assembler
 
 // An Instruction is a structure for both encoding and decoding any and all ARM instructions.

@@ -70,6 +70,8 @@ ParseNodeAllocator::freeNode(ParseNode *pn)
     freelist = pn;
 }
 
+namespace {
+
 /*
  * A work pool of ParseNodes. The work pool is a stack, chained together
  * by nodes' pn_next fields. We use this to avoid creating deep C++ stacks
@@ -103,6 +105,8 @@ class NodeStack {
   private:
     ParseNode *top;
 };
+
+} /* anonymous namespace */
 
 /*
  * Push the children of |pn| on |stack|. Return true if |pn| itself could be
@@ -384,9 +388,9 @@ Parser<FullParseHandler>::cloneParseTree(ParseNode *opn)
         if (pn->getKind() == PNK_MODULE) {
             MOZ_ASSUME_UNREACHABLE("module nodes cannot be cloned");
         }
-        NULLCHECK(pn->pn_funbox =
-                  newFunctionBox(pn, opn->pn_funbox->function(), pc,
-                                 Directives(/* strict = */ opn->pn_funbox->strict)));
+        NULLCHECK(pn->pn_funbox = newFunctionBox(pn, opn->pn_funbox->function(), pc,
+                                                 Directives(/* strict = */ opn->pn_funbox->strict),
+                                                 opn->pn_funbox->generatorKind()));
         NULLCHECK(pn->pn_body = cloneParseTree(opn->pn_body));
         pn->pn_cookie = opn->pn_cookie;
         pn->pn_dflags = opn->pn_dflags;

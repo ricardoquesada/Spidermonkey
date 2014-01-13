@@ -36,14 +36,17 @@ class Requirement
     Requirement(Kind kind)
       : kind_(kind)
     {
-        // These have dedicated constructors;
+        // These have dedicated constructors.
         JS_ASSERT(kind != FIXED && kind != SAME_AS_OTHER);
     }
 
     Requirement(Kind kind, CodePosition at)
       : kind_(kind),
         position_(at)
-    { }
+    {
+        // These have dedicated constructors.
+        JS_ASSERT(kind != FIXED && kind != SAME_AS_OTHER);
+    }
 
     Requirement(LAllocation fixed)
       : kind_(FIXED),
@@ -625,6 +628,11 @@ class LiveRangeAllocator : public RegisterAllocator
 
             LSafepoint *safepoint = ins->safepoint();
             safepoint->addLiveRegister(a->toRegister());
+
+#ifdef CHECK_OSIPOINT_REGISTERS
+            if (reg->isTemp())
+                safepoint->addTempRegister(a->toRegister());
+#endif
         }
     }
 

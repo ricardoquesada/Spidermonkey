@@ -6,8 +6,7 @@
 
 #include "jit/x64/MacroAssembler-x64.h"
 
-#include "mozilla/Casting.h"
-
+#include "jit/Bailouts.h"
 #include "jit/BaselineFrame.h"
 #include "jit/IonFrames.h"
 #include "jit/MoveEmitter.h"
@@ -197,7 +196,7 @@ MacroAssemblerX64::callWithABI(void *fun, Result result)
 {
     uint32_t stackAdjust;
     callWithABIPre(&stackAdjust);
-    call(ImmWord(fun));
+    call(ImmPtr(fun));
     callWithABIPost(stackAdjust, result);
 }
 
@@ -253,12 +252,14 @@ MacroAssemblerX64::handleFailureWithHandlerTail()
     Label catch_;
     Label finally;
     Label return_;
+    Label bailout;
 
     loadPtr(Address(rsp, offsetof(ResumeFromException, kind)), rax);
     branch32(Assembler::Equal, rax, Imm32(ResumeFromException::RESUME_ENTRY_FRAME), &entryFrame);
     branch32(Assembler::Equal, rax, Imm32(ResumeFromException::RESUME_CATCH), &catch_);
     branch32(Assembler::Equal, rax, Imm32(ResumeFromException::RESUME_FINALLY), &finally);
     branch32(Assembler::Equal, rax, Imm32(ResumeFromException::RESUME_FORCED_RETURN), &return_);
+    branch32(Assembler::Equal, rax, Imm32(ResumeFromException::RESUME_BAILOUT), &bailout);
 
     breakpoint(); // Invalid kind.
 
@@ -300,12 +301,19 @@ MacroAssemblerX64::handleFailureWithHandlerTail()
     movq(rbp, rsp);
     pop(rbp);
     ret();
+
+    // If we are bailing out to baseline to handle an exception, jump to
+    // the bailout tail stub.
+    bind(&bailout);
+    movq(Operand(esp, offsetof(ResumeFromException, bailoutInfo)), r9);
+    movl(Imm32(BAILOUT_RETURN_OK), rax);
+    jmp(Operand(rsp, offsetof(ResumeFromException, target)));
 }
 
 Assembler::Condition
 MacroAssemblerX64::testNegativeZero(const FloatRegister &reg, const Register &scratch)
 {
-    movqsd(reg, scratch);
-    subq(Imm32(1), scratch);
+    movq(reg, scratch);
+    cmpq(scratch, Imm32(1));
     return Overflow;
 }

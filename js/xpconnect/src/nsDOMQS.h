@@ -62,7 +62,7 @@ NEW_BINDING(nsDOMUIEvent, UIEvent);
 
 #define DEFINE_UNWRAP_CAST(_interface, _base, _bit)                           \
 template <>                                                                   \
-MOZ_ALWAYS_INLINE JSBool                                                      \
+MOZ_ALWAYS_INLINE bool                                                        \
 xpc_qsUnwrapThis<_interface>(JSContext *cx,                                   \
                              JS::HandleObject obj,                            \
                              _interface **ppThis,                             \
@@ -241,18 +241,6 @@ inline nsISupports*
 ToSupports(nsContentList *p)
 {
     return static_cast<nsINodeList*>(p);
-}
-
-inline nsISupports*
-ToCanonicalSupports(nsINode* p)
-{
-    return p;
-}
-
-inline nsISupports*
-ToSupports(nsINode* p)
-{
-  return p;
 }
 
 inline nsISupports*

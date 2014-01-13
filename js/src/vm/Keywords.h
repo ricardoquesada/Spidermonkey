@@ -9,8 +9,6 @@
 #ifndef vm_Keywords_h
 #define vm_Keywords_h
 
-#include "jsversion.h"
-
 #if JS_HAS_CONST
 #  define FOR_CONST_KEYWORD(macro) \
       macro(const, const_, TOK_CONST, JSVERSION_DEFAULT)
@@ -72,8 +70,12 @@
     macro(protected, protected_, TOK_STRICT_RESERVED, JSVERSION_DEFAULT) \
     macro(public, public_, TOK_STRICT_RESERVED, JSVERSION_DEFAULT) \
     macro(static, static_, TOK_STRICT_RESERVED, JSVERSION_DEFAULT) \
-    /* ES5 future reserved keyword in strict mode, keyword in JS1.7 even when not strict. */ \
-    macro(yield, yield, TOK_YIELD, JSVERSION_1_7) \
+    /* \
+     * ES5 future reserved keyword in strict mode, keyword in JS1.7 even when \
+     * not strict, keyword inside function* in all versions.  Punt logic to \
+     * parser. \
+     */ \
+    macro(yield, yield, TOK_YIELD, JSVERSION_DEFAULT) \
     /* Various conditional keywords. */ \
     FOR_CONST_KEYWORD(macro) \
     FOR_LET_KEYWORD(macro)

@@ -7,7 +7,6 @@
 #define ctypes_CTypes_h
 
 #include "ffi.h"
-#include "jsapi.h"
 #include "jscntxt.h"
 #include "prlink.h"
 
@@ -57,6 +56,8 @@ private:
 template<class T, size_t N = 0>
 class Array : public Vector<T, N, SystemAllocPolicy>
 {
+  static_assert(!mozilla::IsSame<T, JS::Value>::value,
+                "use JS::AutoValueVector instead");
 };
 
 // String and AutoString classes, based on Vector.
@@ -169,7 +170,7 @@ DeflateStringToUTF8Buffer(JSContext *maybecx, const jschar *src, size_t srclen,
 *******************************************************************************/
 
 JS_ALWAYS_INLINE void
-ASSERT_OK(JSBool ok)
+ASSERT_OK(bool ok)
 {
   JS_ASSERT(ok);
 }
@@ -217,7 +218,7 @@ struct FieldInfo
 };
 
 // Hash policy for FieldInfos.
-struct FieldHashPolicy
+struct FieldHashPolicy : DefaultHasher<JSFlatString*>
 {
   typedef JSFlatString* Key;
   typedef Key Lookup;
@@ -231,7 +232,7 @@ struct FieldHashPolicy
     return hash;
   }
 
-  static JSBool match(const Key &k, const Lookup &l) {
+  static bool match(const Key &k, const Lookup &l) {
     if (k == l)
       return true;
 
@@ -298,8 +299,7 @@ struct ClosureInfo
   ~ClosureInfo() {
     if (closure)
       ffi_closure_free(closure);
-    if (errResult)
-      js_free(errResult);
+    js_free(errResult);
   }
 };
 
@@ -443,7 +443,7 @@ namespace ArrayType {
 }
 
 namespace StructType {
-  JSBool DefineInternal(JSContext* cx, JSObject* typeObj, JSObject* fieldsObj);
+  bool DefineInternal(JSContext* cx, JSObject* typeObj, JSObject* fieldsObj);
 
   const FieldInfoHash* GetFieldInfo(JSObject* obj);
   const FieldInfo* LookupField(JSContext* cx, JSObject* obj, JSFlatString *name);
@@ -478,9 +478,9 @@ namespace CData {
   bool IsCDataProto(JSObject* obj);
 
   // Attached by JSAPI as the function 'ctypes.cast'
-  JSBool Cast(JSContext* cx, unsigned argc, jsval* vp);
+  bool Cast(JSContext* cx, unsigned argc, jsval* vp);
   // Attached by JSAPI as the function 'ctypes.getRuntime'
-  JSBool GetRuntime(JSContext* cx, unsigned argc, jsval* vp);
+  bool GetRuntime(JSContext* cx, unsigned argc, jsval* vp);
 }
 
 namespace Int64 {

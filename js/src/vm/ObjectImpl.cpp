@@ -12,21 +12,7 @@
 
 #include "jsobjinlines.h"
 
-#include "gc/Barrier-inl.h"
-
 using namespace js;
-
-bool
-js::ObjectImpl::uninlinedIsNative() const
-{
-    return isNative();
-}
-
-uint32_t
-js::ObjectImpl::uninlinedSlotSpan() const
-{
-    return slotSpan();
-}
 
 PropDesc::PropDesc()
   : pd_(UndefinedValue()),
@@ -264,7 +250,7 @@ js::ObjectImpl::initializeSlotRange(uint32_t start, uint32_t length)
     HeapSlot *fixedStart, *fixedEnd, *slotsStart, *slotsEnd;
     getSlotRangeUnchecked(start, length, &fixedStart, &fixedEnd, &slotsStart, &slotsEnd);
 
-    JSRuntime *rt = runtime();
+    JSRuntime *rt = runtimeFromAnyThread();
     uint32_t offset = start;
     for (HeapSlot *sp = fixedStart; sp < fixedEnd; sp++)
         sp->init(rt, this->asObjectPtr(), HeapSlot::Slot, offset++, UndefinedValue());
@@ -275,7 +261,7 @@ js::ObjectImpl::initializeSlotRange(uint32_t start, uint32_t length)
 void
 js::ObjectImpl::initSlotRange(uint32_t start, const Value *vector, uint32_t length)
 {
-    JSRuntime *rt = runtime();
+    JSRuntime *rt = runtimeFromAnyThread();
     HeapSlot *fixedStart, *fixedEnd, *slotsStart, *slotsEnd;
     getSlotRange(start, length, &fixedStart, &fixedEnd, &slotsStart, &slotsEnd);
     for (HeapSlot *sp = fixedStart; sp < fixedEnd; sp++)
@@ -297,6 +283,12 @@ js::ObjectImpl::copySlotRange(uint32_t start, const Value *vector, uint32_t leng
 }
 
 #ifdef DEBUG
+bool
+js::ObjectImpl::isProxy() const
+{
+    return asObjectPtr()->is<ProxyObject>();
+}
+
 bool
 js::ObjectImpl::slotInRange(uint32_t slot, SentinelAllowed sentinel) const
 {
@@ -346,7 +338,7 @@ js::ObjectImpl::markChildren(JSTracer *trc)
 
     MarkShape(trc, &shape_, "shape");
 
-    Class *clasp = type_->clasp;
+    const Class *clasp = type_->clasp;
     JSObject *obj = asObjectPtr();
     if (clasp->trace)
         clasp->trace(trc, obj);
@@ -561,7 +553,7 @@ bool
 js::GetOwnProperty(JSContext *cx, Handle<ObjectImpl*> obj, PropertyId pid_, unsigned resolveFlags,
                    PropDesc *desc)
 {
-    NEW_OBJECT_REPRESENTATION_ONLY();
+    JS_NEW_OBJECT_REPRESENTATION_ONLY();
 
     JS_CHECK_RECURSION(cx, return false);
 
@@ -573,7 +565,7 @@ js::GetOwnProperty(JSContext *cx, Handle<ObjectImpl*> obj, PropertyId pid_, unsi
     RootedShape shape(cx, obj->nativeLookup(cx, pid));
     if (!shape) {
         /* Not found: attempt to resolve it. */
-        Class *clasp = obj->getClass();
+        const Class *clasp = obj->getClass();
         JSResolveOp resolve = clasp->resolve;
         if (resolve != JS_ResolveStub) {
             Rooted<jsid> id(cx, pid.get().asId());
@@ -651,7 +643,7 @@ bool
 js::GetProperty(JSContext *cx, Handle<ObjectImpl*> obj, Handle<ObjectImpl*> receiver,
                 Handle<PropertyId> pid, unsigned resolveFlags, MutableHandle<Value> vp)
 {
-    NEW_OBJECT_REPRESENTATION_ONLY();
+    JS_NEW_OBJECT_REPRESENTATION_ONLY();
 
     MOZ_ASSERT(receiver);
 
@@ -714,7 +706,7 @@ bool
 js::GetElement(JSContext *cx, Handle<ObjectImpl*> obj, Handle<ObjectImpl*> receiver, uint32_t index,
                unsigned resolveFlags, Value *vp)
 {
-    NEW_OBJECT_REPRESENTATION_ONLY();
+    JS_NEW_OBJECT_REPRESENTATION_ONLY();
 
     Rooted<ObjectImpl*> current(cx, obj);
 
@@ -777,7 +769,7 @@ bool
 js::HasElement(JSContext *cx, Handle<ObjectImpl*> obj, uint32_t index, unsigned resolveFlags,
                bool *found)
 {
-    NEW_OBJECT_REPRESENTATION_ONLY();
+    JS_NEW_OBJECT_REPRESENTATION_ONLY();
 
     Rooted<ObjectImpl*> current(cx, obj);
 
@@ -811,7 +803,7 @@ bool
 js::DefineElement(JSContext *cx, Handle<ObjectImpl*> obj, uint32_t index, const PropDesc &desc,
                   bool shouldThrow, unsigned resolveFlags, bool *succeeded)
 {
-    NEW_OBJECT_REPRESENTATION_ONLY();
+    JS_NEW_OBJECT_REPRESENTATION_ONLY();
 
     ElementsHeader &header = obj->elementsHeader();
 
@@ -937,7 +929,7 @@ bool
 js::SetElement(JSContext *cx, Handle<ObjectImpl*> obj, Handle<ObjectImpl*> receiver,
                uint32_t index, const Value &v, unsigned resolveFlags, bool *succeeded)
 {
-    NEW_OBJECT_REPRESENTATION_ONLY();
+    JS_NEW_OBJECT_REPRESENTATION_ONLY();
 
     Rooted<ObjectImpl*> current(cx, obj);
     RootedValue setter(cx);

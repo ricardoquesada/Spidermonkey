@@ -11,6 +11,8 @@
 
 #include <limits.h>
 
+#include "jsworkers.h"
+
 #include "jit/IonAllocPolicy.h"
 #include "jit/Registers.h"
 #include "jit/RegisterSets.h"
@@ -93,22 +95,48 @@ struct Imm32
     }
 };
 
-// Pointer-sized immediate.
+// Pointer-sized integer to be embedded as an immediate in an instruction.
 struct ImmWord
 {
     uintptr_t value;
 
     explicit ImmWord(uintptr_t value) : value(value)
     { }
-    explicit ImmWord(const void *ptr) : value(reinterpret_cast<uintptr_t>(ptr))
+};
+
+// Pointer to be embedded as an immediate in an instruction.
+struct ImmPtr
+{
+    void *value;
+
+    explicit ImmPtr(const void *value) : value(const_cast<void*>(value))
     { }
 
-    // Note - this constructor is not implemented as it should not be used.
-    explicit ImmWord(gc::Cell *cell);
+    template <class R>
+    explicit ImmPtr(R (*pf)())
+      : value(JS_FUNC_TO_DATA_PTR(void *, pf))
+    { }
 
-    void *asPointer() {
-        return reinterpret_cast<void *>(value);
-    }
+    template <class R, class A1>
+    explicit ImmPtr(R (*pf)(A1))
+      : value(JS_FUNC_TO_DATA_PTR(void *, pf))
+    { }
+
+    template <class R, class A1, class A2>
+    explicit ImmPtr(R (*pf)(A1, A2))
+      : value(JS_FUNC_TO_DATA_PTR(void *, pf))
+    { }
+
+    template <class R, class A1, class A2, class A3>
+    explicit ImmPtr(R (*pf)(A1, A2, A3))
+      : value(JS_FUNC_TO_DATA_PTR(void *, pf))
+    { }
+
+    template <class R, class A1, class A2, class A3, class A4>
+    explicit ImmPtr(R (*pf)(A1, A2, A3, A4))
+      : value(JS_FUNC_TO_DATA_PTR(void *, pf))
+    { }
+
 };
 
 // Used for immediates which require relocation.
@@ -136,7 +164,8 @@ struct ImmMaybeNurseryPtr : public ImmGCPtr
     }
 };
 
-// Specifies a hardcoded, absolute address.
+// Pointer to be embedded as an immediate that is loaded/stored from by an
+// instruction.
 struct AbsoluteAddress {
     void *addr;
 
@@ -269,8 +298,8 @@ class Label : public LabelBase
 #ifdef DEBUG
         // Note: the condition is a hack to silence this assert when OOM testing,
         // see bug 756614.
-        if (!js_IonOptions.parallelCompilation)
-            JS_ASSERT_IF(MaybeGetIonContext() && !GetIonContext()->runtime->hadOutOfMemory, !used());
+        if (MaybeGetIonContext() && !OffThreadIonCompilationEnabled(GetIonContext()->runtime))
+            JS_ASSERT_IF(!GetIonContext()->runtime->hadOutOfMemory, !used());
 #endif
     }
 };

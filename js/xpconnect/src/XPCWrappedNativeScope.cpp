@@ -6,8 +6,6 @@
 /* Class used to manage the wrapped native objects within a JS scope. */
 
 #include "xpcprivate.h"
-#include "XPCWrapper.h"
-#include "jsproxy.h"
 #include "nsContentUtils.h"
 #include "nsCycleCollectionNoteRootCallback.h"
 #include "nsPrincipal.h"
@@ -18,6 +16,7 @@
 
 using namespace mozilla;
 using namespace xpc;
+using namespace JS;
 
 /***************************************************************************/
 
@@ -97,17 +96,24 @@ XPCWrappedNativeScope::GetNewOrUsed(JSContext *cx, JS::HandleObject aGlobal)
 }
 
 static bool
-RemoteXULForbidsXBLScope(nsIPrincipal *aPrincipal)
+RemoteXULForbidsXBLScope(nsIPrincipal *aPrincipal, HandleObject aGlobal)
 {
-  // We end up getting called during SSM bootstrapping to create the
-  // SafeJSContext. In that case, nsContentUtils isn't ready for us.
-  //
-  // Also check for random JSD scopes that don't have a principal.
-  if (!nsContentUtils::IsInitialized() || !aPrincipal)
+  // Check for random JSD scopes that don't have a principal.
+  if (!aPrincipal)
+      return false;
+
+  // The SafeJSContext is lazily created, and tends to be created at really
+  // weird times, at least for xpcshell (often very early in startup or late
+  // in shutdown). Its scope isn't system principal, so if we proceeded we'd
+  // end up calling into AllowXULXBLForPrincipal, which depends on all kinds
+  // of persistent storage and permission machinery that may or not be running.
+  // We know the answer to the question here, so just short-circuit.
+  if (JS_GetClass(aGlobal) == &SafeJSContextGlobalClass)
       return false;
 
   // AllowXULXBLForPrincipal will return true for system principal, but we
   // don't want that here.
+  MOZ_ASSERT(nsContentUtils::IsInitialized());
   if (nsContentUtils::IsSystemPrincipal(aPrincipal))
       return false;
 
@@ -161,12 +167,12 @@ XPCWrappedNativeScope::XPCWrappedNativeScope(JSContext *cx,
     // In addition to being pref-controlled, we also disable XBL scopes for
     // remote XUL domains, _except_ if we have an additional pref override set.
     nsIPrincipal *principal = GetPrincipal();
-    mAllowXBLScope = !RemoteXULForbidsXBLScope(principal);
+    mAllowXBLScope = !RemoteXULForbidsXBLScope(principal, aGlobal);
 
     // Determine whether to use an XBL scope.
     mUseXBLScope = mAllowXBLScope;
     if (mUseXBLScope) {
-      js::Class *clasp = js::GetObjectClass(mGlobalJSObject);
+      const js::Class *clasp = js::GetObjectClass(mGlobalJSObject);
       mUseXBLScope = !strcmp(clasp->name, "Window") ||
                      !strcmp(clasp->name, "ChromeWindow") ||
                      !strcmp(clasp->name, "ModalContentWindow");
@@ -177,7 +183,7 @@ XPCWrappedNativeScope::XPCWrappedNativeScope(JSContext *cx,
 }
 
 // static
-JSBool
+bool
 XPCWrappedNativeScope::IsDyingScope(XPCWrappedNativeScope *scope)
 {
     for (XPCWrappedNativeScope *cur = gDyingScopes; cur; cur = cur->mNext) {
@@ -242,7 +248,6 @@ XPCWrappedNativeScope::EnsureXBLScope(JSContext *cx)
     SandboxOptions options(cx);
     options.wantXrays = true;
     options.wantComponents = true;
-    options.wantXHRConstructor = false;
     options.proto = global;
     options.sameZoneAs = global;
 
@@ -256,7 +261,7 @@ XPCWrappedNativeScope::EnsureXBLScope(JSContext *cx)
 
     // Create the sandbox.
     JS::RootedValue v(cx, JS::UndefinedValue());
-    nsresult rv = xpc_CreateSandboxObject(cx, v.address(), ep, options);
+    nsresult rv = CreateSandboxObject(cx, v.address(), ep, options);
     NS_ENSURE_SUCCESS(rv, nullptr);
     mXBLScope = &v.toObject();
 
@@ -267,6 +272,15 @@ XPCWrappedNativeScope::EnsureXBLScope(JSContext *cx)
     return mXBLScope;
 }
 
+bool
+XPCWrappedNativeScope::AllowXBLScope()
+{
+    // We only disallow XBL scopes in remote XUL situations.
+    MOZ_ASSERT_IF(!mAllowXBLScope,
+                  nsContentUtils::AllowXULXBLForPrincipal(GetPrincipal()));
+    return mAllowXBLScope;
+}
+
 namespace xpc {
 JSObject *GetXBLScope(JSContext *cx, JSObject *contentScopeArg)
 {
@@ -275,7 +289,7 @@ JSObject *GetXBLScope(JSContext *cx, JSObject *contentScopeArg)
     JSObject *scope = EnsureCompartmentPrivate(contentScope)->scope->EnsureXBLScope(cx);
     NS_ENSURE_TRUE(scope, nullptr); // See bug 858642.
     scope = js::UncheckedUnwrap(scope);
-    xpc_UnmarkGrayObject(scope);
+    JS::ExposeObjectToActiveJS(scope);
     return scope;
 }
 
@@ -294,17 +308,17 @@ XPCWrappedNativeScope::~XPCWrappedNativeScope()
     // We can do additional cleanup assertions here...
 
     if (mWrappedNativeMap) {
-        NS_ASSERTION(0 == mWrappedNativeMap->Count(), "scope has non-empty map");
+        MOZ_ASSERT(0 == mWrappedNativeMap->Count(), "scope has non-empty map");
         delete mWrappedNativeMap;
     }
 
     if (mWrappedNativeProtoMap) {
-        NS_ASSERTION(0 == mWrappedNativeProtoMap->Count(), "scope has non-empty map");
+        MOZ_ASSERT(0 == mWrappedNativeProtoMap->Count(), "scope has non-empty map");
         delete mWrappedNativeProtoMap;
     }
 
     if (mMainThreadWrappedNativeProtoMap) {
-        NS_ASSERTION(0 == mMainThreadWrappedNativeProtoMap->Count(), "scope has non-empty map");
+        MOZ_ASSERT(0 == mMainThreadWrappedNativeProtoMap->Count(), "scope has non-empty map");
         delete mMainThreadWrappedNativeProtoMap;
     }
 
@@ -405,8 +419,7 @@ XPCWrappedNativeScope::StartFinalizationPhaseOfGC(JSFreeOp *fop, XPCJSRuntime* r
     // We are in JSGC_MARK_END and JSGC_FINALIZE_END must always follow it
     // calling FinishedFinalizationPhaseOfGC and clearing gDyingScopes in
     // KillDyingScopes.
-    NS_ASSERTION(gDyingScopes == nullptr,
-                 "JSGC_MARK_END without JSGC_FINALIZE_END");
+    MOZ_ASSERT(!gDyingScopes, "JSGC_MARK_END without JSGC_FINALIZE_END");
 
     XPCWrappedNativeScope* prev = nullptr;
     XPCWrappedNativeScope* cur = gScopes;

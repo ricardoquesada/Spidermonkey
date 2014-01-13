@@ -6,11 +6,8 @@
 
 #include "jit/x64/CodeGenerator-x64.h"
 
-#include "jsnum.h"
-
 #include "jit/MIR.h"
 #include "jit/MIRGraph.h"
-#include "vm/Shape.h"
 
 #include "jsscriptinlines.h"
 
@@ -87,10 +84,16 @@ CodeGeneratorX64::visitBox(LBox *box)
     const LAllocation *in = box->getOperand(0);
     const LDefinition *result = box->getDef(0);
 
-    if (box->type() != MIRType_Double)
+    if (IsFloatingPointType(box->type())) {
+        FloatRegister reg = ToFloatRegister(in);
+        if (box->type() == MIRType_Float32) {
+            masm.convertFloatToDouble(reg, ScratchFloatReg);
+            reg = ScratchFloatReg;
+        }
+        masm.movq(reg, ToRegister(result));
+    } else {
         masm.boxValue(ValueTypeFromMIRType(box->type()), ToRegister(in), ToRegister(result));
-    else
-        masm.movqsd(ToFloatRegister(in), ToRegister(result));
+    }
     return true;
 }
 
@@ -244,7 +247,7 @@ CodeGeneratorX64::visitLoadElementT(LLoadElementT *load)
 
     if (load->mir()->loadDoubles()) {
         FloatRegister fpreg = ToFloatRegister(load->output());
-        if (source.kind() == Operand::REG_DISP)
+        if (source.kind() == Operand::MEM_REG_DISP)
             masm.loadDouble(source.toAddress(), fpreg);
         else
             masm.loadDouble(source.toBaseIndex(), fpreg);
@@ -283,9 +286,6 @@ CodeGeneratorX64::visitImplicitThis(LImplicitThis *lir)
     return true;
 }
 
-typedef bool (*InterruptCheckFn)(JSContext *);
-static const VMFunction InterruptCheckInfo = FunctionInfo<InterruptCheckFn>(InterruptCheck);
-
 bool
 CodeGeneratorX64::visitInterruptCheck(LInterruptCheck *lir)
 {
@@ -293,8 +293,7 @@ CodeGeneratorX64::visitInterruptCheck(LInterruptCheck *lir)
     if (!ool)
         return false;
 
-    void *interrupt = (void*)&gen->compartment->rt->interrupt;
-    masm.movq(ImmWord(interrupt), ScratchReg);
+    masm.movq(ImmPtr(&GetIonContext()->runtime->interrupt), ScratchReg);
     masm.cmpl(Operand(ScratchReg, 0), Imm32(0));
     masm.j(Assembler::NonZero, ool->entry());
     masm.bind(ool->rejoin());
@@ -400,8 +399,21 @@ CodeGeneratorX64::visitAsmJSLoadHeap(LAsmJSLoadHeap *ins)
 {
     MAsmJSLoadHeap *mir = ins->mir();
     ArrayBufferView::ViewType vt = mir->viewType();
+    const LAllocation *ptr = ins->ptr();
 
-    Operand srcAddr(HeapReg, ToRegister(ins->ptr()), TimesOne);
+    // No need to note the access if it will never fault.
+    bool skipNote = mir->skipBoundsCheck();
+    Operand srcAddr(HeapReg);
+
+    if (ptr->isConstant()) {
+        int32_t ptrImm = ptr->toConstant()->toInt32();
+        // Note only a positive index is accepted here because a negative offset would
+        // not wrap back into the protected area reserved for the heap.
+        JS_ASSERT(ptrImm >= 0);
+        srcAddr = Operand(HeapReg, ptrImm);
+    } else {
+        srcAddr = Operand(HeapReg, ToRegister(ptr), TimesOne);
+    }
 
     if (vt == ArrayBufferView::TYPE_FLOAT32) {
         FloatRegister dest = ToFloatRegister(ins->output());
@@ -409,7 +421,7 @@ CodeGeneratorX64::visitAsmJSLoadHeap(LAsmJSLoadHeap *ins)
         masm.movss(srcAddr, dest);
         uint32_t after = masm.size();
         masm.cvtss2sd(dest, dest);
-        return gen->noteHeapAccess(AsmJSHeapAccess(before, after, vt, ToAnyRegister(ins->output())));
+        return skipNote || gen->noteHeapAccess(AsmJSHeapAccess(before, after, vt, ToAnyRegister(ins->output())));
     }
 
     uint32_t before = masm.size();
@@ -418,13 +430,13 @@ CodeGeneratorX64::visitAsmJSLoadHeap(LAsmJSLoadHeap *ins)
       case ArrayBufferView::TYPE_UINT8:   masm.movzbl(srcAddr, ToRegister(ins->output())); break;
       case ArrayBufferView::TYPE_INT16:   masm.movswl(srcAddr, ToRegister(ins->output())); break;
       case ArrayBufferView::TYPE_UINT16:  masm.movzwl(srcAddr, ToRegister(ins->output())); break;
-      case ArrayBufferView::TYPE_INT32:   masm.movl(srcAddr, ToRegister(ins->output())); break;
+      case ArrayBufferView::TYPE_INT32:
       case ArrayBufferView::TYPE_UINT32:  masm.movl(srcAddr, ToRegister(ins->output())); break;
       case ArrayBufferView::TYPE_FLOAT64: masm.movsd(srcAddr, ToFloatRegister(ins->output())); break;
       default: MOZ_ASSUME_UNREACHABLE("unexpected array type");
     }
     uint32_t after = masm.size();
-    return gen->noteHeapAccess(AsmJSHeapAccess(before, after, vt, ToAnyRegister(ins->output())));
+    return skipNote || gen->noteHeapAccess(AsmJSHeapAccess(before, after, vt, ToAnyRegister(ins->output())));
 }
 
 bool
@@ -432,42 +444,54 @@ CodeGeneratorX64::visitAsmJSStoreHeap(LAsmJSStoreHeap *ins)
 {
     MAsmJSStoreHeap *mir = ins->mir();
     ArrayBufferView::ViewType vt = mir->viewType();
+    const LAllocation *ptr = ins->ptr();
+    // No need to note the access if it will never fault.
+    bool skipNote = mir->skipBoundsCheck();
+    Operand dstAddr(HeapReg);
 
-    Operand dstAddr(HeapReg, ToRegister(ins->ptr()), TimesOne);
+    if (ptr->isConstant()) {
+        int32_t ptrImm = ptr->toConstant()->toInt32();
+        // Note only a positive index is accepted here because a negative offset would
+        // not wrap back into the protected area reserved for the heap.
+        JS_ASSERT(ptrImm >= 0);
+        dstAddr = Operand(HeapReg, ptrImm);
+    } else {
+        dstAddr = Operand(HeapReg, ToRegister(ins->ptr()), TimesOne);
+    }
 
     if (vt == ArrayBufferView::TYPE_FLOAT32) {
         masm.convertDoubleToFloat(ToFloatRegister(ins->value()), ScratchFloatReg);
         uint32_t before = masm.size();
         masm.movss(ScratchFloatReg, dstAddr);
         uint32_t after = masm.size();
-        return gen->noteHeapAccess(AsmJSHeapAccess(before, after));
+        return skipNote || gen->noteHeapAccess(AsmJSHeapAccess(before, after));
     }
 
     uint32_t before = masm.size();
     if (ins->value()->isConstant()) {
         switch (vt) {
-          case ArrayBufferView::TYPE_INT8:    masm.movb(Imm32(ToInt32(ins->value())), dstAddr); break;
+          case ArrayBufferView::TYPE_INT8:
           case ArrayBufferView::TYPE_UINT8:   masm.movb(Imm32(ToInt32(ins->value())), dstAddr); break;
-          case ArrayBufferView::TYPE_INT16:   masm.movw(Imm32(ToInt32(ins->value())), dstAddr); break;
+          case ArrayBufferView::TYPE_INT16:
           case ArrayBufferView::TYPE_UINT16:  masm.movw(Imm32(ToInt32(ins->value())), dstAddr); break;
-          case ArrayBufferView::TYPE_INT32:   masm.movl(Imm32(ToInt32(ins->value())), dstAddr); break;
+          case ArrayBufferView::TYPE_INT32:
           case ArrayBufferView::TYPE_UINT32:  masm.movl(Imm32(ToInt32(ins->value())), dstAddr); break;
           default: MOZ_ASSUME_UNREACHABLE("unexpected array type");
         }
     } else {
         switch (vt) {
-          case ArrayBufferView::TYPE_INT8:    masm.movb(ToRegister(ins->value()), dstAddr); break;
+          case ArrayBufferView::TYPE_INT8:
           case ArrayBufferView::TYPE_UINT8:   masm.movb(ToRegister(ins->value()), dstAddr); break;
-          case ArrayBufferView::TYPE_INT16:   masm.movw(ToRegister(ins->value()), dstAddr); break;
+          case ArrayBufferView::TYPE_INT16:
           case ArrayBufferView::TYPE_UINT16:  masm.movw(ToRegister(ins->value()), dstAddr); break;
-          case ArrayBufferView::TYPE_INT32:   masm.movl(ToRegister(ins->value()), dstAddr); break;
+          case ArrayBufferView::TYPE_INT32:
           case ArrayBufferView::TYPE_UINT32:  masm.movl(ToRegister(ins->value()), dstAddr); break;
           case ArrayBufferView::TYPE_FLOAT64: masm.movsd(ToFloatRegister(ins->value()), dstAddr); break;
           default: MOZ_ASSUME_UNREACHABLE("unexpected array type");
         }
     }
     uint32_t after = masm.size();
-    return gen->noteHeapAccess(AsmJSHeapAccess(before, after));
+    return skipNote || gen->noteHeapAccess(AsmJSHeapAccess(before, after));
 }
 
 bool

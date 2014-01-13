@@ -27,6 +27,8 @@ ifndef INCLUDED_AUTOCONF_MK
 include $(DEPTH)/config/autoconf.mk
 endif
 
+-include $(DEPTH)/.mozconfig.mk
+
 space = $(NULL) $(NULL)
 
 # Include defs.mk files that can be found in $(srcdir)/$(DEPTH),
@@ -62,10 +64,9 @@ check-variable = $(if $(filter-out 0 1,$(words $($(x))z)),$(error Spaces are not
 
 $(foreach x,$(CHECK_VARS),$(check-variable))
 
-core_abspath = $(if $(findstring :,$(1)),$(1),$(if $(filter /%,$(1)),$(1),$(CURDIR)/$(1)))
-core_realpath = $(if $(realpath $(1)),$(realpath $(1)),$(call core_abspath,$(1)))
-
-core_winabspath = $(firstword $(subst /, ,$(call core_abspath,$(1)))):$(subst $(space),,$(patsubst %,\\%,$(wordlist 2,$(words $(subst /, ,$(call core_abspath,$(1)))), $(strip $(subst /, ,$(call core_abspath,$(1)))))))
+ifndef INCLUDED_FUNCTIONS_MK
+include $(topsrcdir)/config/makefiles/functions.mk
+endif
 
 RM = rm -f
 
@@ -235,9 +236,10 @@ _ENABLE_PIC=1
 
 ifdef LIBXUL_LIBRARY
 ifdef IS_COMPONENT
-ifndef MODULE_NAME
-$(error Component makefile does not specify MODULE_NAME.)
+$(error IS_COMPONENT is set, but is not compatible with LIBXUL_LIBRARY)
 endif
+ifdef MODULE_NAME
+$(error MODULE_NAME is $(MODULE_NAME) but MODULE_NAME and LIBXUL_LIBRARY are not compatible)
 endif
 ifdef FORCE_STATIC_LIB
 $(error Makefile sets FORCE_STATIC_LIB which was already implied by LIBXUL_LIBRARY)
@@ -364,7 +366,6 @@ MY_RULES	:= $(DEPTH)/config/myrules.mk
 # Default command macros; can be overridden in <arch>.mk.
 #
 CCC = $(CXX)
-XPIDL_LINK = $(PYTHON) $(LIBXUL_DIST)/sdk/bin/xpt.py link
 
 # Java macros
 JAVA_GEN_DIR  = _javagen
@@ -495,8 +496,8 @@ OS_COMPILE_CMMFLAGS += -fobjc-abi-version=2 -fobjc-legacy-dispatch
 endif
 endif
 
-COMPILE_CFLAGS	= $(VISIBILITY_FLAGS) $(DEFINES) $(INCLUDES) $(DSO_CFLAGS) $(DSO_PIC_CFLAGS) $(CFLAGS) $(RTL_FLAGS) $(OS_CPPFLAGS) $(OS_COMPILE_CFLAGS)
-COMPILE_CXXFLAGS = $(STL_FLAGS) $(VISIBILITY_FLAGS) $(DEFINES) $(INCLUDES) $(DSO_CFLAGS) $(DSO_PIC_CFLAGS) $(CXXFLAGS) $(RTL_FLAGS) $(OS_CPPFLAGS) $(OS_COMPILE_CXXFLAGS)
+COMPILE_CFLAGS	= $(VISIBILITY_FLAGS) $(DEFINES) $(INCLUDES) $(DSO_CFLAGS) $(DSO_PIC_CFLAGS) $(RTL_FLAGS) $(OS_CPPFLAGS) $(OS_COMPILE_CFLAGS) $(CFLAGS)
+COMPILE_CXXFLAGS = $(STL_FLAGS) $(VISIBILITY_FLAGS) $(DEFINES) $(INCLUDES) $(DSO_CFLAGS) $(DSO_PIC_CFLAGS) $(RTL_FLAGS) $(OS_CPPFLAGS) $(OS_COMPILE_CXXFLAGS) $(CXXFLAGS)
 COMPILE_CMFLAGS = $(OS_COMPILE_CMFLAGS)
 COMPILE_CMMFLAGS = $(OS_COMPILE_CMMFLAGS)
 
@@ -521,11 +522,12 @@ endif
 endif
 
 # Default location of include files
-IDL_DIR		= $(DIST)/idl
-
-XPIDL_FLAGS += -I$(srcdir) -I$(IDL_DIR)
-ifdef LIBXUL_SDK
-XPIDL_FLAGS += -I$(LIBXUL_SDK)/idl
+ifndef LIBXUL_SDK
+IDL_PARSER_DIR = $(topsrcdir)/xpcom/idl-parser
+IDL_PARSER_CACHE_DIR = $(DEPTH)/xpcom/idl-parser
+else
+IDL_PARSER_DIR = $(LIBXUL_SDK)/sdk/bin
+IDL_PARSER_CACHE_DIR = $(LIBXUL_SDK)/sdk/bin
 endif
 
 SDK_LIB_DIR = $(DIST)/sdk/lib
@@ -682,7 +684,7 @@ endif
 EXPAND_LOCALE_SRCDIR = $(if $(filter en-US,$(AB_CD)),$(topsrcdir)/$(1)/en-US,$(call core_realpath,$(L10NBASEDIR))/$(AB_CD)/$(subst /locales,,$(1)))
 
 ifdef relativesrcdir
-LOCALE_SRCDIR = $(call EXPAND_LOCALE_SRCDIR,$(relativesrcdir))
+LOCALE_SRCDIR ?= $(call EXPAND_LOCALE_SRCDIR,$(relativesrcdir))
 endif
 
 ifdef relativesrcdir
@@ -796,10 +798,7 @@ endif
 EXPAND_LIBNAME_PATH = $(foreach lib,$(1),$(2)/$(LIB_PREFIX)$(lib).$(LIB_SUFFIX))
 EXPAND_MOZLIBNAME = $(foreach lib,$(1),$(DIST)/lib/$(LIB_PREFIX)$(lib).$(LIB_SUFFIX))
 
-# Include internal ply only if needed
-ifndef MOZ_SYSTEM_PLY
 PLY_INCLUDE = -I$(topsrcdir)/other-licenses/ply
-endif
 
 export CL_INCLUDES_PREFIX
 

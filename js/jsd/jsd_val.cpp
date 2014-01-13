@@ -57,61 +57,61 @@ void JSD_ASSERT_VALID_PROPERTY(JSDProperty* jsdprop)
 #endif
 
 
-JSBool
+bool
 jsd_IsValueObject(JSDContext* jsdc, JSDValue* jsdval)
 {
     return !JSVAL_IS_PRIMITIVE(jsdval->val) || JSVAL_IS_NULL(jsdval->val);
 }
 
-JSBool
+bool
 jsd_IsValueNumber(JSDContext* jsdc, JSDValue* jsdval)
 {
     return JSVAL_IS_NUMBER(jsdval->val);
 }
 
-JSBool
+bool
 jsd_IsValueInt(JSDContext* jsdc, JSDValue* jsdval)
 {
     return JSVAL_IS_INT(jsdval->val);
 }
 
-JSBool
+bool
 jsd_IsValueDouble(JSDContext* jsdc, JSDValue* jsdval)
 {
     return JSVAL_IS_DOUBLE(jsdval->val);
 }
 
-JSBool
+bool
 jsd_IsValueString(JSDContext* jsdc, JSDValue* jsdval)
 {
     return JSVAL_IS_STRING(jsdval->val);
 }
 
-JSBool
+bool
 jsd_IsValueBoolean(JSDContext* jsdc, JSDValue* jsdval)
 {
     return JSVAL_IS_BOOLEAN(jsdval->val);
 }
 
-JSBool
+bool
 jsd_IsValueNull(JSDContext* jsdc, JSDValue* jsdval)
 {
     return JSVAL_IS_NULL(jsdval->val);
 }
 
-JSBool
+bool
 jsd_IsValueVoid(JSDContext* jsdc, JSDValue* jsdval)
 {
     return JSVAL_IS_VOID(jsdval->val);
 }
 
-JSBool
+bool
 jsd_IsValuePrimitive(JSDContext* jsdc, JSDValue* jsdval)
 {
     return JSVAL_IS_PRIMITIVE(jsdval->val);
 }
 
-JSBool
+bool
 jsd_IsValueFunction(JSDContext* jsdc, JSDValue* jsdval)
 {
     AutoSafeJSContext cx; // NB: Actually unused.
@@ -119,7 +119,7 @@ jsd_IsValueFunction(JSDContext* jsdc, JSDValue* jsdval)
            JS_ObjectIsCallable(cx, JSVAL_TO_OBJECT(jsdval->val));
 }
 
-JSBool
+bool
 jsd_IsValueNative(JSDContext* jsdc, JSDValue* jsdval)
 {
     AutoSafeJSContext cx;
@@ -129,10 +129,10 @@ jsd_IsValueNative(JSDContext* jsdc, JSDValue* jsdval)
     {
         JSAutoCompartment ac(cx, JSVAL_TO_OBJECT(jsdval->val));
         AutoSaveExceptionState as(cx);
-        JSBool ok = JS_FALSE;
+        bool ok = false;
         fun = JSD_GetValueFunction(jsdc, jsdval);
         if(fun)
-            ok = JS_GetFunctionScript(cx, fun) ? JS_FALSE : JS_TRUE;
+            ok = JS_GetFunctionScript(cx, fun) ? false : true;
         JS_ASSERT(fun);
         return ok;
     }
@@ -141,12 +141,12 @@ jsd_IsValueNative(JSDContext* jsdc, JSDValue* jsdval)
 
 /***************************************************************************/
 
-JSBool
+bool
 jsd_GetValueBoolean(JSDContext* jsdc, JSDValue* jsdval)
 {
     jsval val = jsdval->val;
     if(!JSVAL_IS_BOOLEAN(val))
-        return JS_FALSE;
+        return false;
     return JSVAL_TO_BOOLEAN(val);
 }
 
@@ -239,8 +239,8 @@ jsd_GetValueFunctionId(JSDContext* jsdc, JSDValue* jsdval)
 JSDValue*
 jsd_NewValue(JSDContext* jsdc, jsval value)
 {
+    JS::RootedValue val(jsdc->jsrt, value);
     AutoSafeJSContext cx;
-    JS::RootedValue val(cx, value);
     JSDValue* jsdval;
 
     if(!(jsdval = (JSDValue*) calloc(1, sizeof(JSDValue))))
@@ -248,13 +248,13 @@ jsd_NewValue(JSDContext* jsdc, jsval value)
 
     if(JSVAL_IS_GCTHING(val))
     {
-        JSBool ok;
+        bool ok;
         JSAutoCompartment ac(cx, jsdc->glob);
 
         ok = JS_AddNamedValueRoot(cx, &jsdval->val, "JSDValue");
         if(ok && JSVAL_IS_STRING(val)) {
             if(!JS_WrapValue(cx, val.address())) {
-                ok = JS_FALSE;
+                ok = false;
             }
         }
 
@@ -309,8 +309,9 @@ jsd_GetValueWrappedJSVal(JSDContext* jsdc, JSDValue* jsdval)
     return val;
 }
 
-static JSDProperty* _newProperty(JSDContext* jsdc, JSPropertyDesc* pd,
-                                 unsigned additionalFlags)
+static JSDProperty* _newProperty(JSDContext* jsdc, JS::HandleValue propId,
+                                 JS::HandleValue propValue, JS::HandleValue propAlias,
+                                 uint8_t propFlags, unsigned additionalFlags)
 {
     JSDProperty* jsdprop;
 
@@ -319,16 +320,16 @@ static JSDProperty* _newProperty(JSDContext* jsdc, JSPropertyDesc* pd,
 
     JS_INIT_CLIST(&jsdprop->links);
     jsdprop->nref = 1;
-    jsdprop->flags = pd->flags | additionalFlags;
+    jsdprop->flags = propFlags | additionalFlags;
 
-    if(!(jsdprop->name = jsd_NewValue(jsdc, pd->id)))
+    if(!(jsdprop->name = jsd_NewValue(jsdc, propId)))
         goto new_prop_fail;
 
-    if(!(jsdprop->val = jsd_NewValue(jsdc, pd->value)))
+    if(!(jsdprop->val = jsd_NewValue(jsdc, propValue)))
         goto new_prop_fail;
 
     if((jsdprop->flags & JSDPD_ALIAS) &&
-       !(jsdprop->alias = jsd_NewValue(jsdc, pd->alias)))
+       !(jsdprop->alias = jsd_NewValue(jsdc, propAlias)))
         goto new_prop_fail;
 
     return jsdprop;
@@ -351,7 +352,7 @@ static void _freeProps(JSDContext* jsdc, JSDValue* jsdval)
     CLEAR_BIT_FLAG(jsdval->flags, GOT_PROPS);
 }
 
-static JSBool _buildProps(JSDContext* jsdc, JSDValue* jsdval)
+static bool _buildProps(JSDContext* jsdc, JSDValue* jsdval)
 {
     AutoSafeJSContext cx;
     JS::RootedObject obj(cx);
@@ -363,7 +364,7 @@ static JSBool _buildProps(JSDContext* jsdc, JSDValue* jsdval)
     JS_ASSERT(!JSVAL_IS_PRIMITIVE(jsdval->val));
 
     if(JSVAL_IS_PRIMITIVE(jsdval->val))
-        return JS_FALSE;
+        return false;
 
     obj = JSVAL_TO_OBJECT(jsdval->val);
 
@@ -371,12 +372,20 @@ static JSBool _buildProps(JSDContext* jsdc, JSDValue* jsdval)
 
     if(!JS_GetPropertyDescArray(cx, obj, &pda))
     {
-        return JS_FALSE;
+        return false;
     }
 
+    JS::RootedValue propId(cx);
+    JS::RootedValue propValue(cx);
+    JS::RootedValue propAlias(cx);
+    uint8_t propFlags;
     for(i = 0; i < pda.length; i++)
     {
-        JSDProperty* prop = _newProperty(jsdc, &pda.array[i], 0);
+        propId = pda.array[i].id;
+        propValue = pda.array[i].value;
+        propAlias = pda.array[i].alias;
+        propFlags = pda.array[i].flags;
+        JSDProperty* prop = _newProperty(jsdc, propId, propValue, propAlias, propFlags, 0);
         if(!prop)
         {
             _freeProps(jsdc, jsdval);
@@ -462,19 +471,19 @@ jsd_IterateProperties(JSDContext* jsdc, JSDValue* jsdval, JSDProperty **iterp)
 JSDProperty*
 jsd_GetValueProperty(JSDContext* jsdc, JSDValue* jsdval, JSString* nameStr)
 {
+    JS::RootedString name(jsdc->jsrt, nameStr);
     AutoSafeJSContext cx;
     JSAutoCompartment acBase(cx, jsdc->glob);
     JSDProperty* jsdprop;
     JSDProperty* iter = NULL;
     JS::RootedObject obj(cx);
-    JS::RootedString name(cx, nameStr);
-    unsigned  attrs = 0;
-    JSBool found;
-    JSPropertyDesc pd;
-    const jschar * nameChars;
-    size_t nameLen;
+    bool found;
     JS::RootedValue val(cx), nameval(cx);
     JS::RootedId nameid(cx);
+    JS::RootedValue propId(cx);
+    JS::RootedValue propValue(cx);
+    JS::RootedValue propAlias(cx);
+    uint8_t propFlags;
 
     if(!jsd_IsValueObject(jsdc, jsdval))
         return NULL;
@@ -492,58 +501,58 @@ jsd_GetValueProperty(JSDContext* jsdc, JSDValue* jsdval, JSString* nameStr)
     }
     /* Not found in property list, look it up explicitly */
 
+    nameval = STRING_TO_JSVAL(name);
+    if(!JS_ValueToId(cx, nameval, nameid.address()))
+        return NULL;
+
     if(!(obj = JSVAL_TO_OBJECT(jsdval->val)))
         return NULL;
 
-    if (!(nameChars = JS_GetStringCharsZAndLength(cx, name, &nameLen)))
-        return NULL;
-
+    JS::Rooted<JSPropertyDescriptor> desc(cx);
     {
         JSAutoCompartment ac(cx, obj);
+        JS::RootedId id(cx, nameid);
 
-        JS_GetUCPropertyAttributes(cx, obj, nameChars, nameLen, &attrs, &found);
-        if (!found)
-        {
+        if(!JS_WrapId(cx, id.address()))
             return NULL;
-        }
+        if(!JS_GetOwnPropertyDescriptorById(cx, obj, id, 0, &desc))
+            return NULL;
+        if(!desc.object())
+            return NULL;
 
         JS_ClearPendingException(cx);
 
-        if(!JS_GetUCProperty(cx, obj, nameChars, nameLen, &val))
+        if(!JS_GetPropertyById(cx, obj, id, &val))
         {
             if (JS_IsExceptionPending(cx))
             {
-                if (!JS_GetPendingException(cx, &pd.value))
+                if (!JS_GetPendingException(cx, propValue.address()))
                 {
                     return NULL;
                 }
-                pd.flags = JSPD_EXCEPTION;
+                propFlags = JSPD_EXCEPTION;
             }
             else
             {
-                pd.flags = JSPD_ERROR;
-                pd.value = JSVAL_VOID;
+                propFlags = JSPD_ERROR;
+                propValue = JSVAL_VOID;
             }
         }
         else
         {
-            pd.value = val;
+            propValue = val;
         }
     }
 
-    nameval = STRING_TO_JSVAL(name);
-    if (!JS_ValueToId(cx, nameval, nameid.address()) ||
-        !JS_IdToValue(cx, nameid, &pd.id)) {
+    if (!JS_IdToValue(cx, nameid, propId.address()))
         return NULL;
-    }
 
-    pd.spare = 0;
-    pd.alias = JSVAL_NULL;
-    pd.flags |= (attrs & JSPROP_ENUMERATE) ? JSPD_ENUMERATE : 0
-        | (attrs & JSPROP_READONLY)  ? JSPD_READONLY  : 0
-        | (attrs & JSPROP_PERMANENT) ? JSPD_PERMANENT : 0;
+    propAlias = JSVAL_NULL;
+    propFlags |= desc.isEnumerable() ? JSPD_ENUMERATE : 0
+        | desc.isReadonly() ? JSPD_READONLY  : 0
+        | desc.isPermanent() ? JSPD_PERMANENT : 0;
 
-    return _newProperty(jsdc, &pd, JSDPD_HINTED);
+    return _newProperty(jsdc, propId, propValue, propAlias, propFlags, JSDPD_HINTED);
 }
 
 /*
@@ -655,8 +664,8 @@ jsd_GetValueClassName(JSDContext* jsdc, JSDValue* jsdval)
     jsval val = jsdval->val;
     if(!jsdval->className && !JSVAL_IS_PRIMITIVE(val))
     {
+        JS::RootedObject obj(jsdc->jsrt, JSVAL_TO_OBJECT(val));
         AutoSafeJSContext cx;
-        JS::RootedObject obj(cx, JSVAL_TO_OBJECT(val));
         JSAutoCompartment ac(cx, obj);
         jsdval->className = JS_GetDebugClassName(obj);
     }

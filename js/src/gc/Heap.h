@@ -22,14 +22,15 @@
 
 struct JSCompartment;
 
-extern "C" {
 struct JSRuntime;
+
+namespace JS {
+namespace shadow {
+class Runtime;
+}
 }
 
 namespace js {
-
-// Defined in vm/ForkJoin.cpp
-extern bool InSequentialOrExclusiveParallelSection();
 
 class FreeOp;
 
@@ -97,9 +98,15 @@ struct Cell
     MOZ_ALWAYS_INLINE bool markIfUnmarked(uint32_t color = BLACK) const;
     MOZ_ALWAYS_INLINE void unmark(uint32_t color) const;
 
-    inline JSRuntime *runtime() const;
+    inline JSRuntime *runtimeFromMainThread() const;
+    inline JS::shadow::Runtime *shadowRuntimeFromMainThread() const;
     inline JS::Zone *tenuredZone() const;
     inline bool tenuredIsInsideZone(JS::Zone *zone) const;
+
+    // Note: Unrestricted access to the runtime of a GC thing from an arbitrary
+    // thread can easily lead to races. Use this method very carefully.
+    inline JSRuntime *runtimeFromAnyThread() const;
+    inline JS::shadow::Runtime *shadowRuntimeFromAnyThread() const;
 
 #ifdef DEBUG
     inline bool isAligned() const;
@@ -950,10 +957,29 @@ Cell::arenaHeader() const
 }
 
 inline JSRuntime *
-Cell::runtime() const
+Cell::runtimeFromMainThread() const
 {
-    JS_ASSERT(InSequentialOrExclusiveParallelSection());
+    JSRuntime *rt = chunk()->info.runtime;
+    JS_ASSERT(CurrentThreadCanAccessRuntime(rt));
+    return rt;
+}
+
+inline JS::shadow::Runtime *
+Cell::shadowRuntimeFromMainThread() const
+{
+    return reinterpret_cast<JS::shadow::Runtime*>(runtimeFromMainThread());
+}
+
+inline JSRuntime *
+Cell::runtimeFromAnyThread() const
+{
     return chunk()->info.runtime;
+}
+
+inline JS::shadow::Runtime *
+Cell::shadowRuntimeFromAnyThread() const
+{
+    return reinterpret_cast<JS::shadow::Runtime*>(runtimeFromAnyThread());
 }
 
 AllocKind
@@ -990,9 +1016,10 @@ Cell::unmark(uint32_t color) const
 JS::Zone *
 Cell::tenuredZone() const
 {
-    JS_ASSERT(InSequentialOrExclusiveParallelSection());
+    JS::Zone *zone = arenaHeader()->zone;
+    JS_ASSERT(CurrentThreadCanAccessZone(zone));
     JS_ASSERT(isTenured());
-    return arenaHeader()->zone;
+    return zone;
 }
 
 bool

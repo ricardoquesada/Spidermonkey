@@ -80,6 +80,8 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     static MBasicBlock *NewAbortPar(MIRGraph &graph, CompileInfo &info,
                                     MBasicBlock *pred, jsbytecode *entryPc,
                                     MResumePoint *resumePoint);
+    static MBasicBlock *NewAsmJS(MIRGraph &graph, CompileInfo &info,
+                                 MBasicBlock *pred, Kind kind);
 
     bool dominates(MBasicBlock *other);
 
@@ -196,6 +198,7 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     // the current loop as necessary. If the backedge introduces new types for
     // phis at the loop header, returns a disabling abort.
     AbortReason setBackedge(MBasicBlock *block);
+    bool setBackedgeAsmJS(MBasicBlock *block);
 
     // Resets a LOOP_HEADER block to a NORMAL block.  This is needed when
     // optimizations remove the backedge.
@@ -541,10 +544,8 @@ class MIRGraph
     MBasicBlock *osrBlock_;
     MStart *osrStart_;
 
-    // List of compiled/inlined scripts.
-    Vector<JSScript *, 4, IonAllocPolicy> scripts_;
-
     size_t numBlocks_;
+    bool hasTryBlock_;
 
   public:
     MIRGraph(TempAllocator *alloc)
@@ -554,7 +555,8 @@ class MIRGraph
         idGen_(0),
         osrBlock_(NULL),
         osrStart_(NULL),
-        numBlocks_(0)
+        numBlocks_(0),
+        hasTryBlock_(false)
     { }
 
     template <typename T>
@@ -662,19 +664,12 @@ class MIRGraph
     MStart *osrStart() {
         return osrStart_;
     }
-    bool addScript(JSScript *script) {
-        // The same script may be inlined multiple times, add it only once.
-        for (size_t i = 0; i < scripts_.length(); i++) {
-            if (scripts_[i] == script)
-                return true;
-        }
-        return scripts_.append(script);
+
+    bool hasTryBlock() const {
+        return hasTryBlock_;
     }
-    size_t numScripts() const {
-        return scripts_.length();
-    }
-    JSScript **scripts() {
-        return scripts_.begin();
+    void setHasTryBlock() {
+        hasTryBlock_ = true;
     }
 
     // The per-thread context. So as not to modify the calling convention for

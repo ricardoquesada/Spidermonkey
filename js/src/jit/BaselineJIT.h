@@ -100,6 +100,11 @@ struct BaselineScript
   public:
     static const uint32_t MAX_JSSCRIPT_LENGTH = 0x0fffffffu;
 
+    // Limit the locals on a given script so that stack check on baseline frames
+    // doesn't overflow a uint32_t value.
+    // (MAX_JSSCRIPT_SLOTS * sizeof(Value)) must fit within a uint32_t.
+    static const uint32_t MAX_JSSCRIPT_SLOTS = 0xfffffu;
+
   private:
     // Code pointer containing the actual method.
     HeapPtr<IonCode> method_;
@@ -124,7 +129,11 @@ struct BaselineScript
 
         // Flag set when discarding JIT code, to indicate this script is
         // on the stack and should not be discarded.
-        ACTIVE         = 1 << 1
+        ACTIVE = 1 << 1,
+
+        // Flag set when the script contains any writes to its on-stack
+        // (rather than call object stored) arguments.
+        MODIFIES_ARGUMENTS = 1 << 2
     };
 
   private:
@@ -179,6 +188,13 @@ struct BaselineScript
 
     void setNeedsArgsObj() {
         flags_ |= NEEDS_ARGS_OBJ;
+    }
+
+    void setModifiesArguments() {
+        flags_ |= MODIFIES_ARGUMENTS;
+    }
+    bool modifiesArguments() {
+        return flags_ & MODIFIES_ARGUMENTS;
     }
 
     uint32_t prologueOffset() const {
@@ -255,6 +271,8 @@ struct BaselineScript
     static size_t offsetOfFlags() {
         return offsetof(BaselineScript, flags_);
     }
+
+    static void writeBarrierPre(Zone *zone, BaselineScript *script);
 };
 
 inline bool
@@ -326,7 +344,8 @@ struct BaselineBailoutInfo
 
 uint32_t
 BailoutIonToBaseline(JSContext *cx, JitActivation *activation, IonBailoutIterator &iter,
-                     bool invalidate, BaselineBailoutInfo **bailoutInfo);
+                     bool invalidate, BaselineBailoutInfo **bailoutInfo,
+                     const ExceptionBailoutInfo *exceptionInfo = NULL);
 
 // Mark baseline scripts on the stack as active, so that they are not discarded
 // during GC.

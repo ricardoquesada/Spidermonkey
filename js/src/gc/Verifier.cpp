@@ -8,9 +8,7 @@
 # include <valgrind/memcheck.h>
 #endif
 
-#include "jsapi.h"
 #include "jscntxt.h"
-#include "jscompartment.h"
 #include "jsgc.h"
 #include "jsprf.h"
 
@@ -69,7 +67,7 @@ CheckStackRoot(JSRuntime *rt, uintptr_t *w, Rooter *begin, Rooter *end)
         return;
 
     /* Don't check atoms as these will never be subject to generational collection. */
-    if (static_cast<Cell *>(thing)->tenuredZone() == rt->atomsCompartment->zone())
+    if (rt->isAtomsZone(static_cast<Cell *>(thing)->tenuredZone()))
         return;
 
     /*
@@ -530,7 +528,7 @@ IsMarkedOrAllocated(Cell *cell)
     return cell->isMarked() || cell->arenaHeader()->allocatedDuringIncremental;
 }
 
-const static uint32_t MAX_VERIFIER_EDGES = 1000;
+static const uint32_t MAX_VERIFIER_EDGES = 1000;
 
 /*
  * This function is called by EndVerifyBarriers for every heap edge. If the edge

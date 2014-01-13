@@ -9,7 +9,6 @@
 
 #include "gc/Heap.h"
 #include "vm/ForkJoin.h"
-#include "vm/ThreadPool.h"
 
 namespace js {
 namespace jit {
@@ -68,7 +67,7 @@ ParallelResult BitLshPar(ForkJoinSlice *slice, HandleValue lhs, HandleValue rhs,
 ParallelResult BitRshPar(ForkJoinSlice *slice, HandleValue lhs, HandleValue rhs, int32_t *out);
 
 ParallelResult UrshValuesPar(ForkJoinSlice *slice, HandleValue lhs, HandleValue rhs,
-                             MutableHandleValue out);
+                             Value *out);
 
 // Make a new rest parameter in parallel.
 ParallelResult InitRestParameterPar(ForkJoinSlice *slice, uint32_t length, Value *rest,
@@ -84,7 +83,7 @@ void TraceLIR(uint32_t bblock, uint32_t lir, uint32_t execModeInt,
               const char *lirOpName, const char *mirOpName,
               JSScript *script, jsbytecode *pc);
 
-void CallToUncompiledScriptPar(JSFunction *func);
+void CallToUncompiledScriptPar(JSObject *obj);
 
 } // namespace jit
 } // namespace js

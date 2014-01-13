@@ -7,8 +7,6 @@
 #ifndef jit_BytecodeAnalysis_h
 #define jit_BytecodeAnalysis_h
 
-#include "jscntxt.h"
-
 #include "jit/IonAllocPolicy.h"
 #include "js/Vector.h"
 
@@ -24,6 +22,9 @@ struct BytecodeInfo
     bool jumpTarget : 1;
     bool jumpFallthrough : 1;
     bool fallthrough : 1;
+
+    // If true, this is a JSOP_LOOPENTRY op inside a catch or finally block.
+    bool loopEntryInCatchOrFinally : 1;
 
     void init(unsigned depth) {
         JS_ASSERT(depth <= MAX_STACK_DEPTH);
@@ -41,7 +42,7 @@ class BytecodeAnalysis
   public:
     explicit BytecodeAnalysis(JSScript *script);
 
-    bool init();
+    bool init(JSContext *cx);
 
     BytecodeInfo &info(jsbytecode *pc) {
         JS_ASSERT(infos_[pc - script_->code].initialized);

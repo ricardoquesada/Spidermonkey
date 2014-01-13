@@ -10,22 +10,14 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/MemoryReporting.h"
 
-#include <stddef.h>
-
 #include "jscntxt.h"
-#include "jsobj.h"
-#include "jsproxy.h"
 
-#include "gc/Barrier.h"
 #include "gc/Marking.h"
-#include "vm/MatchPairs.h"
-#include "vm/Runtime.h"
-#include "yarr/MatchResult.h"
-#include "yarr/Yarr.h"
 #if ENABLE_YARR_JIT
 #include "yarr/YarrJIT.h"
+#else
+#include "yarr/YarrInterpreter.h"
 #endif
-#include "yarr/YarrSyntaxChecker.h"
 
 /*
  * JavaScript Regular Expressions
@@ -46,6 +38,24 @@
  * a regexp) must indicate the RegExpShared is active via RegExpGuard.
  */
 namespace js {
+
+class MatchConduit;
+class MatchPair;
+class MatchPairs;
+class RegExpShared;
+
+namespace frontend { class TokenStream; }
+
+enum RegExpFlag
+{
+    IgnoreCaseFlag  = 0x01,
+    GlobalFlag      = 0x02,
+    MultilineFlag   = 0x04,
+    StickyFlag      = 0x08,
+
+    NoFlags         = 0x00,
+    AllFlags        = 0x0f
+};
 
 enum RegExpRunStatus
 {
@@ -311,6 +321,7 @@ class RegExpCompartment
 
     bool init(JSContext *cx);
     void sweep(JSRuntime *rt);
+    void clearTables();
 
     bool get(ExclusiveContext *cx, JSAtom *source, RegExpFlag flags, RegExpGuard *g);
 
@@ -332,7 +343,7 @@ class RegExpObject : public JSObject
   public:
     static const unsigned RESERVED_SLOTS = 6;
 
-    static Class class_;
+    static const Class class_;
 
     /*
      * Note: The regexp statics flags are OR'd into the provided flags,
@@ -355,13 +366,22 @@ class RegExpObject : public JSObject
     static unsigned lastIndexSlot() { return LAST_INDEX_SLOT; }
 
     const Value &getLastIndex() const { return getSlot(LAST_INDEX_SLOT); }
-    inline void setLastIndex(double d);
-    inline void zeroLastIndex();
+
+    void setLastIndex(double d) {
+        setSlot(LAST_INDEX_SLOT, NumberValue(d));
+    }
+
+    void zeroLastIndex() {
+        setSlot(LAST_INDEX_SLOT, Int32Value(0));
+    }
 
     JSFlatString *toString(JSContext *cx) const;
 
     JSAtom *getSource() const { return &getSlot(SOURCE_SLOT).toString()->asAtom(); }
-    inline void setSource(JSAtom *source);
+
+    void setSource(JSAtom *source) {
+        setSlot(SOURCE_SLOT, StringValue(source));
+    }
 
     RegExpFlag getFlags() const {
         unsigned flags = 0;
@@ -374,10 +394,22 @@ class RegExpObject : public JSObject
 
     /* Flags. */
 
-    inline void setIgnoreCase(bool enabled);
-    inline void setGlobal(bool enabled);
-    inline void setMultiline(bool enabled);
-    inline void setSticky(bool enabled);
+    void setIgnoreCase(bool enabled) {
+        setSlot(IGNORE_CASE_FLAG_SLOT, BooleanValue(enabled));
+    }
+
+    void setGlobal(bool enabled) {
+        setSlot(GLOBAL_FLAG_SLOT, BooleanValue(enabled));
+    }
+
+    void setMultiline(bool enabled) {
+        setSlot(MULTILINE_FLAG_SLOT, BooleanValue(enabled));
+    }
+
+    void setSticky(bool enabled) {
+        setSlot(STICKY_FLAG_SLOT, BooleanValue(enabled));
+    }
+
     bool ignoreCase() const { return getSlot(IGNORE_CASE_FLAG_SLOT).toBoolean(); }
     bool global() const     { return getSlot(GLOBAL_FLAG_SLOT).toBoolean(); }
     bool multiline() const  { return getSlot(MULTILINE_FLAG_SLOT).toBoolean(); }
@@ -395,7 +427,11 @@ class RegExpObject : public JSObject
         }
         return createShared(cx, g);
     }
-    inline void setShared(ExclusiveContext *cx, RegExpShared &shared);
+
+    void setShared(ExclusiveContext *cx, RegExpShared &shared) {
+        shared.prepareForUse(cx);
+        JSObject::setPrivate(&shared);
+    }
 
   private:
     friend class RegExpObjectBuilder;

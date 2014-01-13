@@ -25,7 +25,7 @@
 using namespace js;
 using namespace js::types;
 
-Class BooleanObject::class_ = {
+const Class BooleanObject::class_ = {
     "Boolean",
     JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_HAS_CACHED_PROTO(JSProto_Boolean),
     JS_PropertyStub,         /* addProperty */
@@ -38,7 +38,7 @@ Class BooleanObject::class_ = {
 };
 
 JS_ALWAYS_INLINE bool
-IsBoolean(const Value &v)
+IsBoolean(HandleValue v)
 {
     return v.isBoolean() || (v.isObject() && v.toObject().is<BooleanObject>());
 }
@@ -47,7 +47,7 @@ IsBoolean(const Value &v)
 JS_ALWAYS_INLINE bool
 bool_toSource_impl(JSContext *cx, CallArgs args)
 {
-    const Value &thisv = args.thisv();
+    HandleValue thisv = args.thisv();
     JS_ASSERT(IsBoolean(thisv));
 
     bool b = thisv.isBoolean() ? thisv.toBoolean() : thisv.toObject().as<BooleanObject>().unbox();
@@ -63,7 +63,7 @@ bool_toSource_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 bool_toSource(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -74,7 +74,7 @@ bool_toSource(JSContext *cx, unsigned argc, Value *vp)
 JS_ALWAYS_INLINE bool
 bool_toString_impl(JSContext *cx, CallArgs args)
 {
-    const Value &thisv = args.thisv();
+    HandleValue thisv = args.thisv();
     JS_ASSERT(IsBoolean(thisv));
 
     bool b = thisv.isBoolean() ? thisv.toBoolean() : thisv.toObject().as<BooleanObject>().unbox();
@@ -82,7 +82,7 @@ bool_toString_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 bool_toString(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -92,7 +92,7 @@ bool_toString(JSContext *cx, unsigned argc, Value *vp)
 JS_ALWAYS_INLINE bool
 bool_valueOf_impl(JSContext *cx, CallArgs args)
 {
-    const Value &thisv = args.thisv();
+    HandleValue thisv = args.thisv();
     JS_ASSERT(IsBoolean(thisv));
 
     bool b = thisv.isBoolean() ? thisv.toBoolean() : thisv.toObject().as<BooleanObject>().unbox();
@@ -100,7 +100,7 @@ bool_valueOf_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 bool_valueOf(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -115,7 +115,7 @@ static const JSFunctionSpec boolean_methods[] = {
     JS_FS_END
 };
 
-static JSBool
+static bool
 Boolean(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -176,7 +176,7 @@ js_InitBooleanClass(JSContext *cx, HandleObject obj)
 }
 
 JSString *
-js_BooleanToString(ExclusiveContext *cx, JSBool b)
+js_BooleanToString(ExclusiveContext *cx, bool b)
 {
     return b ? cx->names().true_ : cx->names().false_;
 }

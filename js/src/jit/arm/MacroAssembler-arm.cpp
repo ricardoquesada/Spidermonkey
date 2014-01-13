@@ -9,6 +9,7 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/MathAlgorithms.h"
 
+#include "jit/Bailouts.h"
 #include "jit/BaselineFrame.h"
 #include "jit/MoveEmitter.h"
 
@@ -374,6 +375,13 @@ MacroAssemblerARM::ma_movPatchable(Imm32 imm_, Register dest,
             as_WritePoolEntry(i, c, imm);
         break;
     }
+}
+
+void
+MacroAssemblerARM::ma_movPatchable(ImmPtr imm, Register dest,
+                                   Assembler::Condition c, RelocStyle rs, Instruction *i)
+{
+    return ma_movPatchable(Imm32(int32_t(imm.value)), dest, c, rs, i);
 }
 
 void
@@ -1545,7 +1553,7 @@ MacroAssemblerARMCompat::buildOOLFakeExitFrame(void *fakeReturnAddr)
     Push(Imm32(descriptor)); // descriptor_
 
     enterNoPool();
-    Push(Imm32((uint32_t) fakeReturnAddr));
+    Push(ImmPtr(fakeReturnAddr));
     leaveNoPool();
 
     return true;
@@ -1564,7 +1572,7 @@ MacroAssemblerARMCompat::callWithExitFrame(IonCode *target)
     else
         rs = L_LDR;
 
-    ma_movPatchable(Imm32((int) target->raw()), ScratchRegister, Always, rs);
+    ma_movPatchable(ImmPtr(target->raw()), ScratchRegister, Always, rs);
     ma_callIonHalfPush(ScratchRegister);
 }
 
@@ -1582,7 +1590,7 @@ MacroAssemblerARMCompat::callWithExitFrame(IonCode *target, Register dynStack)
     else
         rs = L_LDR;
 
-    ma_movPatchable(Imm32((int) target->raw()), ScratchRegister, Always, rs);
+    ma_movPatchable(ImmPtr(target->raw()), ScratchRegister, Always, rs);
     ma_callIonHalfPush(ScratchRegister);
 }
 
@@ -1733,6 +1741,12 @@ MacroAssemblerARMCompat::move32(const Imm32 &imm, const Register &dest)
 {
     ma_mov(imm, dest);
 }
+
+void
+MacroAssemblerARMCompat::move32(const Register &src, const Register &dest) {
+    ma_mov(src, dest);
+}
+
 void
 MacroAssemblerARMCompat::movePtr(const Register &src, const Register &dest)
 {
@@ -1747,6 +1761,11 @@ void
 MacroAssemblerARMCompat::movePtr(const ImmGCPtr &imm, const Register &dest)
 {
     ma_mov(imm, dest);
+}
+void
+MacroAssemblerARMCompat::movePtr(const ImmPtr &imm, const Register &dest)
+{
+    movePtr(ImmWord(uintptr_t(imm.value)), dest);
 }
 void
 MacroAssemblerARMCompat::load8ZeroExtend(const Address &address, const Register &dest)
@@ -1889,7 +1908,7 @@ MacroAssemblerARMCompat::loadPtr(const BaseIndex &src, const Register &dest)
 void
 MacroAssemblerARMCompat::loadPtr(const AbsoluteAddress &address, const Register &dest)
 {
-    movePtr(ImmWord(address.addr), ScratchRegister);
+    movePtr(ImmWord(uintptr_t(address.addr)), ScratchRegister);
     loadPtr(Address(ScratchRegister, 0x0), dest);
 }
 
@@ -2066,6 +2085,12 @@ MacroAssemblerARMCompat::storePtr(ImmWord imm, const Address &address)
 }
 
 void
+MacroAssemblerARMCompat::storePtr(ImmPtr imm, const Address &address)
+{
+    storePtr(ImmWord(uintptr_t(imm.value)), address);
+}
+
+void
 MacroAssemblerARMCompat::storePtr(ImmGCPtr imm, const Address &address)
 {
     movePtr(imm, ScratchRegister);
@@ -2081,7 +2106,7 @@ MacroAssemblerARMCompat::storePtr(Register src, const Address &address)
 void
 MacroAssemblerARMCompat::storePtr(const Register &src, const AbsoluteAddress &dest)
 {
-    movePtr(ImmWord(dest.addr), ScratchRegister);
+    movePtr(ImmWord(uintptr_t(dest.addr)), ScratchRegister);
     storePtr(src, Address(ScratchRegister, 0x0));
 }
 
@@ -2119,6 +2144,12 @@ MacroAssemblerARMCompat::cmpPtr(const Register &lhs, const ImmWord &rhs)
 }
 
 void
+MacroAssemblerARMCompat::cmpPtr(const Register &lhs, const ImmPtr &rhs)
+{
+    return cmpPtr(lhs, ImmWord(uintptr_t(rhs.value)));
+}
+
+void
 MacroAssemblerARMCompat::cmpPtr(const Register &lhs, const Register &rhs)
 {
     ma_cmp(lhs, rhs);
@@ -2142,6 +2173,12 @@ MacroAssemblerARMCompat::cmpPtr(const Address &lhs, const ImmWord &rhs)
 {
     loadPtr(lhs, secondScratchReg_);
     ma_cmp(secondScratchReg_, Imm32(rhs.value));
+}
+
+void
+MacroAssemblerARMCompat::cmpPtr(const Address &lhs, const ImmPtr &rhs)
+{
+    cmpPtr(lhs, ImmWord(uintptr_t(rhs.value)));
 }
 
 void
@@ -2521,11 +2558,25 @@ MacroAssemblerARMCompat::branchTestValue(Condition cond, const Address &valaddr,
 {
     JS_ASSERT(cond == Equal || cond == NotEqual);
 
-    ma_ldr(tagOf(valaddr), ScratchRegister);
-    branchPtr(cond, ScratchRegister, value.typeReg(), label);
+    // Check payload before tag, since payload is more likely to differ.
+    if (cond == NotEqual) {
+        ma_ldr(payloadOf(valaddr), ScratchRegister);
+        branchPtr(NotEqual, ScratchRegister, value.payloadReg(), label);
 
-    ma_ldr(payloadOf(valaddr), ScratchRegister);
-    branchPtr(cond, ScratchRegister, value.payloadReg(), label);
+        ma_ldr(tagOf(valaddr), ScratchRegister);
+        branchPtr(NotEqual, ScratchRegister, value.typeReg(), label);
+
+    } else {
+        Label fallthrough;
+
+        ma_ldr(payloadOf(valaddr), ScratchRegister);
+        branchPtr(NotEqual, ScratchRegister, value.payloadReg(), &fallthrough);
+
+        ma_ldr(tagOf(valaddr), ScratchRegister);
+        branchPtr(Equal, ScratchRegister, value.typeReg(), label);
+
+        bind(&fallthrough);
+    }
 }
 
 // unboxing code
@@ -2565,6 +2616,24 @@ void
 MacroAssemblerARMCompat::unboxDouble(const Address &src, const FloatRegister &dest)
 {
     ma_vldr(Operand(src), dest);
+}
+
+void
+MacroAssemblerARMCompat::unboxString(const ValueOperand &operand, const Register &dest)
+{
+    ma_mov(operand.payloadReg(), dest);
+}
+
+void
+MacroAssemblerARMCompat::unboxString(const Address &src, const Register &dest)
+{
+    ma_ldr(payloadOf(src), dest);
+}
+
+void
+MacroAssemblerARMCompat::unboxObject(const ValueOperand &src, const Register &dest)
+{
+    ma_mov(src.payloadReg(), dest);
 }
 
 void
@@ -2965,8 +3034,8 @@ MacroAssemblerARMCompat::storeTypeTag(ImmTag tag, Register base, Register index,
 
 void
 MacroAssemblerARMCompat::linkExitFrame() {
-    uint8_t *dest = ((uint8_t*)GetIonContext()->compartment->rt) + offsetof(JSRuntime, mainThread.ionTop);
-    movePtr(ImmWord(dest), ScratchRegister);
+    uint8_t *dest = ((uint8_t*)GetIonContext()->runtime) + offsetof(JSRuntime, mainThread.ionTop);
+    movePtr(ImmPtr(dest), ScratchRegister);
     ma_str(StackPointer, Operand(ScratchRegister, 0));
 }
 
@@ -3102,10 +3171,7 @@ void
 MacroAssemblerARMCompat::passABIArg(const MoveOperand &from)
 {
     MoveOperand to;
-    uint32_t increment = 1;
-    bool useResolver = true;
     ++passedArgs_;
-    Move::Kind kind = Move::GENERAL;
     if (!enoughMemory_)
         return;
     if (from.isDouble()) {
@@ -3330,12 +3396,14 @@ MacroAssemblerARMCompat::handleFailureWithHandlerTail()
     Label catch_;
     Label finally;
     Label return_;
+    Label bailout;
 
     ma_ldr(Operand(sp, offsetof(ResumeFromException, kind)), r0);
     branch32(Assembler::Equal, r0, Imm32(ResumeFromException::RESUME_ENTRY_FRAME), &entryFrame);
     branch32(Assembler::Equal, r0, Imm32(ResumeFromException::RESUME_CATCH), &catch_);
     branch32(Assembler::Equal, r0, Imm32(ResumeFromException::RESUME_FINALLY), &finally);
     branch32(Assembler::Equal, r0, Imm32(ResumeFromException::RESUME_FORCED_RETURN), &return_);
+    branch32(Assembler::Equal, r0, Imm32(ResumeFromException::RESUME_BAILOUT), &bailout);
 
     breakpoint(); // Invalid kind.
 
@@ -3380,6 +3448,14 @@ MacroAssemblerARMCompat::handleFailureWithHandlerTail()
     ma_mov(r11, sp);
     pop(r11);
     ret();
+
+    // If we are bailing out to baseline to handle an exception, jump to
+    // the bailout tail stub.
+    bind(&bailout);
+    ma_ldr(Operand(sp, offsetof(ResumeFromException, bailoutInfo)), r2);
+    ma_mov(Imm32(BAILOUT_RETURN_OK), r0);
+    ma_ldr(Operand(sp, offsetof(ResumeFromException, target)), r1);
+    jump(r1);
 }
 
 Assembler::Condition
@@ -3475,7 +3551,7 @@ MacroAssemblerARMCompat::toggledCall(IonCode *target, bool enabled)
     BufferOffset bo = nextOffset();
     CodeOffsetLabel offset(bo.getOffset());
     addPendingJump(bo, target->raw(), Relocation::IONCODE);
-    ma_movPatchable(Imm32(uint32_t(target->raw())), ScratchRegister, Always, hasMOVWT() ? L_MOVWT : L_LDR);
+    ma_movPatchable(ImmPtr(target->raw()), ScratchRegister, Always, hasMOVWT() ? L_MOVWT : L_LDR);
     if (enabled)
         ma_blx(ScratchRegister);
     else

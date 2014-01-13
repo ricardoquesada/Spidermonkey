@@ -7,7 +7,7 @@
 #ifndef jit_AsmJSLink_h
 #define jit_AsmJSLink_h
 
-#include "jsapi.h"
+#include "NamespaceImports.h"
 
 namespace js {
 
@@ -16,7 +16,7 @@ namespace js {
 // Create a new JSFunction to replace originalFun as the representation of the
 // function defining the succesfully-validated module 'moduleObj'.
 extern JSFunction *
-NewAsmJSModuleFunction(JSContext *cx, JSFunction *originalFun, HandleObject moduleObj);
+NewAsmJSModuleFunction(ExclusiveContext *cx, JSFunction *originalFun, HandleObject moduleObj);
 
 // Return whether this is the js::Native returned by NewAsmJSModuleFunction.
 extern bool
@@ -24,12 +24,12 @@ IsAsmJSModuleNative(JSNative native);
 
 // Return whether the given value is a function containing "use asm" that has
 // been validated according to the asm.js spec.
-extern JSBool
+extern bool
 IsAsmJSModule(JSContext *cx, unsigned argc, JS::Value *vp);
 
 // Return whether the given value is a nested function in an asm.js module that
 // has been both compile- and link-time validated.
-extern JSBool
+extern bool
 IsAsmJSFunction(JSContext *cx, unsigned argc, JS::Value *vp);
 
 #else // JS_ION
@@ -40,7 +40,7 @@ IsAsmJSModuleNative(JSNative native)
     return false;
 }
 
-inline JSBool
+inline bool
 IsAsmJSFunction(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -48,7 +48,7 @@ IsAsmJSFunction(JSContext *cx, unsigned argc, Value *vp)
     return true;
 }
 
-inline JSBool
+inline bool
 IsAsmJSModule(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);

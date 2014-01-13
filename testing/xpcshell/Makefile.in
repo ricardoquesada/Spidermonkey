@@ -3,12 +3,10 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DEPTH		= @DEPTH@
-topsrcdir	= @top_srcdir@
-srcdir		= @srcdir@
-VPATH		= @srcdir@
-
-include $(DEPTH)/config/autoconf.mk
+# Run selftests
+PYTHON_UNIT_TESTS := \
+  selftest.py
+  $(NULL)
 
 include $(topsrcdir)/config/rules.mk
 
@@ -53,11 +51,6 @@ libs::
 	$(INSTALL) $(srcdir)/xpcshell_b2g.ini $(DEPTH)/_tests/xpcshell
 	$(INSTALL) $(srcdir)/xpcshell_android.ini $(DEPTH)/_tests/xpcshell
 	cp $(DEPTH)/_tests/xpcshell/xpcshell.ini $(DEPTH)/_tests/xpcshell/all-test-dirs.list
-
-# Run selftests
-check::
-	OBJDIR=$(DEPTH) $(PYTHON) $(topsrcdir)/config/pythonpath.py \
-	  -I$(DEPTH)/build -I$(topsrcdir)/build -I$(topsrcdir)/testing/mozbase/mozinfo/mozinfo $(srcdir)/selftest.py
 
 stage-package:
 	$(NSINSTALL) -D $(PKG_STAGE)/xpcshell/tests

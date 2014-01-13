@@ -9,8 +9,8 @@
 #include "jscntxt.h"
 
 #ifdef JS_THREADSAFE
-# include "prthread.h"
 # include "prprf.h"
+# include "prthread.h"
 # include "jit/BaselineJIT.h"
 # include "vm/Monitor.h"
 #endif
@@ -117,9 +117,9 @@ ParallelBailoutRecord::addTrace(JSScript *script,
 }
 
 bool
-js::InSequentialOrExclusiveParallelSection()
+js::InExclusiveParallelSection()
 {
-    return true;
+    return false;
 }
 
 bool
@@ -211,7 +211,7 @@ class ParallelDo
 {
   public:
     // For tests, make sure to keep this in sync with minItemsTestingThreshold.
-    const static uint32_t MAX_BAILOUTS = 3;
+    static const uint32_t MAX_BAILOUTS = 3;
     uint32_t bailouts;
 
     // Information about the bailout:
@@ -1413,6 +1413,10 @@ ForkJoinShared::executeFromWorker(uint32_t workerId, uintptr_t stackLimit)
     JS_ASSERT(workerId < numSlices_ - 1);
 
     PerThreadData thisThread(cx_->runtime());
+    if (!thisThread.init()) {
+        setAbortFlag(true);
+        return;
+    }
     TlsPerThreadData.set(&thisThread);
 
     // Don't use setIonStackLimit() because that acquires the ionStackLimitLock, and the
@@ -1453,7 +1457,7 @@ ForkJoinShared::executePortion(PerThreadData *perThread,
 
     // Make a new IonContext for the slice, which is needed if we need to
     // re-enter the VM.
-    IonContext icx(cx_->compartment(), NULL);
+    IonContext icx(cx_->runtime(), cx_->compartment(), NULL);
 
     JS_ASSERT(slice.bailoutRecord->topScript == NULL);
 
@@ -1609,7 +1613,9 @@ ForkJoinShared::setAbortFlag(bool fatal)
     abort_ = true;
     fatal_ = fatal_ || fatal;
 
-    cx_->runtime()->triggerOperationCallback();
+    // Note: DontStopIon here avoids the expensive memory protection needed to
+    // interrupt Ion code compiled for sequential execution.
+    cx_->runtime()->triggerOperationCallback(JSRuntime::TriggerCallbackAnyThreadDontStopIon);
 }
 
 void
@@ -2141,9 +2147,9 @@ parallel::SpewBailoutIR(uint32_t bblockId, uint32_t lirId,
 #endif // DEBUG
 
 bool
-js::InSequentialOrExclusiveParallelSection()
+js::InExclusiveParallelSection()
 {
-    return !InParallelSection() || ForkJoinSlice::Current()->hasAcquiredContext();
+    return InParallelSection() && ForkJoinSlice::Current()->hasAcquiredContext();
 }
 
 bool

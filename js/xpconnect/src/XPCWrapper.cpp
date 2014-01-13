@@ -6,10 +6,8 @@
 
 #include "xpcprivate.h"
 #include "XPCWrapper.h"
-#include "AccessCheck.h"
 #include "WrapperFactory.h"
 #include "AccessCheck.h"
-#include "nsCxPusher.h"
 
 using namespace xpc;
 using namespace mozilla;
@@ -17,7 +15,7 @@ using namespace mozilla;
 namespace XPCNativeWrapper {
 
 static inline
-JSBool
+bool
 ThrowException(nsresult ex, JSContext *cx)
 {
   XPCThrower::Throw(ex, cx);
@@ -25,7 +23,7 @@ ThrowException(nsresult ex, JSContext *cx)
   return false;
 }
 
-static JSBool
+static bool
 UnwrapNW(JSContext *cx, unsigned argc, jsval *vp)
 {
   if (argc != 1) {
@@ -47,7 +45,7 @@ UnwrapNW(JSContext *cx, unsigned argc, jsval *vp)
   return true;
 }
 
-static JSBool
+static bool
 XrayWrapperConstructor(JSContext *cx, unsigned argc, jsval *vp)
 {
   if (argc == 0) {

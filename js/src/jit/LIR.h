@@ -12,8 +12,6 @@
 
 #include "mozilla/Array.h"
 
-#include "jscntxt.h"
-
 #include "jit/Bailouts.h"
 #include "jit/InlineList.h"
 #include "jit/IonAllocPolicy.h"
@@ -542,6 +540,7 @@ class LDefinition
           case MIRType_Object:
             return LDefinition::OBJECT;
           case MIRType_Double:
+          case MIRType_Float32:
             return LDefinition::DOUBLE;
 #if defined(JS_PUNBOX64)
           case MIRType_Value:
@@ -987,6 +986,12 @@ class LSafepoint : public TempObject
     // The subset of liveRegs which contains gcthing pointers.
     GeneralRegisterSet gcRegs_;
 
+#ifdef CHECK_OSIPOINT_REGISTERS
+    // Temp regs of the current instruction. This set is never written to the
+    // safepoint; it's only used by assertions during compilation.
+    RegisterSet tempRegs_;
+#endif
+
     // Offset to a position in the safepoint stream, or
     // INVALID_SAFEPOINT_OFFSET.
     uint32_t safepointOffset_;
@@ -1031,6 +1036,14 @@ class LSafepoint : public TempObject
     const RegisterSet &liveRegs() const {
         return liveRegs_;
     }
+#ifdef CHECK_OSIPOINT_REGISTERS
+    void addTempRegister(AnyRegister reg) {
+        tempRegs_.addUnchecked(reg);
+    }
+    const RegisterSet &tempRegs() const {
+        return tempRegs_;
+    }
+#endif
     void addGcRegister(Register reg) {
         gcRegs_.addUnchecked(reg);
     }

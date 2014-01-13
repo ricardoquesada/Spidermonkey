@@ -4,14 +4,15 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DEPTH		= @DEPTH@
-topsrcdir	= @top_srcdir@
-srcdir		= @srcdir@
-VPATH		= @srcdir@
-
-include $(DEPTH)/config/autoconf.mk
-
 SDK_BINARY = run-mozilla.sh
+
+ifneq ($(LLVM_SYMBOLIZER),)
+# Install a copy of the llvm-symbolizer binary to dist/bin, so it can
+# be used for symbolizing traces for e.g. AddressSanitizer
+LLVMSYM_EXECUTABLES=$(LLVM_SYMBOLIZER)
+LLVMSYM_DEST=$(FINAL_TARGET)
+INSTALL_TARGETS += LLVMSYM
+endif
 
 include $(topsrcdir)/config/rules.mk
 

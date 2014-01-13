@@ -19,6 +19,8 @@ using namespace js::jit;
 
 using mozilla::Array;
 
+namespace {
+
 // Iterates over the flags in an AliasSet.
 class AliasSetIterator
 {
@@ -51,6 +53,8 @@ class AliasSetIterator
     }
 };
 
+} /* anonymous namespace */
+
 AliasAnalysis::AliasAnalysis(MIRGenerator *mir, MIRGraph &graph)
   : mir(mir),
     graph_(graph),
@@ -69,9 +73,13 @@ BlockMightReach(MBasicBlock *src, MBasicBlock *dest)
         switch (src->numSuccessors()) {
           case 0:
             return false;
-          case 1:
-            src = src->getSuccessor(0);
+          case 1: {
+            MBasicBlock *successor = src->getSuccessor(0);
+            if (successor->id() <= src->id())
+                return true; // Don't iloop.
+            src = successor;
             break;
+          }
           default:
             return true;
         }
@@ -189,6 +197,9 @@ AliasAnalysis::analyze()
                 }
             }
         }
+
+        // Renumber the last instruction, as the analysis depends on this and the order.
+        block->lastIns()->setId(newId++);
 
         if (block->isLoopBackedge()) {
             JS_ASSERT(loop_->loopHeader() == block->loopHeaderOfBackedge());

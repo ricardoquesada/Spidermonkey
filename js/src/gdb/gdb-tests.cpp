@@ -7,12 +7,13 @@
 #include <string.h>
 
 #include "gdb-tests.h"
+#include "jsapi.h"
 #include "jsfriendapi.h"
 
 using namespace JS;
 
 /* The class of the global object. */
-JSClass global_class = {
+const JSClass global_class = {
     "global", JSCLASS_GLOBAL_FLAGS,
     JS_PropertyStub,  JS_DeletePropertyStub, JS_PropertyStub,  JS_StrictPropertyStub,
     JS_EnumerateStub, JS_ResolveStub, JS_ConvertStub
@@ -28,7 +29,7 @@ checkPtr(T *ptr)
 }
 
 void
-checkBool(JSBool success)
+checkBool(bool success)
 {
   if (! success)
     abort();

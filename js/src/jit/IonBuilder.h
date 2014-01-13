@@ -87,7 +87,8 @@ class IonBuilder : public MIRGenerator
             COND_SWITCH_CASE,   // switch() { case X: ... }
             COND_SWITCH_BODY,   // switch() { case ...: X }
             AND_OR,             // && x, || x
-            LABEL               // label: x
+            LABEL,              // label: x
+            TRY                 // try { x } catch(e) { }
         };
 
         State state;            // Current state of this control structure.
@@ -169,6 +170,9 @@ class IonBuilder : public MIRGenerator
             struct {
                 DeferredEdge *breaks;
             } label;
+            struct {
+                MBasicBlock *successor;
+            } try_;
         };
 
         inline bool isLoop() const {
@@ -192,6 +196,7 @@ class IonBuilder : public MIRGenerator
         static CFGState TableSwitch(jsbytecode *exitpc, MTableSwitch *ins);
         static CFGState CondSwitch(jsbytecode *exitpc, jsbytecode *defaultTarget);
         static CFGState Label(jsbytecode *exitpc);
+        static CFGState Try(jsbytecode *exitpc, MBasicBlock *successor);
     };
 
     static int CmpSuccessors(const void *a, const void *b);
@@ -219,12 +224,10 @@ class IonBuilder : public MIRGenerator
         return js_IonOptions.inlining;
     }
 
-    JSFunction *getSingleCallTarget(types::StackTypeSet *calleeTypes);
-    bool getPolyCallTargets(types::StackTypeSet *calleeTypes,
-                            AutoObjectVector &targets,
-                            uint32_t maxTargets,
-                            bool *gotLambda);
-    bool canInlineTarget(JSFunction *target);
+    JSFunction *getSingleCallTarget(types::TemporaryTypeSet *calleeTypes);
+    bool getPolyCallTargets(types::TemporaryTypeSet *calleeTypes, bool constructing,
+                            AutoObjectVector &targets, uint32_t maxTargets, bool *gotLambda);
+    bool canInlineTarget(JSFunction *target, bool constructing);
 
     void popCfgStack();
     DeferredEdge *filterDeadDeferredEdges(DeferredEdge *edge);
@@ -249,6 +252,7 @@ class IonBuilder : public MIRGenerator
     ControlStatus processSwitchEnd(DeferredEdge *breaks, jsbytecode *exitpc);
     ControlStatus processAndOrEnd(CFGState &state);
     ControlStatus processLabelEnd(CFGState &state);
+    ControlStatus processTryEnd(CFGState &state);
     ControlStatus processReturn(JSOp op);
     ControlStatus processThrow();
     ControlStatus processContinue(JSOp op);
@@ -290,7 +294,7 @@ class IonBuilder : public MIRGenerator
     // Incorporates a type/typeSet into an OSR value for a loop, after the loop
     // body has been processed.
     bool addOsrValueTypeBarrier(uint32_t slot, MInstruction **def,
-                                MIRType type, types::StackTypeSet *typeSet);
+                                MIRType type, types::TemporaryTypeSet *typeSet);
     bool maybeAddOsrTypeBarriers();
 
     // Restarts processing of a loop if the type information at its header was
@@ -321,7 +325,7 @@ class IonBuilder : public MIRGenerator
 
     // Add a guard which ensure that the set of type which goes through this
     // generated code correspond to the observed types for the bytecode.
-    bool pushTypeBarrier(MInstruction *ins, types::StackTypeSet *observed, bool needBarrier);
+    bool pushTypeBarrier(MInstruction *ins, types::TemporaryTypeSet *observed, bool needBarrier);
 
     JSObject *getSingletonPrototype(JSFunction *target);
 
@@ -345,21 +349,61 @@ class IonBuilder : public MIRGenerator
 
     bool hasStaticScopeObject(ScopeCoordinate sc, MutableHandleObject pcall);
     bool loadSlot(MDefinition *obj, Shape *shape, MIRType rvalType,
-                  bool barrier, types::StackTypeSet *types);
+                  bool barrier, types::TemporaryTypeSet *types);
     bool storeSlot(MDefinition *obj, Shape *shape, MDefinition *value, bool needsBarrier,
                    MIRType slotType = MIRType_None);
 
     // jsop_getprop() helpers.
     bool getPropTryArgumentsLength(bool *emitted);
-    bool getPropTryConstant(bool *emitted, HandleId id, types::StackTypeSet *types);
+    bool getPropTryConstant(bool *emitted, HandleId id, types::TemporaryTypeSet *types);
     bool getPropTryDefiniteSlot(bool *emitted, HandlePropertyName name,
-                                bool barrier, types::StackTypeSet *types);
+                                bool barrier, types::TemporaryTypeSet *types);
     bool getPropTryCommonGetter(bool *emitted, HandleId id,
-                                bool barrier, types::StackTypeSet *types);
+                                bool barrier, types::TemporaryTypeSet *types);
     bool getPropTryInlineAccess(bool *emitted, HandlePropertyName name, HandleId id,
-                                bool barrier, types::StackTypeSet *types);
+                                bool barrier, types::TemporaryTypeSet *types);
     bool getPropTryCache(bool *emitted, HandlePropertyName name, HandleId id,
-                         bool barrier, types::StackTypeSet *types);
+                         bool barrier, types::TemporaryTypeSet *types);
+    bool needsToMonitorMissingProperties(types::TemporaryTypeSet *types);
+
+    // jsop_setprop() helpers.
+    bool setPropTryCommonSetter(bool *emitted, MDefinition *obj,
+                                HandlePropertyName name, HandleId id,
+                                MDefinition *value);
+    bool setPropTryCommonDOMSetter(bool *emitted, MDefinition *obj,
+                                   MDefinition *value, HandleFunction setter,
+                                   bool isDOM);
+    bool setPropTryDefiniteSlot(bool *emitted, MDefinition *obj,
+                                HandlePropertyName name, MDefinition *value,
+                                bool barrier, types::TemporaryTypeSet *objTypes);
+    bool setPropTryInlineAccess(bool *emitted, MDefinition *obj,
+                                HandlePropertyName name, HandleId id,
+                                MDefinition *value, bool barrier,
+                                types::TemporaryTypeSet *objTypes);
+    bool setPropTryCache(bool *emitted, MDefinition *obj,
+                         HandlePropertyName name, MDefinition *value,
+                         bool barrier, types::TemporaryTypeSet *objTypes);
+
+    // jsop_setelem() helpers.
+    bool setElemTryTyped(bool *emitted, MDefinition *object,
+                         MDefinition *index, MDefinition *value);
+    bool setElemTryTypedStatic(bool *emitted, MDefinition *object,
+                               MDefinition *index, MDefinition *value);
+    bool setElemTryDense(bool *emitted, MDefinition *object,
+                         MDefinition *index, MDefinition *value);
+    bool setElemTryArguments(bool *emitted, MDefinition *object,
+                             MDefinition *index, MDefinition *value);
+    bool setElemTryCache(bool *emitted, MDefinition *object,
+                         MDefinition *index, MDefinition *value);
+
+    // jsop_getelem() helpers.
+    bool getElemTryDense(bool *emitted, MDefinition *obj, MDefinition *index);
+    bool getElemTryTypedStatic(bool *emitted, MDefinition *obj, MDefinition *index);
+    bool getElemTryTyped(bool *emitted, MDefinition *obj, MDefinition *index);
+    bool getElemTryString(bool *emitted, MDefinition *obj, MDefinition *index);
+    bool getElemTryArguments(bool *emitted, MDefinition *obj, MDefinition *index);
+    bool getElemTryArgumentsInlined(bool *emitted, MDefinition *obj, MDefinition *index);
+    bool getElemTryCache(bool *emitted, MDefinition *obj, MDefinition *index);
 
     // Typed array helpers.
     MInstruction *getTypedArrayLength(MDefinition *obj);
@@ -381,6 +425,7 @@ class IonBuilder : public MIRGenerator
     bool jsop_call(uint32_t argc, bool constructing);
     bool jsop_eval(uint32_t argc);
     bool jsop_ifeq(JSOp op);
+    bool jsop_try();
     bool jsop_label();
     bool jsop_condswitch();
     bool jsop_andor(JSOp op);
@@ -393,31 +438,27 @@ class IonBuilder : public MIRGenerator
     bool jsop_intrinsic(HandlePropertyName name);
     bool jsop_bindname(PropertyName *name);
     bool jsop_getelem();
-    bool jsop_getelem_dense();
-    bool jsop_getelem_typed(int arrayType);
-    bool jsop_getelem_typed_static(bool *psucceeded);
-    bool jsop_getelem_string();
+    bool jsop_getelem_dense(MDefinition *obj, MDefinition *index);
+    bool jsop_getelem_typed(MDefinition *obj, MDefinition *index, ScalarTypeRepresentation::Type arrayType);
     bool jsop_setelem();
-    bool jsop_setelem_dense(types::StackTypeSet::DoubleConversion conversion,
+    bool jsop_setelem_dense(types::TemporaryTypeSet::DoubleConversion conversion,
                             SetElemSafety safety,
                             MDefinition *object, MDefinition *index, MDefinition *value);
-    bool jsop_setelem_typed(int arrayType,
+    bool jsop_setelem_typed(ScalarTypeRepresentation::Type arrayType,
                             SetElemSafety safety,
                             MDefinition *object, MDefinition *index, MDefinition *value);
-    bool jsop_setelem_typed_static(MDefinition *object, MDefinition *index, MDefinition *value,
-                                   bool *psucceeded);
     bool jsop_length();
     bool jsop_length_fastPath();
     bool jsop_arguments();
     bool jsop_arguments_length();
     bool jsop_arguments_getelem();
-    bool jsop_arguments_setelem(MDefinition *object, MDefinition *index, MDefinition *value);
     bool jsop_runonce();
     bool jsop_rest();
     bool jsop_not();
     bool jsop_getprop(HandlePropertyName name);
     bool jsop_setprop(HandlePropertyName name);
     bool jsop_delprop(HandlePropertyName name);
+    bool jsop_delelem();
     bool jsop_newarray(uint32_t count);
     bool jsop_newobject(HandleObject baseObj);
     bool jsop_initelem();
@@ -456,7 +497,8 @@ class IonBuilder : public MIRGenerator
     uint32_t selectInliningTargets(AutoObjectVector &targets, CallInfo &callInfo, Vector<bool> &choiceSet);
 
     // Native inlining helpers.
-    types::StackTypeSet *getInlineReturnTypeSet();
+    types::StackTypeSet *getOriginalInlineReturnTypeSet();
+    types::TemporaryTypeSet *getInlineReturnTypeSet();
     MIRType getInlineReturnType();
 
     // Array natives.
@@ -475,6 +517,7 @@ class IonBuilder : public MIRGenerator
     InliningStatus inlineMathPow(CallInfo &callInfo);
     InliningStatus inlineMathRandom(CallInfo &callInfo);
     InliningStatus inlineMathImul(CallInfo &callInfo);
+    InliningStatus inlineMathFRound(CallInfo &callInfo);
     InliningStatus inlineMathFunction(CallInfo &callInfo, MMathFunction::Function function);
 
     // String natives.
@@ -489,7 +532,8 @@ class IonBuilder : public MIRGenerator
     // Array intrinsics.
     InliningStatus inlineUnsafePutElements(CallInfo &callInfo);
     bool inlineUnsafeSetDenseArrayElement(CallInfo &callInfo, uint32_t base);
-    bool inlineUnsafeSetTypedArrayElement(CallInfo &callInfo, uint32_t base, int arrayType);
+    bool inlineUnsafeSetTypedArrayElement(CallInfo &callInfo, uint32_t base,
+                                          ScalarTypeRepresentation::Type arrayType);
     InliningStatus inlineNewDenseArray(CallInfo &callInfo);
     InliningStatus inlineNewDenseArrayForSequentialExecution(CallInfo &callInfo);
     InliningStatus inlineNewDenseArrayForParallelExecution(CallInfo &callInfo);
@@ -504,7 +548,7 @@ class IonBuilder : public MIRGenerator
     InliningStatus inlineParallelArrayTail(CallInfo &callInfo,
                                            HandleFunction target,
                                            MDefinition *ctor,
-                                           types::StackTypeSet *ctorTypes,
+                                           types::TemporaryTypeSet *ctorTypes,
                                            uint32_t discards);
 
     // Utility intrinsics.
@@ -517,6 +561,7 @@ class IonBuilder : public MIRGenerator
     // Testing functions.
     InliningStatus inlineForceSequentialOrInParallelSection(CallInfo &callInfo);
     InliningStatus inlineBailout(CallInfo &callInfo);
+    InliningStatus inlineAssertFloat32(CallInfo &callInfo);
 
     // Main inlining functions
     InliningStatus inlineNativeCall(CallInfo &callInfo, JSNative native);
@@ -536,7 +581,8 @@ class IonBuilder : public MIRGenerator
                                   MTypeObjectDispatch *dispatch, MGetPropertyCache *cache,
                                   MBasicBlock **fallbackTarget);
 
-    bool anyFunctionIsCloneAtCallsite(types::StackTypeSet *funTypes);
+    bool testNeedsArgumentCheck(JSContext *cx, HandleFunction target, CallInfo &callInfo);
+
     MDefinition *makeCallsiteClone(HandleFunction target, MDefinition *fun);
     MCall *makeCallHelper(HandleFunction target, CallInfo &callInfo, bool cloneAtCallsite);
     bool makeCall(HandleFunction target, CallInfo &callInfo, bool cloneAtCallsite);
@@ -544,22 +590,18 @@ class IonBuilder : public MIRGenerator
     MDefinition *patchInlinedReturn(CallInfo &callInfo, MBasicBlock *exit, MBasicBlock *bottom);
     MDefinition *patchInlinedReturns(CallInfo &callInfo, MIRGraphExits &exits, MBasicBlock *bottom);
 
-    inline bool TestCommonPropFunc(JSContext *cx, types::StackTypeSet *types,
+    inline bool TestCommonPropFunc(JSContext *cx, types::TemporaryTypeSet *types,
                                    HandleId id, JSFunction **funcp,
                                    bool isGetter, bool *isDOM,
                                    MDefinition **guardOut);
 
     bool annotateGetPropertyCache(JSContext *cx, MDefinition *obj, MGetPropertyCache *getPropCache,
-                                  types::StackTypeSet *objTypes, types::StackTypeSet *pushedTypes);
+                                  types::TemporaryTypeSet *objTypes, types::TemporaryTypeSet *pushedTypes);
 
     MGetPropertyCache *getInlineableGetPropertyCache(CallInfo &callInfo);
 
-    MPolyInlineDispatch *
-    makePolyInlineDispatch(JSContext *cx, CallInfo &callInfo,
-                           MGetPropertyCache *getPropCache, MBasicBlock *bottom,
-                           Vector<MDefinition *, 8, IonAllocPolicy> &retvalDefns);
-
-    types::StackTypeSet *cloneTypeSet(types::StackTypeSet *types);
+    types::TemporaryTypeSet *bytecodeTypes(jsbytecode *pc);
+    types::TemporaryTypeSet *cloneTypeSet(types::StackTypeSet *types);
 
     // Use one of the below methods for updating the current block, rather than
     // updating |current| directly. setCurrent() should only be used in cases

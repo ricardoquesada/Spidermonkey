@@ -9,9 +9,6 @@
 
 #ifdef JS_ION
 
-#include "jscntxt.h"
-#include "jscompartment.h"
-
 #include "jit/BaselineIC.h"
 #include "jit/BaselineJIT.h"
 #include "jit/MIR.h"
@@ -43,6 +40,7 @@ class SetElemICInspector : public ICInspector
     bool sawOOBDenseWrite() const;
     bool sawOOBTypedArrayWrite() const;
     bool sawDenseWrite() const;
+    bool sawTypedArrayWrite() const;
 };
 
 class BaselineInspector

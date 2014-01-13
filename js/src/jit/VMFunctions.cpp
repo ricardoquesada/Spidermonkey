@@ -16,6 +16,8 @@
 #include "vm/Debugger.h"
 #include "vm/Interpreter.h"
 
+#include "jsinferinlines.h"
+
 #include "jit/BaselineFrame-inl.h"
 #include "vm/Interpreter-inl.h"
 #include "vm/StringObject-inl.h"
@@ -43,21 +45,24 @@ VMFunction::addToFunctions()
 }
 
 bool
-InvokeFunction(JSContext *cx, HandleFunction fun0, uint32_t argc, Value *argv, Value *rval)
+InvokeFunction(JSContext *cx, HandleObject obj0, uint32_t argc, Value *argv, Value *rval)
 {
-    RootedFunction fun(cx, fun0);
-    if (fun->isInterpreted()) {
-        if (fun->isInterpretedLazy() && !fun->getOrCreateScript(cx))
-            return false;
-
-        // Clone function at call site if needed.
-        if (fun->nonLazyScript()->shouldCloneAtCallsite) {
-            RootedScript script(cx);
-            jsbytecode *pc;
-            types::TypeScript::GetPcScript(cx, script.address(), &pc);
-            fun = CloneFunctionAtCallsite(cx, fun0, script, pc);
-            if (!fun)
+    RootedObject obj(cx, obj0);
+    if (obj->is<JSFunction>()) {
+        RootedFunction fun(cx, &obj->as<JSFunction>());
+        if (fun->isInterpreted()) {
+            if (fun->isInterpretedLazy() && !fun->getOrCreateScript(cx))
                 return false;
+
+            // Clone function at call site if needed.
+            if (fun->nonLazyScript()->shouldCloneAtCallsite) {
+                RootedScript script(cx);
+                jsbytecode *pc;
+                types::TypeScript::GetPcScript(cx, script.address(), &pc);
+                fun = CloneFunctionAtCallsite(cx, fun, script, pc);
+                if (!fun)
+                    return false;
+            }
         }
     }
 
@@ -68,12 +73,21 @@ InvokeFunction(JSContext *cx, HandleFunction fun0, uint32_t argc, Value *argv, V
     // For constructing functions, |this| is constructed at caller side and we can just call Invoke.
     // When creating this failed / is impossible at caller site, i.e. MagicValue(JS_IS_CONSTRUCTING),
     // we use InvokeConstructor that creates it at the callee side.
-    if (thisv.isMagic(JS_IS_CONSTRUCTING))
-        return InvokeConstructor(cx, ObjectValue(*fun), argc, argvWithoutThis, rval);
-
     RootedValue rv(cx);
-    if (!Invoke(cx, thisv, ObjectValue(*fun), argc, argvWithoutThis, &rv))
-        return false;
+    if (thisv.isMagic(JS_IS_CONSTRUCTING)) {
+        if (!InvokeConstructor(cx, ObjectValue(*obj), argc, argvWithoutThis, rv.address()))
+            return false;
+    } else {
+        if (!Invoke(cx, thisv, ObjectValue(*obj), argc, argvWithoutThis, &rv))
+            return false;
+    }
+
+    if (obj->is<JSFunction>()) {
+        RootedScript script(cx);
+        jsbytecode *pc;
+        types::TypeScript::GetPcScript(cx, script.address(), &pc);
+        types::TypeScript::Monitor(cx, script, pc, rv.get());
+    }
 
     *rval = rv;
     return true;
@@ -101,6 +115,22 @@ CheckOverRecursed(JSContext *cx)
     // and in the interim we might just fire a few useless calls to
     // CheckOverRecursed.
     JS_CHECK_RECURSION(cx, return false);
+
+    if (cx->runtime()->interrupt)
+        return InterruptCheck(cx);
+
+    return true;
+}
+
+bool
+CheckOverRecursedWithExtra(JSContext *cx, uint32_t extra)
+{
+    // See |CheckOverRecursed| above.  This is a variant of that function which
+    // accepts an argument holding the extra stack space needed for the Baseline
+    // frame that's about to be pushed.
+    uint8_t spDummy;
+    uint8_t *checkSp = (&spDummy) - extra;
+    JS_CHECK_RECURSION_WITH_SP(cx, checkSp, return false);
 
     if (cx->runtime()->interrupt)
         return InterruptCheck(cx);
@@ -383,12 +413,14 @@ StringFromCharCode(JSContext *cx, int32_t code)
 
 bool
 SetProperty(JSContext *cx, HandleObject obj, HandlePropertyName name, HandleValue value,
-            bool strict, int jsop)
+            bool strict, jsbytecode *pc)
 {
     RootedValue v(cx, value);
     RootedId id(cx, NameToId(name));
 
-    if (jsop == JSOP_SETALIASEDVAR) {
+    JSOp op = JSOp(*pc);
+
+    if (op == JSOP_SETALIASEDVAR) {
         // Aliased var assigns ignore readonly attributes on the property, as
         // required for initializing 'const' closure variables.
         Shape *shape = obj->nativeLookup(cx, name);
@@ -398,7 +430,7 @@ SetProperty(JSContext *cx, HandleObject obj, HandlePropertyName name, HandleValu
     }
 
     if (JS_LIKELY(!obj->getOps()->setProperty)) {
-        unsigned defineHow = (jsop == JSOP_SETNAME || jsop == JSOP_SETGNAME) ? DNP_UNQUALIFIED : 0;
+        unsigned defineHow = (op == JSOP_SETNAME || op == JSOP_SETGNAME) ? DNP_UNQUALIFIED : 0;
         return baseops::SetPropertyHelper(cx, obj, obj, id, defineHow, &v, strict);
     }
 
@@ -409,6 +441,16 @@ bool
 InterruptCheck(JSContext *cx)
 {
     gc::MaybeVerifyBarriers(cx);
+
+    // Fix loop backedges so that they do not invoke the interrupt again.
+    // No lock is held here and it's possible we could segv in the middle here
+    // and end up with a state where some fraction of the backedges point to
+    // the interrupt handler and some don't. This is ok since the interrupt
+    // is definitely about to be handled; if there are still backedges
+    // afterwards which point to the interrupt handler, the next time they are
+    // taken the backedges will just be reset again.
+    cx->runtime()->ionRuntime()->patchIonBackedges(cx->runtime(),
+                                                   IonRuntime::BackedgeLoopHeader);
 
     return !!js_HandleExecutionInterrupt(cx);
 }
@@ -432,7 +474,17 @@ JSObject *
 NewCallObject(JSContext *cx, HandleScript script,
               HandleShape shape, HandleTypeObject type, HeapSlot *slots)
 {
-    return CallObject::create(cx, script, shape, type, slots);
+    JSObject *obj = CallObject::create(cx, script, shape, type, slots);
+
+#ifdef JSGC_GENERATIONAL
+    // The JIT creates call objects in the nursery, so elides barriers for
+    // the initializing writes. The interpreter, however, may have allocated
+    // the call object tenured, so barrier as needed before re-entering.
+    if (!IsInsideNursery(cx->runtime(), obj))
+        cx->runtime()->gcStoreBuffer.putWholeCell(obj);
+#endif
+
+    return obj;
 }
 
 JSObject *
@@ -500,7 +552,7 @@ CreateThis(JSContext *cx, HandleObject callee, MutableHandleValue rval)
 
     if (callee->is<JSFunction>()) {
         JSFunction *fun = &callee->as<JSFunction>();
-        if (fun->isInterpreted()) {
+        if (fun->isInterpretedConstructor()) {
             JSScript *script = fun->getOrCreateScript(cx);
             if (!script || !script->ensureHasTypes(cx))
                 return false;

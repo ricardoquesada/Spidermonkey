@@ -9,11 +9,8 @@
 #ifndef jsalloc_h
 #define jsalloc_h
 
-#include "mozilla/AllocPolicy.h"
-
+#include "js/TypeDecls.h"
 #include "js/Utility.h"
-
-struct JSContext;
 
 namespace js {
 

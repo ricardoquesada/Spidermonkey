@@ -6,15 +6,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jscntxt.h"
-#include "jsdbgapi.h"
 
+#include "js/OldDebugAPI.h"
 #include "jsapi-tests/tests.h"
 
 static int callCount[2] = {0, 0};
 
 static void *
-callCountHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing, JSBool before,
-              JSBool *ok, void *closure)
+callCountHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing, bool before,
+              bool *ok, void *closure)
 {
     callCount[before]++;
 
@@ -26,7 +26,7 @@ callCountHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing, JSBo
 
 BEGIN_TEST(testDebugger_bug519719)
 {
-    CHECK(JS_SetDebugMode(cx, JS_TRUE));
+    CHECK(JS_SetDebugMode(cx, true));
     JS_SetCallHook(rt, callCountHook, NULL);
     EXEC("function call(fn) { fn(0); }\n"
          "function f(g) { for (var i = 0; i < 9; i++) call(g); }\n"
@@ -39,8 +39,8 @@ BEGIN_TEST(testDebugger_bug519719)
 END_TEST(testDebugger_bug519719)
 
 static void *
-nonStrictThisHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing, JSBool before,
-                  JSBool *ok, void *closure)
+nonStrictThisHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing, bool before,
+                  bool *ok, void *closure)
 {
     if (before) {
         bool *allWrapped = (bool *) closure;
@@ -54,7 +54,7 @@ nonStrictThisHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing, 
 BEGIN_TEST(testDebugger_getThisNonStrict)
 {
     bool allWrapped = true;
-    CHECK(JS_SetDebugMode(cx, JS_TRUE));
+    CHECK(JS_SetDebugMode(cx, true));
     JS_SetCallHook(rt, nonStrictThisHook, (void *) &allWrapped);
     EXEC("function nonstrict() { }\n"
          "Boolean.prototype.nonstrict = nonstrict;\n"
@@ -78,8 +78,8 @@ BEGIN_TEST(testDebugger_getThisNonStrict)
 END_TEST(testDebugger_getThisNonStrict)
 
 static void *
-strictThisHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing, JSBool before,
-               JSBool *ok, void *closure)
+strictThisHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing, bool before,
+               bool *ok, void *closure)
 {
     if (before) {
         bool *anyWrapped = (bool *) closure;
@@ -93,7 +93,7 @@ strictThisHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing, JSB
 BEGIN_TEST(testDebugger_getThisStrict)
 {
     bool anyWrapped = false;
-    CHECK(JS_SetDebugMode(cx, JS_TRUE));
+    CHECK(JS_SetDebugMode(cx, true));
     JS_SetCallHook(rt, strictThisHook, (void *) &anyWrapped);
     EXEC("function strict() { 'use strict'; }\n"
          "Boolean.prototype.strict = strict;\n"
@@ -251,7 +251,7 @@ BEGIN_TEST(testDebugger_singleStepThrow)
         return true;
     }
 
-    static JSBool
+    static bool
     setStepMode(JSContext *cx, unsigned argc, jsval *vp)
     {
         JSScript *script;

@@ -8,7 +8,6 @@ MODULE = 'xpconnect'
 
 EXPORTS += [
     'BackstagePass.h',
-    'GeneratedEvents.h',
     'XPCJSMemoryReporter.h',
     'nsCxPusher.h',
     'qsObjectHelper.h',
@@ -35,7 +34,6 @@ CPP_SOURCES += [
     'XPCModule.cpp',
     'XPCQuickStubs.cpp',
     'XPCRuntimeService.cpp',
-    'XPCStack.cpp',
     'XPCString.cpp',
     'XPCThrower.cpp',
     'XPCVariant.cpp',
@@ -51,5 +49,14 @@ CPP_SOURCES += [
     'nsCxPusher.cpp',
     'nsScriptError.cpp',
     'nsXPConnect.cpp',
+    'Sandbox.cpp',
 ]
+
+FAIL_ON_WARNINGS = True
+
+LIBXUL_LIBRARY = True
+
+MSVC_ENABLE_PGO = True
+
+LIBRARY_NAME = 'xpconnect_s'
 

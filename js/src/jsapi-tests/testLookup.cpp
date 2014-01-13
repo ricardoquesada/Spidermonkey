@@ -37,7 +37,7 @@ BEGIN_TEST(testLookup_bug522590)
 }
 END_TEST(testLookup_bug522590)
 
-static JSClass DocumentAllClass = {
+static const JSClass DocumentAllClass = {
     "DocumentAll",
     JSCLASS_EMULATES_UNDEFINED,
     JS_PropertyStub,
@@ -49,7 +49,7 @@ static JSClass DocumentAllClass = {
     JS_ConvertStub
 };
 
-JSBool
+bool
 document_resolve(JSContext *cx, JS::HandleObject obj, JS::HandleId id, unsigned flags,
                  JS::MutableHandleObject objp)
 {
@@ -67,7 +67,7 @@ document_resolve(JSContext *cx, JS::HandleObject obj, JS::HandleId id, unsigned 
             if (!docAll)
                 return false;
             JS::Rooted<JS::Value> allValue(cx, ObjectValue(*docAll));
-            JSBool ok = JS_DefinePropertyById(cx, obj, id, allValue, NULL, NULL, 0);
+            bool ok = JS_DefinePropertyById(cx, obj, id, allValue, NULL, NULL, 0);
             objp.set(ok ? obj.get() : NULL);
             return ok;
         }
@@ -76,7 +76,7 @@ document_resolve(JSContext *cx, JS::HandleObject obj, JS::HandleId id, unsigned 
     return true;
 }
 
-static JSClass document_class = {
+static const JSClass document_class = {
     "document", JSCLASS_NEW_RESOLVE,
     JS_PropertyStub, JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
     JS_EnumerateStub, (JSResolveOp) document_resolve, JS_ConvertStub

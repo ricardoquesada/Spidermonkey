@@ -11,23 +11,16 @@
 
 #include "mozilla/DebugOnly.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Util.h"
 
-#include "jsalloc.h"
-#include "jsclass.h"
 #include "jslock.h"
-#include "jspubtd.h"
-#include "jsscript.h"
-#include "jstypes.h"
+#include "jsobj.h"
 
-#include "gc/Heap.h"
 #include "js/GCAPI.h"
-#include "js/HashTable.h"
+#include "js/Tracer.h"
 #include "js/Vector.h"
 
 class JSAtom;
 struct JSCompartment;
-class JSFunction;
 class JSFlatString;
 class JSLinearString;
 
@@ -40,12 +33,15 @@ class BaseShape;
 class DebugScopeObject;
 class GCHelperThread;
 class GlobalObject;
+class LazyScript;
 class Nursery;
 class PropertyName;
 class ScopeObject;
 class Shape;
 class UnownedBaseShape;
 struct SliceBudget;
+
+unsigned GetCPUCount();
 
 enum HeapState {
     Idle,             // doing nothing with the GC heap
@@ -130,26 +126,26 @@ MapAllocToTraceKind(AllocKind kind)
 }
 
 template <typename T> struct MapTypeToTraceKind {};
-template <> struct MapTypeToTraceKind<JSObject>         { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
-template <> struct MapTypeToTraceKind<JSFunction>       { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
-template <> struct MapTypeToTraceKind<ArgumentsObject>  { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
-template <> struct MapTypeToTraceKind<ArrayBufferObject>{ const static JSGCTraceKind kind = JSTRACE_OBJECT; };
-template <> struct MapTypeToTraceKind<ArrayBufferViewObject>{ const static JSGCTraceKind kind = JSTRACE_OBJECT; };
-template <> struct MapTypeToTraceKind<DebugScopeObject> { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
-template <> struct MapTypeToTraceKind<GlobalObject>     { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
-template <> struct MapTypeToTraceKind<ScopeObject>      { const static JSGCTraceKind kind = JSTRACE_OBJECT; };
-template <> struct MapTypeToTraceKind<JSScript>         { const static JSGCTraceKind kind = JSTRACE_SCRIPT; };
-template <> struct MapTypeToTraceKind<LazyScript>       { const static JSGCTraceKind kind = JSTRACE_LAZY_SCRIPT; };
-template <> struct MapTypeToTraceKind<Shape>            { const static JSGCTraceKind kind = JSTRACE_SHAPE; };
-template <> struct MapTypeToTraceKind<BaseShape>        { const static JSGCTraceKind kind = JSTRACE_BASE_SHAPE; };
-template <> struct MapTypeToTraceKind<UnownedBaseShape> { const static JSGCTraceKind kind = JSTRACE_BASE_SHAPE; };
-template <> struct MapTypeToTraceKind<types::TypeObject>{ const static JSGCTraceKind kind = JSTRACE_TYPE_OBJECT; };
-template <> struct MapTypeToTraceKind<JSAtom>           { const static JSGCTraceKind kind = JSTRACE_STRING; };
-template <> struct MapTypeToTraceKind<JSString>         { const static JSGCTraceKind kind = JSTRACE_STRING; };
-template <> struct MapTypeToTraceKind<JSFlatString>     { const static JSGCTraceKind kind = JSTRACE_STRING; };
-template <> struct MapTypeToTraceKind<JSLinearString>   { const static JSGCTraceKind kind = JSTRACE_STRING; };
-template <> struct MapTypeToTraceKind<PropertyName>     { const static JSGCTraceKind kind = JSTRACE_STRING; };
-template <> struct MapTypeToTraceKind<jit::IonCode>     { const static JSGCTraceKind kind = JSTRACE_IONCODE; };
+template <> struct MapTypeToTraceKind<JSObject>         { static const JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<JSFunction>       { static const JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<ArgumentsObject>  { static const JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<ArrayBufferObject>{ static const JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<ArrayBufferViewObject>{ static const JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<DebugScopeObject> { static const JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<GlobalObject>     { static const JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<ScopeObject>      { static const JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<JSScript>         { static const JSGCTraceKind kind = JSTRACE_SCRIPT; };
+template <> struct MapTypeToTraceKind<LazyScript>       { static const JSGCTraceKind kind = JSTRACE_LAZY_SCRIPT; };
+template <> struct MapTypeToTraceKind<Shape>            { static const JSGCTraceKind kind = JSTRACE_SHAPE; };
+template <> struct MapTypeToTraceKind<BaseShape>        { static const JSGCTraceKind kind = JSTRACE_BASE_SHAPE; };
+template <> struct MapTypeToTraceKind<UnownedBaseShape> { static const JSGCTraceKind kind = JSTRACE_BASE_SHAPE; };
+template <> struct MapTypeToTraceKind<types::TypeObject>{ static const JSGCTraceKind kind = JSTRACE_TYPE_OBJECT; };
+template <> struct MapTypeToTraceKind<JSAtom>           { static const JSGCTraceKind kind = JSTRACE_STRING; };
+template <> struct MapTypeToTraceKind<JSString>         { static const JSGCTraceKind kind = JSTRACE_STRING; };
+template <> struct MapTypeToTraceKind<JSFlatString>     { static const JSGCTraceKind kind = JSTRACE_STRING; };
+template <> struct MapTypeToTraceKind<JSLinearString>   { static const JSGCTraceKind kind = JSTRACE_STRING; };
+template <> struct MapTypeToTraceKind<PropertyName>     { static const JSGCTraceKind kind = JSTRACE_STRING; };
+template <> struct MapTypeToTraceKind<jit::IonCode>     { static const JSGCTraceKind kind = JSTRACE_IONCODE; };
 
 #if defined(JSGC_GENERATIONAL) || defined(DEBUG)
 static inline bool
@@ -216,7 +212,7 @@ IsBackgroundFinalized(AllocKind kind)
 }
 
 static inline bool
-CanBeFinalizedInBackground(gc::AllocKind kind, Class *clasp)
+CanBeFinalizedInBackground(gc::AllocKind kind, const Class *clasp)
 {
     JS_ASSERT(kind <= gc::FINALIZE_OBJECT_LAST);
     /* If the class has no finalizer or a finalizer that is safe to call on
@@ -322,7 +318,7 @@ GetGCKindSlots(AllocKind thingKind)
 }
 
 static inline size_t
-GetGCKindSlots(AllocKind thingKind, Class *clasp)
+GetGCKindSlots(AllocKind thingKind, const Class *clasp)
 {
     size_t nslots = GetGCKindSlots(thingKind);
 
@@ -412,7 +408,7 @@ class ArenaLists
     /* For each arena kind, a list of arenas remaining to be swept. */
     ArenaHeader *arenaListsToSweep[FINALIZE_LIMIT];
 
-    /* Shape areneas to be swept in the foreground. */
+    /* Shape arenas to be swept in the foreground. */
     ArenaHeader *gcShapeArenasToSweep;
 
   public:
@@ -653,30 +649,35 @@ typedef js::HashMap<void *,
                     js::DefaultHasher<void *>,
                     js::SystemAllocPolicy> RootedValueMap;
 
-extern JSBool
+extern bool
 AddValueRoot(JSContext *cx, js::Value *vp, const char *name);
 
-extern JSBool
+extern bool
 AddValueRootRT(JSRuntime *rt, js::Value *vp, const char *name);
 
-extern JSBool
+extern bool
 AddStringRoot(JSContext *cx, JSString **rp, const char *name);
 
-extern JSBool
+extern bool
 AddObjectRoot(JSContext *cx, JSObject **rp, const char *name);
 
-extern JSBool
+extern bool
+AddObjectRoot(JSRuntime *rt, JSObject **rp, const char *name);
+
+extern bool
 AddScriptRoot(JSContext *cx, JSScript **rp, const char *name);
 
 } /* namespace js */
 
-extern JSBool
+extern bool
 js_InitGC(JSRuntime *rt, uint32_t maxbytes);
 
 extern void
 js_FinishGC(JSRuntime *rt);
 
 namespace js {
+
+class StackFrame;
 
 extern void
 MarkCompartmentActive(js::StackFrame *fp);
@@ -1336,6 +1337,13 @@ SetFullCompartmentChecks(JSContext *cx, bool enabled);
 void
 FinishBackgroundFinalize(JSRuntime *rt);
 
+/*
+ * Merge all contents of source into target. This can only be used if source is
+ * the only compartment in its zone.
+ */
+void
+MergeCompartments(JSCompartment *source, JSCompartment *target);
+
 const int ZealPokeValue = 1;
 const int ZealAllocValue = 2;
 const int ZealFrameGCValue = 3;
@@ -1350,8 +1358,7 @@ const int ZealIncrementalMarkAllThenFinish = 9;
 const int ZealIncrementalMultipleSlices = 10;
 const int ZealVerifierPostValue = 11;
 const int ZealFrameVerifierPostValue = 12;
-const int ZealPurgeAnalysisValue = 13;
-const int ZealLimit = 13;
+const int ZealLimit = 12;
 
 enum VerifierType {
     PreBarrierVerifier,
@@ -1392,7 +1399,7 @@ class AutoSuppressGC
     int32_t &suppressGC_;
 
   public:
-    AutoSuppressGC(JSContext *cx);
+    AutoSuppressGC(ExclusiveContext *cx);
     AutoSuppressGC(JSCompartment *comp);
 
     ~AutoSuppressGC()

@@ -8,14 +8,14 @@
 #define jswatchpoint_h
 
 #include "jsalloc.h"
-#include "jsapi.h"
-#include "jsfriendapi.h"
-#include "jsprvtd.h"
 
 #include "gc/Barrier.h"
 #include "js/HashTable.h"
+#include "js/OldDebugAPI.h"
 
 namespace js {
+
+struct WeakMapTracer;
 
 struct WatchKey {
     WatchKey() {}
@@ -36,12 +36,18 @@ struct Watchpoint {
 };
 
 template <>
-struct DefaultHasher<WatchKey> {
+struct DefaultHasher<WatchKey>
+{
     typedef WatchKey Lookup;
     static inline js::HashNumber hash(const Lookup &key);
 
     static bool match(const WatchKey &k, const Lookup &l) {
         return k.object == l.object && k.id.get() == l.id.get();
+    }
+
+    static void rekey(WatchKey &k, const WatchKey& newKey) {
+        k.object.unsafeSet(newKey.object);
+        k.id.unsafeSet(newKey.id);
     }
 };
 

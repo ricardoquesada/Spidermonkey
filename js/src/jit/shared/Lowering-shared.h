@@ -86,6 +86,7 @@ class LIRGeneratorShared : public MInstructionVisitorWithDefaults
     inline LAllocation useKeepaliveOrConstant(MDefinition *mir);
     inline LAllocation useRegisterOrConstant(MDefinition *mir);
     inline LAllocation useRegisterOrConstantAtStart(MDefinition *mir);
+    inline LAllocation useRegisterOrNonNegativeConstantAtStart(MDefinition *mir);
     inline LAllocation useRegisterOrNonDoubleConstant(MDefinition *mir);
 
 #ifdef JS_NUNBOX32
@@ -179,6 +180,11 @@ class LIRGeneratorShared : public MInstructionVisitorWithDefaults
     // Whether to generate typed array accesses on statically known objects.
     static bool allowStaticTypedArrayAccesses() {
         return false;
+    }
+
+     // Whether we can emit Float32 specific optimizations.
+    static bool allowFloat32Optimizations() {
+       return false;
     }
 };
 

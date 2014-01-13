@@ -28,10 +28,18 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
     ValueOperand ToOutValue(LInstruction *ins);
     ValueOperand ToTempValue(LInstruction *ins, size_t pos);
 
-    void loadViewTypeElement(ArrayBufferView::ViewType vt, const Address &srcAddr,
+    template<typename T>
+    bool loadViewTypeElement(ArrayBufferView::ViewType vt, const T &srcAddr,
                              const LDefinition *out);
-    void storeViewTypeElement(ArrayBufferView::ViewType vt, const LAllocation *value,
-                              const Address &dstAddr);
+    template<typename T>
+    void loadNonFloat32ViewTypeElement(ArrayBufferView::ViewType vt, const T &srcAddr,
+                                       const LDefinition *out);
+    template<typename T>
+    bool storeViewTypeElement(ArrayBufferView::ViewType vt, const LAllocation *value,
+                              const T &dstAddr);
+    template<typename T>
+    void storeNonFloat32ViewTypeElement(ArrayBufferView::ViewType vt, const LAllocation *value,
+                                        const T &dstAddr);
     void storeElementTyped(const LAllocation *value, MIRType valueType, MIRType elementType,
                            const Register &elements, const LAllocation *index);
 
@@ -40,7 +48,7 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
 
   public:
     bool visitBox(LBox *box);
-    bool visitBoxDouble(LBoxDouble *box);
+    bool visitBoxFloatingPoint(LBoxFloatingPoint *box);
     bool visitUnbox(LUnbox *unbox);
     bool visitValue(LValue *value);
     bool visitOsrValue(LOsrValue *value);

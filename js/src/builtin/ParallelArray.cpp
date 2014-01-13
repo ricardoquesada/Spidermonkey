@@ -44,7 +44,7 @@ const JSFunctionSpec ParallelArrayObject::methods[] = {
     JS_FS_END
 };
 
-Class ParallelArrayObject::protoClass = {
+const Class ParallelArrayObject::protoClass = {
     "ParallelArray",
     JSCLASS_HAS_CACHED_PROTO(JSProto_ParallelArray),
     JS_PropertyStub,         // addProperty
@@ -56,7 +56,7 @@ Class ParallelArrayObject::protoClass = {
     JS_ConvertStub
 };
 
-Class ParallelArrayObject::class_ = {
+const Class ParallelArrayObject::class_ = {
     "ParallelArray",
     JSCLASS_HAS_CACHED_PROTO(JSProto_ParallelArray),
     JS_PropertyStub,         // addProperty
@@ -86,7 +86,7 @@ ParallelArrayObject::initProps(JSContext *cx, HandleObject obj)
     return true;
 }
 
-/*static*/ JSBool
+/*static*/ bool
 ParallelArrayObject::construct(JSContext *cx, unsigned argc, Value *vp)
 {
     RootedFunction ctor(cx, getConstructor(cx, argc));
@@ -123,7 +123,7 @@ ParallelArrayObject::newInstance(JSContext *cx, NewObjectKind newKind /* = Gener
     return result;
 }
 
-/*static*/ JSBool
+/*static*/ bool
 ParallelArrayObject::constructHelper(JSContext *cx, MutableHandleFunction ctor, CallArgs &args0)
 {
     RootedObject result(cx, newInstance(cx, TenuredObject));

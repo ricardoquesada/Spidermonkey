@@ -5,6 +5,10 @@
 #ifndef __NSTARRAYHELPERS_H__
 #define __NSTARRAYHELPERS_H__
 
+#include "jsapi.h"
+#include "nsContentUtils.h"
+#include "nsTArray.h"
+
 template <class T>
 inline nsresult
 nsTArrayToJSArray(JSContext* aCx, const nsTArray<T>& aSourceArray,
@@ -32,7 +36,7 @@ nsTArrayToJSArray(JSContext* aCx, const nsTArray<T>& aSourceArray,
                                     nullptr, true);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    if (!JS_SetElement(aCx, arrayObj, index, wrappedVal.address())) {
+    if (!JS_SetElement(aCx, arrayObj, index, &wrappedVal)) {
       NS_WARNING("JS_SetElement failed!");
       return NS_ERROR_FAILURE;
     }
@@ -73,7 +77,7 @@ nsTArrayToJSArray<nsString>(JSContext* aCx,
 
     JS::Rooted<JS::Value> wrappedVal(aCx, STRING_TO_JSVAL(s));
 
-    if (!JS_SetElement(aCx, arrayObj, index, wrappedVal.address())) {
+    if (!JS_SetElement(aCx, arrayObj, index, &wrappedVal)) {
       NS_WARNING("JS_SetElement failed!");
       return NS_ERROR_FAILURE;
     }

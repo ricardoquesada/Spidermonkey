@@ -12,22 +12,15 @@
 #include "mozilla/Util.h"
 
 #include "jsapi.h"
-#include "jsdbgapi.h"
 #include "jsfriendapi.h"
 #include "jsprf.h"
+#include "js/OldDebugAPI.h"
 #include "nsXULAppAPI.h"
 #include "nsServiceManagerUtils.h"
 #include "nsComponentManagerUtils.h"
-#include "nsStringAPI.h"
 #include "nsIXPConnect.h"
-#include "nsIXPCScriptable.h"
-#include "nsIInterfaceInfo.h"
-#include "nsIInterfaceInfoManager.h"
 #include "nsIJSNativeInitializer.h"
-#include "nsIXPCScriptable.h"
 #include "nsIServiceManager.h"
-#include "nsIComponentManager.h"
-#include "nsIComponentRegistrar.h"
 #include "nsIFile.h"
 #include "nsStringAPI.h"
 #include "nsIDirectoryService.h"
@@ -37,15 +30,11 @@
 #include "nsArrayEnumerator.h"
 #include "nsCOMArray.h"
 #include "nsDirectoryServiceUtils.h"
-#include "nsMemory.h"
-#include "nsISupportsImpl.h"
 #include "nsIJSRuntimeService.h"
 #include "nsCOMPtr.h"
 #include "nsAutoPtr.h"
-#include "nsIXPCSecurityManager.h"
 #include "nsJSPrincipals.h"
 #include "xpcpublic.h"
-#include "nsXULAppAPI.h"
 #include "BackstagePass.h"
 #include "nsCxPusher.h"
 #ifdef XP_MACOSX
@@ -140,14 +129,14 @@ FILE *gInFile = NULL;
 
 int gExitCode = 0;
 bool gIgnoreReportedErrors = false;
-JSBool gQuitting = false;
-static JSBool reportWarnings = true;
-static JSBool compileOnly = false;
+bool gQuitting = false;
+static bool reportWarnings = true;
+static bool compileOnly = false;
 
 JSPrincipals *gJSPrincipals = nullptr;
 nsAutoString *gWorkingDirectory = nullptr;
 
-static JSBool
+static bool
 GetLocationProperty(JSContext *cx, HandleObject obj, HandleId id, MutableHandleValue vp)
 {
 #if !defined(XP_WIN) && !defined(XP_UNIX)
@@ -236,7 +225,7 @@ extern JS_EXPORT_API(void)     add_history(char *line);
 }
 #endif
 
-static JSBool
+static bool
 GetLine(JSContext *cx, char *bufp, FILE *file, const char *prompt) {
 #ifdef EDITLINE
     /*
@@ -267,7 +256,7 @@ GetLine(JSContext *cx, char *bufp, FILE *file, const char *prompt) {
     return true;
 }
 
-static JSBool
+static bool
 ReadLine(JSContext *cx, unsigned argc, jsval *vp)
 {
     // While 4096 might be quite arbitrary, this is something to be fixed in
@@ -309,7 +298,7 @@ ReadLine(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 Print(JSContext *cx, unsigned argc, jsval *vp)
 {
     unsigned i, n;
@@ -333,7 +322,7 @@ Print(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 Dump(JSContext *cx, unsigned argc, jsval *vp)
 {
     JS_SET_RVAL(cx, vp, JSVAL_VOID);
@@ -358,7 +347,7 @@ Dump(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 Load(JSContext *cx, unsigned argc, jsval *vp)
 {
     JS::Rooted<JSObject*> obj(cx, JS_THIS_OBJECT(cx, vp));
@@ -398,7 +387,7 @@ Load(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 Version(JSContext *cx, unsigned argc, jsval *vp)
 {
     JSVersion origVersion = JS_GetVersion(cx);
@@ -409,7 +398,7 @@ Version(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 BuildDate(JSContext *cx, unsigned argc, jsval *vp)
 {
     fprintf(gOutFile, "built on %s at %s\n", __DATE__, __TIME__);
@@ -417,7 +406,7 @@ BuildDate(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 Quit(JSContext *cx, unsigned argc, jsval *vp)
 {
     gExitCode = 0;
@@ -431,7 +420,7 @@ Quit(JSContext *cx, unsigned argc, jsval *vp)
 // Provide script a way to disable the xpcshell error reporter, preventing
 // reported errors from being logged to the console and also from affecting the
 // exit code returned by the xpcshell binary.
-static JSBool
+static bool
 IgnoreReportedErrors(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -443,7 +432,7 @@ IgnoreReportedErrors(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 DumpXPC(JSContext *cx, unsigned argc, jsval *vp)
 {
     int32_t depth = 2;
@@ -460,7 +449,7 @@ DumpXPC(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 GC(JSContext *cx, unsigned argc, jsval *vp)
 {
     JSRuntime *rt = JS_GetRuntime(cx);
@@ -473,7 +462,7 @@ GC(JSContext *cx, unsigned argc, jsval *vp)
 }
 
 #ifdef JS_GC_ZEAL
-static JSBool
+static bool
 GCZeal(JSContext *cx, unsigned argc, jsval *vp)
 {
     uint32_t zeal;
@@ -488,7 +477,7 @@ GCZeal(JSContext *cx, unsigned argc, jsval *vp)
 
 #ifdef DEBUG
 
-static JSBool
+static bool
 DumpHeap(JSContext *cx, unsigned argc, jsval *vp)
 {
     void* startThing = NULL;
@@ -497,7 +486,7 @@ DumpHeap(JSContext *cx, unsigned argc, jsval *vp)
     size_t maxDepth = (size_t)-1;
     void *thingToIgnore = NULL;
     FILE *dumpFile;
-    JSBool ok;
+    bool ok;
 
     jsval *argv = JS_ARGV(cx, vp);
     JS_SET_RVAL(cx, vp, JSVAL_VOID);
@@ -574,7 +563,7 @@ DumpHeap(JSContext *cx, unsigned argc, jsval *vp)
 
 #endif /* DEBUG */
 
-static JSBool
+static bool
 SendCommand(JSContext* cx,
             unsigned argc,
             jsval* vp)
@@ -648,13 +637,13 @@ MapContextOptionNameToFlag(JSContext* cx, const char* name)
     return 0;
 }
 
-static JSBool
+static bool
 Options(JSContext *cx, unsigned argc, jsval *vp)
 {
     uint32_t optset, flag;
     JSString *str;
     char *names;
-    JSBool found;
+    bool found;
 
     optset = 0;
     jsval *argv = JS_ARGV(cx, vp);
@@ -698,7 +687,7 @@ Options(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 Parent(JSContext *cx, unsigned argc, jsval *vp)
 {
     if (argc != 1) {
@@ -716,7 +705,7 @@ Parent(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 Atob(JSContext *cx, unsigned argc, jsval *vp)
 {
     if (!argc)
@@ -725,7 +714,7 @@ Atob(JSContext *cx, unsigned argc, jsval *vp)
     return xpc::Base64Decode(cx, JS_ARGV(cx, vp)[0], &JS_RVAL(cx, vp));
 }
 
-static JSBool
+static bool
 Btoa(JSContext *cx, unsigned argc, jsval *vp)
 {
   if (!argc)
@@ -734,7 +723,7 @@ Btoa(JSContext *cx, unsigned argc, jsval *vp)
   return xpc::Base64Encode(cx, JS_ARGV(cx, vp)[0], &JS_RVAL(cx, vp));
 }
 
-static JSBool
+static bool
 Blob(JSContext *cx, unsigned argc, jsval *vp)
 {
   JS::CallArgs args = CallArgsFromVp(argc, vp);
@@ -747,7 +736,7 @@ Blob(JSContext *cx, unsigned argc, jsval *vp)
   }
 
   nsCOMPtr<nsIJSNativeInitializer> initializer = do_QueryInterface(native);
-  NS_ASSERTION(initializer, "what?");
+  MOZ_ASSERT(initializer);
 
   nsresult rv = initializer->Initialize(nullptr, cx, nullptr, args);
   if (NS_FAILED(rv)) {
@@ -773,7 +762,7 @@ Blob(JSContext *cx, unsigned argc, jsval *vp)
   return true;
 }
 
-static JSBool
+static bool
 File(JSContext *cx, unsigned argc, jsval *vp)
 {
   JS::CallArgs args = CallArgsFromVp(argc, vp);
@@ -786,7 +775,7 @@ File(JSContext *cx, unsigned argc, jsval *vp)
   }
 
   nsCOMPtr<nsIJSNativeInitializer> initializer = do_QueryInterface(native);
-  NS_ASSERTION(initializer, "what?");
+  MOZ_ASSERT(initializer);
 
   nsresult rv = initializer->Initialize(nullptr, cx, nullptr, args);
   if (NS_FAILED(rv)) {
@@ -814,7 +803,7 @@ File(JSContext *cx, unsigned argc, jsval *vp)
 
 Value sScriptedOperationCallback = UndefinedValue();
 
-static JSBool
+static bool
 XPCShellOperationCallback(JSContext *cx)
 {
     // If no operation callback was set by script, no-op.
@@ -834,7 +823,7 @@ XPCShellOperationCallback(JSContext *cx)
     return rv.toBoolean();
 }
 
-static JSBool
+static bool
 SetOperationCallback(JSContext *cx, unsigned argc, jsval *vp)
 {
     // Sanity-check args.
@@ -861,7 +850,7 @@ SetOperationCallback(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 SimulateActivityCallback(JSContext *cx, unsigned argc, jsval *vp)
 {
     // Sanity-check args.
@@ -903,14 +892,14 @@ static const JSFunctionSpec glob_functions[] = {
     JS_FS_END
 };
 
-JSClass global_class = {
+const JSClass global_class = {
     "global", 0,
     JS_PropertyStub,  JS_DeletePropertyStub,  JS_PropertyStub,  JS_StrictPropertyStub,
     JS_EnumerateStub, JS_ResolveStub,   JS_ConvertStub,   nullptr
 };
 
-static JSBool
-env_setProperty(JSContext *cx, HandleObject obj, HandleId id, JSBool strict, MutableHandleValue vp)
+static bool
+env_setProperty(JSContext *cx, HandleObject obj, HandleId id, bool strict, MutableHandleValue vp)
 {
 /* XXX porting may be easy, but these don't seem to supply setenv by default */
 #if !defined XP_OS2 && !defined SOLARIS
@@ -963,13 +952,13 @@ env_setProperty(JSContext *cx, HandleObject obj, HandleId id, JSBool strict, Mut
     return true;
 }
 
-static JSBool
+static bool
 env_enumerate(JSContext *cx, HandleObject obj)
 {
-    static JSBool reflected;
+    static bool reflected;
     char **evp, *name, *value;
     JSString *valstr;
-    JSBool ok;
+    bool ok;
 
     if (reflected)
         return true;
@@ -995,7 +984,7 @@ env_enumerate(JSContext *cx, HandleObject obj)
     return true;
 }
 
-static JSBool
+static bool
 env_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
             JS::MutableHandleObject objp)
 {
@@ -1025,7 +1014,7 @@ env_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
     return true;
 }
 
-static JSClass env_class = {
+static const JSClass env_class = {
     "environment", JSCLASS_HAS_PRIVATE | JSCLASS_NEW_RESOLVE,
     JS_PropertyStub,  JS_DeletePropertyStub,
     JS_PropertyStub,  env_setProperty,
@@ -1061,12 +1050,12 @@ my_GetErrorMessage(void *userRef, const char *locale, const unsigned errorNumber
 
 static void
 ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE *file,
-            JSBool forceTTY)
+            bool forceTTY)
 {
     JSScript *script;
     JS::Rooted<JS::Value> result(cx);
     int lineno, startline;
-    JSBool ok, hitEOF;
+    bool ok, hitEOF;
     char *bufp, buffer[4096];
     JSString *str;
 
@@ -1160,7 +1149,7 @@ ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE
 }
 
 static void
-Process(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, JSBool forceTTY)
+Process(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, bool forceTTY)
 {
     FILE *file;
 
@@ -1190,7 +1179,7 @@ usage(void)
     return 2;
 }
 
-extern JSClass global_class;
+extern const JSClass global_class;
 
 static void
 ProcessArgsForCompartment(JSContext *cx, char **argv, int argc)
@@ -1231,8 +1220,8 @@ ProcessArgs(JSContext *cx, JS::Handle<JSObject*> obj, char **argv, int argc, XPC
     int i;
     JS::Rooted<JSObject*> argsObj(cx);
     char *filename = NULL;
-    JSBool isInteractive = true;
-    JSBool forceTTY = false;
+    bool isInteractive = true;
+    bool forceTTY = false;
 
     rcfile = fopen(rcfilename, "r");
     if (rcfile) {
@@ -1466,10 +1455,8 @@ XPCShellErrorReporter(JSContext *cx, const char *message, JSErrorReport *rep)
 static bool
 ContextCallback(JSContext *cx, unsigned contextOp)
 {
-    if (contextOp == JSCONTEXT_NEW) {
+    if (contextOp == JSCONTEXT_NEW)
         JS_SetErrorReporter(cx, XPCShellErrorReporter);
-        JS_SetOperationCallback(cx, XPCShellOperationCallback);
-    }
     return true;
 }
 
@@ -1603,6 +1590,13 @@ main(int argc, char **argv, char **envp)
         argv += 2;
     }
 
+#ifdef MOZ_CRASHREPORTER
+    // This is needed during startup and also shutdown, so keep it out
+    // of the nested scope.
+    // Special exception: will remain usable after NS_ShutdownXPCOM
+    nsCOMPtr<nsICrashReporter> crashReporter;
+#endif
+
     {
         if (argc > 1 && !strcmp(argv[1], "--greomni")) {
             nsCOMPtr<nsIFile> greOmni;
@@ -1628,6 +1622,14 @@ main(int argc, char **argv, char **envp)
             return 1;
         }
 
+#ifdef MOZ_CRASHREPORTER
+        const char *val = getenv("MOZ_CRASHREPORTER");
+        crashReporter = do_GetService("@mozilla.org/toolkit/crash-reporter;1");
+        if (val && *val) {
+            crashReporter->SetEnabled(true);
+        }
+#endif
+
         nsCOMPtr<nsIJSRuntimeService> rtsvc = do_GetService("@mozilla.org/js/xpc/RuntimeService;1");
         // get the JSRuntime from the runtime svc
         if (!rtsvc) {
@@ -1641,6 +1643,11 @@ main(int argc, char **argv, char **envp)
         }
 
         rtsvc->RegisterContextCallback(ContextCallback);
+
+        // Override the default XPConnect operation callback. We could store the
+        // old one and restore it before shutting down, but there's not really a
+        // reason to bother.
+        JS_SetOperationCallback(rt, XPCShellOperationCallback);
 
         cx = JS_NewContext(rt, 8192);
         if (!cx) {
@@ -1657,6 +1664,11 @@ main(int argc, char **argv, char **envp)
             printf("failed to get nsXPConnect service!\n");
             return 1;
         }
+
+        // Force the SafeJSContext to be created. This is a workaround for our
+        // implicit dependency on keeping at least one JSContext alive until the
+        // end of shutdown. This can go away when we get bug 905926 landed.
+        xpc->GetSafeJSContext();
 
         nsCOMPtr<nsIPrincipal> systemprincipal;
         // Fetch the system principal and store it away in a global, to use for
@@ -1681,7 +1693,7 @@ main(int argc, char **argv, char **envp)
         }
 
         const JSSecurityCallbacks *scb = JS_GetSecurityCallbacks(rt);
-        NS_ASSERTION(scb, "We are assuming that nsScriptSecurityManager::Init() has been run");
+        MOZ_ASSERT(scb, "We are assuming that nsScriptSecurityManager::Init() has been run");
         shellSecurityCallbacks = *scb;
         JS_SetSecurityCallbacks(rt, &shellSecurityCallbacks);
 
@@ -1768,16 +1780,9 @@ main(int argc, char **argv, char **envp)
     if (!XRE_ShutdownTestShell())
         NS_ERROR("problem shutting down testshell");
 
-#ifdef MOZ_CRASHREPORTER
-    // Get the crashreporter service while XPCOM is still active.
-    // This is a special exception: it will remain usable after NS_ShutdownXPCOM().
-    nsCOMPtr<nsICrashReporter> crashReporter =
-        do_GetService("@mozilla.org/toolkit/crash-reporter;1");
-#endif
-
     // no nsCOMPtrs are allowed to be alive when you call NS_ShutdownXPCOM
     rv = NS_ShutdownXPCOM( NULL );
-    NS_ASSERTION(NS_SUCCEEDED(rv), "NS_ShutdownXPCOM failed");
+    MOZ_ASSERT(NS_SUCCEEDED(rv), "NS_ShutdownXPCOM failed");
 
 #ifdef TEST_CALL_ON_WRAPPED_JS_AFTER_SHUTDOWN
     // test of late call and release (see above)

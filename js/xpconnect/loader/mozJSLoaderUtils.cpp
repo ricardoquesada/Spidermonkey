@@ -3,15 +3,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsAutoPtr.h"
-#include "nsScriptLoader.h"
 
 #include "jsapi.h"
-#include "jsdbgapi.h"
+#include "js/OldDebugAPI.h"
 
 #include "nsJSPrincipals.h"
 
 #include "mozilla/scache/StartupCache.h"
-#include "mozilla/scache/StartupCacheUtils.h"
 
 using namespace mozilla::scache;
 

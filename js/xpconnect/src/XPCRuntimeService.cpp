@@ -4,11 +4,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "xpcprivate.h"
-
 #include "mozilla/dom/workers/Workers.h"
-#include "nsIScriptSecurityManager.h"
 #include "nsContentUtils.h"
+#include "BackstagePass.h"
+#include "nsIProgrammingLanguage.h"
+#include "nsDOMClassInfo.h"
+#include "nsIPrincipal.h"
 
 using mozilla::dom::workers::ResolveWorkerClasses;
 
@@ -50,7 +51,7 @@ BackstagePass::NewResolve(nsIXPConnectWrappedNative *wrapper,
     JS::RootedObject obj(cx, objArg);
     JS::RootedId id(cx, idArg);
 
-    JSBool resolved;
+    bool resolved;
 
     *_retval = !!JS_ResolveStandardClass(cx, obj, id, &resolved);
     if (!*_retval) {

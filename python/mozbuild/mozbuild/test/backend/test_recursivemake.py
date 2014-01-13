@@ -47,16 +47,18 @@ class TestRecursiveMakeBackend(BackendTester):
 
         p = os.path.join(env.topobjdir, 'Makefile')
 
-        lines = [l.strip() for l in open(p, 'rt').readlines()[3:]]
+        lines = [l.strip() for l in open(p, 'rt').readlines()[1:] if not l.startswith('#')]
         self.assertEqual(lines, [
             'DEPTH := .',
             'topsrcdir := %s' % env.topsrcdir,
             'srcdir := %s' % env.topsrcdir,
-            'VPATH = %s' % env.topsrcdir,
-            '',
+            'VPATH := %s' % env.topsrcdir,
+            'relativesrcdir := .',
             'include $(DEPTH)/config/autoconf.mk',
             '',
-            'include $(topsrcdir)/config/rules.mk'
+            'FOO := foo',
+            '',
+            'include $(topsrcdir)/config/recurse.mk',
         ])
 
     def test_missing_makefile_in(self):
@@ -175,6 +177,9 @@ class TestRecursiveMakeBackend(BackendTester):
                 'EXTRA_PP_JS_MODULES += bar.pp.jsm',
                 'EXTRA_PP_JS_MODULES += foo.pp.jsm',
             ],
+            'FAIL_ON_WARNINGS': [
+                'FAIL_ON_WARNINGS := 1',
+            ],
             'GTEST_CMMSRCS': [
                 'GTEST_CMMSRCS += test1.mm',
                 'GTEST_CMMSRCS += test2.mm',
@@ -201,6 +206,17 @@ class TestRecursiveMakeBackend(BackendTester):
             'LIBRARY_NAME': [
                 'LIBRARY_NAME := lib_name',
             ],
+            'LIBXUL_LIBRARY': [
+                'LIBXUL_LIBRARY := 1',
+            ],
+            'MSVC_ENABLE_PGO': [
+                'MSVC_ENABLE_PGO := 1',
+            ],
+            'OS_LIBS': [
+                'OS_LIBS += foo.so',
+                'OS_LIBS += -l123',
+                'OS_LIBS += bar.a',
+            ],
             'SDK_LIBRARY': [
                 'SDK_LIBRARY += bar.sdk',
                 'SDK_LIBRARY += foo.sdk',
@@ -217,19 +233,6 @@ class TestRecursiveMakeBackend(BackendTester):
                 'SSRCS += bar.S',
                 'SSRCS += foo.S',
             ],
-            'XPIDL_FLAGS': [
-                'XPIDL_FLAGS += -Idir1',
-                'XPIDL_FLAGS += -Idir2',
-                'XPIDL_FLAGS += -Idir3',
-            ],
-            'XPIDL_MODULE': [
-                'XPIDL_MODULE := module_name'
-            ],
-            'XPIDLSRCS': [
-                'XPIDLSRCS += bar.idl',
-                'XPIDLSRCS += biz.idl',
-                'XPIDLSRCS += foo.idl',
-            ]
         }
 
         for var, val in expected.items():
@@ -238,33 +241,16 @@ class TestRecursiveMakeBackend(BackendTester):
             self.assertEqual(found, val)
 
     def test_exports(self):
-        """Ensure EXPORTS is written out correctly."""
+        """Ensure EXPORTS is handled properly."""
         env = self._consume('exports', RecursiveMakeBackend)
 
-        backend_path = os.path.join(env.topobjdir, 'backend.mk')
-        lines = [l.strip() for l in open(backend_path, 'rt').readlines()[2:]]
-
-        self.assertEqual(lines, [
-            'MOZBUILD_DERIVED := 1',
-            'NO_MAKEFILE_RULE := 1',
-            'NO_SUBMAKEFILES_RULE := 1',
-            'EXPORTS += foo.h',
-            'EXPORTS_NAMESPACES += mozilla',
-            'EXPORTS_mozilla += mozilla1.h mozilla2.h',
-            'EXPORTS_NAMESPACES += mozilla/dom',
-            'EXPORTS_mozilla/dom += dom1.h dom2.h',
-            'EXPORTS_NAMESPACES += mozilla/gfx',
-            'EXPORTS_mozilla/gfx += gfx.h',
-            'EXPORTS_NAMESPACES += nspr/private',
-            'EXPORTS_nspr/private += pprio.h',
-        ])
-
-        # EXPORTS files should appear in the dist_include purge manifest.
-        m = PurgeManifest(path=os.path.join(env.topobjdir,
-            '_build_manifests', 'purge', 'dist_include'))
-        self.assertIn('foo.h', m.entries)
-        self.assertIn('mozilla/mozilla1.h', m.entries)
-        self.assertIn('mozilla/dom/dom2.h', m.entries)
+        # EXPORTS files should appear in the dist_include install manifest.
+        m = InstallManifest(path=os.path.join(env.topobjdir,
+            '_build_manifests', 'install', 'dist_include'))
+        self.assertEqual(len(m), 7)
+        self.assertIn('foo.h', m)
+        self.assertIn('mozilla/mozilla1.h', m)
+        self.assertIn('mozilla/dom/dom2.h', m)
 
     def test_xpcshell_manifests(self):
         """Ensure XPCSHELL_TESTS_MANIFESTS is written out correctly."""
@@ -280,6 +266,34 @@ class TestRecursiveMakeBackend(BackendTester):
         # Assignment[aa], append[cc], conditional[valid]
         expected = ('aa', 'bb', 'cc', 'dd', 'valid_val')
         self.assertEqual(xpclines, ["XPCSHELL_TESTS += %s" % val for val in expected])
+
+    def test_xpidl_generation(self):
+        """Ensure xpidl files and directories are written out."""
+        env = self._consume('xpidl', RecursiveMakeBackend)
+
+        # Purge manifests should contain entries.
+        purge_dir = os.path.join(env.topobjdir, '_build_manifests', 'purge')
+        install_dir = os.path.join(env.topobjdir, '_build_manifests',
+            'install')
+        self.assertTrue(os.path.isfile(os.path.join(purge_dir, 'xpidl')))
+        self.assertTrue(os.path.isfile(os.path.join(install_dir, 'dist_idl')))
+
+        m = PurgeManifest(path=os.path.join(purge_dir, 'xpidl'))
+        self.assertIn('.deps/my_module.pp', m.entries)
+        self.assertIn('xpt/my_module.xpt', m.entries)
+
+        m = InstallManifest(path=os.path.join(install_dir, 'dist_idl'))
+        self.assertEqual(len(m), 2)
+        self.assertIn('bar.idl', m)
+        self.assertIn('foo.idl', m)
+
+        m = InstallManifest(path=os.path.join(install_dir, 'dist_include'))
+        self.assertIn('foo.h', m)
+
+        p = os.path.join(env.topobjdir, 'config/makefiles/xpidl')
+        self.assertTrue(os.path.isdir(p))
+
+        self.assertTrue(os.path.isfile(os.path.join(p, 'Makefile')))
 
     def test_xpcshell_master_manifest(self):
         """Ensure that the master xpcshell manifest is written out correctly."""
@@ -301,7 +315,6 @@ class TestRecursiveMakeBackend(BackendTester):
 
         expected = [
             'dist_bin',
-            'dist_include',
             'dist_private',
             'dist_public',
             'dist_sdk',
@@ -376,6 +389,21 @@ class TestRecursiveMakeBackend(BackendTester):
             "IPDLDIRS := %s/bar %s/foo" % (topsrcdir, topsrcdir),
         ]
         self.assertEqual(lines, expected)
+
+    def test_local_includes(self):
+        """Test that LOCAL_INCLUDES are written to backend.mk correctly."""
+        env = self._consume('local_includes', RecursiveMakeBackend)
+
+        backend_path = os.path.join(env.topobjdir, 'backend.mk')
+        lines = [l.strip() for l in open(backend_path, 'rt').readlines()[2:]]
+
+        expected = [
+            'LOCAL_INCLUDES += -I$(topsrcdir)/bar/baz',
+            'LOCAL_INCLUDES += -I$(srcdir)/foo',
+        ]
+
+        found = [str for str in lines if str.startswith('LOCAL_INCLUDES')]
+        self.assertEqual(found, expected)
 
 if __name__ == '__main__':
     main()

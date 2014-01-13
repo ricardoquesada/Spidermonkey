@@ -8,6 +8,8 @@
 
 #include "jit/IonSpewer.h"
 
+#include "jsworkers.h"
+
 #include "jit/Ion.h"
 
 #ifndef ION_SPEW_DIR
@@ -72,34 +74,45 @@ FilterContainsLocation(HandleScript function)
 void
 jit::EnableIonDebugLogging()
 {
+    EnableChannel(IonSpew_Logs);
     ionspewer.init();
 }
 
 void
-jit::IonSpewNewFunction(MIRGraph *graph, HandleScript function)
+jit::IonSpewNewFunction(MIRGraph *graph, HandleScript func)
 {
-    if (!js_IonOptions.parallelCompilation)
-        ionspewer.beginFunction(graph, function);
+    if (!OffThreadIonCompilationEnabled(GetIonContext()->runtime)) {
+        ionspewer.beginFunction(graph, func);
+    } else {
+        if (func) {
+            IonSpew(IonSpew_Logs,
+                    "Can't log script %s:%d. (Compiled on background thread.)",
+                    func->filename(), func->lineno);
+        } else {
+            IonSpew(IonSpew_Logs,
+                    "Can't log asm.js compilation. (Compiled on background thread.)");
+        }
+    }
 }
 
 void
 jit::IonSpewPass(const char *pass)
 {
-    if (!js_IonOptions.parallelCompilation)
+    if (!OffThreadIonCompilationEnabled(GetIonContext()->runtime))
         ionspewer.spewPass(pass);
 }
 
 void
 jit::IonSpewPass(const char *pass, LinearScanAllocator *ra)
 {
-    if (!js_IonOptions.parallelCompilation)
+    if (!OffThreadIonCompilationEnabled(GetIonContext()->runtime))
         ionspewer.spewPass(pass, ra);
 }
 
 void
 jit::IonSpewEndFunction()
 {
-    if (!js_IonOptions.parallelCompilation)
+    if (!OffThreadIonCompilationEnabled(GetIonContext()->runtime))
         ionspewer.endFunction();
 }
 
@@ -246,6 +259,7 @@ jit::CheckLogging()
             "  safepoints Safepoints\n"
             "  pools      Literal Pools (ARM only for now)\n"
             "  cacheflush Instruction Cache flushes (ARM only for now)\n"
+            "  range      Range Analysis\n"
             "  logs       C1 and JSON visualization logging\n"
             "  trace      Generate calls to js::jit::Trace() for effectful instructions\n"
             "  all        Everything\n"

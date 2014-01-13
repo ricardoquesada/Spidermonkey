@@ -10,52 +10,33 @@
 #include "vm/Runtime.h"
 
 #include "jscompartment.h"
-#include "jsfriendapi.h"
-#include "jsgc.h"
-#include "jsiter.h"
 #include "jsworkers.h"
 
-#include "builtin/Object.h" // For js::obj_construct
-#include "frontend/ParseMaps.h"
-#include "jit/IonFrames.h" // For GetPcScript
-#include "vm/Interpreter.h"
+#include "jit/IonFrames.h"
 #include "vm/Probes.h"
-#include "vm/RegExpObject.h"
 
 #include "jsgcinlines.h"
-
-#include "vm/ObjectImpl-inl.h"
 
 namespace js {
 
 inline bool
-NewObjectCache::lookupProto(Class *clasp, JSObject *proto, gc::AllocKind kind, EntryIndex *pentry)
+NewObjectCache::lookupProto(const Class *clasp, JSObject *proto, gc::AllocKind kind, EntryIndex *pentry)
 {
     JS_ASSERT(!proto->is<GlobalObject>());
     return lookup(clasp, proto, kind, pentry);
 }
 
 inline bool
-NewObjectCache::lookupGlobal(Class *clasp, js::GlobalObject *global, gc::AllocKind kind, EntryIndex *pentry)
+NewObjectCache::lookupGlobal(const Class *clasp, js::GlobalObject *global, gc::AllocKind kind, EntryIndex *pentry)
 {
     return lookup(clasp, global, kind, pentry);
 }
 
 inline void
-NewObjectCache::fillGlobal(EntryIndex entry, Class *clasp, js::GlobalObject *global, gc::AllocKind kind, JSObject *obj)
+NewObjectCache::fillGlobal(EntryIndex entry, const Class *clasp, js::GlobalObject *global, gc::AllocKind kind, JSObject *obj)
 {
     //JS_ASSERT(global == obj->getGlobal());
     return fill(entry, clasp, global, kind, obj);
-}
-
-inline void
-NewObjectCache::copyCachedToObject(JSObject *dst, JSObject *src, gc::AllocKind kind)
-{
-    js_memcpy(dst, src, gc::Arena::thingSize(kind));
-#ifdef JSGC_GENERATIONAL
-    Shape::writeBarrierPost(dst->shape_, &dst->shape_);
-    types::TypeObject::writeBarrierPost(dst->type_, &dst->type_);
-#endif
 }
 
 inline JSObject *
@@ -75,17 +56,6 @@ NewObjectCache::newObjectFromHit(JSContext *cx, EntryIndex entry_, js::gc::Initi
     }
 
     return NULL;
-}
-
-inline
-ThreadDataIter::ThreadDataIter(JSRuntime *rt)
-{
-#ifdef JS_WORKER_THREADS
-    // Only allow iteration over a runtime's threads when those threads are
-    // paused, to avoid racing when reading data from the PerThreadData.
-    JS_ASSERT_IF(rt->workerThreadState, rt->workerThreadState->shouldPause);
-#endif
-    iter = rt->threadList.getFirst();
 }
 
 }  /* namespace js */

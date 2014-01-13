@@ -9,29 +9,24 @@
 #include "mozJSComponentLoader.h"
 #include "mozJSLoaderUtils.h"
 
-#include "nsIServiceManager.h"
-#include "nsIXPConnect.h"
-
 #include "nsIURI.h"
 #include "nsIIOService.h"
 #include "nsIChannel.h"
 #include "nsIInputStream.h"
 #include "nsNetCID.h"
-#include "nsDependentString.h"
-#include "nsAutoPtr.h"
 #include "nsNetUtil.h"
-#include "nsIProtocolHandler.h"
 #include "nsIFileURL.h"
 #include "nsScriptLoader.h"
+#include "nsIScriptSecurityManager.h"
 
 #include "jsapi.h"
-#include "jsdbgapi.h"
 #include "jsfriendapi.h"
+#include "js/OldDebugAPI.h"
 #include "nsJSPrincipals.h"
+#include "xpcpublic.h" // For xpc::SystemErrorReporter
 
 #include "mozilla/scache/StartupCache.h"
 #include "mozilla/scache/StartupCacheUtils.h"
-#include "mozilla/Preferences.h"
 
 using namespace mozilla::scache;
 using namespace JS;

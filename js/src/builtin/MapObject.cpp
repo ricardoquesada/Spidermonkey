@@ -19,13 +19,11 @@
 
 #include "jsobjinlines.h"
 
-#include "gc/Barrier-inl.h"
-
 using namespace js;
 
 using mozilla::DoubleIsInt32;
 using mozilla::IsNaN;
-using mozilla::Move;
+using mozilla::OldMove;
 using mozilla::MoveRef;
 
 
@@ -610,7 +608,7 @@ class OrderedHashTable
             if (!Ops::isEmpty(Ops::getKey(rp->element))) {
                 HashNumber h = prepareHash(Ops::getKey(rp->element)) >> hashShift;
                 if (rp != wp)
-                    wp->element = Move(rp->element);
+                    wp->element = OldMove(rp->element);
                 wp->chain = hashTable[h];
                 hashTable[h] = wp;
                 wp++;
@@ -657,7 +655,7 @@ class OrderedHashTable
         for (Data *p = data, *end = data + dataLength; p != end; p++) {
             if (!Ops::isEmpty(Ops::getKey(p->element))) {
                 HashNumber h = prepareHash(Ops::getKey(p->element)) >> newHashShift;
-                new (wp) Data(Move(p->element), newHashTable[h]);
+                new (wp) Data(OldMove(p->element), newHashTable[h]);
                 newHashTable[h] = wp;
                 wp++;
             }
@@ -698,14 +696,14 @@ class OrderedHashMap
         }
 
         void operator=(MoveRef<Entry> rhs) {
-            const_cast<Key &>(key) = Move(rhs->key);
-            value = Move(rhs->value);
+            const_cast<Key &>(key) = OldMove(rhs->key);
+            value = OldMove(rhs->value);
         }
 
       public:
         Entry() : key(), value() {}
         Entry(const Key &k, const Value &v) : key(k), value(v) {}
-        Entry(MoveRef<Entry> rhs) : key(Move(rhs->key)), value(Move(rhs->value)) {}
+        Entry(MoveRef<Entry> rhs) : key(OldMove(rhs->key)), value(OldMove(rhs->value)) {}
 
         const Key key;
         Value value;
@@ -852,10 +850,12 @@ HashableValue::mark(JSTracer *trc) const
 
 /*** MapIterator *********************************************************************************/
 
+namespace {
+
 class MapIteratorObject : public JSObject
 {
   public:
-    static Class class_;
+    static const Class class_;
 
     enum { TargetSlot, KindSlot, RangeSlot, SlotCount };
     static const JSFunctionSpec methods[];
@@ -864,14 +864,16 @@ class MapIteratorObject : public JSObject
     static void finalize(FreeOp *fop, JSObject *obj);
 
   private:
-    static inline bool is(const Value &v);
+    static inline bool is(HandleValue v);
     inline ValueMap::Range *range();
     inline MapObject::IteratorKind kind() const;
     static bool next_impl(JSContext *cx, CallArgs args);
-    static JSBool next(JSContext *cx, unsigned argc, Value *vp);
+    static bool next(JSContext *cx, unsigned argc, Value *vp);
 };
 
-Class MapIteratorObject::class_ = {
+} /* anonymous namespace */
+
+const Class MapIteratorObject::class_ = {
     "Map Iterator",
     JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_RESERVED_SLOTS(MapIteratorObject::SlotCount),
@@ -952,7 +954,7 @@ MapIteratorObject::finalize(FreeOp *fop, JSObject *obj)
 }
 
 bool
-MapIteratorObject::is(const Value &v)
+MapIteratorObject::is(HandleValue v)
 {
     return v.isObject() && v.toObject().hasClass(&class_);
 }
@@ -994,7 +996,7 @@ MapIteratorObject::next_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 MapIteratorObject::next(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1004,7 +1006,7 @@ MapIteratorObject::next(JSContext *cx, unsigned argc, Value *vp)
 
 /*** Map *****************************************************************************************/
 
-Class MapObject::class_ = {
+const Class MapObject::class_ = {
     "Map",
     JSCLASS_HAS_PRIVATE | JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_CACHED_PROTO(JSProto_Map),
@@ -1041,7 +1043,7 @@ const JSFunctionSpec MapObject::methods[] = {
 };
 
 static JSObject *
-InitClass(JSContext *cx, Handle<GlobalObject*> global, Class *clasp, JSProtoKey key, Native construct,
+InitClass(JSContext *cx, Handle<GlobalObject*> global, const Class *clasp, JSProtoKey key, Native construct,
           const JSPropertySpec *properties, const JSFunctionSpec *methods)
 {
     Rooted<JSObject*> proto(cx, global->createBlankPrototype(cx, clasp));
@@ -1152,7 +1154,7 @@ MapObject::finalize(FreeOp *fop, JSObject *obj)
         fop->delete_(map);
 }
 
-JSBool
+bool
 MapObject::construct(JSContext *cx, unsigned argc, Value *vp)
 {
     Rooted<JSObject*> obj(cx, NewBuiltinClassInstance(cx, &class_));
@@ -1204,7 +1206,7 @@ MapObject::construct(JSContext *cx, unsigned argc, Value *vp)
 }
 
 bool
-MapObject::is(const Value &v)
+MapObject::is(HandleValue v)
 {
     return v.isObject() && v.toObject().hasClass(&class_) && v.toObject().getPrivate();
 }
@@ -1233,7 +1235,7 @@ MapObject::size_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 MapObject::size(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1255,7 +1257,7 @@ MapObject::get_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 MapObject::get(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1273,7 +1275,7 @@ MapObject::has_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 MapObject::has(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1297,7 +1299,7 @@ MapObject::set_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 MapObject::set(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1329,7 +1331,7 @@ MapObject::delete_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 MapObject::delete_(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1354,7 +1356,7 @@ MapObject::keys_impl(JSContext *cx, CallArgs args)
     return iterator_impl(cx, args, Keys);
 }
 
-JSBool
+bool
 MapObject::keys(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1367,7 +1369,7 @@ MapObject::values_impl(JSContext *cx, CallArgs args)
     return iterator_impl(cx, args, Values);
 }
 
-JSBool
+bool
 MapObject::values(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1380,7 +1382,7 @@ MapObject::entries_impl(JSContext *cx, CallArgs args)
     return iterator_impl(cx, args, Entries);
 }
 
-JSBool
+bool
 MapObject::entries(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1399,7 +1401,7 @@ MapObject::clear_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 MapObject::clear(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1415,10 +1417,12 @@ js_InitMapClass(JSContext *cx, HandleObject obj)
 
 /*** SetIterator *********************************************************************************/
 
+namespace {
+
 class SetIteratorObject : public JSObject
 {
   public:
-    static Class class_;
+    static const Class class_;
 
     enum { TargetSlot, KindSlot, RangeSlot, SlotCount };
     static const JSFunctionSpec methods[];
@@ -1427,14 +1431,16 @@ class SetIteratorObject : public JSObject
     static void finalize(FreeOp *fop, JSObject *obj);
 
   private:
-    static inline bool is(const Value &v);
+    static inline bool is(HandleValue v);
     inline ValueSet::Range *range();
     inline SetObject::IteratorKind kind() const;
     static bool next_impl(JSContext *cx, CallArgs args);
-    static JSBool next(JSContext *cx, unsigned argc, Value *vp);
+    static bool next(JSContext *cx, unsigned argc, Value *vp);
 };
 
-Class SetIteratorObject::class_ = {
+} /* anonymous namespace */
+
+const Class SetIteratorObject::class_ = {
     "Set Iterator",
     JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_RESERVED_SLOTS(SetIteratorObject::SlotCount),
@@ -1514,7 +1520,7 @@ SetIteratorObject::finalize(FreeOp *fop, JSObject *obj)
 }
 
 bool
-SetIteratorObject::is(const Value &v)
+SetIteratorObject::is(HandleValue v)
 {
     return v.isObject() && v.toObject().is<SetIteratorObject>();
 }
@@ -1553,7 +1559,7 @@ SetIteratorObject::next_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 SetIteratorObject::next(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1563,7 +1569,7 @@ SetIteratorObject::next(JSContext *cx, unsigned argc, Value *vp)
 
 /*** Set *****************************************************************************************/
 
-Class SetObject::class_ = {
+const Class SetObject::class_ = {
     "Set",
     JSCLASS_HAS_PRIVATE | JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_CACHED_PROTO(JSProto_Set),
@@ -1637,7 +1643,7 @@ SetObject::finalize(FreeOp *fop, JSObject *obj)
         fop->delete_(set);
 }
 
-JSBool
+bool
 SetObject::construct(JSContext *cx, unsigned argc, Value *vp)
 {
     Rooted<JSObject*> obj(cx, NewBuiltinClassInstance(cx, &class_));
@@ -1675,7 +1681,7 @@ SetObject::construct(JSContext *cx, unsigned argc, Value *vp)
 }
 
 bool
-SetObject::is(const Value &v)
+SetObject::is(HandleValue v)
 {
     return v.isObject() && v.toObject().hasClass(&class_) && v.toObject().getPrivate();
 }
@@ -1699,7 +1705,7 @@ SetObject::size_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 SetObject::size(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1717,7 +1723,7 @@ SetObject::has_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 SetObject::has(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1740,7 +1746,7 @@ SetObject::add_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 SetObject::add(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1763,7 +1769,7 @@ SetObject::delete_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 SetObject::delete_(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1788,7 +1794,7 @@ SetObject::values_impl(JSContext *cx, CallArgs args)
     return iterator_impl(cx, args, Values);
 }
 
-JSBool
+bool
 SetObject::values(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1801,7 +1807,7 @@ SetObject::entries_impl(JSContext *cx, CallArgs args)
     return iterator_impl(cx, args, Entries);
 }
 
-JSBool
+bool
 SetObject::entries(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -1820,7 +1826,7 @@ SetObject::clear_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+bool
 SetObject::clear(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);

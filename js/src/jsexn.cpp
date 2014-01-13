@@ -30,7 +30,6 @@
 #include "vm/GlobalObject.h"
 #include "vm/StringBuffer.h"
 
-#include "jsfuninlines.h"
 #include "jsobjinlines.h"
 
 using namespace js;
@@ -42,7 +41,7 @@ using mozilla::PodArrayZero;
 using mozilla::PodZero;
 
 /* Forward declarations for ErrorObject::class_'s initializer. */
-static JSBool
+static bool
 Exception(JSContext *cx, unsigned argc, Value *vp);
 
 static void
@@ -51,11 +50,11 @@ exn_trace(JSTracer *trc, JSObject *obj);
 static void
 exn_finalize(FreeOp *fop, JSObject *obj);
 
-static JSBool
+static bool
 exn_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
             MutableHandleObject objp);
 
-Class ErrorObject::class_ = {
+const Class ErrorObject::class_ = {
     js_Error_str,
     JSCLASS_HAS_PRIVATE | JSCLASS_IMPLEMENTS_BARRIERS | JSCLASS_NEW_RESOLVE |
     JSCLASS_HAS_CACHED_PROTO(JSProto_Error),
@@ -382,7 +381,7 @@ exn_finalize(FreeOp *fop, JSObject *obj)
     }
 }
 
-static JSBool
+static bool
 exn_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
             MutableHandleObject objp)
 {
@@ -524,7 +523,7 @@ FilenameToString(JSContext *cx, const char *filename)
     return JS_NewStringCopyZ(cx, filename);
 }
 
-static JSBool
+static bool
 Exception(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -602,7 +601,7 @@ Exception(JSContext *cx, unsigned argc, Value *vp)
 }
 
 /* ES5 15.11.4.4 (NB: with subsequent errata). */
-static JSBool
+static bool
 exn_toString(JSContext *cx, unsigned argc, Value *vp)
 {
     JS_CHECK_RECURSION(cx, return false);
@@ -681,7 +680,7 @@ exn_toString(JSContext *cx, unsigned argc, Value *vp)
 /*
  * Return a string that may eval to something similar to the original object.
  */
-static JSBool
+static bool
 exn_toSource(JSContext *cx, unsigned argc, Value *vp)
 {
     JS_CHECK_RECURSION(cx, return false);
@@ -856,22 +855,29 @@ js_InitExceptionClasses(JSContext *cx, HandleObject obj)
 }
 
 const JSErrorFormatString*
-js_GetLocalizedErrorMessage(JSContext* cx, void *userRef, const char *locale,
+js_GetLocalizedErrorMessage(ExclusiveContext *cx, void *userRef, const char *locale,
                             const unsigned errorNumber)
 {
     const JSErrorFormatString *errorString = NULL;
 
-    if (cx->runtime()->localeCallbacks && cx->runtime()->localeCallbacks->localeGetErrorMessage) {
-        errorString = cx->runtime()->localeCallbacks
-                                   ->localeGetErrorMessage(userRef, locale, errorNumber);
+    // The locale callbacks might not be thread safe, so don't call them if
+    // we're not on the main thread. When used with XPConnect,
+    // |localeGetErrorMessage| will be NULL anyways.
+    if (cx->isJSContext() &&
+        cx->asJSContext()->runtime()->localeCallbacks &&
+        cx->asJSContext()->runtime()->localeCallbacks->localeGetErrorMessage)
+    {
+        JSLocaleCallbacks *callbacks = cx->asJSContext()->runtime()->localeCallbacks;
+        errorString = callbacks->localeGetErrorMessage(userRef, locale, errorNumber);
     }
+
     if (!errorString)
         errorString = js_GetErrorMessage(userRef, locale, errorNumber);
     return errorString;
 }
 
 JS_FRIEND_API(const jschar*)
-js::GetErrorTypeName(JSContext* cx, int16_t exnType)
+js::GetErrorTypeName(JSRuntime* rt, int16_t exnType)
 {
     /*
      * JSEXN_INTERNALERR returns null to prevent that "InternalError: "
@@ -883,7 +889,7 @@ js::GetErrorTypeName(JSContext* cx, int16_t exnType)
         return NULL;
     }
     JSProtoKey key = GetExceptionProtoKey(exnType);
-    return ClassName(key, cx)->chars();
+    return ClassName(key, rt)->chars();
 }
 
 #if defined ( DEBUG_mccabe ) && defined ( PRINTNAMES )
@@ -896,7 +902,7 @@ static const struct exnname { char *name; char *exception; } errortoexnname[] = 
 };
 #endif /* DEBUG */
 
-JSBool
+bool
 js_ErrorToException(JSContext *cx, const char *message, JSErrorReport *reportp,
                     JSErrorCallback callback, void *userRef)
 {
@@ -985,7 +991,7 @@ js_ErrorToException(JSContext *cx, const char *message, JSErrorReport *reportp,
 static bool
 IsDuckTypedErrorObject(JSContext *cx, HandleObject exnObject, const char **filename_strp)
 {
-    JSBool found;
+    bool found;
     if (!JS_HasProperty(cx, exnObject, js_message_str, &found) || !found)
         return false;
 
@@ -1004,7 +1010,7 @@ IsDuckTypedErrorObject(JSContext *cx, HandleObject exnObject, const char **filen
     return true;
 }
 
-JSBool
+bool
 js_ReportUncaughtException(JSContext *cx)
 {
     JSErrorReport *reportp, report;

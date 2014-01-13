@@ -10,6 +10,7 @@
 
 #include "mozilla/PodOperations.h"
 
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -19,8 +20,7 @@
 #include "jscntxt.h"
 #include "jsexn.h"
 #include "jsnum.h"
-#include "jsopcode.h"
-#include "jsscript.h"
+#include "jsworkers.h"
 
 #include "frontend/BytecodeCompiler.h"
 #include "js/CharacterEncoding.h"
@@ -31,6 +31,7 @@ using namespace js;
 using namespace js::frontend;
 using namespace js::unicode;
 
+using mozilla::Maybe;
 using mozilla::PodAssign;
 using mozilla::PodCopy;
 using mozilla::PodZero;
@@ -215,7 +216,7 @@ TokenStream::SourceCoords::lineIndexOf(uint32_t offset) const
     // want one before that.
     iMax = lineStartOffsets_.length() - 2;
     while (iMax > iMin) {
-        iMid = (iMin + iMax) / 2;
+        iMid = iMin + (iMax - iMin) / 2;
         if (offset >= lineStartOffsets_[iMid + 1])
             iMin = iMid + 1;    // offset is above lineStartOffsets_[iMid]
         else
@@ -332,8 +333,7 @@ TokenStream::TokenStream(ExclusiveContext *cx, const CompileOptions &options,
 
 TokenStream::~TokenStream()
 {
-    if (sourceMap)
-        js_free(sourceMap);
+    js_free(sourceMap);
 
     JS_ASSERT_IF(originPrincipals, originPrincipals->refcount);
 }
@@ -360,7 +360,6 @@ JS_ALWAYS_INLINE void
 TokenStream::updateFlagsForEOL()
 {
     flags.isDirtyLine = false;
-    flags.sawEOL = true;
 }
 
 // This gets the next char, normalizing all EOL sequences to '\n' as it goes.
@@ -566,7 +565,7 @@ TokenStream::reportStrictModeErrorNumberVA(uint32_t offset, bool strictMode, uns
 }
 
 void
-CompileError::throwError()
+CompileError::throwError(JSContext *cx)
 {
     // If there's a runtime exception type associated with this error
     // number, set that as the pending exception.  For errors occuring at
@@ -624,19 +623,22 @@ TokenStream::reportCompileErrorNumberVA(uint32_t offset, unsigned flags, unsigne
         warning = false;
     }
 
-    if (!this->cx->isJSContext())
-        return warning;
-
-    JSContext *cx = this->cx->asJSContext();
-
-    CompileError err(cx);
+    // On the main thread, report the error immediately. When compiling off
+    // thread, save the error so that the main thread can report it later.
+    CompileError tempErr;
+    CompileError &err = cx->isJSContext() ? tempErr : cx->addPendingCompileError();
 
     err.report.flags = flags;
     err.report.errorNumber = errorNumber;
     err.report.filename = filename;
     err.report.originPrincipals = originPrincipals;
-    err.report.lineno = srcCoords.lineNum(offset);
-    err.report.column = srcCoords.columnIndex(offset);
+    if (offset == NoOffset) {
+        err.report.lineno = 0;
+        err.report.column = 0;
+    } else {
+        err.report.lineno = srcCoords.lineNum(offset);
+        err.report.column = srcCoords.columnIndex(offset);
+    }
 
     err.argumentsType = (flags & JSREPORT_UC) ? ArgumentsAreUnicode : ArgumentsAreASCII;
 
@@ -654,7 +656,7 @@ TokenStream::reportCompileErrorNumberVA(uint32_t offset, unsigned flags, unsigne
     // So we don't even try, leaving report.linebuf and friends zeroed.  This
     // means that any error involving a multi-line token (e.g. an unterminated
     // multi-line string literal) won't have a context printed.
-    if (err.report.lineno == lineno) {
+    if (offset != NoOffset && err.report.lineno == lineno) {
         const jschar *tokenStart = userbuf.base() + offset;
 
         // We show only a portion (a "window") of the line around the erroneous
@@ -694,7 +696,8 @@ TokenStream::reportCompileErrorNumberVA(uint32_t offset, unsigned flags, unsigne
         err.report.uctokenptr = err.report.uclinebuf + windowOffset;
     }
 
-    err.throwError();
+    if (cx->isJSContext())
+        err.throwError(cx->asJSContext());
 
     return warning;
 }
@@ -843,8 +846,7 @@ TokenStream::getSourceMappingURL(bool isMultiline, bool shouldWarnDeprecated)
 
         size_t sourceMapLength = tokenbuf.length();
 
-        if (sourceMap)
-            js_free(sourceMap);
+        js_free(sourceMap);
         sourceMap = cx->pod_malloc<jschar>(sourceMapLength + 1);
         if (!sourceMap)
             return false;
@@ -934,10 +936,10 @@ TokenStream::checkForKeyword(const jschar *s, size_t length, TokenKind *ttp)
             return reportError(JSMSG_RESERVED_ID, kw->chars);
         }
 
-        // The keyword is not in this version. Treat it as an identifier,
-        // unless it is let or yield which we treat as TOK_STRICT_RESERVED by
-        // falling through to the code below (ES5 forbids them in strict mode).
-        if (kw->tokentype != TOK_LET && kw->tokentype != TOK_YIELD)
+        // The keyword is not in this version. Treat it as an identifier, unless
+        // it is let which we treat as TOK_STRICT_RESERVED by falling through to
+        // the code below (ES5 forbids it in strict mode).
+        if (kw->tokentype != TOK_LET)
             return true;
     }
 

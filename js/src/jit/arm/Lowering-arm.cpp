@@ -43,6 +43,18 @@ LIRGeneratorARM::useBoxFixed(LInstruction *lir, size_t n, MDefinition *mir, Regi
     return true;
 }
 
+LAllocation
+LIRGeneratorARM::useByteOpRegister(MDefinition *mir)
+{
+    return useRegister(mir);
+}
+
+LAllocation
+LIRGeneratorARM::useByteOpRegisterOrNonDoubleConstant(MDefinition *mir)
+{
+    return useRegisterOrNonDoubleConstant(mir);
+}
+
 bool
 LIRGeneratorARM::lowerConstantDouble(double d, MInstruction *mir)
 {
@@ -70,8 +82,9 @@ LIRGeneratorARM::visitBox(MBox *box)
     MDefinition *inner = box->getOperand(0);
 
     // If the box wrapped a double, it needs a new register.
-    if (inner->type() == MIRType_Double)
-        return defineBox(new LBoxDouble(useRegisterAtStart(inner), tempCopy(inner, 0)), box);
+    if (IsFloatingPointType(inner->type()))
+        return defineBox(new LBoxFloatingPoint(useRegisterAtStart(inner), tempCopy(inner, 0),
+                                               inner->type()), box);
 
     if (box->canEmitAtUses())
         return emitAtUses(box);
@@ -111,11 +124,11 @@ LIRGeneratorARM::visitUnbox(MUnbox *unbox)
     if (!ensureDefined(inner))
         return false;
 
-    if (unbox->type() == MIRType_Double) {
-        LUnboxDouble *lir = new LUnboxDouble();
+    if (IsFloatingPointType(unbox->type())) {
+        LUnboxFloatingPoint *lir = new LUnboxFloatingPoint(unbox->type());
         if (unbox->fallible() && !assignSnapshot(lir, unbox->bailoutKind()))
             return false;
-        if (!useBox(lir, LUnboxDouble::Input, inner))
+        if (!useBox(lir, LUnboxFloatingPoint::Input, inner))
             return false;
         return define(lir, unbox);
     }
@@ -387,53 +400,6 @@ LIRGeneratorARM::visitGuardObjectType(MGuardObjectType *ins)
 }
 
 bool
-LIRGeneratorARM::visitStoreTypedArrayElement(MStoreTypedArrayElement *ins)
-{
-    JS_ASSERT(ins->elements()->type() == MIRType_Elements);
-    JS_ASSERT(ins->index()->type() == MIRType_Int32);
-
-    if (ins->isFloatArray())
-        JS_ASSERT(ins->value()->type() == MIRType_Double);
-    else
-        JS_ASSERT(ins->value()->type() == MIRType_Int32);
-
-    LUse elements = useRegister(ins->elements());
-    LAllocation index = useRegisterOrConstant(ins->index());
-    LAllocation value = useRegisterOrNonDoubleConstant(ins->value());
-    return add(new LStoreTypedArrayElement(elements, index, value), ins);
-}
-
-bool
-LIRGeneratorARM::visitStoreTypedArrayElementHole(MStoreTypedArrayElementHole *ins)
-{
-    JS_ASSERT(ins->elements()->type() == MIRType_Elements);
-    JS_ASSERT(ins->index()->type() == MIRType_Int32);
-    JS_ASSERT(ins->length()->type() == MIRType_Int32);
-
-    if (ins->isFloatArray())
-        JS_ASSERT(ins->value()->type() == MIRType_Double);
-    else
-        JS_ASSERT(ins->value()->type() == MIRType_Int32);
-
-    LUse elements = useRegister(ins->elements());
-    LAllocation length = useRegisterOrConstant(ins->length());
-    LAllocation index = useRegisterOrConstant(ins->index());
-    LAllocation value = useRegisterOrNonDoubleConstant(ins->value());
-    return add(new LStoreTypedArrayElementHole(elements, length, index, value), ins);
-}
-
-bool
-LIRGeneratorARM::visitInterruptCheck(MInterruptCheck *ins)
-{
-    LInterruptCheck *lir = new LInterruptCheck();
-    if (!add(lir))
-        return false;
-    if (!assignSafepoint(lir, ins))
-        return false;
-    return true;
-}
-
-bool
 LIRGeneratorARM::lowerUrshD(MUrsh *mir)
 {
     MDefinition *lhs = mir->lhs();
@@ -513,25 +479,38 @@ LIRGeneratorARM::visitAsmJSUnsignedToDouble(MAsmJSUnsignedToDouble *ins)
 }
 
 bool
+LIRGeneratorARM::visitAsmJSLoadHeap(MAsmJSLoadHeap *ins)
+{
+    MDefinition *ptr = ins->ptr();
+    JS_ASSERT(ptr->type() == MIRType_Int32);
+    LAllocation ptrAlloc;
+
+    // For the ARM it is best to keep the 'ptr' in a register if a bounds check is needed.
+    if (ptr->isConstant() && ins->skipBoundsCheck()) {
+        int32_t ptrValue = ptr->toConstant()->value().toInt32();
+        // A bounds check is only skipped for a positive index.
+        JS_ASSERT(ptrValue >= 0);
+        ptrAlloc = LAllocation(ptr->toConstant()->vp());
+    } else
+        ptrAlloc = useRegisterAtStart(ptr);
+
+    return define(new LAsmJSLoadHeap(ptrAlloc), ins);
+}
+
+bool
 LIRGeneratorARM::visitAsmJSStoreHeap(MAsmJSStoreHeap *ins)
 {
-    LAsmJSStoreHeap *lir;
-    switch (ins->viewType()) {
-      case ArrayBufferView::TYPE_INT8: case ArrayBufferView::TYPE_UINT8:
-      case ArrayBufferView::TYPE_INT16: case ArrayBufferView::TYPE_UINT16:
-      case ArrayBufferView::TYPE_INT32: case ArrayBufferView::TYPE_UINT32:
-        lir = new LAsmJSStoreHeap(useRegisterAtStart(ins->ptr()),
-                                  useRegisterAtStart(ins->value()));
-        break;
-      case ArrayBufferView::TYPE_FLOAT32:
-      case ArrayBufferView::TYPE_FLOAT64:
-        lir = new LAsmJSStoreHeap(useRegisterAtStart(ins->ptr()),
-                                  useRegisterAtStart(ins->value()));
-        break;
-      default: MOZ_ASSUME_UNREACHABLE("unexpected array type");
-    }
+    MDefinition *ptr = ins->ptr();
+    JS_ASSERT(ptr->type() == MIRType_Int32);
+    LAllocation ptrAlloc;
 
-    return add(lir, ins);
+    if (ptr->isConstant() && ins->skipBoundsCheck()) {
+        JS_ASSERT(ptr->toConstant()->value().toInt32() >= 0);
+        ptrAlloc = LAllocation(ptr->toConstant()->vp());
+    } else
+        ptrAlloc = useRegisterAtStart(ptr);
+
+    return add(new LAsmJSStoreHeap(ptrAlloc, useRegisterAtStart(ins->value())), ins);
 }
 
 bool

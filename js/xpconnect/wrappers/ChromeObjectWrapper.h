@@ -11,9 +11,10 @@
 #include "mozilla/Attributes.h"
 
 #include "FilteringWrapper.h"
-#include "AccessCheck.h"
 
 namespace xpc {
+
+struct ExposedPropertiesOnly;
 
 // When chrome JS objects are exposed to content, they get a ChromeObjectWrapper.
 //
@@ -30,7 +31,8 @@ class ChromeObjectWrapper : public ChromeObjectWrapperBase
 
     /* Custom traps. */
     virtual bool getPropertyDescriptor(JSContext *cx, JS::Handle<JSObject*> wrapper,
-                                       JS::Handle<jsid> id, js::PropertyDescriptor *desc,
+                                       JS::Handle<jsid> id,
+                                       JS::MutableHandle<JSPropertyDescriptor> desc,
                                        unsigned flags) MOZ_OVERRIDE;
     virtual bool has(JSContext *cx, JS::Handle<JSObject*> wrapper,
                      JS::Handle<jsid> id, bool *bp) MOZ_OVERRIDE;

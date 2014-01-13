@@ -4,13 +4,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DEPTH		= @DEPTH@
-topsrcdir	= @top_srcdir@
-srcdir		= @srcdir@
-VPATH		= @srcdir@
-
-include $(DEPTH)/config/autoconf.mk
-
 # For sanity's sake, we compile nsinstall without the wrapped system
 # headers, so that we can use it to set up the wrapped system headers.
 VISIBILITY_FLAGS =
@@ -98,6 +91,7 @@ export:: $(export-preqs)
 		-DMOZ_NATIVE_JPEG=$(MOZ_NATIVE_JPEG) \
 		-DMOZ_NATIVE_LIBEVENT=$(MOZ_NATIVE_LIBEVENT) \
 		-DMOZ_NATIVE_LIBVPX=$(MOZ_NATIVE_LIBVPX) \
+		-DMOZ_NATIVE_ICU=$(MOZ_NATIVE_ICU) \
 		$(srcdir)/system-headers | $(PERL) $(topsrcdir)/nsprpub/config/make-system-wrappers.pl system_wrappers
 	$(INSTALL) system_wrappers $(DIST)
 
@@ -119,7 +113,7 @@ STL_WRAPPERS_SENTINEL = $(DIST)/stl_wrappers/sentinel
 
 $(STL_WRAPPERS_SENTINEL): $(srcdir)/make-stl-wrappers.py $(srcdir)/$(stl_compiler)-stl-wrapper.template.h $(srcdir)/stl-headers $(GLOBAL_DEPS)
 	$(PYTHON) $(srcdir)/make-stl-wrappers.py stl_wrappers $(stl_compiler) $(srcdir)/$(stl_compiler)-stl-wrapper.template.h $(srcdir)/stl-headers
-	$(PYTHON) $(srcdir)/nsinstall.py stl_wrappers $(DIST)
+	$(PYTHON) $(srcdir)/nsinstall.py -t stl_wrappers $(DIST)
 	touch $(STL_WRAPPERS_SENTINEL)
 
 export:: $(STL_WRAPPERS_SENTINEL)

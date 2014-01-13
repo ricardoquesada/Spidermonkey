@@ -11,6 +11,7 @@
 #include "jscompartment.h"
 #include "jsiter.h"
 
+#include "vm/ArgumentsObject.h"
 #include "vm/GlobalObject.h"
 #include "vm/ProxyObject.h"
 #include "vm/Shape.h"
@@ -18,8 +19,8 @@
 
 #include "jsatominlines.h"
 #include "jsobjinlines.h"
+#include "jsscriptinlines.h"
 
-#include "gc/Barrier-inl.h"
 #include "vm/Stack-inl.h"
 
 using namespace js;
@@ -164,6 +165,14 @@ js::ScopeCoordinateFunctionScript(JSContext *cx, JSScript *script, jsbytecode *p
 
 /*****************************************************************************/
 
+inline void
+ScopeObject::setEnclosingScope(HandleObject obj)
+{
+    JS_ASSERT_IF(obj->is<CallObject>() || obj->is<DeclEnvObject>() || obj->is<BlockObject>(),
+                 obj->isDelegate());
+    setFixedSlot(SCOPE_CHAIN_SLOT, ObjectValue(*obj));
+}
+
 /*
  * Construct a bare-bones call object given a shape, type, and slots pointer.
  * The call object must be further initialized to be usable.
@@ -298,7 +307,7 @@ CallObject::createForStrictEval(JSContext *cx, AbstractFramePtr frame)
     return create(cx, script, scopeChain, callee);
 }
 
-Class CallObject::class_ = {
+const Class CallObject::class_ = {
     "Call",
     JSCLASS_IS_ANONYMOUS | JSCLASS_HAS_RESERVED_SLOTS(CallObject::RESERVED_SLOTS),
     JS_PropertyStub,         /* addProperty */
@@ -310,7 +319,7 @@ Class CallObject::class_ = {
     NULL                     /* convert: Leave it NULL so we notice if calls ever escape */
 };
 
-Class DeclEnvObject::class_ = {
+const Class DeclEnvObject::class_ = {
     js_Object_str,
     JSCLASS_HAS_RESERVED_SLOTS(DeclEnvObject::RESERVED_SLOTS) |
     JSCLASS_HAS_CACHED_PROTO(JSProto_Object),
@@ -331,6 +340,8 @@ Class DeclEnvObject::class_ = {
 DeclEnvObject *
 DeclEnvObject::createTemplateObject(JSContext *cx, HandleFunction fun, gc::InitialHeap heap)
 {
+    JS_ASSERT(IsNurseryAllocable(FINALIZE_KIND));
+
     RootedTypeObject type(cx, cx->getNewType(&class_, NULL));
     if (!type)
         return NULL;
@@ -348,7 +359,7 @@ DeclEnvObject::createTemplateObject(JSContext *cx, HandleFunction fun, gc::Initi
 
     // Assign a fixed slot to a property with the same name as the lambda.
     Rooted<jsid> id(cx, AtomToId(fun->atom()));
-    Class *clasp = obj->getClass();
+    const Class *clasp = obj->getClass();
     unsigned attrs = JSPROP_ENUMERATE | JSPROP_PERMANENT | JSPROP_READONLY;
     if (!JSObject::putProperty(cx, obj, id, clasp->getProperty, clasp->setProperty,
                                lambdaSlot(), attrs, 0, 0))
@@ -400,7 +411,7 @@ WithObject::create(JSContext *cx, HandleObject proto, HandleObject enclosing, ui
     return &obj->as<WithObject>();
 }
 
-static JSBool
+static bool
 with_LookupGeneric(JSContext *cx, HandleObject obj, HandleId id,
                    MutableHandleObject objp, MutableHandleShape propp)
 {
@@ -408,7 +419,7 @@ with_LookupGeneric(JSContext *cx, HandleObject obj, HandleId id,
     return JSObject::lookupGeneric(cx, actual, id, objp, propp);
 }
 
-static JSBool
+static bool
 with_LookupProperty(JSContext *cx, HandleObject obj, HandlePropertyName name,
                     MutableHandleObject objp, MutableHandleShape propp)
 {
@@ -416,7 +427,7 @@ with_LookupProperty(JSContext *cx, HandleObject obj, HandlePropertyName name,
     return with_LookupGeneric(cx, obj, id, objp, propp);
 }
 
-static JSBool
+static bool
 with_LookupElement(JSContext *cx, HandleObject obj, uint32_t index,
                    MutableHandleObject objp, MutableHandleShape propp)
 {
@@ -426,7 +437,7 @@ with_LookupElement(JSContext *cx, HandleObject obj, uint32_t index,
     return with_LookupGeneric(cx, obj, id, objp, propp);
 }
 
-static JSBool
+static bool
 with_LookupSpecial(JSContext *cx, HandleObject obj, HandleSpecialId sid,
                    MutableHandleObject objp, MutableHandleShape propp)
 {
@@ -434,7 +445,7 @@ with_LookupSpecial(JSContext *cx, HandleObject obj, HandleSpecialId sid,
     return with_LookupGeneric(cx, obj, id, objp, propp);
 }
 
-static JSBool
+static bool
 with_GetGeneric(JSContext *cx, HandleObject obj, HandleObject receiver, HandleId id,
                 MutableHandleValue vp)
 {
@@ -442,7 +453,7 @@ with_GetGeneric(JSContext *cx, HandleObject obj, HandleObject receiver, HandleId
     return JSObject::getGeneric(cx, actual, actual, id, vp);
 }
 
-static JSBool
+static bool
 with_GetProperty(JSContext *cx, HandleObject obj, HandleObject receiver, HandlePropertyName name,
                  MutableHandleValue vp)
 {
@@ -450,7 +461,7 @@ with_GetProperty(JSContext *cx, HandleObject obj, HandleObject receiver, HandleP
     return with_GetGeneric(cx, obj, receiver, id, vp);
 }
 
-static JSBool
+static bool
 with_GetElement(JSContext *cx, HandleObject obj, HandleObject receiver, uint32_t index,
                 MutableHandleValue vp)
 {
@@ -460,7 +471,7 @@ with_GetElement(JSContext *cx, HandleObject obj, HandleObject receiver, uint32_t
     return with_GetGeneric(cx, obj, receiver, id, vp);
 }
 
-static JSBool
+static bool
 with_GetSpecial(JSContext *cx, HandleObject obj, HandleObject receiver, HandleSpecialId sid,
                 MutableHandleValue vp)
 {
@@ -468,119 +479,77 @@ with_GetSpecial(JSContext *cx, HandleObject obj, HandleObject receiver, HandleSp
     return with_GetGeneric(cx, obj, receiver, id, vp);
 }
 
-static JSBool
+static bool
 with_SetGeneric(JSContext *cx, HandleObject obj, HandleId id,
-                MutableHandleValue vp, JSBool strict)
+                MutableHandleValue vp, bool strict)
 {
     RootedObject actual(cx, &obj->as<WithObject>().object());
     return JSObject::setGeneric(cx, actual, actual, id, vp, strict);
 }
 
-static JSBool
+static bool
 with_SetProperty(JSContext *cx, HandleObject obj, HandlePropertyName name,
-                 MutableHandleValue vp, JSBool strict)
+                 MutableHandleValue vp, bool strict)
 {
     RootedObject actual(cx, &obj->as<WithObject>().object());
     return JSObject::setProperty(cx, actual, actual, name, vp, strict);
 }
 
-static JSBool
+static bool
 with_SetElement(JSContext *cx, HandleObject obj, uint32_t index,
-                MutableHandleValue vp, JSBool strict)
+                MutableHandleValue vp, bool strict)
 {
     RootedObject actual(cx, &obj->as<WithObject>().object());
     return JSObject::setElement(cx, actual, actual, index, vp, strict);
 }
 
-static JSBool
+static bool
 with_SetSpecial(JSContext *cx, HandleObject obj, HandleSpecialId sid,
-                MutableHandleValue vp, JSBool strict)
+                MutableHandleValue vp, bool strict)
 {
     RootedObject actual(cx, &obj->as<WithObject>().object());
     return JSObject::setSpecial(cx, actual, actual, sid, vp, strict);
 }
 
-static JSBool
+static bool
 with_GetGenericAttributes(JSContext *cx, HandleObject obj, HandleId id, unsigned *attrsp)
 {
     RootedObject actual(cx, &obj->as<WithObject>().object());
     return JSObject::getGenericAttributes(cx, actual, id, attrsp);
 }
 
-static JSBool
-with_GetPropertyAttributes(JSContext *cx, HandleObject obj, HandlePropertyName name, unsigned *attrsp)
-{
-    RootedObject actual(cx, &obj->as<WithObject>().object());
-    return JSObject::getPropertyAttributes(cx, actual, name, attrsp);
-}
-
-static JSBool
-with_GetElementAttributes(JSContext *cx, HandleObject obj, uint32_t index, unsigned *attrsp)
-{
-    RootedObject actual(cx, &obj->as<WithObject>().object());
-    return JSObject::getElementAttributes(cx, actual, index, attrsp);
-}
-
-static JSBool
-with_GetSpecialAttributes(JSContext *cx, HandleObject obj, HandleSpecialId sid, unsigned *attrsp)
-{
-    RootedObject actual(cx, &obj->as<WithObject>().object());
-    return JSObject::getSpecialAttributes(cx, actual, sid, attrsp);
-}
-
-static JSBool
+static bool
 with_SetGenericAttributes(JSContext *cx, HandleObject obj, HandleId id, unsigned *attrsp)
 {
     RootedObject actual(cx, &obj->as<WithObject>().object());
     return JSObject::setGenericAttributes(cx, actual, id, attrsp);
 }
 
-static JSBool
-with_SetPropertyAttributes(JSContext *cx, HandleObject obj, HandlePropertyName name, unsigned *attrsp)
-{
-    RootedObject actual(cx, &obj->as<WithObject>().object());
-    return JSObject::setPropertyAttributes(cx, actual, name, attrsp);
-}
-
-static JSBool
-with_SetElementAttributes(JSContext *cx, HandleObject obj, uint32_t index, unsigned *attrsp)
-{
-    RootedObject actual(cx, &obj->as<WithObject>().object());
-    return JSObject::setElementAttributes(cx, actual, index, attrsp);
-}
-
-static JSBool
-with_SetSpecialAttributes(JSContext *cx, HandleObject obj, HandleSpecialId sid, unsigned *attrsp)
-{
-    RootedObject actual(cx, &obj->as<WithObject>().object());
-    return JSObject::setSpecialAttributes(cx, actual, sid, attrsp);
-}
-
-static JSBool
+static bool
 with_DeleteProperty(JSContext *cx, HandleObject obj, HandlePropertyName name,
-                    JSBool *succeeded)
+                    bool *succeeded)
 {
     RootedObject actual(cx, &obj->as<WithObject>().object());
     return JSObject::deleteProperty(cx, actual, name, succeeded);
 }
 
-static JSBool
+static bool
 with_DeleteElement(JSContext *cx, HandleObject obj, uint32_t index,
-                   JSBool *succeeded)
+                   bool *succeeded)
 {
     RootedObject actual(cx, &obj->as<WithObject>().object());
     return JSObject::deleteElement(cx, actual, index, succeeded);
 }
 
-static JSBool
+static bool
 with_DeleteSpecial(JSContext *cx, HandleObject obj, HandleSpecialId sid,
-                   JSBool *succeeded)
+                   bool *succeeded)
 {
     RootedObject actual(cx, &obj->as<WithObject>().object());
     return JSObject::deleteSpecial(cx, actual, sid, succeeded);
 }
 
-static JSBool
+static bool
 with_Enumerate(JSContext *cx, HandleObject obj, JSIterateOp enum_op,
                MutableHandleValue statep, MutableHandleId idp)
 {
@@ -594,7 +563,7 @@ with_ThisObject(JSContext *cx, HandleObject obj)
     return &obj->as<WithObject>().withThis();
 }
 
-Class WithObject::class_ = {
+const Class WithObject::class_ = {
     "With",
     JSCLASS_HAS_RESERVED_SLOTS(WithObject::RESERVED_SLOTS) |
     JSCLASS_IS_ANONYMOUS,
@@ -631,13 +600,7 @@ Class WithObject::class_ = {
         with_SetElement,
         with_SetSpecial,
         with_GetGenericAttributes,
-        with_GetPropertyAttributes,
-        with_GetElementAttributes,
-        with_GetSpecialAttributes,
         with_SetGenericAttributes,
-        with_SetPropertyAttributes,
-        with_SetElementAttributes,
-        with_SetSpecialAttributes,
         with_DeleteProperty,
         with_DeleteElement,
         with_DeleteSpecial,
@@ -751,7 +714,7 @@ StaticBlockObject::addVar(ExclusiveContext *cx, Handle<StaticBlockObject*> block
                                          /* allowDictionary = */ false);
 }
 
-Class BlockObject::class_ = {
+const Class BlockObject::class_ = {
     "Block",
     JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_RESERVED_SLOTS(BlockObject::RESERVED_SLOTS) |
@@ -921,17 +884,6 @@ CallObjectLambdaName(JSFunction &fun)
     return fun.isNamedLambda() ? fun.atom() : NULL;
 }
 
-ScopeIter::ScopeIter(JSContext *cx
-                     MOZ_GUARD_OBJECT_NOTIFIER_PARAM_IN_IMPL)
-  : cx(cx),
-    frame_(NullFramePtr()),
-    cur_(cx, reinterpret_cast<JSObject *>(-1)),
-    block_(cx, reinterpret_cast<StaticBlockObject *>(-1)),
-    type_(Type(-1))
-{
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-}
-
 ScopeIter::ScopeIter(const ScopeIter &si, JSContext *cx
                      MOZ_GUARD_OBJECT_NOTIFIER_PARAM_IN_IMPL)
   : cx(cx),
@@ -949,7 +901,7 @@ ScopeIter::ScopeIter(JSObject &enclosingScope, JSContext *cx
   : cx(cx),
     frame_(NullFramePtr()),
     cur_(cx, &enclosingScope),
-    block_(cx, reinterpret_cast<StaticBlockObject *>(-1)),
+    block_(cx, NULL),
     type_(Type(-1))
 {
     MOZ_GUARD_OBJECT_NOTIFIER_INIT;
@@ -1146,6 +1098,8 @@ ScopeIterKey::match(ScopeIterKey si1, ScopeIterKey si2)
 }
 
 /*****************************************************************************/
+
+namespace {
 
 /*
  * DebugScopeProxy is the handler for DebugScopeObject proxy objects. Having a
@@ -1374,14 +1328,16 @@ class DebugScopeProxy : public BaseProxyHandler
         return false;
     }
 
-    bool getPropertyDescriptor(JSContext *cx, HandleObject proxy, HandleId id, PropertyDescriptor *desc,
+    bool getPropertyDescriptor(JSContext *cx, HandleObject proxy, HandleId id,
+                               MutableHandle<PropertyDescriptor> desc,
                                unsigned flags) MOZ_OVERRIDE
     {
         return getOwnPropertyDescriptor(cx, proxy, id, desc, flags);
     }
 
     bool getOwnPropertyDescriptor(JSContext *cx, HandleObject proxy, HandleId id,
-                                  PropertyDescriptor *desc, unsigned flags) MOZ_OVERRIDE
+                                  MutableHandle<PropertyDescriptor> desc,
+                                  unsigned flags) MOZ_OVERRIDE
     {
         Rooted<DebugScopeObject*> debugScope(cx, &proxy->as<DebugScopeObject>());
         Rooted<ScopeObject*> scope(cx, &debugScope->scope());
@@ -1391,23 +1347,27 @@ class DebugScopeProxy : public BaseProxyHandler
             return false;
 
         if (maybeArgsObj) {
-            PodZero(desc);
-            desc->obj = debugScope;
-            desc->attrs = JSPROP_READONLY | JSPROP_ENUMERATE | JSPROP_PERMANENT;
-            desc->value = ObjectValue(*maybeArgsObj);
+            desc.object().set(debugScope);
+            desc.setAttributes(JSPROP_READONLY | JSPROP_ENUMERATE | JSPROP_PERMANENT);
+            desc.value().setObject(*maybeArgsObj);
+            desc.setShortId(0);
+            desc.setGetter(NULL);
+            desc.setSetter(NULL);
             return true;
         }
 
         RootedValue v(cx);
         if (handleUnaliasedAccess(cx, debugScope, scope, id, GET, &v)) {
-            PodZero(desc);
-            desc->obj = debugScope;
-            desc->attrs = JSPROP_READONLY | JSPROP_ENUMERATE | JSPROP_PERMANENT;
-            desc->value = v;
+            desc.object().set(debugScope);
+            desc.setAttributes(JSPROP_READONLY | JSPROP_ENUMERATE | JSPROP_PERMANENT);
+            desc.value().set(v);
+            desc.setShortId(0);
+            desc.setGetter(NULL);
+            desc.setSetter(NULL);
             return true;
         }
 
-        return JS_GetPropertyDescriptorById(cx, scope, id, 0, desc);
+        return JS_GetOwnPropertyDescriptorById(cx, scope, id, flags, desc);
     }
 
     bool get(JSContext *cx, HandleObject proxy, HandleObject receiver,  HandleId id,
@@ -1442,7 +1402,7 @@ class DebugScopeProxy : public BaseProxyHandler
     }
 
     bool defineProperty(JSContext *cx, HandleObject proxy, HandleId id,
-                        PropertyDescriptor *desc) MOZ_OVERRIDE
+                        MutableHandle<PropertyDescriptor> desc) MOZ_OVERRIDE
     {
         Rooted<ScopeObject*> scope(cx, &proxy->as<DebugScopeObject>().scope());
 
@@ -1452,8 +1412,8 @@ class DebugScopeProxy : public BaseProxyHandler
         if (found)
             return Throw(cx, id, JSMSG_CANT_REDEFINE_PROP);
 
-        return JS_DefinePropertyById(cx, scope, id, desc->value, desc->getter, desc->setter,
-                                     desc->attrs);
+        return JS_DefinePropertyById(cx, scope, id, desc.value(), desc.getter(), desc.setter(),
+                                     desc.attributes());
     }
 
     bool getScopePropertyNames(JSContext *cx, HandleObject proxy, AutoIdVector &props,
@@ -1504,7 +1464,7 @@ class DebugScopeProxy : public BaseProxyHandler
             return true;
         }
 
-        JSBool found;
+        bool found;
         RootedObject scope(cx, &scopeObj);
         if (!JS_HasPropertyById(cx, scope, id, &found))
             return false;
@@ -1534,6 +1494,8 @@ class DebugScopeProxy : public BaseProxyHandler
                                         JSDVG_IGNORE_STACK, idval, NullPtr(), NULL, NULL);
     }
 };
+
+} /* anonymous namespace */
 
 int DebugScopeProxy::family = 0;
 DebugScopeProxy DebugScopeProxy::singleton;
@@ -1690,7 +1652,7 @@ DebugScopes::ensureCompartmentData(JSContext *cx)
     if (c->debugScopes)
         return c->debugScopes;
 
-    c->debugScopes = c->rt->new_<DebugScopes>(cx);
+    c->debugScopes = cx->runtime()->new_<DebugScopes>(cx);
     if (c->debugScopes && c->debugScopes->init())
         return c->debugScopes;
 
@@ -2026,7 +1988,7 @@ DebugScopes::hasLiveFrame(ScopeObject &scope)
          *  4. GC completes, live objects may now point to values that weren't
          *     marked and thus may point to swept GC things
          */
-        if (JSGenerator *gen = frame.maybeSuspendedGenerator(scope.compartment()->rt))
+        if (JSGenerator *gen = frame.maybeSuspendedGenerator(scope.compartment()->runtimeFromMainThread()))
             JSObject::readBarrier(gen->obj);
 
         return frame;

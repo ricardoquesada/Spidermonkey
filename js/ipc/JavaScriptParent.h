@@ -10,7 +10,7 @@
 
 #include "JavaScriptShared.h"
 #include "mozilla/jsipc/PJavaScriptParent.h"
-#include "jsclass.h"
+#include "js/Class.h"
 
 #ifdef XP_WIN
 #undef GetClassName
@@ -34,14 +34,14 @@ class JavaScriptParent
     // (The traps should be in the same order like js/src/jsproxy.h)
     bool preventExtensions(JSContext *cx, JS::HandleObject proxy);
     bool getPropertyDescriptor(JSContext *cx, JS::HandleObject proxy, JS::HandleId id,
-                               JSPropertyDescriptor *desc, unsigned flags);
+                               JS::MutableHandle<JSPropertyDescriptor> desc, unsigned flags);
     bool getOwnPropertyDescriptor(JSContext *cx, JS::HandleObject proxy, JS::HandleId id,
-                                  JSPropertyDescriptor *desc, unsigned flags);
+                                  JS::MutableHandle<JSPropertyDescriptor> desc, unsigned flags);
     bool defineProperty(JSContext *cx, JS::HandleObject proxy, JS::HandleId id,
-                        JSPropertyDescriptor *desc);
-    bool getOwnPropertyNames(JSContext *cx, JS::HandleObject proxy, js::AutoIdVector &props);
+                        JS::MutableHandle<JSPropertyDescriptor> desc);
+    bool getOwnPropertyNames(JSContext *cx, JS::HandleObject proxy, JS::AutoIdVector &props);
     bool delete_(JSContext *cx, JS::HandleObject proxy, JS::HandleId id, bool *bp);
-    bool enumerate(JSContext *cx, JS::HandleObject proxy, js::AutoIdVector &props);
+    bool enumerate(JSContext *cx, JS::HandleObject proxy, JS::AutoIdVector &props);
 
     // Derived proxy traps. Implementing these is useful for perfomance.
     bool has(JSContext *cx, JS::HandleObject proxy, JS::HandleId id, bool *bp);
@@ -50,7 +50,7 @@ class JavaScriptParent
              JS::HandleId id, JS::MutableHandleValue vp);
     bool set(JSContext *cx, JS::HandleObject proxy, JS::HandleObject receiver,
              JS::HandleId id, bool strict, JS::MutableHandleValue vp);
-    bool keys(JSContext *cx, JS::HandleObject proxy, js::AutoIdVector &props);
+    bool keys(JSContext *cx, JS::HandleObject proxy, JS::AutoIdVector &props);
     // We use "iterate" provided by the base class here.
 
     // SpiderMonkey Extensions.
@@ -82,7 +82,8 @@ class JavaScriptParent
 
   private:
     bool makeId(JSContext *cx, JSObject *obj, ObjectId *idp);
-    bool getPropertyNames(JSContext *cx, JS::HandleObject proxy, uint32_t flags, js::AutoIdVector &props);
+    bool getPropertyNames(JSContext *cx, JS::HandleObject proxy, uint32_t flags,
+                          JS::AutoIdVector &props);
     ObjectId idOf(JSObject *obj);
 
     // Catastrophic IPC failure.

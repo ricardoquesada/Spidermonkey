@@ -74,14 +74,16 @@ class RangeAnalysis
                                   MBasicBlock *block);
 
   protected:
+    MIRGenerator *mir;
     MIRGraph &graph_;
 
   public:
-    MOZ_CONSTEXPR RangeAnalysis(MIRGraph &graph) :
-        graph_(graph) {}
-    bool addBetaNobes();
+    MOZ_CONSTEXPR RangeAnalysis(MIRGenerator *mir, MIRGraph &graph) :
+        mir(mir), graph_(graph) {}
+    bool addBetaNodes();
     bool analyze();
-    bool removeBetaNobes();
+    bool addRangeAssertions();
+    bool removeBetaNodes();
     bool truncate();
 
   private:
@@ -174,6 +176,9 @@ class Range : public TempObject {
           symbolicLower_(NULL),
           symbolicUpper_(NULL)
     {
+        JS_ASSERT(e >= (h == INT64_MIN ? MaxDoubleExponent : mozilla::FloorLog2(mozilla::Abs(h))));
+        JS_ASSERT(e >= (l == INT64_MIN ? MaxDoubleExponent : mozilla::FloorLog2(mozilla::Abs(l))));
+
         setLowerInit(l);
         setUpperInit(h);
         rectifyExponent();
@@ -329,10 +334,10 @@ class Range : public TempObject {
     }
 
     inline void set(int64_t l, int64_t h, bool d = false, uint16_t e = MaxInt32Exponent) {
+        max_exponent_ = e;
         setLowerInit(l);
         setUpperInit(h);
         decimal_ = d;
-        max_exponent_ = e;
         rectifyExponent();
         JS_ASSERT_IF(lower_infinite_, lower_ == JSVAL_INT_MIN);
         JS_ASSERT_IF(upper_infinite_, upper_ == JSVAL_INT_MAX);

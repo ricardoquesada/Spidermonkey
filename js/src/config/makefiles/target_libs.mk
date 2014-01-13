@@ -5,31 +5,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-PARALLEL_DIRS_libs = $(addsuffix _libs,$(PARALLEL_DIRS))
-
-.PHONY: libs $(PARALLEL_DIRS_libs)
-
-###############
-## TIER targets
-###############
-libs_tier_%:
-	@$(ECHO) "$@"
-	$(foreach dir,$(tier_$*_dirs),$(call TIER_DIR_SUBMAKE,libs,$(dir)))
-
-#################
-## Common targets
-#################
-ifdef PARALLEL_DIRS
-libs:: $(PARALLEL_DIRS_libs)
-
-$(PARALLEL_DIRS_libs): %_libs: %/Makefile
-	+@$(call SUBMAKE,libs,$*)
-endif
-
-
-####################
-##
-####################
 ifdef EXPORT_LIBRARY
 ifeq ($(EXPORT_LIBRARY),1)
 ifdef IS_COMPONENT
@@ -43,7 +18,7 @@ GARBAGE += $(foreach lib,$(LIBRARY),$(EXPORT_LIBRARY)/$(lib))
 endif
 endif # EXPORT_LIBRARY
 
-libs:: $(SUBMAKEFILES) $(MAKE_DIRS) $(HOST_LIBRARY) $(LIBRARY) $(SHARED_LIBRARY) $(IMPORT_LIBRARY) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS) $(SIMPLE_PROGRAMS) $(JAVA_LIBRARY)
+libs:: $(SUBMAKEFILES) $(HOST_LIBRARY) $(LIBRARY) $(SHARED_LIBRARY) $(IMPORT_LIBRARY) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS) $(SIMPLE_PROGRAMS)
 ifndef NO_DIST_INSTALL
 ifdef SHARED_LIBRARY
 ifdef IS_COMPONENT
@@ -56,7 +31,6 @@ endif
 endif # IS_COMPONENT
 endif # SHARED_LIBRARY
 endif # !NO_DIST_INSTALL
-	$(LOOP_OVER_DIRS)
 
 ifndef NO_DIST_INSTALL
 
@@ -116,16 +90,6 @@ ifdef HOST_LIBRARY
 HOST_LIBRARY_FILES = $(HOST_LIBRARY)
 HOST_LIBRARY_DEST ?= $(DIST)/host/lib
 INSTALL_TARGETS += HOST_LIBRARY
-endif
-
-ifdef JAVA_LIBRARY
-JAVA_LIBRARY_FILES = $(JAVA_LIBRARY)
-ifdef IS_COMPONENT
-JAVA_LIBRARY_DEST ?= $(FINAL_TARGET)/components
-else
-JAVA_LIBRARY_DEST ?= $(FINAL_TARGET)
-endif
-INSTALL_TARGETS += JAVA_LIBRARY
 endif
 
 endif # !NO_DIST_INSTALL

@@ -6,7 +6,7 @@
 
 using namespace JS;
 
-static JSClass CustomClass = {
+static const JSClass CustomClass = {
   "CustomClass",
   JSCLASS_HAS_RESERVED_SLOTS(1),
   JS_PropertyStub,
@@ -21,7 +21,7 @@ static JSClass CustomClass = {
 static const uint32_t CUSTOM_SLOT = 0;
 
 static bool
-IsCustomClass(const Value &v)
+IsCustomClass(JS::Handle<JS::Value> v)
 {
   return v.isObject() && JS_GetClass(&v.toObject()) == &CustomClass;
 }
@@ -34,7 +34,7 @@ CustomMethodImpl(JSContext *cx, CallArgs args)
   return true;
 }
 
-static JSBool
+static bool
 CustomMethod(JSContext *cx, unsigned argc, Value *vp)
 {
   CallArgs args = CallArgsFromVp(argc, vp);

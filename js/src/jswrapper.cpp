@@ -23,6 +23,22 @@ using namespace js::gc;
 
 int js::sWrapperFamily;
 
+/*
+ * Wrapper forwards this call directly to the wrapped object for efficiency
+ * and transparency. In particular, the hint is needed to properly stringify
+ * Date objects in certain cases - see bug 646129. Note also the
+ * SecurityWrapper overrides this trap to avoid information leaks. See bug
+ * 720619.
+ */
+bool
+Wrapper::defaultValue(JSContext *cx, HandleObject proxy, JSType hint, MutableHandleValue vp)
+{
+    vp.set(ObjectValue(*proxy->as<ProxyObject>().target()));
+    if (hint == JSTYPE_VOID)
+        return ToPrimitive(cx, vp);
+    return ToPrimitive(cx, hint, vp);
+}
+
 JSObject *
 Wrapper::New(JSContext *cx, JSObject *obj, JSObject *proto, JSObject *parent, Wrapper *handler)
 {
@@ -166,7 +182,7 @@ bool CrossCompartmentWrapper::finalizeInBackground(Value priv)
      * Make the 'background-finalized-ness' of the wrapper the same as the
      * wrapped object, to allow transplanting between them.
      */
-    if (IsInsideNursery(priv.toObject().runtime(), &priv.toObject()))
+    if (IsInsideNursery(priv.toObject().runtimeFromMainThread(), &priv.toObject()))
         return false;
     return IsBackgroundFinalized(priv.toObject().tenuredGetAllocKind());
 }
@@ -203,7 +219,7 @@ CrossCompartmentWrapper::preventExtensions(JSContext *cx, HandleObject wrapper)
 
 bool
 CrossCompartmentWrapper::getPropertyDescriptor(JSContext *cx, HandleObject wrapper, HandleId id,
-                                               PropertyDescriptor *desc, unsigned flags)
+                                               MutableHandle<PropertyDescriptor> desc, unsigned flags)
 {
     RootedId idCopy(cx, id);
     PIERCE(cx, wrapper,
@@ -214,7 +230,7 @@ CrossCompartmentWrapper::getPropertyDescriptor(JSContext *cx, HandleObject wrapp
 
 bool
 CrossCompartmentWrapper::getOwnPropertyDescriptor(JSContext *cx, HandleObject wrapper,
-                                                  HandleId id, PropertyDescriptor *desc,
+                                                  HandleId id, MutableHandle<PropertyDescriptor> desc,
                                                   unsigned flags)
 {
     RootedId idCopy(cx, id);
@@ -226,10 +242,10 @@ CrossCompartmentWrapper::getOwnPropertyDescriptor(JSContext *cx, HandleObject wr
 
 bool
 CrossCompartmentWrapper::defineProperty(JSContext *cx, HandleObject wrapper, HandleId id,
-                                        PropertyDescriptor *desc)
+                                        MutableHandle<PropertyDescriptor> desc)
 {
     RootedId idCopy(cx, id);
-    AutoPropertyDescriptorRooter desc2(cx, desc);
+    Rooted<PropertyDescriptor> desc2(cx, desc);
     PIERCE(cx, wrapper,
            cx->compartment()->wrapId(cx, idCopy.address()) && cx->compartment()->wrap(cx, &desc2),
            Wrapper::defineProperty(cx, wrapper, idCopy, &desc2),
@@ -293,7 +309,7 @@ CrossCompartmentWrapper::get(JSContext *cx, HandleObject wrapper, HandleObject r
     RootedId idCopy(cx, id);
     {
         AutoCompartment call(cx, wrappedObject(wrapper));
-        if (!cx->compartment()->wrap(cx, receiverCopy.address()) ||
+        if (!cx->compartment()->wrap(cx, &receiverCopy) ||
             !cx->compartment()->wrapId(cx, idCopy.address()))
         {
             return false;
@@ -312,7 +328,7 @@ CrossCompartmentWrapper::set(JSContext *cx, HandleObject wrapper, HandleObject r
     RootedObject receiverCopy(cx, receiver);
     RootedId idCopy(cx, id);
     PIERCE(cx, wrapper,
-           cx->compartment()->wrap(cx, receiverCopy.address()) &&
+           cx->compartment()->wrap(cx, &receiverCopy) &&
            cx->compartment()->wrapId(cx, idCopy.address()) &&
            cx->compartment()->wrap(cx, vp),
            Wrapper::set(cx, wrapper, receiverCopy, idCopy, strict, vp),
@@ -364,7 +380,7 @@ Reify(JSContext *cx, JSCompartment *origin, MutableHandleValue vp)
 
     /* Wrap the iteratee. */
     RootedObject obj(cx, ni->obj);
-    if (!origin->wrap(cx, obj.address()))
+    if (!origin->wrap(cx, &obj))
         return false;
 
     /*
@@ -575,7 +591,7 @@ CrossCompartmentWrapper::getPrototypeOf(JSContext *cx, HandleObject wrapper,
             protop->setDelegate(cx);
     }
 
-    return cx->compartment()->wrap(cx, protop.address());
+    return cx->compartment()->wrap(cx, protop);
 }
 
 CrossCompartmentWrapper CrossCompartmentWrapper::singleton(0u);
@@ -657,9 +673,9 @@ SecurityWrapper<Base>::regexp_toShared(JSContext *cx, HandleObject obj, RegExpGu
 template <class Base>
 bool
 SecurityWrapper<Base>::defineProperty(JSContext *cx, HandleObject wrapper,
-                                      HandleId id, PropertyDescriptor *desc)
+                                      HandleId id, MutableHandle<PropertyDescriptor> desc)
 {
-    if (desc->getter || desc->setter) {
+    if (desc.getter() || desc.setter()) {
         JSString *str = IdToString(cx, id);
         const jschar *prop = str ? str->getCharsZ(cx) : NULL;
         JS_ReportErrorNumberUC(cx, js_GetErrorMessage, NULL,
@@ -696,7 +712,7 @@ DeadObjectProxy::preventExtensions(JSContext *cx, HandleObject proxy)
 
 bool
 DeadObjectProxy::getPropertyDescriptor(JSContext *cx, HandleObject wrapper, HandleId id,
-                                       PropertyDescriptor *desc, unsigned flags)
+                                       MutableHandle<PropertyDescriptor> desc, unsigned flags)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
@@ -704,7 +720,7 @@ DeadObjectProxy::getPropertyDescriptor(JSContext *cx, HandleObject wrapper, Hand
 
 bool
 DeadObjectProxy::getOwnPropertyDescriptor(JSContext *cx, HandleObject wrapper, HandleId id,
-                                          PropertyDescriptor *desc, unsigned flags)
+                                          MutableHandle<PropertyDescriptor> desc, unsigned flags)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
@@ -712,7 +728,7 @@ DeadObjectProxy::getOwnPropertyDescriptor(JSContext *cx, HandleObject wrapper, H
 
 bool
 DeadObjectProxy::defineProperty(JSContext *cx, HandleObject wrapper, HandleId id,
-                                PropertyDescriptor *desc)
+                                MutableHandle<PropertyDescriptor> desc)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_DEAD_OBJECT);
     return false;
@@ -853,7 +869,7 @@ js::NukeCrossCompartmentWrapper(JSContext *cx, JSObject *wrapper)
  * and only do that on tab close (outer window destruction).  Thus the
  * option of how to handle the global object.
  */
-JS_FRIEND_API(JSBool)
+JS_FRIEND_API(bool)
 js::NukeCrossCompartmentWrappers(JSContext* cx,
                                  const CompartmentFilter& sourceFilter,
                                  const CompartmentFilter& targetFilter,
@@ -892,7 +908,7 @@ js::NukeCrossCompartmentWrappers(JSContext* cx,
         }
     }
 
-    return JS_TRUE;
+    return true;
 }
 
 // Given a cross-compartment wrapper |wobj|, update it to point to
@@ -933,7 +949,7 @@ js::RemapWrapper(JSContext *cx, JSObject *wobjArg, JSObject *newTargetArg)
     // the choice to reuse |wobj| or not.
     RootedObject tobj(cx, newTarget);
     AutoCompartment ac(cx, wobj);
-    if (!wcompartment->wrap(cx, tobj.address(), wobj))
+    if (!wcompartment->wrap(cx, &tobj, wobj))
         MOZ_CRASH();
 
     // If wrap() reused |wobj|, it will have overwritten it and returned with

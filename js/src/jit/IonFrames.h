@@ -20,9 +20,6 @@
 #include "jit/IonFrameIterator.h"
 #include "jit/Registers.h"
 
-class JSFunction;
-class JSScript;
-
 namespace js {
 namespace jit {
 
@@ -255,6 +252,8 @@ class FrameSizeClass
     }
 };
 
+struct BaselineBailoutInfo;
+
 // Data needed to recover from an exception.
 struct ResumeFromException
 {
@@ -262,6 +261,7 @@ struct ResumeFromException
     static const uint32_t RESUME_CATCH = 1;
     static const uint32_t RESUME_FINALLY = 2;
     static const uint32_t RESUME_FORCED_RETURN = 3;
+    static const uint32_t RESUME_BAILOUT = 4;
 
     uint8_t *framePointer;
     uint8_t *stackPointer;
@@ -270,6 +270,8 @@ struct ResumeFromException
 
     // Value to push when resuming into a |finally| block.
     Value exception;
+
+    BaselineBailoutInfo *bailoutInfo;
 };
 
 void HandleException(ResumeFromException *rfe);
@@ -288,15 +290,11 @@ MakeFrameDescriptor(uint32_t frameSize, FrameType type)
 
 // Returns the JSScript associated with the topmost Ion frame.
 inline JSScript *
-GetTopIonJSScript(PerThreadData *pt, const SafepointIndex **safepointIndexOut, void **returnAddrOut)
+GetTopIonJSScript(PerThreadData *pt, void **returnAddrOut)
 {
     IonFrameIterator iter(pt->ionTop);
     JS_ASSERT(iter.type() == IonFrame_Exit);
     ++iter;
-
-    // If needed, grab the safepoint index.
-    if (safepointIndexOut)
-        *safepointIndexOut = iter.safepoint();
 
     JS_ASSERT(iter.returnAddressToFp() != NULL);
     if (returnAddrOut)
@@ -312,9 +310,9 @@ GetTopIonJSScript(PerThreadData *pt, const SafepointIndex **safepointIndexOut, v
 }
 
 inline JSScript *
-GetTopIonJSScript(JSContext *cx, const SafepointIndex **safepointIndexOut, void **returnAddrOut)
+GetTopIonJSScript(ThreadSafeContext *cx, void **returnAddrOut = NULL)
 {
-    return GetTopIonJSScript(&cx->mainThread(), safepointIndexOut, returnAddrOut);
+    return GetTopIonJSScript(cx->perThreadData, returnAddrOut);
 }
 
 } // namespace jit
@@ -330,11 +328,6 @@ GetTopIonJSScript(JSContext *cx, const SafepointIndex **safepointIndexOut, void 
 
 namespace js {
 namespace jit {
-
-JSScript *
-GetTopIonJSScript(JSContext *cx,
-                  const SafepointIndex **safepointIndexOut = NULL,
-                  void **returnAddrOut = NULL);
 
 void
 GetPcScript(JSContext *cx, JSScript **scriptRes, jsbytecode **pcRes);

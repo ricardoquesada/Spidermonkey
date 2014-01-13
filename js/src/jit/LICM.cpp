@@ -64,7 +64,6 @@ class Loop
     bool isInLoop(MDefinition *ins);
     bool isBeforeLoop(MDefinition *ins);
     bool isLoopInvariant(MInstruction *ins);
-    bool isLoopInvariant(MDefinition *ins);
 
     // This method determines if this block hot within a loop.  That is, if it's
     // always or usually run when the loop executes
@@ -249,7 +248,7 @@ Loop::requiresHoistedUse(const MDefinition *ins) const
     // hoisting on their own, in general. Floating-point constants typically
     // are worth hoisting, unless they'll end up being spilled (eg. due to a
     // call).
-    if (ins->isConstant() && (ins->type() != MIRType_Double || containsPossibleCall_))
+    if (ins->isConstant() && (IsFloatingPointType(ins->type()) || containsPossibleCall_))
         return true;
 
     return false;
@@ -351,15 +350,6 @@ Loop::isLoopInvariant(MInstruction *ins)
     }
 
     return true;
-}
-
-bool
-Loop::isLoopInvariant(MDefinition *ins)
-{
-    if (!isInLoop(ins))
-        return true;
-
-    return ins->isInstruction() && isLoopInvariant(ins->toInstruction());
 }
 
 bool

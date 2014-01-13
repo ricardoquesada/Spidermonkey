@@ -9,8 +9,11 @@
 #include "nsISupports.h"
 #include "nsWeakReference.h"
 #include "nsIGlobalObject.h"
+#include "nsIScriptObjectPrincipal.h"
+#include "nsIXPCScriptable.h"
 
 class BackstagePass : public nsIGlobalObject,
+                      public nsIScriptObjectPrincipal,
                       public nsIXPCScriptable,
                       public nsIClassInfo,
                       public nsSupportsWeakReference

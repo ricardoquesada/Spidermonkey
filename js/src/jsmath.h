@@ -9,7 +9,7 @@
 
 #include "mozilla/MemoryReporting.h"
 
-#include "jsapi.h"
+#include "NamespaceImports.h"
 
 namespace js {
 
@@ -61,31 +61,31 @@ js_InitMathClass(JSContext *cx, js::HandleObject obj);
 extern double
 math_random_no_outparam(JSContext *cx);
 
-extern JSBool
+extern bool
 js_math_random(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 js_math_abs(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 js_math_ceil(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 js_math_floor(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 js_math_max(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 js_math_min(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 js_math_round(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 js_math_sqrt(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 js_math_pow(JSContext *cx, unsigned argc, js::Value *vp);
 
 extern double
@@ -96,67 +96,85 @@ js_math_floor_impl(double x);
 
 namespace js {
 
-extern JSBool
+extern bool
 math_imul(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
+math_fround(JSContext *cx, unsigned argc, js::Value *vp);
+
+extern bool
 math_log(JSContext *cx, unsigned argc, js::Value *vp);
 
 extern double
 math_log_impl(MathCache *cache, double x);
 
-extern JSBool
+extern double
+math_log_uncached(double x);
+
+extern bool
 math_sin(JSContext *cx, unsigned argc, js::Value *vp);
 
 extern double
 math_sin_impl(MathCache *cache, double x);
 
-extern JSBool
+extern double
+math_sin_uncached(double x);
+
+extern bool
 math_cos(JSContext *cx, unsigned argc, js::Value *vp);
 
 extern double
 math_cos_impl(MathCache *cache, double x);
 
-extern JSBool
+extern double
+math_cos_uncached(double x);
+
+extern bool
 math_exp(JSContext *cx, unsigned argc, js::Value *vp);
 
 extern double
 math_exp_impl(MathCache *cache, double x);
 
-extern JSBool
+extern double
+math_exp_uncached(double x);
+
+extern bool
 math_tan(JSContext *cx, unsigned argc, js::Value *vp);
 
 extern double
 math_tan_impl(MathCache *cache, double x);
 
-extern JSBool
+extern double
+math_tan_uncached(double x);
+
+extern bool
 math_log10(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 math_log2(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 math_log1p(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 math_expm1(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 math_cosh(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 math_sinh(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 math_tanh(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 math_acosh(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 math_asinh(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 math_atanh(JSContext *cx, unsigned argc, js::Value *vp);
 
 // Math.hypot is disabled pending the resolution of spec issues (bug 896264).
@@ -165,25 +183,25 @@ extern bool
 math_hypot(JSContext *cx, unsigned argc, Value *vp);
 #endif
 
-extern JSBool
+extern bool
 math_trunc(JSContext *cx, unsigned argc, Value *vp);
 
-extern JSBool
+extern bool
 math_sign(JSContext *cx, unsigned argc, Value *vp);
 
-extern JSBool
+extern bool
 math_cbrt(JSContext *cx, unsigned argc, Value *vp);
 
-extern JSBool
+extern bool
 math_asin(JSContext *cx, unsigned argc, Value *vp);
 
-extern JSBool
+extern bool
 math_acos(JSContext *cx, unsigned argc, Value *vp);
 
-extern JSBool
+extern bool
 math_atan(JSContext *cx, unsigned argc, Value *vp);
 
-extern JSBool
+extern bool
 math_atan2(JSContext *cx, unsigned argc, Value *vp);
 
 extern double
@@ -192,19 +210,28 @@ ecmaAtan2(double x, double y);
 extern double
 math_atan_impl(MathCache *cache, double x);
 
-extern JSBool
+extern double
+math_atan_uncached(double x);
+
+extern bool
 math_atan(JSContext *cx, unsigned argc, js::Value *vp);
 
 extern double
 math_asin_impl(MathCache *cache, double x);
 
-extern JSBool
+extern double
+math_asin_uncached(double x);
+
+extern bool
 math_asin(JSContext *cx, unsigned argc, js::Value *vp);
 
 extern double
 math_acos_impl(MathCache *cache, double x);
 
-extern JSBool
+extern double
+math_acos_uncached(double x);
+
+extern bool
 math_acos(JSContext *cx, unsigned argc, js::Value *vp);
 
 extern double
@@ -213,53 +240,95 @@ powi(double x, int y);
 extern double
 ecmaPow(double x, double y);
 
-extern JSBool
+extern bool
 math_imul(JSContext *cx, unsigned argc, Value *vp);
 
 extern double 
 math_log10_impl(MathCache *cache, double x);
 
 extern double 
+math_log10_uncached(double x);
+
+extern double 
 math_log2_impl(MathCache *cache, double x);
+
+extern double 
+math_log2_uncached(double x);
 
 extern double 
 math_log1p_impl(MathCache *cache, double x);
 
 extern double 
+math_log1p_uncached(double x);
+
+extern double 
 math_expm1_impl(MathCache *cache, double x);
+
+extern double 
+math_expm1_uncached(double x);
 
 extern double 
 math_cosh_impl(MathCache *cache, double x);
 
 extern double 
+math_cosh_uncached(double x);
+
+extern double 
 math_sinh_impl(MathCache *cache, double x);
+
+extern double 
+math_sinh_uncached(double x);
 
 extern double 
 math_tanh_impl(MathCache *cache, double x);
 
 extern double 
+math_tanh_uncached(double x);
+
+extern double 
 math_acosh_impl(MathCache *cache, double x);
+
+extern double 
+math_acosh_uncached(double x);
 
 extern double 
 math_asinh_impl(MathCache *cache, double x);
 
 extern double 
+math_asinh_uncached(double x);
+
+extern double 
 math_atanh_impl(MathCache *cache, double x);
+
+extern double 
+math_atanh_uncached(double x);
 
 // Math.hypot is disabled pending the resolution of spec issues (bug 896264).
 #if 0
 extern double 
 math_hypot_impl(double x, double y);
+
+extern double 
+math_hypot_uncached(double x, double y);
 #endif
 
 extern double 
 math_trunc_impl(MathCache *cache, double x);
 
 extern double 
+math_trunc_uncached(double x);
+
+extern double 
 math_sign_impl(MathCache *cache, double x);
 
 extern double 
+math_sign_uncached(double x);
+
+extern double 
 math_cbrt_impl(MathCache *cache, double x);
+
+extern double 
+math_cbrt_uncached(double x);
 
 } /* namespace js */
 

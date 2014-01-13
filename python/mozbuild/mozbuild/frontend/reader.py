@@ -168,24 +168,8 @@ class MozbuildSandbox(Sandbox):
             d['SRCDIR'] = os.path.join(topsrcdir, reldir).replace(os.sep, '/').rstrip('/')
             d['OBJDIR'] = os.path.join(topobjdir, reldir).replace(os.sep, '/').rstrip('/')
 
-            # config.status does not yet use unicode. However, mozbuild expects
-            # unicode everywhere. So, decode binary into unicode as necessary.
-            # Bug 844509 tracks a better way to do this.
-            substs = {}
-            for k, v in config.substs.items():
-                if not isinstance(v, text_type):
-                    try:
-                        v = v.decode('utf-8')
-                    except UnicodeDecodeError:
-                        log(self._log, logging.INFO, 'lossy_encoding',
-                            {'variable': k},
-                            'Lossy Unicode encoding for {variable}. See bug 844509.')
-
-                        v = v.decode('utf-8', 'replace')
-
-                substs[k] = v
-
-            d['CONFIG'] = ReadOnlyDefaultDict(substs, global_default=None)
+            d['CONFIG'] = ReadOnlyDefaultDict(self.config.substs_unicode,
+                global_default=None)
 
             # Register functions.
             for name, func in FUNCTIONS.items():
@@ -228,7 +212,7 @@ class MozbuildSandbox(Sandbox):
 
         Sandbox.exec_file(self, path)
 
-    def _add_tier_directory(self, tier, reldir, static=False):
+    def _add_tier_directory(self, tier, reldir, static=False, external=False):
         """Register a tier directory with the build."""
         if isinstance(reldir, text_type):
             reldir = [reldir]
@@ -237,9 +221,13 @@ class MozbuildSandbox(Sandbox):
             self['TIERS'][tier] = {
                 'regular': [],
                 'static': [],
+                'external': [],
             }
 
-        key = 'static' if static else 'regular'
+        key = 'static' if static else 'external' if external else 'regular'
+        if external and static:
+            raise Exception('Only one of external or static can be set at the '
+                'same time')
 
         for path in reldir:
             if path in self['TIERS'][tier][key]:

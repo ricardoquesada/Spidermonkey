@@ -23,21 +23,14 @@
 #include "jsapi.h"
 #include "nsCOMPtr.h"
 #include "nsAutoPtr.h"
-#include "nsICategoryManager.h"
 #include "nsIComponentManager.h"
 #include "mozilla/Module.h"
 #include "nsIFile.h"
-#include "nsIServiceManager.h"
-#include "nsISupports.h"
 #include "mozJSComponentLoader.h"
 #include "mozJSLoaderUtils.h"
 #include "nsIJSRuntimeService.h"
 #include "nsIXPConnect.h"
-#include "nsCRT.h"
-#include "nsMemory.h"
 #include "nsIObserverService.h"
-#include "nsIXPCScriptable.h"
-#include "nsString.h"
 #include "nsIScriptSecurityManager.h"
 #include "nsIURI.h"
 #include "nsIFileURL.h"
@@ -46,28 +39,17 @@
 #include "nsDOMBlobBuilder.h"
 #include "jsprf.h"
 #include "nsJSPrincipals.h"
-// For reporting errors with the console service
-#include "nsIScriptError.h"
-#include "nsIConsoleService.h"
-#include "nsIStorageStream.h"
-#include "nsIStringStream.h"
-#if defined(XP_WIN)
-#include "nsILocalFileWin.h"
-#endif
 #include "xpcprivate.h"
 #include "xpcpublic.h"
-#include "nsIResProtocolHandler.h"
 #include "nsContentUtils.h"
 #include "nsCxPusher.h"
 #include "WrapperFactory.h"
 
 #include "mozilla/scache/StartupCache.h"
 #include "mozilla/scache/StartupCacheUtils.h"
-#include "mozilla/Omnijar.h"
 #include "mozilla/Preferences.h"
 
-#include "jsdbgapi.h"
-
+#include "js/OldDebugAPI.h"
 
 using namespace mozilla;
 using namespace mozilla::scache;
@@ -77,7 +59,7 @@ using namespace JS;
 // This JSClass exists to trick silly code that expects toString()ing the
 // global in a component scope to return something with "BackstagePass" in it
 // to continue working.
-static JSClass kFakeBackstagePassJSClass =
+static const JSClass kFakeBackstagePassJSClass =
 {
     "FakeBackstagePass",
     0,
@@ -123,7 +105,7 @@ static PRLogModuleInfo *gJSCLLog;
 #define ERROR_GETTING_SYMBOL "%s - Could not get symbol '%s'."
 #define ERROR_SETTING_SYMBOL "%s - Could not set symbol '%s' on target object."
 
-static JSBool
+static bool
 Dump(JSContext *cx, unsigned argc, jsval *vp)
 {
     JSString *str;
@@ -153,7 +135,7 @@ Dump(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
+static bool
 Debug(JSContext *cx, unsigned argc, jsval *vp)
 {
 #ifdef DEBUG
@@ -163,7 +145,7 @@ Debug(JSContext *cx, unsigned argc, jsval *vp)
 #endif
 }
 
-static JSBool
+static bool
 Atob(JSContext *cx, unsigned argc, jsval *vp)
 {
     if (!argc)
@@ -172,7 +154,7 @@ Atob(JSContext *cx, unsigned argc, jsval *vp)
     return xpc::Base64Decode(cx, JS_ARGV(cx, vp)[0], &JS_RVAL(cx, vp));
 }
 
-static JSBool
+static bool
 Btoa(JSContext *cx, unsigned argc, jsval *vp)
 {
     if (!argc)
@@ -181,7 +163,7 @@ Btoa(JSContext *cx, unsigned argc, jsval *vp)
     return xpc::Base64Encode(cx, JS_ARGV(cx, vp)[0], &JS_RVAL(cx, vp));
 }
 
-static JSBool
+static bool
 File(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -199,7 +181,7 @@ File(JSContext *cx, unsigned argc, Value *vp)
     }
 
     nsCOMPtr<nsIJSNativeInitializer> initializer = do_QueryInterface(native);
-    NS_ASSERTION(initializer, "what?");
+    MOZ_ASSERT(initializer);
 
     rv = initializer->Initialize(nullptr, cx, nullptr, args);
     if (NS_FAILED(rv)) {
@@ -221,7 +203,7 @@ File(JSContext *cx, unsigned argc, Value *vp)
     return true;
 }
 
-static JSBool
+static bool
 Blob(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -234,7 +216,7 @@ Blob(JSContext *cx, unsigned argc, Value *vp)
     }
 
     nsCOMPtr<nsIJSNativeInitializer> initializer = do_QueryInterface(native);
-    NS_ASSERTION(initializer, "what?");
+    MOZ_ASSERT(initializer);
 
     rv = initializer->Initialize(nullptr, cx, nullptr, args);
     if (NS_FAILED(rv)) {
@@ -344,10 +326,14 @@ ReportOnCaller(JSCLContextHelper &helper,
 mozJSComponentLoader::mozJSComponentLoader()
     : mRuntime(nullptr),
       mContext(nullptr),
+      mModules(32),
+      mImports(32),
+      mInProgressImports(32),
+      mThisObjects(32),
       mInitialized(false),
       mReuseLoaderGlobal(false)
 {
-    NS_ASSERTION(!sSelf, "mozJSComponentLoader should be a singleton");
+    MOZ_ASSERT(!sSelf, "mozJSComponentLoader should be a singleton");
 
 #ifdef PR_LOGGING
     if (!gJSCLLog) {
@@ -413,11 +399,6 @@ mozJSComponentLoader::ReallyInit()
     rv = secman->GetSystemPrincipal(getter_AddRefs(mSystemPrincipal));
     if (NS_FAILED(rv) || !mSystemPrincipal)
         return NS_ERROR_FAILURE;
-
-    mModules.Init(32);
-    mImports.Init(32);
-    mInProgressImports.Init(32);
-    mThisObjects.Init(32);
 
     nsCOMPtr<nsIObserverService> obsSvc =
         do_GetService(kObserverServiceContractID, &rv);
@@ -1272,7 +1253,7 @@ mozJSComponentLoader::ImportInto(const nsACString &aLocation,
         mod = newEntry;
     }
 
-    NS_ASSERTION(mod->obj, "Import table contains entry with no object");
+    MOZ_ASSERT(mod->obj, "Import table contains entry with no object");
     vp.set(mod->obj);
 
     if (targetObj) {
@@ -1309,7 +1290,7 @@ mozJSComponentLoader::ImportInto(const nsACString &aLocation,
         RootedValue value(mContext);
         RootedId symbolId(mContext);
         for (uint32_t i = 0; i < symbolCount; ++i) {
-            if (!JS_GetElement(mContext, symbolsObj, i, value.address()) ||
+            if (!JS_GetElement(mContext, symbolsObj, i, &value) ||
                 !value.isString() ||
                 !JS_ValueToId(mContext, value, symbolId.address())) {
                 return ReportOnCaller(cxhelper, ERROR_ARRAY_ELEMENT,
@@ -1417,7 +1398,7 @@ mozJSComponentLoader::ModuleEntry::GetFactory(const mozilla::Module& module,
                                               const mozilla::Module::CIDEntry& entry)
 {
     const ModuleEntry& self = static_cast<const ModuleEntry&>(module);
-    NS_ASSERTION(self.getfactoryobj, "Handing out an uninitialized module?");
+    MOZ_ASSERT(self.getfactoryobj, "Handing out an uninitialized module?");
 
     nsCOMPtr<nsIFactory> f;
     nsresult rv = self.getfactoryobj->Get(*entry.cid, getter_AddRefs(f));
@@ -1454,6 +1435,6 @@ JSCLContextHelper::~JSCLContextHelper()
 void
 JSCLContextHelper::reportErrorAfterPop(char *buf)
 {
-    NS_ASSERTION(!mBuf, "Already called reportErrorAfterPop");
+    MOZ_ASSERT(!mBuf, "Already called reportErrorAfterPop");
     mBuf = buf;
 }

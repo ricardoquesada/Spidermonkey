@@ -9,10 +9,6 @@
 
 #ifdef JS_ION
 
-#include "jscntxt.h"
-#include "jscompartment.h"
-#include "jsinfer.h"
-
 #include "jit/BaselineIC.h"
 #include "jit/BaselineJIT.h"
 #include "jit/BytecodeAnalysis.h"
@@ -26,7 +22,6 @@
 #else
 # include "jit/arm/BaselineCompiler-arm.h"
 #endif
-#include "vm/Interpreter.h"
 
 namespace js {
 namespace jit {
@@ -189,6 +184,9 @@ class BaselineCompiler : public BaselineCompilerSpecific
 
     // Native code offset right before the scope chain is initialized.
     CodeOffsetLabel prologueOffset_;
+
+    // Whether any on stack arguments are modified.
+    bool modifiesArguments_;
 
     Label *labelOf(jsbytecode *pc) {
         return &labels_[pc - script->code];

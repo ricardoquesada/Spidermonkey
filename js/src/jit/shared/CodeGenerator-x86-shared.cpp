@@ -9,10 +9,6 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/MathAlgorithms.h"
 
-#include "jscntxt.h"
-#include "jscompartment.h"
-#include "jsmath.h"
-
 #include "jit/IonCompartment.h"
 #include "jit/IonFrames.h"
 #include "jit/ParallelFunctions.h"
@@ -23,7 +19,10 @@
 using namespace js;
 using namespace js::jit;
 
+using mozilla::DoubleSignificandBits;
 using mozilla::FloorLog2;
+using mozilla::NegativeInfinity;
+using mozilla::SpecificNaN;
 
 namespace js {
 namespace jit {
@@ -69,20 +68,16 @@ void
 CodeGeneratorX86Shared::emitBranch(Assembler::Condition cond, MBasicBlock *mirTrue,
                                    MBasicBlock *mirFalse, Assembler::NaNCond ifNaN)
 {
-    LBlock *ifTrue = mirTrue->lir();
-    LBlock *ifFalse = mirFalse->lir();
-
     if (ifNaN == Assembler::NaN_IsFalse)
-        masm.j(Assembler::Parity, ifFalse->label());
+        jumpToBlock(mirFalse, Assembler::Parity);
     else if (ifNaN == Assembler::NaN_IsTrue)
-        masm.j(Assembler::Parity, ifTrue->label());
+        jumpToBlock(mirTrue, Assembler::Parity);
 
-    if (isNextBlock(ifFalse)) {
-        masm.j(cond, ifTrue->label());
+    if (isNextBlock(mirFalse->lir())) {
+        jumpToBlock(mirTrue, cond);
     } else {
-        masm.j(Assembler::InvertCondition(cond), ifFalse->label());
-        if (!isNextBlock(ifTrue))
-            masm.jmp(ifTrue->label());
+        jumpToBlock(mirFalse, Assembler::InvertCondition(cond));
+        jumpToBlock(mirTrue);
     }
 }
 
@@ -91,6 +86,14 @@ CodeGeneratorX86Shared::visitDouble(LDouble *ins)
 {
     const LDefinition *out = ins->getDef(0);
     masm.loadConstantDouble(ins->getDouble(), ToFloatRegister(out));
+    return true;
+}
+
+bool
+CodeGeneratorX86Shared::visitFloat32(LFloat32 *ins)
+{
+    const LDefinition *out = ins->getDef(0);
+    masm.loadConstantFloat32(ins->getFloat(), ToFloatRegister(out));
     return true;
 }
 
@@ -376,9 +379,10 @@ CodeGeneratorX86Shared::visitMinMaxD(LMinMaxD *ins)
 {
     FloatRegister first = ToFloatRegister(ins->first());
     FloatRegister second = ToFloatRegister(ins->second());
+#ifdef DEBUG
     FloatRegister output = ToFloatRegister(ins->output());
-
     JS_ASSERT(first == output);
+#endif
 
     Label done, nan, minMaxInst;
 
@@ -427,9 +431,9 @@ CodeGeneratorX86Shared::visitAbsD(LAbsD *ins)
 {
     FloatRegister input = ToFloatRegister(ins->input());
     JS_ASSERT(input == ToFloatRegister(ins->output()));
-    masm.xorpd(ScratchFloatReg, ScratchFloatReg);
-    masm.subsd(input, ScratchFloatReg); // negate the sign bit.
-    masm.andpd(ScratchFloatReg, input); // s & ~s
+    // Load a value which is all ones except for the sign bit.
+    masm.loadConstantDouble(SpecificNaN(0, DoubleSignificandBits), ScratchFloatReg);
+    masm.andpd(ScratchFloatReg, input);
     return true;
 }
 
@@ -437,8 +441,8 @@ bool
 CodeGeneratorX86Shared::visitSqrtD(LSqrtD *ins)
 {
     FloatRegister input = ToFloatRegister(ins->input());
-    JS_ASSERT(input == ToFloatRegister(ins->output()));
-    masm.sqrtsd(input, input);
+    FloatRegister output = ToFloatRegister(ins->output());
+    masm.sqrtsd(input, output);
     return true;
 }
 
@@ -446,15 +450,12 @@ bool
 CodeGeneratorX86Shared::visitPowHalfD(LPowHalfD *ins)
 {
     FloatRegister input = ToFloatRegister(ins->input());
-    Register scratch = ToRegister(ins->temp());
     JS_ASSERT(input == ToFloatRegister(ins->output()));
 
-    const uint32_t NegInfinityFloatBits = 0xFF800000;
     Label done, sqrt;
 
     // Branch if not -Infinity.
-    masm.move32(Imm32(NegInfinityFloatBits), scratch);
-    masm.loadFloatAsDouble(scratch, ScratchFloatReg);
+    masm.loadConstantDouble(NegativeInfinity(), ScratchFloatReg);
     masm.branchDouble(Assembler::DoubleNotEqualOrUnordered, input, ScratchFloatReg, &sqrt);
 
     // Math.pow(-Infinity, 0.5) == Infinity.
@@ -754,6 +755,27 @@ CodeGeneratorX86Shared::visitDivPowTwoI(LDivPowTwoI *ins)
 
         // Do the shift.
         masm.sarl(Imm32(shift), lhs);
+    }
+
+    return true;
+}
+
+bool
+CodeGeneratorX86Shared::visitDivSelfI(LDivSelfI *ins)
+{
+    Register op = ToRegister(ins->op());
+    Register output = ToRegister(ins->output());
+    MDiv *mir = ins->mir();
+
+    JS_ASSERT(mir->canBeDivideByZero());
+
+    masm.testl(op, op);
+    if (mir->isTruncated()) {
+        masm.emitSet(Assembler::NonZero, output);
+    } else {
+       if (!bailoutIf(Assembler::Zero, ins->snapshot()))
+           return false;
+        masm.mov(Imm32(1), output);
     }
 
     return true;
@@ -1263,6 +1285,34 @@ CodeGeneratorX86Shared::visitMathD(LMathD *math)
 }
 
 bool
+CodeGeneratorX86Shared::visitMathF(LMathF *math)
+{
+    FloatRegister lhs = ToFloatRegister(math->lhs());
+    Operand rhs = ToOperand(math->rhs());
+
+    JS_ASSERT(ToFloatRegister(math->output()) == lhs);
+
+    switch (math->jsop()) {
+      case JSOP_ADD:
+        masm.addss(rhs, lhs);
+        break;
+      case JSOP_SUB:
+        masm.subss(rhs, lhs);
+        break;
+      case JSOP_MUL:
+        masm.mulss(rhs, lhs);
+        break;
+      case JSOP_DIV:
+        masm.divss(rhs, lhs);
+        break;
+      default:
+        MOZ_ASSUME_UNREACHABLE("unexpected opcode");
+        return false;
+    }
+    return true;
+}
+
+bool
 CodeGeneratorX86Shared::visitFloor(LFloor *lir)
 {
     FloatRegister input = ToFloatRegister(lir->input());
@@ -1445,7 +1495,7 @@ CodeGeneratorX86Shared::visitGuardClass(LGuardClass *guard)
     Register tmp = ToRegister(guard->tempInt());
 
     masm.loadPtr(Address(obj, JSObject::offsetOfType()), tmp);
-    masm.cmpPtr(Operand(tmp, offsetof(types::TypeObject, clasp)), ImmWord(guard->mir()->getClass()));
+    masm.cmpPtr(Operand(tmp, offsetof(types::TypeObject, clasp)), ImmPtr(guard->mir()->getClass()));
     if (!bailoutIf(Assembler::NotEqual, guard->snapshot()))
         return false;
     return true;
@@ -1510,6 +1560,16 @@ CodeGeneratorX86Shared::visitNegD(LNegD *ins)
     JS_ASSERT(input == ToFloatRegister(ins->output()));
 
     masm.negateDouble(input);
+    return true;
+}
+
+bool
+CodeGeneratorX86Shared::visitNegF(LNegF *ins)
+{
+    FloatRegister input = ToFloatRegister(ins->input());
+    JS_ASSERT(input == ToFloatRegister(ins->output()));
+
+    masm.negateFloat(input);
     return true;
 }
 

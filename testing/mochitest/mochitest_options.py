@@ -4,7 +4,6 @@
 
 import optparse
 import os
-import sys
 import tempfile
 
 from automation import Automation
@@ -12,13 +11,13 @@ from automationutils import addCommonOptions, isURL
 from mozprofile import DEFAULT_PORTS
 import moznetwork
 
+here = os.path.abspath(os.path.dirname(__file__))
+
 try:
     from mozbuild.base import MozbuildObject
-    build_obj = MozbuildObject.from_environment()
+    build_obj = MozbuildObject.from_environment(cwd=here)
 except ImportError:
     build_obj = None
-
-here = os.path.abspath(os.path.dirname(sys.argv[0]))
 
 __all__ = ["MochitestOptions", "B2GOptions"]
 
@@ -321,13 +320,6 @@ class MochitestOptions(optparse.OptionParser):
           "metavar": "PREF=VALUE",
           "help": "defines an extra user preference",
         }],
-        [["--build-info-json"],
-        { "action": "store",
-          "type": "string",
-          "default": None,
-          "dest": "mozInfo",
-          "help": "path to mozinfo.json to determine build time options",
-        }],
     ]
 
     def __init__(self, automation=None, **kwargs):
@@ -465,15 +457,6 @@ class MochitestOptions(optparse.OptionParser):
                 self.error("--run-until-failure can only be used together with --test-path specifying a single test.")
             if not options.repeat:
                 options.repeat = 29
-
-        if not options.mozInfo:
-            if build_obj:
-                options.mozInfo = os.path.join(build_obj.topobjdir, 'mozinfo.json')
-            else:
-                options.mozInfo = os.path.abspath('mozinfo.json')
-
-        if not os.path.isfile(options.mozInfo):
-            self.error("Unable to file build information file (mozinfo.json) at this location: %s" % options.mozInfo)
 
         return options
 
@@ -668,7 +651,7 @@ class B2GOptions(MochitestOptions):
     def verifyOptions(self, options, mochitest):
         # since we are reusing verifyOptions, it will exit if App is not found
         temp = options.app
-        options.app = sys.argv[0]
+        options.app = __file__
         tempPort = options.httpPort
         tempSSL = options.sslPort
         tempIP = options.webServer

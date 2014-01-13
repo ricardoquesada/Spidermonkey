@@ -9,7 +9,7 @@
 
 #include "mozilla/FloatingPoint.h"
 
-#include "jscntxt.h"
+#include "NamespaceImports.h"
 
 #include "vm/NumericConversions.h"
 
@@ -18,10 +18,12 @@ extern double js_NegativeInfinity;
 
 namespace js {
 
+class StringBuffer;
+
 extern bool
 InitRuntimeNumberState(JSRuntime *rt);
 
-#if !ENABLE_INTL_API
+#if !EXPOSE_INTL_API
 extern void
 FinishRuntimeNumberState(JSRuntime *rt);
 #endif
@@ -40,7 +42,9 @@ extern const char js_isFinite_str[];
 extern const char js_parseFloat_str[];
 extern const char js_parseInt_str[];
 
-class JSString;
+class JSAtom;
+
+namespace js {
 
 /*
  * When base == 10, this function implements ToString() as specified by
@@ -49,13 +53,19 @@ class JSString;
  */
 template <js::AllowGC allowGC>
 extern JSString *
-js_NumberToString(js::ThreadSafeContext *cx, double d);
+NumberToString(js::ThreadSafeContext *cx, double d);
 
-namespace js {
+template <js::AllowGC allowGC>
+extern JSAtom *
+NumberToAtom(js::ExclusiveContext *cx, double d);
 
 template <AllowGC allowGC>
 extern JSFlatString *
 Int32ToString(ThreadSafeContext *cx, int32_t i);
+
+template <AllowGC allowGC>
+extern JSAtom *
+Int32ToAtom(ExclusiveContext *cx, int32_t si);
 
 /*
  * Convert an integer or double (contained in the given value) to a string and
@@ -153,7 +163,7 @@ ToNumber(JSContext *cx, JS::MutableHandleValue vp)
     if (vp.isNumber())
         return true;
     double d;
-    extern bool ToNumberSlow(JSContext *cx, Value v, double *dp);
+    extern JS_PUBLIC_API(bool) ToNumberSlow(JSContext *cx, Value v, double *dp);
     if (!ToNumberSlow(cx, vp, &d))
         return false;
 
@@ -161,7 +171,7 @@ ToNumber(JSContext *cx, JS::MutableHandleValue vp)
     return true;
 }
 
-JSBool
+bool
 num_parseInt(JSContext *cx, unsigned argc, Value *vp);
 
 }  /* namespace js */
@@ -176,14 +186,14 @@ num_parseInt(JSContext *cx, unsigned argc, Value *vp);
  * If the string does not contain a number, set *ep to s and return 0.0 in dp.
  * Return false if out of memory.
  */
-extern JSBool
+extern bool
 js_strtod(js::ThreadSafeContext *cx, const jschar *s, const jschar *send,
           const jschar **ep, double *dp);
 
-extern JSBool
+extern bool
 js_num_toString(JSContext *cx, unsigned argc, js::Value *vp);
 
-extern JSBool
+extern bool
 js_num_valueOf(JSContext *cx, unsigned argc, js::Value *vp);
 
 namespace js {
@@ -242,7 +252,7 @@ ToInteger(JSContext *cx, HandleValue v, double *dp)
     if (v.isDouble()) {
         *dp = v.toDouble();
     } else {
-        extern bool ToNumberSlow(JSContext *cx, Value v, double *dp);
+        extern JS_PUBLIC_API(bool) ToNumberSlow(JSContext *cx, Value v, double *dp);
         if (!ToNumberSlow(cx, v, dp))
             return false;
     }

@@ -19,8 +19,6 @@
 
 #include "jsobjinlines.h"
 
-#include "gc/Barrier-inl.h"
-
 using namespace js;
 
 WeakMapBase::WeakMapBase(JSObject *memOf, JSCompartment *c)
@@ -126,7 +124,7 @@ GetKeyArg(JSContext *cx, CallArgs &args)
 }
 
 JS_ALWAYS_INLINE bool
-IsWeakMap(const Value &v)
+IsWeakMap(HandleValue v)
 {
     return v.isObject() && v.toObject().is<WeakMapObject>();
 }
@@ -156,7 +154,7 @@ WeakMap_has_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+static bool
 WeakMap_has(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -177,7 +175,7 @@ WeakMap_clear_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+static bool
 WeakMap_clear(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -213,7 +211,7 @@ WeakMap_get_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+static bool
 WeakMap_get(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -246,7 +244,7 @@ WeakMap_delete_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+static bool
 WeakMap_delete(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -320,14 +318,14 @@ WeakMap_set_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-JSBool
+static bool
 WeakMap_set(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     return CallNonGenericMethod<IsWeakMap, WeakMap_set_impl>(cx, args);
 }
 
-JS_FRIEND_API(JSBool)
+JS_FRIEND_API(bool)
 JS_NondeterministicGetWeakMapKeys(JSContext *cx, JSObject *objArg, JSObject **ret)
 {
     RootedObject obj(cx, objArg);
@@ -377,7 +375,7 @@ WeakMap_finalize(FreeOp *fop, JSObject *obj)
     }
 }
 
-static JSBool
+static bool
 WeakMap_construct(JSContext *cx, unsigned argc, Value *vp)
 {
     JSObject *obj = NewBuiltinClassInstance(cx, &WeakMapObject::class_);
@@ -388,7 +386,7 @@ WeakMap_construct(JSContext *cx, unsigned argc, Value *vp)
     return true;
 }
 
-Class WeakMapObject::class_ = {
+const Class WeakMapObject::class_ = {
     "WeakMap",
     JSCLASS_HAS_PRIVATE | JSCLASS_IMPLEMENTS_BARRIERS |
     JSCLASS_HAS_CACHED_PROTO(JSProto_WeakMap),

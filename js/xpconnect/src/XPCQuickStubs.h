@@ -7,16 +7,18 @@
 #ifndef xpcquickstubs_h___
 #define xpcquickstubs_h___
 
-#include "xpcpublic.h"
 #include "XPCForwards.h"
-#include "qsObjectHelper.h"
-#include "mozilla/dom/BindingUtils.h"
+
+class qsObjectHelper;
+namespace mozilla {
+namespace dom {
+class NativeProperties;
+}
+}
 
 /* XPCQuickStubs.h - Support functions used only by quick stubs. */
 
 class XPCCallContext;
-class XPCLazyCallContext;
-class XPCWrappedNativeJSClass;
 
 #define XPC_QS_NULL_INDEX  ((uint16_t) -1)
 
@@ -46,7 +48,7 @@ struct xpc_qsHashEntry {
     uint16_t chain;
 };
 
-JSBool
+bool
 xpc_qsDefineQuickStubs(JSContext *cx, JSObject *proto, unsigned extraFlags,
                        uint32_t ifacec, const nsIID **interfaces,
                        uint32_t tableSize, const xpc_qsHashEntry *table,
@@ -55,7 +57,7 @@ xpc_qsDefineQuickStubs(JSContext *cx, JSObject *proto, unsigned extraFlags,
                        const char *stringTable);
 
 /** Raise an exception on @a cx and return false. */
-JSBool
+bool
 xpc_qsThrow(JSContext *cx, nsresult rv);
 
 /**
@@ -71,14 +73,14 @@ xpc_qsThrow(JSContext *cx, nsresult rv);
  * receives the wrapper JSObject.  (The other reason is to help the caller keep
  * that JSObject GC-reachable.)
  */
-JSBool
+bool
 xpc_qsThrowGetterSetterFailed(JSContext *cx, nsresult rv,
                               JSObject *obj, jsid memberId);
 // And variants using strings and string tables
-JSBool
+bool
 xpc_qsThrowGetterSetterFailed(JSContext *cx, nsresult rv,
                               JSObject *obj, const char* memberName);
-JSBool
+bool
 xpc_qsThrowGetterSetterFailed(JSContext *cx, nsresult rv,
                               JSObject *obj, uint16_t memberIndex);
 
@@ -87,10 +89,10 @@ xpc_qsThrowGetterSetterFailed(JSContext *cx, nsresult rv,
  *
  * See NOTE at xpc_qsThrowGetterSetterFailed.
  */
-JSBool
+bool
 xpc_qsThrowMethodFailed(JSContext *cx, nsresult rv, jsval *vp);
 
-JSBool
+bool
 xpc_qsThrowMethodFailedWithCcx(XPCCallContext &ccx, nsresult rv);
 
 bool
@@ -130,23 +132,23 @@ xpc_qsThrowBadSetterValue(JSContext *cx, nsresult rv, JSObject *obj,
                           uint16_t name_index);
 
 
-JSBool
+bool
 xpc_qsGetterOnlyPropertyStub(JSContext *cx, JS::HandleObject obj, JS::HandleId id,
-                             JSBool strict, JS::MutableHandleValue vp);
+                             bool strict, JS::MutableHandleValue vp);
 
-JSBool
+bool
 xpc_qsGetterOnlyNativeStub(JSContext *cx, unsigned argc, jsval *vp);
 
 /* Functions for converting values between COM and JS. */
 
-inline JSBool
+inline bool
 xpc_qsInt64ToJsval(JSContext *cx, int64_t i, jsval *rv)
 {
     *rv = JS_NumberValue(static_cast<double>(i));
     return true;
 }
 
-inline JSBool
+inline bool
 xpc_qsUint64ToJsval(JSContext *cx, uint64_t u, jsval *rv)
 {
     *rv = JS_NumberValue(static_cast<double>(u));
@@ -169,7 +171,7 @@ public:
             Ptr()->~implementation_type();
     }
 
-    JSBool IsValid() const { return mValid; }
+    bool IsValid() const { return mValid; }
 
     implementation_type *Ptr()
     {
@@ -222,7 +224,7 @@ protected:
      * stored in mBuf, if mValid is true.
      */
     void *mBuf[JS_HOWMANY(sizeof(implementation_type), sizeof(void *))];
-    JSBool mValid;
+    bool mValid;
 
     /*
      * If null is returned, then we either failed or fully initialized
@@ -347,15 +349,15 @@ struct xpc_qsSelfRef
  *     Out. On success it receives the converted string unless v is null or
  *     undefinedin which case bytes->ptr() remains null.
  */
-JSBool
+bool
 xpc_qsJsvalToCharStr(JSContext *cx, jsval v, JSAutoByteString *bytes);
 
-JSBool
+bool
 xpc_qsJsvalToWcharStr(JSContext *cx, jsval v, jsval *pval, const PRUnichar **pstr);
 
 
 /** Convert an nsString to JSString, returning true on success. This will sometimes modify |str| to be empty. */
-JSBool
+bool
 xpc_qsStringToJsstring(JSContext *cx, nsString &str, JSString **rval);
 
 nsresult
@@ -392,7 +394,7 @@ castNative(JSContext *cx,
  * Requires a request on @a cx.
  */
 template <class T>
-inline JSBool
+inline bool
 xpc_qsUnwrapThis(JSContext *cx,
                  JS::HandleObject obj,
                  T **ppThis,
@@ -426,7 +428,7 @@ castNativeFromWrapper(JSContext *cx,
                       jsval *pVal,
                       nsresult *rv);
 
-JSBool
+bool
 xpc_qsUnwrapThisFromCcxImpl(XPCCallContext &ccx,
                             const nsIID &iid,
                             void **ppThis,
@@ -438,7 +440,7 @@ xpc_qsUnwrapThisFromCcxImpl(XPCCallContext &ccx,
  * present in the given XPCCallContext.
  */
 template <class T>
-inline JSBool
+inline bool
 xpc_qsUnwrapThisFromCcx(XPCCallContext &ccx,
                         T **ppThis,
                         nsISupports **pThisRef,
@@ -526,7 +528,7 @@ xpc_qsGetWrapperCache(void *p)
  * aIdentity is a performance optimization. Set it to true,
  * only if p is the identity pointer.
  */
-JSBool
+bool
 xpc_qsXPCOMObjectToJsval(JSContext *aCx,
                          qsObjectHelper &aHelper,
                          const nsIID *iid,
@@ -536,7 +538,7 @@ xpc_qsXPCOMObjectToJsval(JSContext *aCx,
 /**
  * Convert a variant to jsval. Return true on success.
  */
-JSBool
+bool
 xpc_qsVariantToJsval(JSContext *cx,
                      nsIVariant *p,
                      jsval *rval);
@@ -570,11 +572,11 @@ xpc_qsSameResult(int32_t result1, int32_t result2)
 
 // Apply |op| to |obj|, |id|, and |vp|. If |op| is a setter, treat the assignment as lenient.
 template<typename Op>
-inline JSBool ApplyPropertyOp(JSContext *cx, Op op, JS::HandleObject obj, JS::HandleId id,
+inline bool ApplyPropertyOp(JSContext *cx, Op op, JS::HandleObject obj, JS::HandleId id,
                               JS::MutableHandleValue vp);
 
 template<>
-inline JSBool
+inline bool
 ApplyPropertyOp<JSPropertyOp>(JSContext *cx, JSPropertyOp op, JS::HandleObject obj, JS::HandleId id,
                               JS::MutableHandleValue vp)
 {
@@ -582,7 +584,7 @@ ApplyPropertyOp<JSPropertyOp>(JSContext *cx, JSPropertyOp op, JS::HandleObject o
 }
 
 template<>
-inline JSBool
+inline bool
 ApplyPropertyOp<JSStrictPropertyOp>(JSContext *cx, JSStrictPropertyOp op, JS::HandleObject obj,
                                     JS::HandleId id, JS::MutableHandleValue vp)
 {
@@ -590,7 +592,7 @@ ApplyPropertyOp<JSStrictPropertyOp>(JSContext *cx, JSStrictPropertyOp op, JS::Ha
 }
 
 template<typename Op>
-JSBool
+bool
 PropertyOpForwarder(JSContext *cx, unsigned argc, jsval *vp)
 {
     // Layout:
@@ -620,7 +622,7 @@ PropertyOpForwarder(JSContext *cx, unsigned argc, jsval *vp)
     return ApplyPropertyOp<Op>(cx, *popp, obj, id, args.rval());
 }
 
-extern JSClass PointerHolderClass;
+extern const JSClass PointerHolderClass;
 
 template<typename Op>
 JSObject *

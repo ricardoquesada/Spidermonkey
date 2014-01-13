@@ -57,6 +57,7 @@ class ObjdirMismatchException(BadEnvironmentException):
     def __str__(self):
         return "Objdir mismatch: %s != %s" % (self.objdir1, self.objdir2)
 
+
 class MozbuildObject(ProcessExecutionMixin):
     """Base class providing basic functionality useful to many modules.
 
@@ -86,7 +87,7 @@ class MozbuildObject(ProcessExecutionMixin):
         self._config_environment = None
 
     @classmethod
-    def from_environment(cls):
+    def from_environment(cls, cwd=None):
         """Create a MozbuildObject by detecting the proper one from the env.
 
         This examines environment state like the current working directory and
@@ -110,6 +111,7 @@ class MozbuildObject(ProcessExecutionMixin):
         If we're not inside a srcdir or objdir, an exception is raised.
         """
 
+        cwd = cwd or os.getcwd()
         topsrcdir = None
         topobjdir = None
         mozconfig = None
@@ -121,7 +123,7 @@ class MozbuildObject(ProcessExecutionMixin):
             mozconfig = info.get('mozconfig')
             return topsrcdir, topobjdir, mozconfig
 
-        for dir_path in ancestors(os.getcwd()):
+        for dir_path in ancestors(cwd):
             # If we find a mozinfo.json, we are in the objdir.
             mozinfo_path = os.path.join(dir_path, 'mozinfo.json')
             if os.path.isfile(mozinfo_path):
@@ -153,16 +155,21 @@ class MozbuildObject(ProcessExecutionMixin):
         loader = MozconfigLoader(topsrcdir)
         config = loader.read_mozconfig(mozconfig)
 
+        config_topobjdir = MozbuildObject.resolve_mozconfig_topobjdir(
+            topsrcdir, config)
+
         # If we're inside a objdir and the found mozconfig resolves to
         # another objdir, we abort. The reasoning here is that if you are
         # inside an objdir you probably want to perform actions on that objdir,
-        # not another one.
-        if topobjdir and config['topobjdir'] \
-            and not samepath(topobjdir, config['topobjdir']):
+        # not another one. This prevents accidental usage of the wrong objdir
+        # when the current objdir is ambiguous.
+        if topobjdir and config_topobjdir \
+            and not samepath(topobjdir, config_topobjdir) \
+            and not samepath(topobjdir, os.path.join(config_topobjdir, "mozilla")):
 
-            raise ObjdirMismatchException(topobjdir, config['topobjdir'])
+            raise ObjdirMismatchException(topobjdir, config_topobjdir)
 
-        topobjdir = config['topobjdir'] or topobjdir
+        topobjdir = topobjdir or config_topobjdir
         if topobjdir:
             topobjdir = os.path.normpath(topobjdir)
 
@@ -170,14 +177,27 @@ class MozbuildObject(ProcessExecutionMixin):
         # it out via config.guess.
         return cls(topsrcdir, None, None, topobjdir=topobjdir)
 
+    @staticmethod
+    def resolve_mozconfig_topobjdir(topsrcdir, mozconfig, default=None):
+        topobjdir = mozconfig['topobjdir'] or default
+        if not topobjdir:
+            return None
+
+        if '@CONFIG_GUESS@' in topobjdir:
+            topobjdir = topobjdir.replace('@CONFIG_GUESS@',
+                MozbuildObject.resolve_config_guess(mozconfig, topsrcdir))
+
+        if not os.path.isabs(topobjdir):
+            topobjdir = os.path.abspath(os.path.join(topsrcdir, topobjdir))
+
+        return os.path.normpath(topobjdir)
+
     @property
     def topobjdir(self):
         if self._topobjdir is None:
-            topobj = self.mozconfig['topobjdir'] or 'obj-@CONFIG_GUESS@'
-            if not os.path.isabs(topobj):
-                topobj = os.path.abspath(os.path.join(self.topsrcdir, topobj))
-            self._topobjdir = topobj.replace("@CONFIG_GUESS@",
-                                             self._config_guess)
+            self._topobjdir = MozbuildObject.resolve_mozconfig_topobjdir(
+                self.topsrcdir, self.mozconfig, default='obj-@CONFIG_GUESS@')
+
         return self._topobjdir
 
     @property
@@ -281,19 +301,32 @@ class MozbuildObject(ProcessExecutionMixin):
 
         return path
 
+    @staticmethod
+    def resolve_config_guess(mozconfig, topsrcdir):
+        make_extra = mozconfig['make_extra'] or []
+        make_extra = dict(m.split('=', 1) for m in make_extra)
+
+        config_guess = make_extra.get('CONFIG_GUESS', None)
+
+        if config_guess:
+            return config_guess
+
+        p = os.path.join(topsrcdir, 'build', 'autoconf', 'config.guess')
+
+        # This is a little kludgy. We need access to the normalize_command
+        # function. However, that's a method of a mach mixin, so we need a
+        # class instance. Ideally the function should be accessible as a
+        # standalone function.
+        o = MozbuildObject(topsrcdir, None, None, None)
+        args = o._normalize_command([p], True)
+
+        return subprocess.check_output(args, cwd=topsrcdir).strip()
+
     @property
     def _config_guess(self):
         if self._config_guess_output is None:
-            make_extra = self.mozconfig['make_extra'] or []
-            make_extra = dict(m.split('=', 1) for m in make_extra)
-            self._config_guess_output = make_extra.get('CONFIG_GUESS', None)
-
-        if self._config_guess_output is None:
-            p = os.path.join(self.topsrcdir, 'build', 'autoconf',
-                'config.guess')
-            args = self._normalize_command([p], True)
-            self._config_guess_output = subprocess.check_output(args,
-                cwd=self.topsrcdir).strip()
+            self._config_guess_output = MozbuildObject.resolve_config_guess(
+                self.mozconfig, self.topsrcdir)
 
         return self._config_guess_output
 
@@ -326,7 +359,7 @@ class MozbuildObject(ProcessExecutionMixin):
             srcdir=False, allow_parallel=True, line_handler=None,
             append_env=None, explicit_env=None, ignore_errors=False,
             ensure_exit_code=0, silent=True, print_directory=True,
-            pass_thru=False, num_jobs=0):
+            pass_thru=False, num_jobs=0, force_pymake=False):
         """Invoke make.
 
         directory -- Relative directory to look for Makefile in.
@@ -338,11 +371,11 @@ class MozbuildObject(ProcessExecutionMixin):
         silent -- If True (the default), run make in silent mode.
         print_directory -- If True (the default), have make print directories
         while doing traversal.
+        force_pymake -- If True, pymake will be used instead of GNU make.
         """
         self._ensure_objdir_exists()
 
-        # Need to copy list since we modify it.
-        args = list(self._make_path)
+        args = [self._make_path(force_pymake=force_pymake)]
 
         if directory:
             args.extend(['-C', directory])
@@ -379,6 +412,9 @@ class MozbuildObject(ProcessExecutionMixin):
         if srcdir:
             fn = self._run_command_in_srcdir
 
+        append_env = dict(append_env or ())
+        append_env[b'MACH'] = '1'
+
         params = {
             'args': args,
             'line_handler': line_handler,
@@ -400,26 +436,18 @@ class MozbuildObject(ProcessExecutionMixin):
 
         return fn(**params)
 
-    @property
-    def _make_path(self):
-        if self._make is None:
-            if self._is_windows():
-                make_py = os.path.join(self.topsrcdir, 'build', 'pymake',
-                    'make.py').replace(os.sep, '/')
-                self._make = [sys.executable, make_py]
+    def _make_path(self, force_pymake=False):
+        if self._is_windows() or force_pymake:
+            return os.path.join(self.topsrcdir, 'build', 'pymake',
+                'make.py').replace(os.sep, '/')
 
-            else:
-                for test in ['gmake', 'make']:
-                    try:
-                        self._make = [which.which(test)]
-                        break
-                    except which.WhichError:
-                        continue
+        for test in ['gmake', 'make']:
+            try:
+                return which.which(test)
+            except which.WhichError:
+                continue
 
-        if self._make is None:
-            raise Exception('Could not find suitable make binary!')
-
-        return self._make
+        raise Exception('Could not find a suitable make implementation.')
 
     def _run_command_in_srcdir(self, **args):
         return self.run_process(cwd=self.topsrcdir, **args)
@@ -453,6 +481,8 @@ class MachCommandBase(MozbuildObject):
         MozbuildObject.__init__(self, context.topdir, context.settings,
             context.log_manager)
 
+        self._mach_context = context
+
         # Incur mozconfig processing so we have unified error handling for
         # errors. Otherwise, the exceptions could bubble back to mach's error
         # handler.
@@ -475,6 +505,17 @@ class MachCommandBase(MozbuildObject):
                     print(line)
 
             sys.exit(1)
+
+
+class MachCommandConditions(object):
+    """A series of commonly used condition functions which can be applied to
+    mach commands with providers deriving from MachCommandBase.
+    """
+
+    @staticmethod
+    def is_b2g(cls):
+        """Must have a Boot to Gecko build."""
+        return cls.substs.get('MOZ_WIDGET_TOOLKIT') == 'gonk'
 
 
 class PathArgument(object):
