@@ -7,7 +7,7 @@ cpus=$(sysctl hw.ncpu | awk '{print $2}')
             --enable-strip --enable-strip-install \
             --disable-root-analysis --disable-exact-rooting --enable-gcincremental --enable-optimize=-O3 \
             --enable-llvm-hacks \
-            --enable-debug \
+            --disable-debug \
             --enable-intl-api=no
 # make
 xcrun make -j$cpus
