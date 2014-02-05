@@ -40,7 +40,11 @@ host_arch=`uname -m`
 build_with_arch()
 {
 
-NDK_ROOT=$HOME/bin/android-ndk
+#NDK_ROOT=$HOME/bin/android-ndk
+if [[ ! $NDK_ROOT ]]; then
+	echo "You have to define NDK_ROOT"
+	exit 1
+fi
 
 rm -rf dist
 rm -f ./config.cache
