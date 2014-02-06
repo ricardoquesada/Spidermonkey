@@ -90,9 +90,13 @@ OPDEF(JSOP_DELELEM,   38, "delelem",    NULL,         1,  2,  1, JOF_BYTE |JOF_E
 OPDEF(JSOP_TYPEOF,    39, js_typeof_str,NULL,         1,  1,  1, JOF_BYTE|JOF_DETECTING)
 OPDEF(JSOP_VOID,      40, js_void_str,  NULL,         1,  1,  1, JOF_BYTE)
 
-OPDEF(JSOP_UNUSED41,  41, "unused41",   NULL,         1,  0,  0,  JOF_BYTE)
-OPDEF(JSOP_UNUSED42,  42, "unused42",   NULL,         1,  0,  0,  JOF_BYTE)
-OPDEF(JSOP_UNUSED43,  43, "unused43",   NULL,         1,  0,  0,  JOF_BYTE)
+/* spreadcall variant of JSOP_CALL */
+OPDEF(JSOP_SPREADCALL,41, "spreadcall", NULL,         1,  3,  1, JOF_BYTE|JOF_INVOKE|JOF_TYPESET)
+/* spreadcall variant of JSOP_NEW */
+OPDEF(JSOP_SPREADNEW, 42, "spreadnew",  NULL,         1,  3,  1, JOF_BYTE|JOF_INVOKE|JOF_TYPESET)
+/* spreadcall variant of JSOP_EVAL */
+OPDEF(JSOP_SPREADEVAL,43, "spreadeval", NULL,         1,  3,  1, JOF_BYTE|JOF_INVOKE|JOF_TYPESET)
+
 OPDEF(JSOP_UNUSED44,  44, "unused44",   NULL,         1,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_UNUSED45,  45, "unused45",   NULL,         1,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_UNUSED46,  46, "unused46",   NULL,         1,  0,  0,  JOF_BYTE)
@@ -223,7 +227,6 @@ OPDEF(JSOP_LEAVEFORLETIN, 105,"leaveforletin",NULL,   1,  0,  0,  JOF_BYTE)
 /* The argument is the offset to the next statement and is used by IonMonkey. */
 OPDEF(JSOP_LABEL,     106,"label",     NULL,          5,  0,  0,  JOF_JUMP)
 
-/* Performs the dynamic validation step of type-checked asm.js. */
 OPDEF(JSOP_UNUSED107, 107,"unused107",  NULL,         1,  0,  0,  JOF_BYTE)
 
 /* Like JSOP_FUNAPPLY but for f.call instead of f.apply. */
@@ -275,11 +278,6 @@ OPDEF(JSOP_EVAL,      123,"eval",       NULL,         3, -1,  1, JOF_UINT16|JOF_
  */
 OPDEF(JSOP_ENUMELEM,  124,"enumelem",   NULL,         1,  3,  0,  JOF_BYTE |JOF_SET|JOF_TMPSLOT)
 
-/*
- * Getter and setter prefix bytecodes.  These modify the next bytecode, either
- * an assignment or a property initializer code, which then defines a property
- * getter or setter.
- */
 OPDEF(JSOP_UNUSED125,  125, "unused125", NULL,      1,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_UNUSED126,  126, "unused126", NULL,      1,  0,  0,  JOF_BYTE)
 
@@ -402,13 +400,14 @@ OPDEF(JSOP_ENTERLET0,     185,"enterlet0",  NULL,     5, -1, -1,  JOF_OBJECT)
 
 /* Enter a let block/expr whose slots are 1 below the top of the stack. */
 OPDEF(JSOP_ENTERLET1,     186,"enterlet1",  NULL,     5, -1, -1,  JOF_OBJECT)
+/* Enter a let block/expr whose slots are 2 below the top of the stack. */
+OPDEF(JSOP_ENTERLET2,     187,"enterlet2",  NULL,     5, -1, -1,  JOF_OBJECT)
 
 /*
  * Opcode to hold 24-bit immediate integer operands.
  */
-OPDEF(JSOP_UINT24,        187,"uint24",     NULL,     4,  0,  1, JOF_UINT24)
+OPDEF(JSOP_UINT24,        188,"uint24",     NULL,     4,  0,  1, JOF_UINT24)
 
-OPDEF(JSOP_UNUSED188,     188,"unused188",   NULL,    1,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_UNUSED189,     189,"unused189",   NULL,    1,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_UNUSED190,     190,"unused190",   NULL,    1,  0,  0,  JOF_BYTE)
 OPDEF(JSOP_UNUSED191,     191,"unused191",   NULL,    1,  0,  0,  JOF_BYTE)

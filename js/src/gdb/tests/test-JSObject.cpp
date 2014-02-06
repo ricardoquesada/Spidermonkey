@@ -1,4 +1,5 @@
 #include "gdb-tests.h"
+#include "jsapi.h"
 
 FRAGMENT(JSObject, simple) {
   JS::Rooted<JSObject *> glob(cx, JS::CurrentGlobalOrNull(cx));
@@ -29,7 +30,7 @@ FRAGMENT(JSObject, simple) {
 }
 
 FRAGMENT(JSObject, null) {
-  JS::Rooted<JSObject *> null(cx, NULL);
+  JS::Rooted<JSObject *> null(cx, nullptr);
   JSObject *nullRaw = null;
 
   breakpoint();

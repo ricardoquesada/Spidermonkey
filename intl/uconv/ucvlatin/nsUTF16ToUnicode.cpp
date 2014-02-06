@@ -3,10 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsUCConstructors.h"
 #include "nsUTF16ToUnicode.h"
 #include "nsCharTraits.h"
-#include <string.h>
 
 enum {
   STATE_NORMAL = 0,
@@ -78,7 +76,7 @@ nsUTF16ToUnicodeBase::UTF16ConvertToUnicode(const char * aSrc,
     // previous run while the 2nd byte has to come from |*src|.
     mState = STATE_NORMAL;
 #ifdef IS_BIG_ENDIAN
-    u = (mOddByte << 8) | *src++; // safe, we know we have at least one byte.
+    u = (mOddByte << 8) | uint8_t(*src++); // safe, we know we have at least one byte.
 #else
     u = (*src++ << 8) | mOddByte; // safe, we know we have at least one byte.
 #endif

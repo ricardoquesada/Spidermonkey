@@ -1,10 +1,9 @@
-// |jit-test| no-jm
-// (disable with JM, see bug 845276)
+// |jit-test|
 
 // If an exception unwind hook performs a forced return, and this calls an
 // onPop handler that throws, the exception should not be handled in the
 // current frame but propagated to the caller.
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 var dbg = new Debugger(g);
 
 g.eval('function f() { try { var y; throw 123; } catch(e) { assertEq(0, 1); } }');

@@ -9,15 +9,8 @@
 
 #include "jsbool.h"
 
-#include "mozilla/Assertions.h"
-#include "mozilla/Likely.h"
-
-#include "jswrapper.h"
-
-#include "js/RootingAPI.h"
+#include "vm/BooleanObject.h"
 #include "vm/WrapperObject.h"
-
-#include "vm/BooleanObject-inl.h"
 
 namespace js {
 
@@ -37,9 +30,7 @@ inline bool
 EmulatesUndefined(JSObject *obj)
 {
     JSObject *actual = MOZ_LIKELY(!obj->is<WrapperObject>()) ? obj : UncheckedUnwrap(obj);
-    bool emulatesUndefined = actual->getClass()->emulatesUndefined();
-    MOZ_ASSERT_IF(emulatesUndefined, obj->type()->flags & types::OBJECT_FLAG_EMULATES_UNDEFINED);
-    return emulatesUndefined;
+    return actual->getClass()->emulatesUndefined();
 }
 
 } /* namespace js */

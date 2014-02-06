@@ -9,8 +9,6 @@
 
 #include "mozilla/Attributes.h"
 
-#include "jsscript.h"
-
 #include "builtin/Module.h"
 #include "frontend/TokenStream.h"
 
@@ -21,6 +19,8 @@ template <typename ParseHandler>
 struct ParseContext;
 
 class FullParseHandler;
+class FunctionBox;
+class ObjectBox;
 
 /*
  * Indicates a location in the stack that an upvar value can be retrieved from
@@ -123,6 +123,7 @@ class UpvarCookie
     F(THROW) \
     F(DEBUGGER) \
     F(YIELD) \
+    F(YIELD_STAR) \
     F(GENEXP) \
     F(ARRAYCOMP) \
     F(ARRAYPUSH) \
@@ -130,6 +131,7 @@ class UpvarCookie
     F(LET) \
     F(SEQ) \
     F(FORIN) \
+    F(FOROF) \
     F(FORHEAD) \
     F(ARGSBODY) \
     F(SPREAD) \
@@ -251,19 +253,26 @@ enum ParseNodeKind
  *                          pn_val: constant value if lookup or table switch
  * PNK_WHILE    binary      pn_left: cond, pn_right: body
  * PNK_DOWHILE  binary      pn_left: body, pn_right: cond
- * PNK_FOR      binary      pn_left: either PNK_FORIN (for-in statement) or
- *                            PNK_FORHEAD (for(;;) statement)
+ * PNK_FOR      binary      pn_left: either PNK_FORIN (for-in statement),
+ *                            PNK_FOROF (for-of) or PNK_FORHEAD (for(;;))
  *                          pn_right: body
- * PNK_FORIN    ternary     pn_kid1:  PNK_VAR to left of 'in', or NULL
+ * PNK_FORIN    ternary     pn_kid1:  PNK_VAR to left of 'in', or nullptr
  *                            its pn_xflags may have PNX_POPVAR
  *                            bit set
  *                          pn_kid2: PNK_NAME or destructuring expr
  *                            to left of 'in'; if pn_kid1, then this
  *                            is a clone of pn_kid1->pn_head
  *                          pn_kid3: object expr to right of 'in'
- * PNK_FORHEAD  ternary     pn_kid1:  init expr before first ';' or NULL
- *                          pn_kid2:  cond expr before second ';' or NULL
- *                          pn_kid3:  update expr after second ';' or NULL
+ * PNK_FOROF    ternary     pn_kid1:  PNK_VAR to left of 'of', or nullptr
+ *                            its pn_xflags may have PNX_POPVAR
+ *                            bit set
+ *                          pn_kid2: PNK_NAME or destructuring expr
+ *                            to left of 'of'; if pn_kid1, then this
+ *                            is a clone of pn_kid1->pn_head
+ *                          pn_kid3: expr to right of 'of'
+ * PNK_FORHEAD  ternary     pn_kid1:  init expr before first ';' or nullptr
+ *                          pn_kid2:  cond expr before second ';' or nullptr
+ *                          pn_kid3:  update expr after second ';' or nullptr
  * PNK_THROW    unary       pn_op: JSOP_THROW, pn_kid: exception
  * PNK_TRY      ternary     pn_kid1: try block
  *                          pn_kid2: null or PNK_CATCHLIST list of
@@ -439,7 +448,7 @@ class ParseNode
   public:
     ParseNode(ParseNodeKind kind, JSOp op, ParseNodeArity arity)
       : pn_type(kind), pn_op(op), pn_arity(arity), pn_parens(0), pn_used(0), pn_defn(0),
-        pn_pos(0, 0), pn_offset(0), pn_next(NULL), pn_link(NULL)
+        pn_pos(0, 0), pn_offset(0), pn_next(nullptr), pn_link(nullptr)
     {
         JS_ASSERT(kind < PNK_LIMIT);
         memset(&pn_u, 0, sizeof pn_u);
@@ -447,7 +456,7 @@ class ParseNode
 
     ParseNode(ParseNodeKind kind, JSOp op, ParseNodeArity arity, const TokenPos &pos)
       : pn_type(kind), pn_op(op), pn_arity(arity), pn_parens(0), pn_used(0), pn_defn(0),
-        pn_pos(pos), pn_offset(0), pn_next(NULL), pn_link(NULL)
+        pn_pos(pos), pn_offset(0), pn_next(nullptr), pn_link(nullptr)
     {
         JS_ASSERT(kind < PNK_LIMIT);
         memset(&pn_u, 0, sizeof pn_u);
@@ -578,7 +587,7 @@ class ParseNode
         pn_parens = false;
         JS_ASSERT(!pn_used);
         JS_ASSERT(!pn_defn);
-        pn_next = pn_link = NULL;
+        pn_next = pn_link = nullptr;
     }
 
     static ParseNode *create(ParseNodeKind kind, ParseNodeArity arity, FullParseHandler *handler);
@@ -622,8 +631,8 @@ class ParseNode
         return pn_lexdef;
     }
 
-    ParseNode  *maybeExpr()   { return pn_used ? NULL : expr(); }
-    Definition *maybeLexDef() { return pn_used ? lexdef() : NULL; }
+    ParseNode  *maybeExpr()   { return pn_used ? nullptr : expr(); }
+    Definition *maybeLexDef() { return pn_used ? lexdef() : nullptr; }
 
     Definition *resolve();
 
@@ -706,7 +715,7 @@ class ParseNode
             if (kid && kid->getKind() == PNK_STRING && !kid->pn_parens)
                 return kid->pn_atom;
         }
-        return NULL;
+        return nullptr;
     }
 
     inline bool test(unsigned flag) const;
@@ -763,7 +772,7 @@ class ParseNode
 
     void makeEmpty() {
         JS_ASSERT(pn_arity == PN_LIST);
-        pn_head = NULL;
+        pn_head = nullptr;
         pn_tail = &pn_head;
         pn_count = 0;
         pn_xflags = 0;
@@ -982,7 +991,7 @@ struct NameNode : public ParseNode
       : ParseNode(kind, op, PN_NAME, pos)
     {
         pn_atom = atom;
-        pn_expr = NULL;
+        pn_expr = nullptr;
         pn_cookie.makeFree();
         pn_dflags = 0;
         pn_blockid = blockid;
@@ -1173,8 +1182,8 @@ class PropertyAccess : public ParseNode
     PropertyAccess(ParseNode *lhs, PropertyName *name, uint32_t begin, uint32_t end)
       : ParseNode(PNK_DOT, JSOP_NOP, PN_NAME, TokenPos(begin, end))
     {
-        JS_ASSERT(lhs != NULL);
-        JS_ASSERT(name != NULL);
+        JS_ASSERT(lhs != nullptr);
+        JS_ASSERT(name != nullptr);
         pn_u.name.expr = lhs;
         pn_u.name.atom = name;
     }
@@ -1347,7 +1356,7 @@ class ParseNodeAllocator
 {
   public:
     explicit ParseNodeAllocator(ExclusiveContext *cx, LifoAlloc &alloc)
-      : cx(cx), alloc(alloc), freelist(NULL)
+      : cx(cx), alloc(alloc), freelist(nullptr)
     {}
 
     void *allocNode();
@@ -1406,7 +1415,8 @@ ParseNode::isConstant()
         return true;
       case PNK_ARRAY:
       case PNK_OBJECT:
-        return isOp(JSOP_NEWINIT) && !(pn_xflags & PNX_NONCONST);
+        JS_ASSERT(isOp(JSOP_NEWINIT));
+        return !(pn_xflags & PNX_NONCONST);
       default:
         return false;
     }
@@ -1443,6 +1453,19 @@ enum ParseReportKind
 };
 
 enum FunctionSyntaxKind { Expression, Statement, Arrow };
+
+static inline ParseNode *
+FunctionArgsList(ParseNode *fn, unsigned *numFormals)
+{
+    JS_ASSERT(fn->isKind(PNK_FUNCTION));
+    ParseNode *argsBody = fn->pn_body;
+    JS_ASSERT(argsBody->isKind(PNK_ARGSBODY));
+    *numFormals = argsBody->pn_count;
+    if (*numFormals > 0 && argsBody->last()->isKind(PNK_STATEMENTLIST))
+        (*numFormals)--;
+    JS_ASSERT(argsBody->isArity(PN_LIST));
+    return argsBody->pn_head;
+}
 
 } /* namespace frontend */
 } /* namespace js */

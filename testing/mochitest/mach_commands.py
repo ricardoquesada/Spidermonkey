@@ -9,9 +9,12 @@ import mozpack.path
 import os
 import platform
 import sys
+import warnings
+import which
 
 from mozbuild.base import (
     MachCommandBase,
+    MachCommandConditions as conditions,
     MozbuildObject,
 )
 
@@ -23,6 +26,43 @@ from mach.decorators import (
 
 from mach.logging import StructuredHumanFormatter
 
+ADB_NOT_FOUND = '''
+The %s command requires the adb binary to be on your path.
+
+If you have a B2G build, this can be found in
+'%s/out/host/<platform>/bin'.
+'''.lstrip()
+
+GAIA_PROFILE_NOT_FOUND = '''
+The %s command requires a non-debug gaia profile. Either pass in --profile,
+or set the GAIA_PROFILE environment variable.
+
+If you do not have a non-debug gaia profile, you can build one:
+    $ git clone https://github.com/mozilla-b2g/gaia
+    $ cd gaia
+    $ make
+
+The profile should be generated in a directory called 'profile'.
+'''.lstrip()
+
+GAIA_PROFILE_IS_DEBUG = '''
+The %s command requires a non-debug gaia profile. The specified profile,
+%s, is a debug profile.
+
+If you do not have a non-debug gaia profile, you can build one:
+    $ git clone https://github.com/mozilla-b2g/gaia
+    $ cd gaia
+    $ make
+
+The profile should be generated in a directory called 'profile'.
+'''.lstrip()
+
+MARIONETTE_DISABLED = '''
+The %s command requires a marionette enabled build.
+
+Add 'ENABLE_MARIONETTE=1' to your mozconfig file and re-build the application.
+Your currently active mozconfig is %s.
+'''.lstrip()
 
 class UnexpectedFilter(logging.Filter):
     def filter(self, record):
@@ -36,9 +76,116 @@ class MochitestRunner(MozbuildObject):
     This currently contains just the basics for running mochitests. We may want
     to hook up result parsing, etc.
     """
-    def run_mochitest_test(self, suite=None, test_file=None, debugger=None,
+
+    def get_webapp_runtime_path(self):
+        import mozinfo
+        appname = 'webapprt-stub' + mozinfo.info.get('bin_suffix', '')
+        if sys.platform.startswith('darwin'):
+            appname = os.path.join(self.distdir, self.substs['MOZ_MACBUNDLE_NAME'],
+            'Contents', 'MacOS', appname)
+        else:
+            appname = os.path.join(self.distdir, 'bin', appname)
+        return appname
+
+    def __init__(self, *args, **kwargs):
+        MozbuildObject.__init__(self, *args, **kwargs)
+
+        # TODO Bug 794506 remove once mach integrates with virtualenv.
+        build_path = os.path.join(self.topobjdir, 'build')
+        if build_path not in sys.path:
+            sys.path.append(build_path)
+
+        self.tests_dir = os.path.join(self.topobjdir, '_tests')
+        self.mochitest_dir = os.path.join(self.tests_dir, 'testing', 'mochitest')
+
+    def run_b2g_test(self, test_file=None, b2g_home=None, xre_path=None, **kwargs):
+        """Runs a b2g mochitest.
+
+        test_file is a path to a test file. It can be a relative path from the
+        top source directory, an absolute filename, or a directory containing
+        test files.
+        """
+        # Need to call relpath before os.chdir() below.
+        test_path = ''
+        if test_file:
+            test_path = self._wrap_path_argument(test_file).relpath()
+
+        # TODO without os.chdir, chained imports fail below
+        os.chdir(self.mochitest_dir)
+
+        # The imp module can spew warnings if the modules below have
+        # already been imported, ignore them.
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+
+            import imp
+            path = os.path.join(self.mochitest_dir, 'runtestsb2g.py')
+            with open(path, 'r') as fh:
+                imp.load_module('mochitest', fh, path,
+                    ('.py', 'r', imp.PY_SOURCE))
+
+            import mochitest
+            from mochitest_options import B2GOptions
+
+        parser = B2GOptions()
+        options = parser.parse_args([])[0]
+
+        if test_path:
+            test_root_file = mozpack.path.join(self.mochitest_dir, 'tests', test_path)
+            if not os.path.exists(test_root_file):
+                print('Specified test path does not exist: %s' % test_root_file)
+                return 1
+            options.testPath = test_path
+        else:
+            options.testManifest = 'b2g.json'
+
+        for k, v in kwargs.iteritems():
+            setattr(options, k, v)
+
+        options.consoleLevel = 'INFO'
+        if conditions.is_b2g_desktop(self):
+            if self.substs.get('ENABLE_MARIONETTE') != '1':
+                print(MARIONETTE_DISABLED % ('mochitest-b2g-desktop',
+                                             self.mozconfig['path']))
+                return 1
+
+            options.profile = options.profile or os.environ.get('GAIA_PROFILE')
+            if not options.profile:
+                print(GAIA_PROFILE_NOT_FOUND % 'mochitest-b2g-desktop')
+                return 1
+
+            if os.path.isfile(os.path.join(options.profile, 'extensions', \
+                    'httpd@gaiamobile.org')):
+                print(GAIA_PROFILE_IS_DEBUG % ('mochitest-b2g-desktop',
+                                               options.profile))
+                return 1
+
+            options.desktop = True
+            options.app = self.get_binary_path()
+            if not options.app.endswith('-bin'):
+                options.app = '%s-bin' % options.app
+            if not os.path.isfile(options.app):
+                options.app = options.app[:-len('-bin')]
+
+            return mochitest.run_desktop_mochitests(parser, options)
+
+        try:
+            which.which('adb')
+        except which.WhichError:
+            # TODO Find adb automatically if it isn't on the path
+            print(ADB_NOT_FOUND % ('mochitest-remote', b2g_home))
+            return 1
+
+        options.b2gPath = b2g_home
+        options.logcat_dir = self.mochitest_dir
+        options.httpdPath = self.mochitest_dir
+        options.xrePath = xre_path
+        return mochitest.run_remote_mochitests(parser, options)
+
+    def run_desktop_test(self, suite=None, test_file=None, debugger=None,
         debugger_args=None, shuffle=False, keep_open=False, rerun_failures=False,
-        no_autorun=False, repeat=0, run_until_failure=False, slow=False):
+        no_autorun=False, repeat=0, run_until_failure=False, slow=False,
+        chunk_by_dir=0, total_chunks=None, this_chunk=None, jsdebugger=False):
         """Runs a mochitest.
 
         test_file is a path to a test file. It can be a relative path from the
@@ -58,11 +205,6 @@ class MochitestRunner(MozbuildObject):
         keep_open denotes whether to keep the browser open after tests
         complete.
         """
-        # TODO Bug 794506 remove once mach integrates with virtualenv.
-        build_path = os.path.join(self.topobjdir, 'build')
-        if build_path not in sys.path:
-            sys.path.append(build_path)
-
         if rerun_failures and test_file:
             print('Cannot specify both --rerun-failures and a test path.')
             return 1
@@ -72,9 +214,6 @@ class MochitestRunner(MozbuildObject):
         if test_file:
             test_path = self._wrap_path_argument(test_file).relpath()
 
-        tests_dir = os.path.join(self.topobjdir, '_tests')
-        mochitest_dir = os.path.join(tests_dir, 'testing', 'mochitest')
-
         failure_file_path = os.path.join(self.statedir, 'mochitest_failures.json')
 
         if rerun_failures and not os.path.exists(failure_file_path):
@@ -82,22 +221,20 @@ class MochitestRunner(MozbuildObject):
             return 1
 
         from StringIO import StringIO
-        from automation import Automation
 
         # runtests.py is ambiguous, so we load the file/module manually.
         if 'mochitest' not in sys.modules:
             import imp
-            path = os.path.join(mochitest_dir, 'runtests.py')
+            path = os.path.join(self.mochitest_dir, 'runtests.py')
             with open(path, 'r') as fh:
                 imp.load_module('mochitest', fh, path,
                     ('.py', 'r', imp.PY_SOURCE))
 
+        import mozinfo
         import mochitest
 
         # This is required to make other components happy. Sad, isn't it?
         os.chdir(self.topobjdir)
-
-        automation = Automation()
 
         # Automation installs its own stream handler to stdout. Since we want
         # all logging to go through us, we just remove their handler.
@@ -106,10 +243,11 @@ class MochitestRunner(MozbuildObject):
         for handler in remove_handlers:
             logging.getLogger().removeHandler(handler)
 
-        runner = mochitest.Mochitest(automation)
+        runner = mochitest.Mochitest()
 
-        opts = mochitest.MochitestOptions(automation)
+        opts = mochitest.MochitestOptions()
         options, args = opts.parse_args([])
+
 
         # Need to set the suite options before verifyOptions below.
         if suite == 'plain':
@@ -124,6 +262,13 @@ class MochitestRunner(MozbuildObject):
             options.browserChrome = True
         elif suite == 'a11y':
             options.a11y = True
+        elif suite == 'webapprt-content':
+            options.webapprtContent = True
+            options.app = self.get_webapp_runtime_path()
+        elif suite == 'webapprt-chrome':
+            options.webapprtChrome = True
+            options.app = self.get_webapp_runtime_path()
+            options.browserArgs.append("-test-mode")
         else:
             raise Exception('None or unrecognized mochitest suite type.')
 
@@ -134,22 +279,25 @@ class MochitestRunner(MozbuildObject):
         options.repeat = repeat
         options.runUntilFailure = run_until_failure
         options.runSlower = slow
-        options.testingModulesDir = os.path.join(tests_dir, 'modules')
+        options.testingModulesDir = os.path.join(self.tests_dir, 'modules')
         options.extraProfileFiles.append(os.path.join(self.distdir, 'plugins'))
         options.symbolsPath = os.path.join(self.distdir, 'crashreporter-symbols')
+        options.chunkByDir = chunk_by_dir
+        options.totalChunks = total_chunks
+        options.thisChunk = this_chunk
+        options.jsdebugger = jsdebugger
 
         options.failureFile = failure_file_path
 
         if test_path:
             test_root = runner.getTestRoot(options)
-            test_root_file = mozpack.path.join(mochitest_dir, test_root, test_path)
+            test_root_file = mozpack.path.join(self.mochitest_dir, test_root, test_path)
             if not os.path.exists(test_root_file):
                 print('Specified test path does not exist: %s' % test_root_file)
                 print('You may need to run |mach build| to build the test files.')
                 return 1
 
             options.testPath = test_path
-            env = {'TEST_PATH': test_path}
 
         if rerun_failures:
             options.testManifest = failure_file_path
@@ -167,10 +315,6 @@ class MochitestRunner(MozbuildObject):
 
         if options is None:
             raise Exception('mochitest option validator failed.')
-
-        automation.setServerInfo(options.webServer, options.httpPort,
-            options.sslPort, options.webSocketPort)
-
 
         # We need this to enable colorization of output.
         self.log_manager.enable_unstructured()
@@ -228,7 +372,7 @@ def MochitestCommand(func):
     func = keep_open(func)
 
     rerun = CommandArgument('--rerun-failures', action='store_true',
-        help='Run only the tests that filed during the last test run.')
+        help='Run only the tests that failed during the last test run.')
     func = rerun(func)
 
     autorun = CommandArgument('--no-autorun', action='store_true',
@@ -249,6 +393,76 @@ def MochitestCommand(func):
         help='Delay execution between tests.')
     func = slow(func)
 
+    chunk_dir = CommandArgument('--chunk-by-dir', type=int,
+        help='Group tests together in chunks by this many top directories.')
+    func = chunk_dir(func)
+
+    chunk_total = CommandArgument('--total-chunks', type=int,
+        help='Total number of chunks to split tests into.')
+    func = chunk_total(func)
+
+    this_chunk = CommandArgument('--this-chunk', type=int,
+        help='If running tests by chunks, the number of the chunk to run.')
+    func = this_chunk(func)
+
+    jsdebugger = CommandArgument('--jsdebugger', action='store_true',
+        help='Start the browser JS debugger before running the test. Implies --no-autorun.')
+    func = jsdebugger(func)
+
+    path = CommandArgument('test_file', default=None, nargs='?',
+        metavar='TEST',
+        help='Test to run. Can be specified as a single file, a ' \
+            'directory, or omitted. If omitted, the entire test suite is ' \
+            'executed.')
+    func = path(func)
+
+    return func
+
+def B2GCommand(func):
+    """Decorator that adds shared command arguments to b2g mochitest commands."""
+
+    busybox = CommandArgument('--busybox', default=None,
+        help='Path to busybox binary to install on device')
+    func = busybox(func)
+
+    logcatdir = CommandArgument('--logcat-dir', default=None,
+        help='directory to store logcat dump files')
+    func = logcatdir(func)
+
+    profile = CommandArgument('--profile', default=None,
+        help='for desktop testing, the path to the \
+              gaia profile to use')
+    func = profile(func)
+
+    geckopath = CommandArgument('--gecko-path', default=None,
+        help='the path to a gecko distribution that should \
+              be installed on the emulator prior to test')
+    func = geckopath(func)
+
+    nowindow = CommandArgument('--no-window', action='store_true', default=False,
+        help='Pass --no-window to the emulator')
+    func = nowindow(func)
+
+    sdcard = CommandArgument('--sdcard', default="10MB",
+        help='Define size of sdcard: 1MB, 50MB...etc')
+    func = sdcard(func)
+
+    emulator = CommandArgument('--emulator', default='arm',
+        help='Architecture of emulator to use: x86 or arm')
+    func = emulator(func)
+
+    marionette = CommandArgument('--marionette', default=None,
+        help='host:port to use when connecting to Marionette')
+    func = marionette(func)
+
+    chunk_total = CommandArgument('--total-chunks', type=int,
+        help='Total number of chunks to split tests into.')
+    func = chunk_total(func)
+
+    this_chunk = CommandArgument('--this-chunk', type=int,
+        help='If running tests by chunks, the number of the chunk to run.')
+    func = this_chunk(func)
+
     path = CommandArgument('test_file', default=None, nargs='?',
         metavar='TEST',
         help='Test to run. Can be specified as a single file, a ' \
@@ -259,41 +473,118 @@ def MochitestCommand(func):
     return func
 
 
+
 @CommandProvider
 class MachCommands(MachCommandBase):
     @Command('mochitest-plain', category='testing',
+        conditions=[conditions.is_firefox],
         description='Run a plain mochitest.')
     @MochitestCommand
     def run_mochitest_plain(self, test_file, **kwargs):
         return self.run_mochitest(test_file, 'plain', **kwargs)
 
     @Command('mochitest-chrome', category='testing',
+        conditions=[conditions.is_firefox],
         description='Run a chrome mochitest.')
     @MochitestCommand
     def run_mochitest_chrome(self, test_file, **kwargs):
         return self.run_mochitest(test_file, 'chrome', **kwargs)
 
     @Command('mochitest-browser', category='testing',
+        conditions=[conditions.is_firefox],
         description='Run a mochitest with browser chrome.')
     @MochitestCommand
     def run_mochitest_browser(self, test_file, **kwargs):
         return self.run_mochitest(test_file, 'browser', **kwargs)
 
     @Command('mochitest-metro', category='testing',
+        conditions=[conditions.is_firefox],
         description='Run a mochitest with metro browser chrome.')
     @MochitestCommand
     def run_mochitest_metro(self, test_file, **kwargs):
         return self.run_mochitest(test_file, 'metro', **kwargs)
 
     @Command('mochitest-a11y', category='testing',
+        conditions=[conditions.is_firefox],
         description='Run an a11y mochitest.')
     @MochitestCommand
     def run_mochitest_a11y(self, test_file, **kwargs):
         return self.run_mochitest(test_file, 'a11y', **kwargs)
 
+    @Command('webapprt-test-chrome', category='testing',
+        conditions=[conditions.is_firefox],
+        description='Run a webapprt chrome mochitest.')
+    @MochitestCommand
+    def run_mochitest_webapprt_chrome(self, test_file, **kwargs):
+        return self.run_mochitest(test_file, 'webapprt-chrome', **kwargs)
+
+    @Command('webapprt-test-content', category='testing',
+        conditions=[conditions.is_firefox],
+        description='Run a webapprt content mochitest.')
+    @MochitestCommand
+    def run_mochitest_webapprt_content(self, test_file, **kwargs):
+        return self.run_mochitest(test_file, 'webapprt-content', **kwargs)
+
     def run_mochitest(self, test_file, flavor, **kwargs):
+        from mozbuild.controller.building import BuildDriver
+
         self._ensure_state_subdir_exists('.')
 
+        driver = self._spawn(BuildDriver)
+        driver.install_tests(remove=False)
+
         mochitest = self._spawn(MochitestRunner)
-        return mochitest.run_mochitest_test(test_file=test_file, suite=flavor,
+
+        return mochitest.run_desktop_test(test_file=test_file, suite=flavor,
             **kwargs)
+
+
+# TODO For now b2g commands will only work with the emulator,
+# they should be modified to work with all devices.
+def is_emulator(cls):
+    """Emulator needs to be configured."""
+    return cls.device_name in ('emulator', 'emulator-jb')
+
+
+@CommandProvider
+class B2GCommands(MachCommandBase):
+    """So far these are only mochitest plain. They are
+    implemented separately because their command lines
+    are completely different.
+    """
+    def __init__(self, context):
+        MachCommandBase.__init__(self, context)
+
+        for attr in ('b2g_home', 'xre_path', 'device_name'):
+            setattr(self, attr, getattr(context, attr, None))
+
+    @Command('mochitest-remote', category='testing',
+        description='Run a remote mochitest.',
+        conditions=[conditions.is_b2g, is_emulator])
+    @B2GCommand
+    def run_mochitest_remote(self, test_file, **kwargs):
+        from mozbuild.controller.building import BuildDriver
+
+        self._ensure_state_subdir_exists('.')
+
+        driver = self._spawn(BuildDriver)
+        driver.install_tests(remove=False)
+
+        mochitest = self._spawn(MochitestRunner)
+        return mochitest.run_b2g_test(b2g_home=self.b2g_home,
+                xre_path=self.xre_path, test_file=test_file, **kwargs)
+
+    @Command('mochitest-b2g-desktop', category='testing',
+        conditions=[conditions.is_b2g_desktop],
+        description='Run a b2g desktop mochitest.')
+    @B2GCommand
+    def run_mochitest_b2g_desktop(self, test_file, **kwargs):
+        from mozbuild.controller.building import BuildDriver
+
+        self._ensure_state_subdir_exists('.')
+
+        driver = self._spawn(BuildDriver)
+        driver.install_tests(remove=False)
+
+        mochitest = self._spawn(MochitestRunner)
+        return mochitest.run_b2g_test(test_file=test_file, **kwargs)

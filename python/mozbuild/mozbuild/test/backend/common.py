@@ -58,19 +58,42 @@ CONFIGS = {
         'non_global_defines': [],
         'substs': [],
     },
+    'defines': {
+        'defines': [],
+        'non_global_defines': [],
+        'substs': [],
+    },
     'exports': {
         'defines': [],
         'non_global_defines': [],
         'substs': [],
     },
-    'xpcshell_manifests': {
+    'test-manifests-written': {
         'defines': [],
         'non_global_defines': [],
-        'substs': [
-            ('XPCSHELL_TESTS_MANIFESTS', 'XPCSHELL_TESTS'),
-            ],
+        'substs': [],
     },
     'ipdl_sources': {
+        'defines': [],
+        'non_global_defines': [],
+        'substs': [],
+    },
+    'xpidl': {
+        'defines': [],
+        'non_global_defines': [],
+        'substs': [],
+    },
+    'local_includes': {
+        'defines': [],
+        'non_global_defines': [],
+        'substs': [],
+    },
+    'generated_includes': {
+        'defines': [],
+        'non_global_defines': [],
+        'substs': [],
+    },
+    'final_target': {
         'defines': [],
         'non_global_defines': [],
         'substs': [],
@@ -95,9 +118,7 @@ class BackendTester(unittest.TestCase):
         return ConfigEnvironment(srcdir, objdir, **config)
 
     def _emit(self, name, env=None):
-        if not env:
-            env = self._get_environment(name)
-
+        env = env or self._get_environment(name)
         reader = BuildReader(env)
         emitter = TreeMetadataEmitter(env)
 

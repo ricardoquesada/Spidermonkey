@@ -9,14 +9,14 @@
 
 static int g_counter;
 
-static JSBool
+static bool
 CounterAdd(JSContext *cx, JS::HandleObject obj, JS::HandleId id, JS::MutableHandleValue vp)
 {
     g_counter++;
-    return JS_TRUE;
+    return true;
 }
 
-static JSClass CounterClass = {
+static const JSClass CounterClass = {
     "Counter",  /* name */
     0,  /* flags */
     CounterAdd, JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
@@ -27,7 +27,7 @@ BEGIN_TEST(testPropCache_bug505798)
 {
     g_counter = 0;
     EXEC("var x = {};");
-    CHECK(JS_DefineObject(cx, global, "y", &CounterClass, NULL, JSPROP_ENUMERATE));
+    CHECK(JS_DefineObject(cx, global, "y", &CounterClass, nullptr, JSPROP_ENUMERATE));
     EXEC("var arr = [x, y];\n"
          "for (var i = 0; i < arr.length; i++)\n"
          "    arr[i].p = 1;\n");

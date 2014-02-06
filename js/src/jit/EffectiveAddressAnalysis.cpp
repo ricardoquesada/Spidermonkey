@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jit/EffectiveAddressAnalysis.h"
+#include "jit/MIR.h"
+#include "jit/MIRGraph.h"
 
 using namespace js;
 using namespace jit;
@@ -30,9 +32,9 @@ AnalyzeLsh(MBasicBlock *block, MLsh *lsh)
 
     int32_t displacement = 0;
     MInstruction *last = lsh;
-    MDefinition *base = NULL;
+    MDefinition *base = nullptr;
     while (true) {
-        if (last->useCount() != 1)
+        if (!last->hasOneUse())
             break;
 
         MUseIterator use = last->usesBegin();
@@ -61,7 +63,7 @@ AnalyzeLsh(MBasicBlock *block, MLsh *lsh)
         if (displacement % elemSize != 0)
             return;
 
-        if (last->useCount() != 1)
+        if (!last->hasOneUse())
             return;
 
         MUseIterator use = last->usesBegin();

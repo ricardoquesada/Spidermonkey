@@ -9,16 +9,7 @@
 
 #ifdef JS_ION
 
-#include "jscntxt.h"
-#include "jscompartment.h"
-#include "jsinfer.h"
-
-#include "jit/BaselineIC.h"
-#include "jit/BaselineJIT.h"
-#include "jit/BytecodeAnalysis.h"
 #include "jit/FixedList.h"
-#include "jit/IonAllocPolicy.h"
-#include "jit/IonCode.h"
 #if defined(JS_CPU_X86)
 # include "jit/x86/BaselineCompiler-x86.h"
 #elif defined(JS_CPU_X64)
@@ -26,7 +17,6 @@
 #else
 # include "jit/arm/BaselineCompiler-arm.h"
 #endif
-#include "vm/Interpreter.h"
 
 namespace js {
 namespace jit {
@@ -158,6 +148,7 @@ namespace jit {
     _(JSOP_ENTERBLOCK)         \
     _(JSOP_ENTERLET0)          \
     _(JSOP_ENTERLET1)          \
+    _(JSOP_ENTERLET2)          \
     _(JSOP_LEAVEBLOCK)         \
     _(JSOP_LEAVEBLOCKEXPR)     \
     _(JSOP_LEAVEFORLETIN)      \
@@ -189,6 +180,9 @@ class BaselineCompiler : public BaselineCompilerSpecific
 
     // Native code offset right before the scope chain is initialized.
     CodeOffsetLabel prologueOffset_;
+
+    // Whether any on stack arguments are modified.
+    bool modifiesArguments_;
 
     Label *labelOf(jsbytecode *pc) {
         return &labels_[pc - script->code];

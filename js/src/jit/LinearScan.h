@@ -7,7 +7,6 @@
 #ifndef jit_LinearScan_h
 #define jit_LinearScan_h
 
-#include "jit/BitSet.h"
 #include "jit/LiveRangeAllocator.h"
 #include "js/Vector.h"
 
@@ -69,7 +68,6 @@ class LinearScanAllocator : public LiveRangeAllocator<LinearScanVirtualRegister>
       public:
         void enqueueForward(LiveInterval *after, LiveInterval *interval);
         void enqueueBackward(LiveInterval *interval);
-        void enqueueAtHead(LiveInterval *interval);
 
         void assertSorted();
 

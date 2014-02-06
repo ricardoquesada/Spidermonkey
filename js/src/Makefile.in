@@ -4,23 +4,20 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DEPTH		= @DEPTH@
-topsrcdir	= @top_srcdir@
-srcdir		= @srcdir@
+ifndef .PYMAKE
+ifeq (,$(MAKE_VERSION))
+$(error GNU Make is required)
+endif
+make_min_ver := 3.81
+ifneq ($(make_min_ver),$(firstword $(sort $(make_min_ver) $(MAKE_VERSION))))
+$(error GNU Make $(make_min_ver) or higher is required)
+endif
+endif
 
 TOPLEVEL_BUILD := 1
 
 run_for_side_effects := $(shell echo "MAKE: $(MAKE)")
-include $(DEPTH)/config/autoconf.mk
-
-ifdef JS_STANDALONE
-LIBRARY_NAME	= mozjs-@MOZJS_MAJOR_VERSION@.@MOZJS_MINOR_VERSION@@MOZJS_ALPHA@
-else
-LIBRARY_NAME	= mozjs
-endif
-
 STATIC_LIBRARY_NAME = js_static
-MSVC_ENABLE_PGO := 1
 LIBS		= $(NSPR_LIBS)
 
 # JavaScript must be built shared, even for static builds, as it is used by
@@ -34,7 +31,6 @@ LIBS		= $(NSPR_LIBS)
 ifdef JS_SHARED_LIBRARY
 FORCE_SHARED_LIB = 1
 endif
-FORCE_STATIC_LIB = 1
 DIST_INSTALL = 1
 
 ###############################################
@@ -70,6 +66,10 @@ VPATH		+= \
 #
 ifdef NIGHTLY_BUILD
 DEFINES += -DENABLE_PARALLEL_JS
+endif
+
+ifdef NIGHTLY_BUILD
+DEFINES += -DENABLE_BINARYDATA
 endif
 
 # Ion
@@ -149,8 +149,6 @@ else
 SDK_LIBRARY = $(SHARED_LIBRARY)
 endif
 
-include $(topsrcdir)/config/config.mk
-
 ifeq (,$(MOZ_GLUE_PROGRAM_LDFLAGS))
 # When building standalone, we need to include mfbt sources, and to declare
 # "exported" mfbt symbols on its behalf when we use its headers.
@@ -160,17 +158,11 @@ endif
 
 EXTRA_DSO_LDOPTS += $(NSPR_LIBS)
 
-ifndef BUILD_OPT
-MOCHAFILE	= 1
-endif
-
 # Define keyword generator before rules.mk, see bug 323979 comment 50
 
-HOST_CPPSRCS += jskwgen.cpp
 HOST_SIMPLE_PROGRAMS += host_jskwgen$(HOST_BIN_SUFFIX)
 GARBAGE += jsautokw.h host_jskwgen$(HOST_BIN_SUFFIX)
 
-HOST_CPPSRCS += jsoplengen.cpp
 HOST_SIMPLE_PROGRAMS += host_jsoplengen$(HOST_BIN_SUFFIX)
 GARBAGE += jsautooplen.h host_jsoplengen$(HOST_BIN_SUFFIX)
 
@@ -186,6 +178,7 @@ MOZILLA_DTRACE_SRC = $(srcdir)/devtools/javascript-trace.d
 endif
 
 default::
+	$(call py_action,process_install_manifest,--no-remove $(DIST)/include _build_manifests/install/dist_include)
 
 ifneq (,$(CROSS_COMPILE)$(filter-out WINNT OS2,$(OS_ARCH)))
 # nsinstall doesn't get built until we enter config/ in the exports phase,
@@ -210,13 +203,25 @@ symverscript: symverscript.in
 EXTRA_DEPS += symverscript
 endif
 
+export_files = js-config.h
+ifdef HAVE_DTRACE
+export_files += $(CURDIR)/javascript-trace.h
+endif
+
+INSTALL_TARGETS += jsconfig
+jsconfig_FILES = $(export_files)
+jsconfig_DEST = $(DIST)/include
+jsconfig_TARGET := export
+
 include $(topsrcdir)/config/rules.mk
+
+.PHONY: buildffi buildicu
+buildffi buildicu:
+$(if $(MOZ_PSEUDO_DERECURSE),compile,export):: buildffi buildicu
 
 ifdef JS_HAS_CTYPES
 ifndef MOZ_NATIVE_FFI
-# Build libffi proper as part of the 'exports' target, so things get built
-# in the right order.
-export::
+buildffi:
 		$(call SUBMAKE,,ctypes/libffi)
 
 distclean clean::
@@ -232,12 +237,17 @@ endif
 # ICU headers need to be available whether we build with the complete
 # Internationalization API or not - ICU stubs rely on them.
 
+ifdef MOZ_NATIVE_ICU
+LOCAL_INCLUDES += $(MOZ_ICU_CFLAGS)
+else
 LOCAL_INCLUDES += \
   -I$(topsrcdir)/../../intl/icu/source/common \
   -I$(topsrcdir)/../../intl/icu/source/i18n \
   $(NULL)
+endif
 
 ifdef ENABLE_INTL_API
+ifndef MOZ_NATIVE_ICU
 
 ifeq ($(OS_ARCH),WINNT)
   # Library names: On Windows, ICU uses modified library names for static
@@ -255,14 +265,12 @@ else
 ICU_MAKE = $(MAKE)
 endif
 
-# - Build ICU as part of the "export" target, so things get built
-#   in the right order.
 # - ICU requires GNU make according to its readme.html. pymake can't be used
 #   because it doesn't support order only dependencies.
 # - Force ICU to use the standard suffix for object files because expandlibs
 #   will discard all files with a non-standard suffix (bug 857450).
 # - Options for genrb: -k strict parsing; -R omit collation tailoring rules.
-export::
+buildicu:
 # ICU's build system is full of races, so force non-parallel build.
 	+$(ICU_MAKE) -j1 -C intl/icu STATIC_O=$(OBJ_SUFFIX) GENRBOPTS='-k -R'
 	$(ICU_LIB_RENAME)
@@ -270,6 +278,7 @@ export::
 distclean clean::
 	$(call SUBMAKE,$@,intl/icu)
 
+endif
 endif
 
 #
@@ -303,11 +312,18 @@ JITTEST_VALGRIND_FLAG = --valgrind
 endif
 endif
 
+ifdef MOZ_ASAN
+ifneq ($(LLVM_SYMBOLIZER),)
+# Use the LLVM symbolizer when running jit-tests under ASan, if available
+JITTEST_ASAN_ENV=ASAN_SYMBOLIZER_PATH='$(LLVM_SYMBOLIZER)'
+endif
+endif
+
 check-style::
 	(cd $(srcdir) && $(PYTHON) config/check_spidermonkey_style.py);
 
 check-jit-test::
-	$(wildcard $(RUN_TEST_PROGRAM)) $(PYTHON) -u $(srcdir)/jit-test/jit_test.py \
+	$(JITTEST_ASAN_ENV) $(wildcard $(RUN_TEST_PROGRAM)) $(PYTHON) -u $(srcdir)/jit-test/jit_test.py \
 	        --no-slow --no-progress --tinderbox --tbpl $(JITTEST_VALGRIND_FLAG) \
 	        $(DIST)/bin/$(JS_SHELL_NAME)$(BIN_SUFFIX)
 
@@ -349,11 +365,14 @@ endif
 endif
 
 DIST_GARBAGE = config.cache config.log config.status* \
-   config/autoconf.mk \
-   unallmakefiles $(JS_CONFIG_NAME) js-config.h js-confdefs.h
+   config/autoconf.mk config/emptyvars.mk \
+   $(JS_CONFIG_NAME) js-config.h js-confdefs.h \
+   backend.mk config/backend.mk devtools/backend.mk editline/backend.mk \
+   gdb/backend.mk jsapi-tests/backend.mk shell/backend.mk tests/backend.mk \
+   backend.RecursiveMakeBackend.built backend.RecursiveMakeBackend.built.pp \
+   devtools/rootAnalysis/Makefile
 
 distclean::
-	cat unallmakefiles | $(XARGS) rm -f
 	$(RM) $(DIST_GARBAGE)
 
 DEFINES		+= -DEXPORT_JS_API
@@ -394,7 +413,15 @@ ifneq (,$(MOZ_ZLIB_LIBS)$(MOZ_GLUE_LDFLAGS))
 DEFINES += -DUSE_ZLIB
 endif
 
-SHARED_LIBRARY_LIBS += $(ICU_LIBS)
+ifdef MOZ_LINKER
+DEFINES += -DMOZ_LINKER
+endif
+
+ifdef MOZ_NATIVE_ICU
+EXTRA_DSO_LDOPTS += $(MOZ_ICU_LIBS)
+else
+SHARED_LIBRARY_LIBS += $(MOZ_ICU_LIBS)
+endif
 
 # Prevent floating point errors caused by VC++ optimizations
 ifdef _MSC_VER
@@ -549,13 +576,10 @@ install:: $(LIBRARY_NAME).pc
 #          mfbt headers
 #
 
-install:: $(EXPORTS)
-	$(SYSINSTALL) $^ $(DESTDIR)$(includedir)/$(LIBRARY_NAME)
+install::
+	$(call py_action,process_install_manifest,--no-remove $(DESTDIR)$(includedir)/$(LIBRARY_NAME) _build_manifests/install/dist_include)
 
-install:: $(EXPORTS_js)
-	$(SYSINSTALL) $^ $(DESTDIR)$(includedir)/$(LIBRARY_NAME)/js
-
-install:: $(EXPORTS_mozilla)
+install:: $(EXPORTS_mozilla_FILES)
 	$(SYSINSTALL) $^ $(DESTDIR)$(includedir)/$(LIBRARY_NAME)/mozilla
 
 #
@@ -578,15 +602,10 @@ ifneq (,$(IMPORT_LIBRARY))
 endif
 	$(MAKE) -C shell install
 
-# Extra dependencies and rules for auto-generated headers
-host_jskwgen.$(OBJ_SUFFIX): jsversion.h vm/Keywords.h
-
 # Use CURDIR to avoid finding a jsautokw.h in the source tree (from a
 # previous build?) via VPATH when we're building in a separate tree.
 $(CURDIR)/jsautokw.h: host_jskwgen$(HOST_BIN_SUFFIX)
 	./host_jskwgen$(HOST_BIN_SUFFIX) $@
-
-host_jsoplengen.$(OBJ_SUFFIX): jsopcode.tbl
 
 # Use CURDIR to avoid finding a jsautooplen.h in the source tree (from
 # a previous build?) via VPATH when we're building in a separate tree.
@@ -594,7 +613,7 @@ $(CURDIR)/jsautooplen.h: host_jsoplengen$(HOST_BIN_SUFFIX)
 	./host_jsoplengen$(HOST_BIN_SUFFIX) $@
 
 # Force auto-header generation before compiling any source that may use them
-$(patsubst %.cc,%.$(OBJ_SUFFIX),$(CPPSRCS:%.cpp=%.$(OBJ_SUFFIX))): $(CURDIR)/jsautokw.h $(CURDIR)/jsautooplen.h
+$(OBJS): $(CURDIR)/jsautokw.h $(CURDIR)/jsautooplen.h
 
 ifdef MOZ_ETW
 ETWProvider.h ETWProvider.rc ETWProvider.mof: ETWProvider.man
@@ -638,11 +657,13 @@ selfhosting_srcs := \
   $(srcdir)/builtin/Date.js \
   $(srcdir)/builtin/Intl.js \
   $(srcdir)/builtin/IntlData.js \
+  $(srcdir)/builtin/Iterator.js \
+  $(srcdir)/builtin/Map.js \
   $(srcdir)/builtin/Number.js \
   $(srcdir)/builtin/ParallelArray.js \
   $(srcdir)/builtin/String.js \
   $(srcdir)/builtin/Set.js \
-  $(srcdir)/builtin/Map.js \
+  $(srcdir)/builtin/TypedObject.js \
   $(NULL)
 
 selfhosted_out_h_deps := \
@@ -678,3 +699,30 @@ endif
 #
 # END kludges for the Nitro assembler
 ###############################################
+
+###############################################
+# Generating source package tarballs
+# (only possible when tar is found)
+ifneq (,$(TAR))
+
+source-package:
+	SRCDIR=$(srcdir) \
+	DIST=$(DIST) \
+	MAKE=$(MAKE) \
+	MKDIR=$(MKDIR) \
+	TAR=$(TAR) \
+	MOZJS_MAJOR_VERSION=$(MOZJS_MAJOR_VERSION) \
+	MOZJS_MINOR_VERSION=$(MOZJS_MINOR_VERSION) \
+	MOZJS_PATCH_VERSION=$(MOZJS_PATCH_VERSION) \
+	MOZJS_ALPHA=$(MOZJS_ALPHA) \
+	$(srcdir)/make-source-package.sh
+
+clean::
+	DIST=$(DIST) \
+	MOZJS_MAJOR_VERSION=$(MOZJS_MAJOR_VERSION) \
+	MOZJS_MINOR_VERSION=$(MOZJS_MINOR_VERSION) \
+	MOZJS_PATCH_VERSION=$(MOZJS_PATCH_VERSION) \
+	MOZJS_ALPHA=$(MOZJS_ALPHA) \
+	$(srcdir)/make-source-package.sh clean
+
+endif

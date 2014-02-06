@@ -9,7 +9,6 @@
 
 #include "jsatom.h"
 #include "jsopcode.h"
-#include "jsprvtd.h"
 #include "jspubtd.h"
 #include "jsscript.h"
 #include "jstypes.h"
@@ -73,10 +72,6 @@ class FunctionContextFlags
     // This class's data is all private and so only visible to these friends.
     friend class FunctionBox;
 
-    // We parsed a yield statement in the function, which can happen in JS1.7+
-    // mode.
-    bool isLegacyGenerator:1;
-
     // The function or a function that encloses it may define new local names
     // at runtime through means other than calling eval.
     bool mightAliasLocals:1;
@@ -130,8 +125,7 @@ class FunctionContextFlags
 
   public:
     FunctionContextFlags()
-     :  isLegacyGenerator(false),
-        mightAliasLocals(false),
+     :  mightAliasLocals(false),
         hasExtensibleScope(false),
         needsDeclEnvObject(false),
         argumentsHasLocalBinding(false),
@@ -184,8 +178,8 @@ class SharedContext
     bool strict;
     bool extraWarnings;
 
-    // If it's function code, funbox must be non-NULL and scopeChain must be NULL.
-    // If it's global code, funbox must be NULL.
+    // If it's function code, funbox must be non-nullptr and scopeChain must be
+    // nullptr. If it's global code, funbox must be nullptr.
     SharedContext(ExclusiveContext *cx, Directives directives, bool extraWarnings)
       : context(cx),
         anyCxFlags(),
@@ -194,7 +188,7 @@ class SharedContext
     {}
 
     virtual ObjectBox *toObjectBox() = 0;
-    inline bool isGlobalSharedContext() { return toObjectBox() == NULL; }
+    inline bool isGlobalSharedContext() { return toObjectBox() == nullptr; }
     inline bool isModuleBox() { return toObjectBox() && toObjectBox()->isModuleBox(); }
     inline bool isFunctionBox() { return toObjectBox() && toObjectBox()->isFunctionBox(); }
     inline GlobalSharedContext *asGlobalSharedContext();
@@ -227,7 +221,7 @@ class GlobalSharedContext : public SharedContext
         scopeChain_(cx, scopeChain)
     {}
 
-    ObjectBox *toObjectBox() { return NULL; }
+    ObjectBox *toObjectBox() { return nullptr; }
     JSObject *scopeChain() const { return scopeChain_; }
 };
 
@@ -264,7 +258,9 @@ class FunctionBox : public ObjectBox, public SharedContext
     uint32_t        bufEnd;
     uint32_t        startLine;
     uint32_t        startColumn;
-    uint16_t        ndefaults;
+    uint16_t        length;
+
+    uint8_t         generatorKindBits_;     /* The GeneratorKind of this function. */
     bool            inWith:1;               /* some enclosing scope is a with-statement */
     bool            inGenexpLambda:1;       /* lambda from generator expression */
     bool            hasDestructuringArgs:1; /* arguments list contains destructuring expression */
@@ -280,27 +276,40 @@ class FunctionBox : public ObjectBox, public SharedContext
     template <typename ParseHandler>
     FunctionBox(ExclusiveContext *cx, ObjectBox* traceListHead, JSFunction *fun,
                 ParseContext<ParseHandler> *pc, Directives directives,
-                bool extraWarnings);
+                bool extraWarnings, GeneratorKind generatorKind);
 
     ObjectBox *toObjectBox() { return this; }
     JSFunction *function() const { return &object->as<JSFunction>(); }
 
-    // In the future, isGenerator will also return true for ES6 generators.
-    bool isGenerator()              const { return isLegacyGenerator(); }
-    bool isLegacyGenerator()        const { return funCxFlags.isLegacyGenerator; }
+    GeneratorKind generatorKind() const { return GeneratorKindFromBits(generatorKindBits_); }
+    bool isGenerator() const { return generatorKind() != NotGenerator; }
+    bool isLegacyGenerator() const { return generatorKind() == LegacyGenerator; }
+    bool isStarGenerator() const { return generatorKind() == StarGenerator; }
+
+    void setGeneratorKind(GeneratorKind kind) {
+        // A generator kind can be set at initialization, or when "yield" is
+        // first seen.  In both cases the transition can only happen from
+        // NotGenerator.
+        JS_ASSERT(!isGenerator());
+        generatorKindBits_ = GeneratorKindAsBits(kind);
+    }
+
     bool mightAliasLocals()         const { return funCxFlags.mightAliasLocals; }
     bool hasExtensibleScope()       const { return funCxFlags.hasExtensibleScope; }
     bool needsDeclEnvObject()       const { return funCxFlags.needsDeclEnvObject; }
     bool argumentsHasLocalBinding() const { return funCxFlags.argumentsHasLocalBinding; }
     bool definitelyNeedsArgsObj()   const { return funCxFlags.definitelyNeedsArgsObj; }
 
-    void setIsLegacyGenerator()            { funCxFlags.isLegacyGenerator        = true; }
     void setMightAliasLocals()             { funCxFlags.mightAliasLocals         = true; }
     void setHasExtensibleScope()           { funCxFlags.hasExtensibleScope       = true; }
     void setNeedsDeclEnvObject()           { funCxFlags.needsDeclEnvObject       = true; }
     void setArgumentsHasLocalBinding()     { funCxFlags.argumentsHasLocalBinding = true; }
     void setDefinitelyNeedsArgsObj()       { JS_ASSERT(funCxFlags.argumentsHasLocalBinding);
                                              funCxFlags.definitelyNeedsArgsObj   = true; }
+
+    bool hasDefaults() const {
+        return length != function()->nargs - function()->hasRest();
+    }
 
     // Return whether this function has either specified "use asm" or is
     // (transitively) nested inside a function that has.
@@ -354,6 +363,7 @@ enum StmtType {
     STMT_DO_LOOP,               /* do/while loop statement */
     STMT_FOR_LOOP,              /* for loop statement */
     STMT_FOR_IN_LOOP,           /* for/in loop statement */
+    STMT_FOR_OF_LOOP,           /* for/of loop statement */
     STMT_WHILE_LOOP,            /* while loop statement */
     STMT_LIMIT
 };
@@ -428,15 +438,15 @@ PushStatement(ContextT *ct, typename ContextT::StmtInfo *stmt, StmtType type)
     stmt->type = type;
     stmt->isBlockScope = false;
     stmt->isForLetBlock = false;
-    stmt->label = NULL;
-    stmt->blockObj = NULL;
+    stmt->label = nullptr;
+    stmt->blockObj = nullptr;
     stmt->down = ct->topStmt;
     ct->topStmt = stmt;
     if (stmt->linksScope()) {
         stmt->downScope = ct->topScopeStmt;
         ct->topScopeStmt = stmt;
     } else {
-        stmt->downScope = NULL;
+        stmt->downScope = nullptr;
     }
 }
 

@@ -10,7 +10,6 @@
 // This file declares the structures that are used for attaching LIR to a
 // MIRGraph.
 
-#include "jit/IonAllocPolicy.h"
 #include "jit/LIR.h"
 
 namespace js {
@@ -39,8 +38,8 @@ class LIRGeneratorShared : public MInstructionVisitorWithDefaults
       : gen(gen),
         graph(graph),
         lirGraph_(lirGraph),
-        lastResumePoint_(NULL),
-        osiPoint_(NULL)
+        lastResumePoint_(nullptr),
+        osiPoint_(nullptr)
     { }
 
     MIRGenerator *mir() {
@@ -73,6 +72,7 @@ class LIRGeneratorShared : public MInstructionVisitorWithDefaults
     inline LUse useFixed(MDefinition *mir, Register reg);
     inline LUse useFixed(MDefinition *mir, FloatRegister reg);
     inline LUse useFixed(MDefinition *mir, AnyRegister reg);
+    inline LUse useFixedAtStart(MDefinition *mir, Register reg);
     inline LAllocation useOrConstant(MDefinition *mir);
     // "Any" is architecture dependent, and will include registers and stack slots on X86,
     // and only registers on ARM.
@@ -86,6 +86,7 @@ class LIRGeneratorShared : public MInstructionVisitorWithDefaults
     inline LAllocation useKeepaliveOrConstant(MDefinition *mir);
     inline LAllocation useRegisterOrConstant(MDefinition *mir);
     inline LAllocation useRegisterOrConstantAtStart(MDefinition *mir);
+    inline LAllocation useRegisterOrNonNegativeConstantAtStart(MDefinition *mir);
     inline LAllocation useRegisterOrNonDoubleConstant(MDefinition *mir);
 
 #ifdef JS_NUNBOX32
@@ -143,14 +144,14 @@ class LIRGeneratorShared : public MInstructionVisitorWithDefaults
     }
 
     template <typename T> void annotate(T *ins);
-    template <typename T> bool add(T *ins, MInstruction *mir = NULL);
+    template <typename T> bool add(T *ins, MInstruction *mir = nullptr);
 
     void lowerTypedPhiInput(MPhi *phi, uint32_t inputPosition, LBlock *block, size_t lirIndex);
     bool defineTypedPhi(MPhi *phi, size_t lirIndex);
 
     LOsiPoint *popOsiPoint() {
         LOsiPoint *tmp = osiPoint_;
-        osiPoint_ = NULL;
+        osiPoint_ = nullptr;
         return tmp;
     }
 
@@ -179,6 +180,11 @@ class LIRGeneratorShared : public MInstructionVisitorWithDefaults
     // Whether to generate typed array accesses on statically known objects.
     static bool allowStaticTypedArrayAccesses() {
         return false;
+    }
+
+     // Whether we can emit Float32 specific optimizations.
+    static bool allowFloat32Optimizations() {
+       return false;
     }
 };
 

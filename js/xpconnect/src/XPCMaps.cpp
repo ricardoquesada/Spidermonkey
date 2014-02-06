@@ -54,7 +54,7 @@ HashNativeKey(PLDHashTable *table, const void *key)
     }
 
     if (!Set) {
-        NS_ASSERTION(Addition, "bad key");
+        MOZ_ASSERT(Addition, "bad key");
         // This would be an XOR like below.
         // But "0 ^ x == x". So it does not matter.
         h = (js::HashNumber) NS_PTR_TO_INT32(Addition) >> 2;
@@ -86,7 +86,7 @@ JSObject2WrappedJSMap::FindDyingJSObjects(nsTArray<nsXPCWrappedJS*>* dying)
 {
     for (Map::Range r = mTable.all(); !r.empty(); r.popFront()) {
         nsXPCWrappedJS* wrapper = r.front().value;
-        NS_ASSERTION(wrapper, "found a null JS wrapper!");
+        MOZ_ASSERT(wrapper, "found a null JS wrapper!");
 
         // walk the wrapper chain and find any whose JSObject is to be finalized
         while (wrapper) {
@@ -98,13 +98,13 @@ JSObject2WrappedJSMap::FindDyingJSObjects(nsTArray<nsXPCWrappedJS*>* dying)
 }
 
 void
-JSObject2WrappedJSMap::ShutdownMarker(JSRuntime* rt)
+JSObject2WrappedJSMap::ShutdownMarker()
 {
     for (Map::Range r = mTable.all(); !r.empty(); r.popFront()) {
         nsXPCWrappedJS* wrapper = r.front().value;
-        NS_ASSERTION(wrapper, "found a null JS wrapper!");
-        NS_ASSERTION(wrapper->IsValid(), "found an invalid JS wrapper!");
-        wrapper->SystemIsBeingShutDown(rt);
+        MOZ_ASSERT(wrapper, "found a null JS wrapper!");
+        MOZ_ASSERT(wrapper->IsValid(), "found an invalid JS wrapper!");
+        wrapper->SystemIsBeingShutDown();
     }
 }
 
@@ -119,9 +119,9 @@ Native2WrappedNativeMap::newMap(int size)
     if (map && map->mTable)
         return map;
     // Allocation of the map or the creation of its hash table has
-    // failed. This will cause a NULL deref later when we attempt to
-    // use the map, so we abort immediately to provide a more useful
-    // crash stack.
+    // failed. This will cause a nullptr deref later when we attempt
+    // to use the map, so we abort immediately to provide a more
+    // useful crash stack.
     NS_RUNTIMEABORT("Ran out of memory.");
     return nullptr;
 }
@@ -157,7 +157,7 @@ Native2WrappedNativeMap::SizeOfEntryExcludingThis(PLDHashEntryHdr *hdr,
 /***************************************************************************/
 // implement IID2WrappedJSClassMap...
 
-struct PLDHashTableOps IID2WrappedJSClassMap::Entry::sOps =
+const struct PLDHashTableOps IID2WrappedJSClassMap::Entry::sOps =
 {
     PL_DHashAllocTable,
     PL_DHashFreeTable,
@@ -194,7 +194,7 @@ IID2WrappedJSClassMap::~IID2WrappedJSClassMap()
 /***************************************************************************/
 // implement IID2NativeInterfaceMap...
 
-struct PLDHashTableOps IID2NativeInterfaceMap::Entry::sOps =
+const struct PLDHashTableOps IID2NativeInterfaceMap::Entry::sOps =
 {
     PL_DHashAllocTable,
     PL_DHashFreeTable,
@@ -291,9 +291,9 @@ ClassInfo2WrappedNativeProtoMap::newMap(int size)
     if (map && map->mTable)
         return map;
     // Allocation of the map or the creation of its hash table has
-    // failed. This will cause a NULL deref later when we attempt to
-    // use the map, so we abort immediately to provide a more useful
-    // crash stack.
+    // failed. This will cause a nullptr deref later when we attempt
+    // to use the map, so we abort immediately to provide a more
+    // useful crash stack.
     NS_RUNTIMEABORT("Ran out of memory.");
     return nullptr;
 }
@@ -401,7 +401,7 @@ NativeSetMap::Entry::Match(PLDHashTable *table,
     return true;
 }
 
-struct PLDHashTableOps NativeSetMap::Entry::sOps =
+const struct PLDHashTableOps NativeSetMap::Entry::sOps =
 {
     PL_DHashAllocTable,
     PL_DHashFreeTable,
@@ -468,7 +468,7 @@ IID2ThisTranslatorMap::Entry::Clear(PLDHashTable *table, PLDHashEntryHdr *entry)
     memset(entry, 0, table->entrySize);
 }
 
-struct PLDHashTableOps IID2ThisTranslatorMap::Entry::sOps =
+const struct PLDHashTableOps IID2ThisTranslatorMap::Entry::sOps =
 {
     PL_DHashAllocTable,
     PL_DHashFreeTable,
@@ -548,7 +548,7 @@ XPCNativeScriptableSharedMap::Entry::Match(PLDHashTable *table,
     return 0 == strcmp(name1, name2);
 }
 
-struct PLDHashTableOps XPCNativeScriptableSharedMap::Entry::sOps =
+const struct PLDHashTableOps XPCNativeScriptableSharedMap::Entry::sOps =
 {
     PL_DHashAllocTable,
     PL_DHashFreeTable,
@@ -582,7 +582,7 @@ XPCNativeScriptableSharedMap::~XPCNativeScriptableSharedMap()
         PL_DHashTableDestroy(mTable);
 }
 
-JSBool
+bool
 XPCNativeScriptableSharedMap::GetNewOrUsed(uint32_t flags,
                                            char* name,
                                            uint32_t interfacesBitmap,

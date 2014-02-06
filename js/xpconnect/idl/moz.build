@@ -9,15 +9,14 @@ XPIDL_SOURCES += [
     'nsIJSEngineTelemetryStats.idl',
     'nsIJSRuntimeService.idl',
     'nsIScriptError.idl',
-    'nsIXPCScriptNotify.idl',
+    'nsIXPConnect.idl',
     'nsIXPCScriptable.idl',
     'nsIXPCSecurityManager.idl',
-    'nsIXPConnect.idl',
+    'xpccomponents.idl',
+    'xpcexception.idl',
     'xpcIJSGetFactory.idl',
     'xpcIJSModuleLoader.idl',
     'xpcIJSWeakReference.idl',
-    'xpccomponents.idl',
-    'xpcexception.idl',
     'xpcjsid.idl',
 ]
 

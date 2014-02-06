@@ -8,9 +8,7 @@
 # include <valgrind/memcheck.h>
 #endif
 
-#include "jsapi.h"
 #include "jscntxt.h"
-#include "jscompartment.h"
 #include "jsgc.h"
 #include "jsprf.h"
 
@@ -36,7 +34,7 @@ CheckNonAddressThing(uintptr_t *w, Rooted<T> *rootp)
     return w >= (uintptr_t*)rootp->address() && w < (uintptr_t*)(rootp->address() + 1);
 }
 
-JS_ALWAYS_INLINE bool
+static JS_ALWAYS_INLINE bool
 CheckStackRootThing(uintptr_t *w, Rooted<void *> *rootp, ThingRootKind kind)
 {
     if (kind == THING_ROOT_BINDINGS)
@@ -69,7 +67,7 @@ CheckStackRoot(JSRuntime *rt, uintptr_t *w, Rooter *begin, Rooter *end)
         return;
 
     /* Don't check atoms as these will never be subject to generational collection. */
-    if (static_cast<Cell *>(thing)->tenuredZone() == rt->atomsCompartment->zone())
+    if (rt->isAtomsZone(static_cast<Cell *>(thing)->tenuredZone()))
         return;
 
     /*
@@ -270,7 +268,7 @@ JS::CheckStackRoots(JSContext *cx)
     // Truncate stackEnd to just after the address of the youngest
     // already-scanned rooter on the stack, to avoid re-scanning the rest of
     // the stack.
-    void *firstScanned = NULL;
+    void *firstScanned = nullptr;
     for (Rooter *p = rooters.begin(); p != rooters.end(); p++) {
         if (p->rooter->scanned) {
             uintptr_t *addr = reinterpret_cast<uintptr_t*>(p->rooter);
@@ -380,7 +378,7 @@ struct VerifyPreTracer : JSTracer {
     char *term;
     NodeMap nodemap;
 
-    VerifyPreTracer() : root(NULL) {}
+    VerifyPreTracer() : root(nullptr) {}
     ~VerifyPreTracer() { js_free(root); }
 };
 
@@ -406,7 +404,7 @@ AccumulateEdge(JSTracer *jstrc, void **thingp, JSGCTraceKind kind)
 
     node->edges[i].thing = *thingp;
     node->edges[i].kind = kind;
-    node->edges[i].label = trc->debugPrinter ? NULL : (char *)trc->debugPrintArg;
+    node->edges[i].label = trc->debugPrinter ? nullptr : (char *)trc->debugPrintArg;
     node->count++;
 }
 
@@ -419,7 +417,7 @@ MakeNode(VerifyPreTracer *trc, void *thing, JSGCTraceKind kind)
         trc->edgeptr += sizeof(VerifyNode) - sizeof(EdgeValue);
         if (trc->edgeptr >= trc->term) {
             trc->edgeptr = trc->term;
-            return NULL;
+            return nullptr;
         }
 
         node->thing = thing;
@@ -428,7 +426,7 @@ MakeNode(VerifyPreTracer *trc, void *thing, JSGCTraceKind kind)
         trc->nodemap.add(p, thing, node);
         return node;
     }
-    return NULL;
+    return nullptr;
 }
 
 static VerifyNode *
@@ -458,6 +456,8 @@ gc::StartVerifyPreBarriers(JSRuntime *rt)
         r.front()->bitmap.clear();
 
     VerifyPreTracer *trc = js_new<VerifyPreTracer>();
+    if (!trc)
+        return;
 
     rt->gcNumber++;
     trc->number = rt->gcNumber;
@@ -476,7 +476,7 @@ gc::StartVerifyPreBarriers(JSRuntime *rt)
         goto oom;
 
     /* Create the root node. */
-    trc->curnode = MakeNode(trc, NULL, JSGCTraceKind(0));
+    trc->curnode = MakeNode(trc, nullptr, JSGCTraceKind(0));
 
     /* We want MarkRuntime to save the roots to gcSavedRoots. */
     rt->gcIncrementalState = MARK_ROOTS;
@@ -521,7 +521,7 @@ gc::StartVerifyPreBarriers(JSRuntime *rt)
 oom:
     rt->gcIncrementalState = NO_INCREMENTAL;
     js_delete(trc);
-    rt->gcVerifyPreData = NULL;
+    rt->gcVerifyPreData = nullptr;
 }
 
 static bool
@@ -530,14 +530,14 @@ IsMarkedOrAllocated(Cell *cell)
     return cell->isMarked() || cell->arenaHeader()->allocatedDuringIncremental;
 }
 
-const static uint32_t MAX_VERIFIER_EDGES = 1000;
+static const uint32_t MAX_VERIFIER_EDGES = 1000;
 
 /*
  * This function is called by EndVerifyBarriers for every heap edge. If the edge
  * already existed in the original snapshot, we "cancel it out" by overwriting
- * it with NULL. EndVerifyBarriers later asserts that the remaining non-NULL
- * edges (i.e., the ones from the original snapshot that must have been
- * modified) must point to marked objects.
+ * it with nullptr. EndVerifyBarriers later asserts that the remaining
+ * non-nullptr edges (i.e., the ones from the original snapshot that must have
+ * been modified) must point to marked objects.
  */
 static void
 CheckEdge(JSTracer *jstrc, void **thingp, JSGCTraceKind kind)
@@ -552,7 +552,7 @@ CheckEdge(JSTracer *jstrc, void **thingp, JSGCTraceKind kind)
     for (uint32_t i = 0; i < node->count; i++) {
         if (node->edges[i].thing == *thingp) {
             JS_ASSERT(node->edges[i].kind == kind);
-            node->edges[i].thing = NULL;
+            node->edges[i].thing = nullptr;
             return;
         }
     }
@@ -601,7 +601,7 @@ gc::EndVerifyPreBarriers(JSRuntime *rt)
     JS_ASSERT(trc->number == rt->gcNumber);
     rt->gcNumber++;
 
-    rt->gcVerifyPreData = NULL;
+    rt->gcVerifyPreData = nullptr;
     rt->gcIncrementalState = NO_INCREMENTAL;
 
     if (!compartmentCreated && IsIncrementalGCSafe(rt)) {
@@ -660,6 +660,9 @@ gc::StartVerifyPostBarriers(JSRuntime *rt)
     MinorGC(rt, JS::gcreason::API);
 
     VerifyPostTracer *trc = js_new<VerifyPostTracer>();
+    if (!trc)
+        return;
+
     rt->gcVerifyPostData = trc;
     rt->gcNumber++;
     trc->number = rt->gcNumber;
@@ -687,7 +690,7 @@ PostVerifierCollectStoreBufferEdges(JSTracer *jstrc, void **thingp, JSGCTraceKin
      * only things that enter this callback are marked by the store buffer. The
      * store buffer ensures that the real tracing location is set correctly.
      */
-    void **loc = trc->realLocation != NULL ? (void **)trc->realLocation : thingp;
+    void **loc = trc->realLocation != nullptr ? (void **)trc->realLocation : thingp;
 
     trc->edges->put(loc);
 }
@@ -726,7 +729,7 @@ PostVerifierVisitEdge(JSTracer *jstrc, void **thingp, JSGCTraceKind kind)
      * below. Since ObjectImpl::markChildren handles this, the real trace
      * location will be set correctly in these cases.
      */
-    void **loc = trc->realLocation != NULL ? (void **)trc->realLocation : thingp;
+    void **loc = trc->realLocation != nullptr ? (void **)trc->realLocation : thingp;
 
     AssertStoreBufferContainsEdge(trc->edges, loc, dst);
 }
@@ -761,7 +764,7 @@ js::gc::EndVerifyPostBarriers(JSRuntime *rt)
 
 oom:
     js_delete(trc);
-    rt->gcVerifyPostData = NULL;
+    rt->gcVerifyPostData = nullptr;
 #endif
 }
 
@@ -842,12 +845,12 @@ js::gc::FinishVerifier(JSRuntime *rt)
 {
     if (VerifyPreTracer *trc = (VerifyPreTracer *)rt->gcVerifyPreData) {
         js_delete(trc);
-        rt->gcVerifyPreData = NULL;
+        rt->gcVerifyPreData = nullptr;
     }
 #ifdef JSGC_GENERATIONAL
     if (VerifyPostTracer *trc = (VerifyPostTracer *)rt->gcVerifyPostData) {
         js_delete(trc);
-        rt->gcVerifyPostData = NULL;
+        rt->gcVerifyPostData = nullptr;
     }
 #endif
 }

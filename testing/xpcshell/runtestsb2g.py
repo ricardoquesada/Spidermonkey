@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.realpath(os.path.dirname(sys.argv[0]))))
 
 import traceback
-from remotexpcshelltests import XPCShellRemote, RemoteXPCShellOptions
+from remotexpcshelltests import RemoteXPCShellTestThread, XPCShellRemote, RemoteXPCShellOptions
 from mozdevice import devicemanagerADB, DMError
 
 DEVICE_TEST_ROOT = '/data/local/tests'
@@ -17,7 +17,28 @@ DEVICE_TEST_ROOT = '/data/local/tests'
 
 from marionette import Marionette
 
+class B2GXPCShellTestThread(RemoteXPCShellTestThread):
+    # Overridden
+    def launchProcess(self, cmd, stdout, stderr, env, cwd):
+        try:
+            # This returns 1 even when tests pass - hardcode returncode to 0 (bug 773703)
+            outputFile = RemoteXPCShellTestThread.launchProcess(self, cmd, stdout, stderr, env, cwd)
+            self.shellReturnCode = 0
+        except DMError:
+            self.shellReturnCode = -1
+            outputFile = "xpcshelloutput"
+            f = open(outputFile, "a")
+            f.write("\n%s" % traceback.format_exc())
+            f.close()
+        return outputFile
+
 class B2GXPCShellRemote(XPCShellRemote):
+    # Overridden
+    def setLD_LIBRARY_PATH(self):
+        self.env['LD_LIBRARY_PATH'] = '/system/b2g'
+        if not self.options.use_device_libs:
+            # overwrite /system/b2g if necessary
+            XPCShellRemote.setLD_LIBRARY_PATH(self)
 
     # Overridden
     def setupUtilities(self):
@@ -47,29 +68,11 @@ class B2GXPCShellRemote(XPCShellRemote):
     # Overridden
     def pushLibs(self):
         if not self.options.use_device_libs:
-            XPCShellRemote.pushLibs(self)
-
-    # Overridden
-    def setLD_LIBRARY_PATH(self, env):
-        if self.options.use_device_libs:
-            env['LD_LIBRARY_PATH'] = '/system/b2g'
-            env['LD_PRELOAD'] = '/system/b2g/libmozglue.so'
-        else:
-            XPCShellRemote.setLD_LIBRARY_PATH(self, env)
-
-    # Overridden
-    def launchProcess(self, cmd, stdout, stderr, env, cwd):
-        try:
-            # This returns 1 even when tests pass - hardcode returncode to 0 (bug 773703)
-            outputFile = XPCShellRemote.launchProcess(self, cmd, stdout, stderr, env, cwd)
-            self.shellReturnCode = 0
-        except DMError:
-            self.shellReturnCode = -1
-            outputFile = "xpcshelloutput"
-            f = open(outputFile, "a")
-            f.write("\n%s" % traceback.format_exc())
-            f.close()
-        return outputFile
+            count = XPCShellRemote.pushLibs(self)
+            if not count:
+                # couldn't find any libs, fallback to device libs
+                self.env['LD_LIBRARY_PATH'] = '/system/b2g'
+                self.options.use_device_libs = True
 
 class B2GOptions(RemoteXPCShellOptions):
 
@@ -192,14 +195,19 @@ def main():
         options.remoteTestRoot = dm.getDeviceRoot()
     xpcsh = B2GXPCShellRemote(dm, options, args)
 
+    # we don't run concurrent tests on mobile
+    options.sequential = True
+
     try:
-        success = xpcsh.runTests(xpcshell='xpcshell', testdirs=args[0:], **options.__dict__)
+        if not xpcsh.runTests(xpcshell='xpcshell', testdirs=args[0:],
+                                 testClass=B2GXPCShellTestThread,
+                                 mobileArgs=xpcsh.mobileArgs,
+                                 **options.__dict__):
+            sys.exit(1)
     except:
         print "Automation Error: Exception caught while running tests"
         traceback.print_exc()
         sys.exit(1)
-
-    sys.exit(int(success))
 
 
 # You usually run this like :

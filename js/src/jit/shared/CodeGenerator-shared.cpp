@@ -8,7 +8,7 @@
 
 #include "mozilla/DebugOnly.h"
 
-#include "builtin/ParallelArray.h"
+#include "jit/IonCaches.h"
 #include "jit/IonMacroAssembler.h"
 #include "jit/IonSpewer.h"
 #include "jit/MIR.h"
@@ -35,18 +35,18 @@ CodeGeneratorShared::ensureMasm(MacroAssembler *masmArg)
 }
 
 CodeGeneratorShared::CodeGeneratorShared(MIRGenerator *gen, LIRGraph *graph, MacroAssembler *masmArg)
-  : oolIns(NULL),
+  : oolIns(nullptr),
     maybeMasm_(),
     masm(ensureMasm(masmArg)),
     gen(gen),
     graph(*graph),
-    current(NULL),
-    deoptTable_(NULL),
+    current(nullptr),
+    deoptTable_(nullptr),
 #ifdef DEBUG
     pushedArgs_(0),
 #endif
     lastOsiPointOffset_(0),
-    sps_(&gen->compartment->rt->spsProfiler, &lastPC_),
+    sps_(&GetIonContext()->runtime->spsProfiler, &lastPC_),
     osrEntryOffset_(0),
     skipArgCheckEntryOffset_(0),
     frameDepth_(graph->localSlotCount() * sizeof(STACK_SLOT_SIZE) +
@@ -99,7 +99,7 @@ CodeGeneratorShared::generateOutOfLineCode()
         if (!outOfLineCode_[i]->generate(this))
             return false;
     }
-    oolIns = NULL;
+    oolIns = nullptr;
 
     return true;
 }
@@ -114,7 +114,7 @@ CodeGeneratorShared::addOutOfLineCode(OutOfLineCode *code)
     if (oolIns)
         code->setSource(oolIns->script(), oolIns->pc());
     else
-        code->setSource(current ? current->mir()->info().script() : NULL, lastPC_);
+        code->setSource(current ? current->mir()->info().script() : nullptr, lastPC_);
     return outOfLineCode_.append(code);
 }
 
@@ -127,7 +127,7 @@ ToStackIndex(LAllocation *a)
         return a->toStackSlot()->slot();
     }
     JS_ASSERT(-int32_t(sizeof(IonJSFrameLayout)) <= a->toArgument()->index());
-    return -(sizeof(IonJSFrameLayout) + a->toArgument()->index());
+    return -int32_t(sizeof(IonJSFrameLayout) + a->toArgument()->index());
 }
 
 bool
@@ -143,6 +143,9 @@ CodeGeneratorShared::encodeSlots(LSnapshot *snapshot, MResumePoint *resumePoint,
         if (mir->isPassArg())
             mir = mir->toPassArg()->getArgument();
         JS_ASSERT(!mir->isPassArg());
+
+        if (mir->isBox())
+            mir = mir->toBox()->getOperand(0);
 
         MIRType type = mir->isUnused()
                        ? MIRType_Undefined
@@ -160,15 +163,23 @@ CodeGeneratorShared::encodeSlots(LSnapshot *snapshot, MResumePoint *resumePoint,
           case MIRType_Object:
           case MIRType_Boolean:
           case MIRType_Double:
+          case MIRType_Float32:
           {
             LAllocation *payload = snapshot->payloadOfSlot(i);
-            JSValueType type = ValueTypeFromMIRType(mir->type());
+            JSValueType valueType = ValueTypeFromMIRType(type);
             if (payload->isMemory()) {
-                snapshots_.addSlot(type, ToStackIndex(payload));
+                if (type == MIRType_Float32)
+                    snapshots_.addFloat32Slot(ToStackIndex(payload));
+                else
+                    snapshots_.addSlot(valueType, ToStackIndex(payload));
             } else if (payload->isGeneralReg()) {
-                snapshots_.addSlot(type, ToRegister(payload));
+                snapshots_.addSlot(valueType, ToRegister(payload));
             } else if (payload->isFloatReg()) {
-                snapshots_.addSlot(ToFloatRegister(payload));
+                FloatRegister reg = ToFloatRegister(payload);
+                if (type == MIRType_Float32)
+                    snapshots_.addFloat32Slot(reg);
+                else
+                    snapshots_.addSlot(reg);
             } else {
                 MConstant *constant = mir->toConstant();
                 const Value &v = constant->value();
@@ -274,7 +285,9 @@ CodeGeneratorShared::encode(LSnapshot *snapshot)
                 // include the this. When inlining that is not included.
                 // So the exprStackSlots will be one less.
                 JS_ASSERT(stackDepth - exprStack <= 1);
-            } else if (JSOp(*bailPC) != JSOP_FUNAPPLY && !IsGetterPC(bailPC) && !IsSetterPC(bailPC)) {
+            } else if (JSOp(*bailPC) != JSOP_FUNAPPLY &&
+                       !IsGetPropPC(bailPC) && !IsSetPropPC(bailPC))
+            {
                 // For fun.apply({}, arguments) the reconstructStackDepth will
                 // have stackdepth 4, but it could be that we inlined the
                 // funapply. In that case exprStackSlots, will have the real
@@ -420,6 +433,183 @@ CodeGeneratorShared::markOsiPoint(LOsiPoint *ins, uint32_t *callPointOffset)
     return osiIndices_.append(OsiIndex(*callPointOffset, so));
 }
 
+#ifdef CHECK_OSIPOINT_REGISTERS
+template <class Op>
+static void
+HandleRegisterDump(Op op, MacroAssembler &masm, RegisterSet liveRegs, Register activation,
+                   Register scratch)
+{
+    const size_t baseOffset = JitActivation::offsetOfRegs();
+
+    // Handle live GPRs.
+    for (GeneralRegisterIterator iter(liveRegs.gprs()); iter.more(); iter++) {
+        Register reg = *iter;
+        Address dump(activation, baseOffset + RegisterDump::offsetOfRegister(reg));
+
+        if (reg == activation) {
+            // To use the original value of the activation register (that's
+            // now on top of the stack), we need the scratch register.
+            masm.push(scratch);
+            masm.loadPtr(Address(StackPointer, sizeof(uintptr_t)), scratch);
+            op(scratch, dump);
+            masm.pop(scratch);
+        } else {
+            op(reg, dump);
+        }
+    }
+
+    // Handle live FPRs.
+    for (FloatRegisterIterator iter(liveRegs.fpus()); iter.more(); iter++) {
+        FloatRegister reg = *iter;
+        Address dump(activation, baseOffset + RegisterDump::offsetOfRegister(reg));
+        op(reg, dump);
+    }
+}
+
+class StoreOp
+{
+    MacroAssembler &masm;
+
+  public:
+    StoreOp(MacroAssembler &masm)
+      : masm(masm)
+    {}
+
+    void operator()(Register reg, Address dump) {
+        masm.storePtr(reg, dump);
+    }
+    void operator()(FloatRegister reg, Address dump) {
+        masm.storeDouble(reg, dump);
+    }
+};
+
+static void
+StoreAllLiveRegs(MacroAssembler &masm, RegisterSet liveRegs)
+{
+    // Store a copy of all live registers before performing the call.
+    // When we reach the OsiPoint, we can use this to check nothing
+    // modified them in the meantime.
+
+    // Load pointer to the JitActivation in a scratch register.
+    GeneralRegisterSet allRegs(GeneralRegisterSet::All());
+    Register scratch = allRegs.takeAny();
+    masm.push(scratch);
+    masm.loadJitActivation(scratch);
+
+    Address checkRegs(scratch, JitActivation::offsetOfCheckRegs());
+    masm.add32(Imm32(1), checkRegs);
+
+    StoreOp op(masm);
+    HandleRegisterDump<StoreOp>(op, masm, liveRegs, scratch, allRegs.getAny());
+
+    masm.pop(scratch);
+}
+
+class VerifyOp
+{
+    MacroAssembler &masm;
+    Label *failure_;
+
+  public:
+    VerifyOp(MacroAssembler &masm, Label *failure)
+      : masm(masm), failure_(failure)
+    {}
+
+    void operator()(Register reg, Address dump) {
+        masm.branchPtr(Assembler::NotEqual, dump, reg, failure_);
+    }
+    void operator()(FloatRegister reg, Address dump) {
+        masm.loadDouble(dump, ScratchFloatReg);
+        masm.branchDouble(Assembler::DoubleNotEqual, ScratchFloatReg, reg, failure_);
+    }
+};
+
+static void
+OsiPointRegisterCheckFailed()
+{
+    // Any live register captured by a safepoint (other than temp registers)
+    // must remain unchanged between the call and the OsiPoint instruction.
+    MOZ_ASSUME_UNREACHABLE("Modified registers between VM call and OsiPoint");
+}
+
+void
+CodeGeneratorShared::verifyOsiPointRegs(LSafepoint *safepoint)
+{
+    // Ensure the live registers stored by callVM did not change between
+    // the call and this OsiPoint. Try-catch relies on this invariant.
+
+    // Load pointer to the JitActivation in a scratch register.
+    GeneralRegisterSet allRegs(GeneralRegisterSet::All());
+    Register scratch = allRegs.takeAny();
+    masm.push(scratch);
+    masm.loadJitActivation(scratch);
+
+    // If we should not check registers (because the instruction did not call
+    // into the VM, or a GC happened), we're done.
+    Label failure, done;
+    Address checkRegs(scratch, JitActivation::offsetOfCheckRegs());
+    masm.branch32(Assembler::Equal, checkRegs, Imm32(0), &done);
+
+    // Having more than one VM function call made in one visit function at
+    // runtime is a sec-ciritcal error, because if we conservatively assume that
+    // one of the function call can re-enter Ion, then the invalidation process
+    // will potentially add a call at a random location, by patching the code
+    // before the return address.
+    masm.branch32(Assembler::NotEqual, checkRegs, Imm32(1), &failure);
+
+    // Ignore temp registers. Some instructions (like LValueToInt32) modify
+    // temps after calling into the VM. This is fine because no other
+    // instructions (including this OsiPoint) will depend on them.
+    RegisterSet liveRegs = safepoint->liveRegs();
+    liveRegs = RegisterSet::Intersect(liveRegs, RegisterSet::Not(safepoint->tempRegs()));
+
+    VerifyOp op(masm, &failure);
+    HandleRegisterDump<VerifyOp>(op, masm, liveRegs, scratch, allRegs.getAny());
+
+    masm.jump(&done);
+
+    masm.bind(&failure);
+    masm.setupUnalignedABICall(0, scratch);
+    masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, OsiPointRegisterCheckFailed));
+    masm.breakpoint();
+
+    masm.bind(&done);
+    masm.pop(scratch);
+}
+
+bool
+CodeGeneratorShared::shouldVerifyOsiPointRegs(LSafepoint *safepoint)
+{
+    if (!js_IonOptions.checkOsiPointRegisters)
+        return false;
+
+    if (gen->info().executionMode() != SequentialExecution)
+        return false;
+
+    if (safepoint->liveRegs().empty(true) && safepoint->liveRegs().empty(false))
+        return false; // No registers to check.
+
+    return true;
+}
+
+void
+CodeGeneratorShared::resetOsiPointRegs(LSafepoint *safepoint)
+{
+    if (!shouldVerifyOsiPointRegs(safepoint))
+        return;
+
+    // Set checkRegs to 0. If we perform a VM call, the instruction
+    // will set it to 1.
+    GeneralRegisterSet allRegs(GeneralRegisterSet::All());
+    Register scratch = allRegs.takeAny();
+    masm.push(scratch);
+    masm.loadJitActivation(scratch);
+    Address checkRegs(scratch, JitActivation::offsetOfCheckRegs());
+    masm.store32(Imm32(0), checkRegs);
+    masm.pop(scratch);
+}
+#endif
+
 // Before doing any call to Cpp, you should ensure that volatile
 // registers are evicted by the register allocator.
 bool
@@ -449,9 +639,14 @@ CodeGeneratorShared::callVM(const VMFunction &fun, LInstruction *ins, const Regi
 #endif
 
     // Get the wrapper of the VM function.
-    IonCode *wrapper = gen->ionRuntime()->getVMWrapper(fun);
+    IonCode *wrapper = gen->jitRuntime()->getVMWrapper(fun);
     if (!wrapper)
         return false;
+
+#ifdef CHECK_OSIPOINT_REGISTERS
+    if (shouldVerifyOsiPointRegs(ins->safepoint()))
+        StoreAllLiveRegs(masm, ins->safepoint()->liveRegs());
+#endif
 
     // Call the wrapper function.  The wrapper is in charge to unwind the stack
     // when returning from the call.  Failures are handled with exceptions based
@@ -481,10 +676,11 @@ class OutOfLineTruncateSlow : public OutOfLineCodeBase<CodeGeneratorShared>
 {
     FloatRegister src_;
     Register dest_;
+    bool needFloat32Conversion_;
 
   public:
-    OutOfLineTruncateSlow(FloatRegister src, Register dest)
-      : src_(src), dest_(dest)
+    OutOfLineTruncateSlow(FloatRegister src, Register dest, bool needFloat32Conversion = false)
+      : src_(src), dest_(dest), needFloat32Conversion_(needFloat32Conversion)
     { }
 
     bool accept(CodeGeneratorShared *codegen) {
@@ -496,16 +692,41 @@ class OutOfLineTruncateSlow : public OutOfLineCodeBase<CodeGeneratorShared>
     Register dest() const {
         return dest_;
     }
+    bool needFloat32Conversion() const {
+        return needFloat32Conversion_;
+    }
+
 };
+
+OutOfLineCode *
+CodeGeneratorShared::oolTruncateDouble(const FloatRegister &src, const Register &dest)
+{
+    OutOfLineTruncateSlow *ool = new OutOfLineTruncateSlow(src, dest);
+    if (!addOutOfLineCode(ool))
+        return nullptr;
+    return ool;
+}
 
 bool
 CodeGeneratorShared::emitTruncateDouble(const FloatRegister &src, const Register &dest)
 {
-    OutOfLineTruncateSlow *ool = new OutOfLineTruncateSlow(src, dest);
-    if (!addOutOfLineCode(ool))
+    OutOfLineCode *ool = oolTruncateDouble(src, dest);
+    if (!ool)
         return false;
 
     masm.branchTruncateDouble(src, dest, ool->entry());
+    masm.bind(ool->rejoin());
+    return true;
+}
+
+bool
+CodeGeneratorShared::emitTruncateFloat32(const FloatRegister &src, const Register &dest)
+{
+    OutOfLineTruncateSlow *ool = new OutOfLineTruncateSlow(src, dest, true);
+    if (!addOutOfLineCode(ool))
+        return false;
+
+    masm.branchTruncateFloat32(src, dest, ool->entry());
     masm.bind(ool->rejoin());
     return true;
 }
@@ -518,10 +739,21 @@ CodeGeneratorShared::visitOutOfLineTruncateSlow(OutOfLineTruncateSlow *ool)
 
     saveVolatile(dest);
 
+    if (ool->needFloat32Conversion()) {
+        masm.push(src);
+        masm.convertFloatToDouble(src, src);
+    }
+
     masm.setupUnalignedABICall(1, dest);
     masm.passABIArg(src);
-    masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, js::ToInt32));
+    if (gen->compilingAsmJS())
+        masm.callWithABI(AsmJSImm_ToInt32);
+    else
+        masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, js::ToInt32));
     masm.storeCallResult(dest);
+
+    if (ool->needFloat32Conversion())
+        masm.pop(src);
 
     restoreVolatile(dest);
 
@@ -570,7 +802,7 @@ CodeGeneratorShared::oolAbortPar(ParallelBailoutCause cause, MBasicBlock *basicB
 {
     OutOfLineAbortPar *ool = new OutOfLineAbortPar(cause, basicBlock, bytecode);
     if (!ool || !addOutOfLineCode(ool))
-        return NULL;
+        return nullptr;
     return ool;
 }
 
@@ -594,21 +826,21 @@ CodeGeneratorShared::oolPropagateAbortPar(LInstruction *lir)
 {
     OutOfLinePropagateAbortPar *ool = new OutOfLinePropagateAbortPar(lir);
     if (!ool || !addOutOfLineCode(ool))
-        return NULL;
+        return nullptr;
     return ool;
 }
 
 bool
 OutOfLineAbortPar::generate(CodeGeneratorShared *codegen)
 {
-    codegen->callTraceLIR(0xDEADBEEF, NULL, "AbortPar");
+    codegen->callTraceLIR(0xDEADBEEF, nullptr, "AbortPar");
     return codegen->visitOutOfLineAbortPar(this);
 }
 
 bool
 OutOfLinePropagateAbortPar::generate(CodeGeneratorShared *codegen)
 {
-    codegen->callTraceLIR(0xDEADBEEF, NULL, "AbortPar");
+    codegen->callTraceLIR(0xDEADBEEF, nullptr, "AbortPar");
     return codegen->visitOutOfLinePropagateAbortPar(this);
 }
 
@@ -618,62 +850,151 @@ CodeGeneratorShared::callTraceLIR(uint32_t blockIndex, LInstruction *lir,
 {
     JS_ASSERT_IF(!lir, bailoutName);
 
-    uint32_t emi = (uint32_t) gen->info().executionMode();
-
     if (!IonSpewEnabled(IonSpew_Trace))
         return true;
-    masm.PushRegsInMask(RegisterSet::All());
 
-    RegisterSet regSet(RegisterSet::All());
+    uint32_t execMode = (uint32_t) gen->info().executionMode();
+    uint32_t lirIndex;
+    const char *lirOpName;
+    const char *mirOpName;
+    JSScript *script;
+    jsbytecode *pc;
 
-    Register blockIndexReg = regSet.takeGeneral();
-    Register lirIndexReg = regSet.takeGeneral();
-    Register emiReg = regSet.takeGeneral();
-    Register lirOpNameReg = regSet.takeGeneral();
-    Register mirOpNameReg = regSet.takeGeneral();
-    Register scriptReg = regSet.takeGeneral();
-    Register pcReg = regSet.takeGeneral();
+    masm.PushRegsInMask(RegisterSet::Volatile());
+    masm.reserveStack(sizeof(IonLIRTraceData));
 
     // This first move is here so that when you scan the disassembly,
     // you can easily pick out where each instruction begins.  The
     // next few items indicate to you the Basic Block / LIR.
-    masm.move32(Imm32(0xDEADBEEF), blockIndexReg);
+    masm.move32(Imm32(0xDEADBEEF), CallTempReg0);
 
     if (lir) {
-        masm.move32(Imm32(blockIndex), blockIndexReg);
-        masm.move32(Imm32(lir->id()), lirIndexReg);
-        masm.move32(Imm32(emi), emiReg);
-        masm.movePtr(ImmWord(lir->opName()), lirOpNameReg);
+        lirIndex = lir->id();
+        lirOpName = lir->opName();
         if (MDefinition *mir = lir->mirRaw()) {
-            masm.movePtr(ImmWord(mir->opName()), mirOpNameReg);
-            masm.movePtr(ImmWord((void *)mir->block()->info().script()), scriptReg);
-            masm.movePtr(ImmWord(mir->trackedPc()), pcReg);
+            mirOpName = mir->opName();
+            script = mir->block()->info().script();
+            pc = mir->trackedPc();
         } else {
-            masm.movePtr(ImmWord((void *)NULL), mirOpNameReg);
-            masm.movePtr(ImmWord((void *)NULL), scriptReg);
-            masm.movePtr(ImmWord((void *)NULL), pcReg);
+            mirOpName = nullptr;
+            script = nullptr;
+            pc = nullptr;
         }
     } else {
-        masm.move32(Imm32(0xDEADBEEF), blockIndexReg);
-        masm.move32(Imm32(0xDEADBEEF), lirIndexReg);
-        masm.move32(Imm32(emi), emiReg);
-        masm.movePtr(ImmWord(bailoutName), lirOpNameReg);
-        masm.movePtr(ImmWord(bailoutName), mirOpNameReg);
-        masm.movePtr(ImmWord((void *)NULL), scriptReg);
-        masm.movePtr(ImmWord((void *)NULL), pcReg);
+        blockIndex = lirIndex = 0xDEADBEEF;
+        lirOpName = mirOpName = bailoutName;
+        script = nullptr;
+        pc = nullptr;
     }
 
-    masm.setupUnalignedABICall(7, CallTempReg4);
-    masm.passABIArg(blockIndexReg);
-    masm.passABIArg(lirIndexReg);
-    masm.passABIArg(emiReg);
-    masm.passABIArg(lirOpNameReg);
-    masm.passABIArg(mirOpNameReg);
-    masm.passABIArg(scriptReg);
-    masm.passABIArg(pcReg);
+    masm.store32(Imm32(blockIndex),
+                 Address(StackPointer, offsetof(IonLIRTraceData, blockIndex)));
+    masm.store32(Imm32(lirIndex),
+                 Address(StackPointer, offsetof(IonLIRTraceData, lirIndex)));
+    masm.store32(Imm32(execMode),
+                 Address(StackPointer, offsetof(IonLIRTraceData, execModeInt)));
+    masm.storePtr(ImmPtr(lirOpName),
+                  Address(StackPointer, offsetof(IonLIRTraceData, lirOpName)));
+    masm.storePtr(ImmPtr(mirOpName),
+                  Address(StackPointer, offsetof(IonLIRTraceData, mirOpName)));
+    masm.storePtr(ImmGCPtr(script),
+                  Address(StackPointer, offsetof(IonLIRTraceData, script)));
+    masm.storePtr(ImmPtr(pc),
+                  Address(StackPointer, offsetof(IonLIRTraceData, pc)));
+
+    masm.movePtr(StackPointer, CallTempReg0);
+    masm.setupUnalignedABICall(1, CallTempReg1);
+    masm.passABIArg(CallTempReg0);
     masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, TraceLIR));
-    masm.PopRegsInMask(RegisterSet::All());
+
+    masm.freeStack(sizeof(IonLIRTraceData));
+    masm.PopRegsInMask(RegisterSet::Volatile());
+
     return true;
+}
+
+typedef bool (*InterruptCheckFn)(JSContext *);
+const VMFunction InterruptCheckInfo = FunctionInfo<InterruptCheckFn>(InterruptCheck);
+
+Label *
+CodeGeneratorShared::labelForBackedgeWithImplicitCheck(MBasicBlock *mir)
+{
+    // If this is a loop backedge to a loop header with an implicit interrupt
+    // check, use a patchable jump. Skip this search if compiling without a
+    // script for asm.js, as there will be no interrupt check instruction.
+    // Due to critical edge unsplitting there may no longer be unique loop
+    // backedges, so just look for any edge going to an earlier block in RPO.
+    if (!gen->compilingAsmJS() && mir->isLoopHeader() && mir->id() <= current->mir()->id()) {
+        for (LInstructionIterator iter = mir->lir()->begin(); iter != mir->lir()->end(); iter++) {
+            if (iter->isLabel() || iter->isMoveGroup()) {
+                // Continue searching for an interrupt check.
+            } else if (iter->isInterruptCheckImplicit()) {
+                return iter->toInterruptCheckImplicit()->oolEntry();
+            } else {
+                // The interrupt check should be the first instruction in the
+                // loop header other than the initial label and move groups.
+                JS_ASSERT(iter->isInterruptCheck() || iter->isCheckInterruptPar());
+                return nullptr;
+            }
+        }
+    }
+
+    return nullptr;
+}
+
+void
+CodeGeneratorShared::jumpToBlock(MBasicBlock *mir)
+{
+    // No jump necessary if we can fall through to the next block.
+    if (isNextBlock(mir->lir()))
+        return;
+
+    if (Label *oolEntry = labelForBackedgeWithImplicitCheck(mir)) {
+        // Note: the backedge is initially a jump to the next instruction.
+        // It will be patched to the target block's label during link().
+        RepatchLabel rejoin;
+        CodeOffsetJump backedge = masm.jumpWithPatch(&rejoin);
+        masm.bind(&rejoin);
+
+        if (!patchableBackedges_.append(PatchableBackedgeInfo(backedge, mir->lir()->label(), oolEntry)))
+            MOZ_CRASH();
+    } else {
+        masm.jump(mir->lir()->label());
+    }
+}
+
+void
+CodeGeneratorShared::jumpToBlock(MBasicBlock *mir, Assembler::Condition cond)
+{
+    if (Label *oolEntry = labelForBackedgeWithImplicitCheck(mir)) {
+        // Note: the backedge is initially a jump to the next instruction.
+        // It will be patched to the target block's label during link().
+        RepatchLabel rejoin;
+        CodeOffsetJump backedge = masm.jumpWithPatch(&rejoin, cond);
+        masm.bind(&rejoin);
+
+        if (!patchableBackedges_.append(PatchableBackedgeInfo(backedge, mir->lir()->label(), oolEntry)))
+            MOZ_CRASH();
+    } else {
+        masm.j(cond, mir->lir()->label());
+    }
+}
+
+size_t
+CodeGeneratorShared::addCacheLocations(const CacheLocationList &locs, size_t *numLocs)
+{
+    size_t firstIndex = runtimeData_.length();
+    size_t numLocations = 0;
+    for (CacheLocationList::iterator iter = locs.begin(); iter != locs.end(); iter++) {
+        // allocateData() ensures that sizeof(CacheLocation) is word-aligned.
+        // If this changes, we will need to pad to ensure alignment.
+        size_t curIndex = allocateData(sizeof(CacheLocation));
+        new (&runtimeData_[curIndex]) CacheLocation(iter->pc, iter->script);
+        numLocations++;
+    }
+    JS_ASSERT(numLocations != 0);
+    *numLocs = numLocations;
+    return firstIndex;
 }
 
 } // namespace jit

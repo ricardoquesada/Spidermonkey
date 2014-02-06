@@ -32,6 +32,7 @@
 
 #include "assembler/wtf/Assertions.h"
 #include "assembler/wtf/VMTags.h"
+#include "js/Utility.h"
 
 namespace JSC {
 
@@ -42,7 +43,14 @@ size_t ExecutableAllocator::determinePageSize()
 
 ExecutablePool::Allocation ExecutableAllocator::systemAlloc(size_t n)
 {
-    void* allocation = mmap(NULL, n, INITIAL_PROTECTION_FLAGS, MAP_PRIVATE | MAP_ANON, VM_TAG_FOR_EXECUTABLEALLOCATOR_MEMORY, 0);
+    void* allocation;
+#ifdef JSGC_ROOT_ANALYSIS
+    do {
+#endif
+        allocation = mmap(NULL, n, INITIAL_PROTECTION_FLAGS, MAP_PRIVATE | MAP_ANON, VM_TAG_FOR_EXECUTABLEALLOCATOR_MEMORY, 0);
+#ifdef JSGC_ROOT_ANALYSIS
+    } while (allocation && JS::IsPoisonedPtr(allocation));
+#endif
     if (allocation == MAP_FAILED)
         allocation = NULL;
     ExecutablePool::Allocation alloc = { reinterpret_cast<char*>(allocation), n };
@@ -90,6 +98,18 @@ __asm void ExecutableAllocator::cacheFlush(void* code, size_t size)
     bx lr
 }
 #endif
+
+void
+ExecutablePool::toggleAllCodeAsAccessible(bool accessible)
+{
+    char* begin = m_allocation.pages;
+    size_t size = m_freePtr - begin;
+
+    if (size) {
+        if (mprotect(begin, size, accessible ? PROT_READ | PROT_WRITE | PROT_EXEC : PROT_NONE))
+            MOZ_CRASH();
+    }
+}
 
 }
 

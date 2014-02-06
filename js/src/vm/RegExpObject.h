@@ -10,22 +10,15 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/MemoryReporting.h"
 
-#include <stddef.h>
-
 #include "jscntxt.h"
-#include "jsobj.h"
 #include "jsproxy.h"
 
-#include "gc/Barrier.h"
 #include "gc/Marking.h"
-#include "vm/MatchPairs.h"
-#include "vm/Runtime.h"
-#include "yarr/MatchResult.h"
-#include "yarr/Yarr.h"
 #if ENABLE_YARR_JIT
 #include "yarr/YarrJIT.h"
+#else
+#include "yarr/YarrInterpreter.h"
 #endif
-#include "yarr/YarrSyntaxChecker.h"
 
 /*
  * JavaScript Regular Expressions
@@ -47,6 +40,24 @@
  */
 namespace js {
 
+class MatchConduit;
+class MatchPair;
+class MatchPairs;
+class RegExpShared;
+
+namespace frontend { class TokenStream; }
+
+enum RegExpFlag
+{
+    IgnoreCaseFlag  = 0x01,
+    GlobalFlag      = 0x02,
+    MultilineFlag   = 0x04,
+    StickyFlag      = 0x08,
+
+    NoFlags         = 0x00,
+    AllFlags        = 0x0f
+};
+
 enum RegExpRunStatus
 {
     RegExpRunStatus_Error,
@@ -60,10 +71,10 @@ class RegExpObjectBuilder
     Rooted<RegExpObject*> reobj_;
 
     bool getOrCreate();
-    bool getOrCreateClone(RegExpObject *proto);
+    bool getOrCreateClone(HandleTypeObject type);
 
   public:
-    RegExpObjectBuilder(ExclusiveContext *cx, RegExpObject *reobj = NULL);
+    RegExpObjectBuilder(ExclusiveContext *cx, RegExpObject *reobj = nullptr);
 
     RegExpObject *reobj() { return reobj_; }
 
@@ -211,7 +222,7 @@ class RegExpShared
     bool hasCode() const                { return false; }
     bool hasMatchOnlyCode() const       { return false; }
 #endif
-    bool hasBytecode() const            { return bytecode != NULL; }
+    bool hasBytecode() const            { return bytecode != nullptr; }
     bool isCompiled() const             { return hasBytecode() || hasCode() || hasMatchOnlyCode(); }
 };
 
@@ -235,7 +246,7 @@ class RegExpGuard
 
   public:
     RegExpGuard(ExclusiveContext *cx)
-      : re_(NULL), source_(cx)
+      : re_(nullptr), source_(cx)
     {}
 
     RegExpGuard(ExclusiveContext *cx, RegExpShared &re)
@@ -259,8 +270,8 @@ class RegExpGuard
     void release() {
         if (re_) {
             re_->decRef();
-            re_ = NULL;
-            source_ = NULL;
+            re_ = nullptr;
+            source_ = nullptr;
         }
     }
 
@@ -311,6 +322,7 @@ class RegExpCompartment
 
     bool init(JSContext *cx);
     void sweep(JSRuntime *rt);
+    void clearTables();
 
     bool get(ExclusiveContext *cx, JSAtom *source, RegExpFlag flags, RegExpGuard *g);
 
@@ -332,7 +344,7 @@ class RegExpObject : public JSObject
   public:
     static const unsigned RESERVED_SLOTS = 6;
 
-    static Class class_;
+    static const Class class_;
 
     /*
      * Note: The regexp statics flags are OR'd into the provided flags,
@@ -355,13 +367,22 @@ class RegExpObject : public JSObject
     static unsigned lastIndexSlot() { return LAST_INDEX_SLOT; }
 
     const Value &getLastIndex() const { return getSlot(LAST_INDEX_SLOT); }
-    inline void setLastIndex(double d);
-    inline void zeroLastIndex();
+
+    void setLastIndex(double d) {
+        setSlot(LAST_INDEX_SLOT, NumberValue(d));
+    }
+
+    void zeroLastIndex() {
+        setSlot(LAST_INDEX_SLOT, Int32Value(0));
+    }
 
     JSFlatString *toString(JSContext *cx) const;
 
     JSAtom *getSource() const { return &getSlot(SOURCE_SLOT).toString()->asAtom(); }
-    inline void setSource(JSAtom *source);
+
+    void setSource(JSAtom *source) {
+        setSlot(SOURCE_SLOT, StringValue(source));
+    }
 
     RegExpFlag getFlags() const {
         unsigned flags = 0;
@@ -374,17 +395,29 @@ class RegExpObject : public JSObject
 
     /* Flags. */
 
-    inline void setIgnoreCase(bool enabled);
-    inline void setGlobal(bool enabled);
-    inline void setMultiline(bool enabled);
-    inline void setSticky(bool enabled);
+    void setIgnoreCase(bool enabled) {
+        setSlot(IGNORE_CASE_FLAG_SLOT, BooleanValue(enabled));
+    }
+
+    void setGlobal(bool enabled) {
+        setSlot(GLOBAL_FLAG_SLOT, BooleanValue(enabled));
+    }
+
+    void setMultiline(bool enabled) {
+        setSlot(MULTILINE_FLAG_SLOT, BooleanValue(enabled));
+    }
+
+    void setSticky(bool enabled) {
+        setSlot(STICKY_FLAG_SLOT, BooleanValue(enabled));
+    }
+
     bool ignoreCase() const { return getSlot(IGNORE_CASE_FLAG_SLOT).toBoolean(); }
     bool global() const     { return getSlot(GLOBAL_FLAG_SLOT).toBoolean(); }
     bool multiline() const  { return getSlot(MULTILINE_FLAG_SLOT).toBoolean(); }
     bool sticky() const     { return getSlot(STICKY_FLAG_SLOT).toBoolean(); }
 
     void shared(RegExpGuard *g) const {
-        JS_ASSERT(maybeShared() != NULL);
+        JS_ASSERT(maybeShared() != nullptr);
         g->init(*maybeShared());
     }
 
@@ -395,7 +428,11 @@ class RegExpObject : public JSObject
         }
         return createShared(cx, g);
     }
-    inline void setShared(ExclusiveContext *cx, RegExpShared &shared);
+
+    void setShared(ExclusiveContext *cx, RegExpShared &shared) {
+        shared.prepareForUse(cx);
+        JSObject::setPrivate(&shared);
+    }
 
   private:
     friend class RegExpObjectBuilder;

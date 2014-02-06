@@ -3,25 +3,12 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DEPTH		= @DEPTH@
-topsrcdir	= @top_srcdir@
-srcdir		= @srcdir@
-VPATH		= @srcdir@
-relativesrcdir  = @relativesrcdir@
-
-include $(DEPTH)/config/autoconf.mk
-
 NO_JS_MANIFEST = 1
 MOZ_CHROME_FILE_FORMAT = jar
 DIST_FILES = install.rdf
 
 # Used in install.rdf
 USE_EXTENSION_MANIFEST = 1
-
-XPI_NAME = mochijar
-
-# we turn this off for UNIVERSAL_BINARY
-CHROME_JAR = 1
 
 include $(topsrcdir)/config/rules.mk
 # We're installing to _tests/testing/mochitest, so this is the depth
@@ -64,7 +51,10 @@ _SERV_FILES = 	\
 		android.json \
 		androidx86.json \
 		b2g.json \
+		b2g-desktop.json \
+		b2g-debug.json \
 		b2g_start_script.js \
+		gl.json \
 		root-ev-tester.crl \
 		intermediate-ev-tester.crl \
 		$(NULL)	
@@ -129,6 +119,7 @@ TEST_HARNESS_BINS := \
   certutil$(BIN_SUFFIX) \
   pk12util$(BIN_SUFFIX) \
   OCSPStaplingServer$(BIN_SUFFIX) \
+  GenerateOCSPResponse$(BIN_SUFFIX) \
   fix_stack_using_bpsyms.py \
   $(NULL)
 
@@ -179,25 +170,6 @@ endif
 # Rules for staging the necessary harness bits for a test package
 PKG_STAGE = $(DIST)/test-package-stage
 DIST_BIN = $(DIST)/bin
-
-PKG_CHROMEJAR = $(PKG_STAGE)/mochitest/content/
-
-ifdef CHROME_JAR
-stage-chromejar:
-	$(NSINSTALL) -D $(PKG_CHROMEJAR)
-	cp -RL $(DEPTH)/_tests/testing/mochitest/browser $(PKG_CHROMEJAR)
-	cp -RL $(DEPTH)/_tests/testing/mochitest/chrome $(PKG_CHROMEJAR)
-ifdef MOZ_METRO
-	cp -RL $(DEPTH)/_tests/testing/mochitest/metro $(PKG_CHROMEJAR)
-endif
-ifdef ACCESSIBILITY
-	cp -RL $(DEPTH)/_tests/testing/mochitest/a11y $(PKG_CHROMEJAR)
-endif
-	(cd $(PKG_STAGE)/mochitest && zip -rq tests.jar content/)
-	@(rm -rf $(PKG_CHROMEJAR))
-
-stage-package: stage-chromejar
-endif
 
 $(_DEST_DIR):
 	$(NSINSTALL) -D $@

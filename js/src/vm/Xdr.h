@@ -9,11 +9,7 @@
 
 #include "mozilla/Endian.h"
 
-#include "jsapi.h"
-#include "jsnum.h"
-#include "jsprvtd.h"
-
-#include "vm/NumericConversions.h"
+#include "jsatom.h"
 
 namespace js {
 
@@ -26,12 +22,12 @@ namespace js {
  * and saved versions. If deserialization fails, the data should be
  * invalidated if possible.
  */
-static const uint32_t XDR_BYTECODE_VERSION = uint32_t(0xb973c0de - 150);
+static const uint32_t XDR_BYTECODE_VERSION = uint32_t(0xb973c0de - 153);
 
 class XDRBuffer {
   public:
     XDRBuffer(JSContext *cx)
-      : context(cx), base(NULL), cursor(NULL), limit(NULL) { }
+      : context(cx), base(nullptr), cursor(nullptr), limit(nullptr) { }
 
     JSContext *cx() const {
         return context;
@@ -67,7 +63,7 @@ class XDRBuffer {
     uint8_t *write(size_t n) {
         if (n > size_t(limit - cursor)) {
             if (!grow(n))
-                return NULL;
+                return nullptr;
         }
         uint8_t *ptr = cursor;
         cursor += n;
@@ -102,7 +98,7 @@ class XDRState {
     JSPrincipals *originPrincipals_;
 
     XDRState(JSContext *cx)
-      : buf(cx), principals_(NULL), originPrincipals_(NULL) {
+      : buf(cx), principals_(nullptr), originPrincipals_(nullptr) {
     }
 
   public:
@@ -232,7 +228,7 @@ class XDREncoder : public XDRState<XDR_ENCODE> {
 
     void *forgetData(uint32_t *lengthp) {
         void *data = buf.getData(lengthp);
-        buf.setData(NULL, 0);
+        buf.setData(nullptr, 0);
         return data;
     }
 };

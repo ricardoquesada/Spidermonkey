@@ -8,7 +8,6 @@
 #define mozJSLoaderUtils_h
 
 #include "nsString.h"
-#include "jsapi.h"
 
 class nsIURI;
 namespace mozilla {
@@ -20,7 +19,7 @@ class StartupCache;
 nsresult
 ReadCachedScript(mozilla::scache::StartupCache* cache, nsACString &uri,
                  JSContext *cx, nsIPrincipal *systemPrincipal,
-                 JSScript **script);
+                 JS::MutableHandleScript scriptp);
 
 nsresult
 ReadCachedFunction(mozilla::scache::StartupCache* cache, nsACString &uri,
@@ -30,7 +29,7 @@ ReadCachedFunction(mozilla::scache::StartupCache* cache, nsACString &uri,
 nsresult
 WriteCachedScript(mozilla::scache::StartupCache* cache, nsACString &uri,
                   JSContext *cx, nsIPrincipal *systemPrincipal,
-                  JSScript *script);
+                  JS::HandleScript script);
 nsresult
 WriteCachedFunction(mozilla::scache::StartupCache* cache, nsACString &uri,
                     JSContext *cx, nsIPrincipal *systemPrincipal,

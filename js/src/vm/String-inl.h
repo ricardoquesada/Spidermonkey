@@ -29,7 +29,7 @@ NewShortString(ThreadSafeContext *cx, JS::Latin1Chars chars)
                           ? JSInlineString::new_<allowGC>(cx)
                           : JSShortString::new_<allowGC>(cx);
     if (!str)
-        return NULL;
+        return nullptr;
 
     jschar *p = str->init(len);
     for (size_t i = 0; i < len; ++i)
@@ -53,7 +53,7 @@ NewShortString(ExclusiveContext *cx, JS::StableTwoByteChars chars)
                           ? JSInlineString::new_<allowGC>(cx)
                           : JSShortString::new_<allowGC>(cx);
     if (!str)
-        return NULL;
+        return nullptr;
 
     jschar *storage = str->init(len);
     mozilla::PodCopy(storage, chars.start().get(), len);
@@ -77,7 +77,7 @@ NewShortString(ExclusiveContext *cx, JS::TwoByteChars chars)
                           : JSShortString::new_<NoGC>(cx);
     if (!str) {
         if (!allowGC)
-            return NULL;
+            return nullptr;
         jschar tmp[JSShortString::MAX_SHORT_LENGTH];
         mozilla::PodCopy(tmp, chars.start().get(), len);
         return NewShortString<CanGC>(cx, JS::StableTwoByteChars(tmp, len));
@@ -100,45 +100,6 @@ StringWriteBarrierPostRemove(js::ThreadSafeContext *maybecx, JSString **strp)
 }
 
 } /* namespace js */
-
-inline void
-JSString::writeBarrierPre(JSString *str)
-{
-#ifdef JSGC_INCREMENTAL
-    if (!str || !str->runtime()->needsBarrier())
-        return;
-
-    JS::Zone *zone = str->zone();
-    if (zone->needsBarrier()) {
-        JSString *tmp = str;
-        MarkStringUnbarriered(zone->barrierTracer(), &tmp, "write barrier");
-        JS_ASSERT(tmp == str);
-    }
-#endif
-}
-
-inline bool
-JSString::needWriteBarrierPre(JS::Zone *zone)
-{
-#ifdef JSGC_INCREMENTAL
-    return zone->needsBarrier();
-#else
-    return false;
-#endif
-}
-
-inline void
-JSString::readBarrier(JSString *str)
-{
-#ifdef JSGC_INCREMENTAL
-    JS::Zone *zone = str->zone();
-    if (zone->needsBarrier()) {
-        JSString *tmp = str;
-        MarkStringUnbarriered(zone->barrierTracer(), &tmp, "read barrier");
-        JS_ASSERT(tmp == str);
-    }
-#endif
-}
 
 JS_ALWAYS_INLINE bool
 JSString::validateLength(js::ThreadSafeContext *maybecx, size_t length)
@@ -169,10 +130,10 @@ JSRope::new_(js::ThreadSafeContext *cx,
              size_t length)
 {
     if (!validateLength(cx, length))
-        return NULL;
+        return nullptr;
     JSRope *str = (JSRope *) js_NewGCString<allowGC>(cx);
     if (!str)
-        return NULL;
+        return nullptr;
     str->init(cx, left, right, length);
     return str;
 }
@@ -237,7 +198,7 @@ JSDependentString::new_(js::ExclusiveContext *cx,
 
     str = (JSDependentString *)js_NewGCString<js::CanGC>(cx);
     if (!str)
-        return NULL;
+        return nullptr;
     str->init(cx, base, chars, length);
     return str;
 }
@@ -260,7 +221,7 @@ JSFlatString::toPropertyName(JSContext *cx)
         return asAtom().asPropertyName();
     JSAtom *atom = js::AtomizeString<js::CanGC>(cx, this);
     if (!atom)
-        return NULL;
+        return nullptr;
     return atom->asPropertyName();
 }
 
@@ -278,10 +239,10 @@ JSStableString::new_(js::ThreadSafeContext *cx, const jschar *chars, size_t leng
     JS_ASSERT(chars[length] == jschar(0));
 
     if (!validateLength(cx, length))
-        return NULL;
+        return nullptr;
     JSStableString *str = (JSStableString *)js_NewGCString<allowGC>(cx);
     if (!str)
-        return NULL;
+        return nullptr;
     str->init(chars, length);
     return str;
 }
@@ -333,10 +294,10 @@ JSExternalString::new_(JSContext *cx, const jschar *chars, size_t length,
     JS_ASSERT(chars[length] == 0);
 
     if (!validateLength(cx, length))
-        return NULL;
+        return nullptr;
     JSExternalString *str = js_NewGCExternalString(cx);
     if (!str)
-        return NULL;
+        return nullptr;
     str->init(chars, length, fin);
     cx->runtime()->updateMallocCounter(cx->zone(), (length + 1) * sizeof(jschar));
     return str;
@@ -349,7 +310,7 @@ js::StaticStrings::getUnitStringForElement(JSContext *cx, JSString *str, size_t 
 
     jschar c;
     if (!str->getChar(cx, index, &c))
-        return NULL;
+        return nullptr;
     if (c < UNIT_STATIC_LIMIT)
         return getUnit(c);
     return js_NewDependentString(cx, str, index, 1);

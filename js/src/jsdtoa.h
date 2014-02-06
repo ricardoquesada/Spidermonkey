@@ -6,6 +6,7 @@
 
 #ifndef jsdtoa_h
 #define jsdtoa_h
+
 /*
  * Public interface to portable double-precision floating point to string
  * and back conversion package.
@@ -26,14 +27,14 @@ js_DestroyDtoaState(DtoaState *state);
  * value represented by the character string pointed to by s00. The string is
  * scanned up to the first unrecognized character.
  *
- * If se is not NULL, *se receives a pointer to the character terminating the
- * scan. If no number can be formed, *se receives a pointer to the first
+ * If se is not nullptr, *se receives a pointer to the character terminating
+ * the scan. If no number can be formed, *se receives a pointer to the first
  * unparseable character in s00, and zero is returned.
  *
- * *err is set to zero on success; it's set to JS_DTOA_ERANGE on range
- * errors and JS_DTOA_ENOMEM on memory failure.
+ * On overflow, this function returns infinity and does not indicate an error.
+ *
+ * *err is set to zero on success; it's set to JS_DTOA_ENOMEM on memory failure.
  */
-#define JS_DTOA_ERANGE 1
 #define JS_DTOA_ENOMEM 2
 double
 js_strtod_harder(DtoaState *state, const char *s00, char **se, int *err);
@@ -81,7 +82,7 @@ typedef enum JSDToStrMode {
  * beginning.  The size of buffer is given in bufferSize, and must be at least
  * as large as given by the above macros.
  *
- * Return NULL if out of memory.
+ * Return nullptr if out of memory.
  */
 char *
 js_dtostr(DtoaState *state, char *buffer, size_t bufferSize, JSDToStrMode mode, int precision,
@@ -102,7 +103,7 @@ js_dtostr(DtoaState *state, char *buffer, size_t bufferSize, JSDToStrMode mode, 
  * would equal d (except for -0.0, which converts to "0", and NaN, which is
  * not equal to itself).
  *
- * Return NULL if out of memory.  If the result is not NULL, it must be
+ * Return nullptr if out of memory.  If the result is not nullptr, it must be
  * released via js_free().
  */
 char *

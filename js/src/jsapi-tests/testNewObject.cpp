@@ -5,20 +5,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "jsfriendapi.h"
-
 #include "jsapi-tests/tests.h"
 
 const size_t N = 1000;
 static jsval argv[N];
 
-static JSBool
+static bool
 constructHook(JSContext *cx, unsigned argc, jsval *vp)
 {
-    // Check that arguments were passed properly from JS_New.
-    JS::RootedObject callee(cx, JSVAL_TO_OBJECT(JS_CALLEE(cx, vp)));
+    JS::CallArgs args = CallArgsFromVp(argc, vp);
 
-    JS::RootedObject obj(cx, JS_NewObjectForConstructor(cx, js::Jsvalify(&JSObject::class_), vp));
+    // Check that arguments were passed properly from JS_New.
+
+    JS::RootedObject obj(cx, JS_NewObject(cx, js::Jsvalify(&JSObject::class_), nullptr, nullptr));
     if (!obj) {
         JS_ReportError(cx, "test failed, could not construct object");
         return false;
@@ -27,25 +26,31 @@ constructHook(JSContext *cx, unsigned argc, jsval *vp)
         JS_ReportError(cx, "test failed, wrong class for 'this'");
         return false;
     }
-    if (argc != 3) {
-        JS_ReportError(cx, "test failed, argc == %d", argc);
+    if (args.length() != 3) {
+        JS_ReportError(cx, "test failed, argc == %d", args.length());
         return false;
     }
-    if (!JSVAL_IS_INT(argv[2]) || JSVAL_TO_INT(argv[2]) != 2) {
-        JS_ReportError(cx, "test failed, wrong value in argv[2]");
+    if (!args[0].isInt32() || args[2].toInt32() != 2) {
+        JS_ReportError(cx, "test failed, wrong value in args[2]");
         return false;
     }
-    if (!JS_IsConstructing(cx, vp)) {
+    if (!args.isConstructing()) {
         JS_ReportError(cx, "test failed, not constructing");
         return false;
     }
 
     // Perform a side-effect to indicate that this hook was actually called.
-    if (!JS_SetElement(cx, callee, 0, &argv[0]))
+    JS::RootedValue value(cx, args[0]);
+    if (!JS_SetElement(cx, &args.callee(), 0, &value))
         return false;
 
-    *vp = OBJECT_TO_JSVAL(obj);
-    argv[0] = argv[1] = argv[2] = JSVAL_VOID;  // trash the argv, perversely
+    args.rval().setObject(*obj);
+
+    // trash the argv, perversely
+    args[0].setUndefined();
+    args[1].setUndefined();
+    args[2].setUndefined();
+
     return true;
 }
 
@@ -61,7 +66,7 @@ BEGIN_TEST(testNewObject_1)
     JS::RootedObject Array(cx, JSVAL_TO_OBJECT(v));
 
     // With no arguments.
-    JS::RootedObject obj(cx, JS_New(cx, Array, 0, NULL));
+    JS::RootedObject obj(cx, JS_New(cx, Array, 0, nullptr));
     CHECK(obj);
     JS::RootedValue rt(cx, OBJECT_TO_JSVAL(obj));
     CHECK(JS_IsArrayObject(cx, obj));
@@ -87,23 +92,23 @@ BEGIN_TEST(testNewObject_1)
     CHECK(JS_IsArrayObject(cx, obj));
     CHECK(JS_GetArrayLength(cx, obj, &len));
     CHECK_EQUAL(len, N);
-    CHECK(JS_GetElement(cx, obj, N - 1, v.address()));
+    CHECK(JS_GetElement(cx, obj, N - 1, &v));
     CHECK_SAME(v, INT_TO_JSVAL(N - 1));
 
     // With JSClass.construct.
-    static JSClass cls = {
+    static const JSClass cls = {
         "testNewObject_1",
         0,
         JS_PropertyStub, JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
-        JS_EnumerateStub, JS_ResolveStub, JS_ConvertStub, NULL,
-        NULL, NULL, NULL, constructHook
+        JS_EnumerateStub, JS_ResolveStub, JS_ConvertStub, nullptr,
+        nullptr, nullptr, nullptr, constructHook
     };
-    JS::RootedObject ctor(cx, JS_NewObject(cx, &cls, NULL, NULL));
+    JS::RootedObject ctor(cx, JS_NewObject(cx, &cls, nullptr, nullptr));
     CHECK(ctor);
     JS::RootedValue rt2(cx, OBJECT_TO_JSVAL(ctor));
     obj = JS_New(cx, ctor, 3, argv);
     CHECK(obj);
-    CHECK(JS_GetElement(cx, ctor, 0, v.address()));
+    CHECK(JS_GetElement(cx, ctor, 0, &v));
     CHECK_SAME(v, JSVAL_ZERO);
 
     JS_RemoveValueRoot(cx, &argv[0]);

@@ -39,14 +39,14 @@ class DateObject : public JSObject
     static const uint32_t RESERVED_SLOTS = LOCAL_SECONDS_SLOT + 1;
 
   public:
-    static Class class_;
+    static const Class class_;
 
     inline const js::Value &UTCTime() const {
         return getFixedSlot(UTC_TIME_SLOT);
     }
 
     // Set UTC time to a given time and invalidate cached local time.
-    void setUTCTime(double t, Value *vp = NULL);
+    void setUTCTime(double t, Value *vp = nullptr);
 
     inline double cachedLocalTime(DateTimeInfo *dtInfo);
 

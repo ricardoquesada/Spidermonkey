@@ -8,10 +8,7 @@
 
 #include "mozilla/DebugOnly.h"
 
-#include <limits.h>
-
 #include "jit/BitSet.h"
-#include "jit/IonBuilder.h"
 #include "jit/IonSpewer.h"
 
 using namespace js;
@@ -86,7 +83,7 @@ LinearScanAllocator::allocateRegisters()
 
     // Iterate through all intervals in ascending start order.
     CodePosition prevPosition = CodePosition::MIN;
-    while ((current = unhandled.dequeue()) != NULL) {
+    while ((current = unhandled.dequeue()) != nullptr) {
         JS_ASSERT(current->getAllocation()->isUse());
         JS_ASSERT(current->numRanges() > 0);
 
@@ -265,13 +262,25 @@ LinearScanAllocator::resolveControlFlow()
         BitSet *live = liveIn[mSuccessor->id()];
 
         for (BitSet::Iterator liveRegId(*live); liveRegId; liveRegId++) {
-            LiveInterval *to = vregs[*liveRegId].intervalFor(inputOf(successor->firstId()));
+            LinearScanVirtualRegister *vreg = &vregs[*liveRegId];
+            LiveInterval *to = vreg->intervalFor(inputOf(successor->firstId()));
             JS_ASSERT(to);
 
             for (size_t j = 0; j < mSuccessor->numPredecessors(); j++) {
                 LBlock *predecessor = mSuccessor->getPredecessor(j)->lir();
                 LiveInterval *from = vregs[*liveRegId].intervalFor(outputOf(predecessor->lastId()));
                 JS_ASSERT(from);
+
+                if (*from->getAllocation() == *to->getAllocation())
+                    continue;
+
+                // If this value is spilled at its definition, other stores
+                // are redundant.
+                if (vreg->mustSpillAtDefinition() && to->getAllocation()->isStackSlot()) {
+                    JS_ASSERT(vreg->canonicalSpill());
+                    JS_ASSERT(*vreg->canonicalSpill() == *to->getAllocation());
+                    continue;
+                }
 
                 if (mSuccessor->numPredecessors() > 1) {
                     JS_ASSERT(predecessor->mir()->numSuccessors() == 1);
@@ -297,6 +306,25 @@ LinearScanAllocator::moveInputAlloc(CodePosition pos, LAllocation *from, LAlloca
         return true;
     LMoveGroup *moves = getInputMoveGroup(pos);
     return moves->add(from, to);
+}
+
+static inline void
+SetOsiPointUses(LiveInterval *interval, CodePosition defEnd, const LAllocation &allocation)
+{
+    // Moves are inserted after OsiPoint instructions. This function sets
+    // any OsiPoint uses of this interval to the allocation of the value
+    // before the move.
+
+    JS_ASSERT(interval->index() == 0);
+
+    for (UsePositionIterator usePos(interval->usesBegin());
+         usePos != interval->usesEnd();
+         usePos++)
+    {
+        if (usePos->pos > defEnd)
+            break;
+        *static_cast<LAllocation *>(usePos->use) = allocation;
+    }
 }
 
 /*
@@ -339,10 +367,19 @@ LinearScanAllocator::reifyAllocations()
             LDefinition *def = reg->def();
             LAllocation *spillFrom;
 
+            // Insert the moves after any OsiPoint or Nop instructions
+            // following this one. See minimalDefEnd for more info.
+            CodePosition defEnd = minimalDefEnd(reg->ins());
+
             if (def->policy() == LDefinition::PRESET && def->output()->isRegister()) {
                 AnyRegister fixedReg = def->output()->toRegister();
                 LiveInterval *from = fixedIntervals[fixedReg.code()];
-                if (!moveAfter(outputOf(reg->ins()), from, interval))
+
+                // If we insert the move after an OsiPoint that uses this vreg,
+                // it should use the fixed register instead.
+                SetOsiPointUses(interval, defEnd, LAllocation(fixedReg));
+
+                if (!moveAfter(defEnd, from, interval))
                     return false;
                 spillFrom = from->getAllocation();
             } else {
@@ -375,11 +412,14 @@ LinearScanAllocator::reifyAllocations()
             if (reg->mustSpillAtDefinition() && !reg->ins()->isPhi() &&
                 (*reg->canonicalSpill() != *spillFrom))
             {
-                // Insert a spill at the input of the next instruction. Control
-                // instructions never have outputs, so the next instruction is
-                // always valid. Note that we explicitly ignore phis, which
-                // should have been handled in resolveControlFlow().
-                LMoveGroup *moves = getMoveGroupAfter(outputOf(reg->ins()));
+                // If we move the spill after an OsiPoint, the OsiPoint should
+                // use the original location instead.
+                SetOsiPointUses(interval, defEnd, *spillFrom);
+
+                // Insert a spill after this instruction (or after any OsiPoint
+                // or Nop instructions). Note that we explicitly ignore phis,
+                // which should have been handled in resolveControlFlow().
+                LMoveGroup *moves = getMoveGroupAfter(defEnd);
                 if (!moves->add(spillFrom, reg->canonicalSpill()))
                     return false;
             }
@@ -544,9 +584,15 @@ LinearScanAllocator::populateSafepoints()
 
                 // If the payload is an argument, we'll scan that explicitly as
                 // part of the frame. It is therefore safe to not add any
-                // safepoint entry.
-                if (payloadAlloc->isArgument())
+                // safepoint entry, as long as the vreg does not have a stack
+                // slot as canonical spill slot.
+                if (payloadAlloc->isArgument() &&
+                    (!payload->canonicalSpill() || payload->canonicalSpill() == payloadAlloc))
+                {
+                    JS_ASSERT(typeAlloc->isArgument());
+                    JS_ASSERT(!type->canonicalSpill() || type->canonicalSpill() == typeAlloc);
                     continue;
+                }
 
                 if (isSpilledAt(typeInterval, inputOf(ins)) &&
                     isSpilledAt(payloadInterval, inputOf(ins)))
@@ -724,7 +770,13 @@ LinearScanAllocator::assign(LAllocation allocation)
         }
     }
 
-    if (reg && allocation.isMemory()) {
+    bool useAsCanonicalSpillSlot = allocation.isMemory();
+    // Only canonically spill argument values when frame arguments are not
+    // modified in the body.
+    if (mir->modifiesFrameArguments())
+        useAsCanonicalSpillSlot = allocation.isStackSlot();
+
+    if (reg && useAsCanonicalSpillSlot) {
         if (reg->canonicalSpill()) {
             JS_ASSERT(allocation == *reg->canonicalSpill());
 
@@ -1039,7 +1091,7 @@ LinearScanAllocator::findBestBlockedRegister(CodePosition *nextUsed)
             if (nextUsePos[reg.code()] != CodePosition::MIN) {
                 CodePosition pos = i->intersect(current);
                 if (pos != CodePosition::MIN && pos < nextUsePos[reg.code()]) {
-                    nextUsePos[reg.code()] = pos;
+                    nextUsePos[reg.code()] = (pos == current->start()) ? CodePosition::MIN : pos;
                     IonSpew(IonSpew_RegAlloc, "   Register %s next used %u (fixed)", reg.name(), pos.pos());
                 }
             }
@@ -1091,6 +1143,9 @@ LinearScanAllocator::canCoexist(LiveInterval *a, LiveInterval *b)
 void
 LinearScanAllocator::validateIntervals()
 {
+    if (!js_IonOptions.assertGraphConsistency)
+        return;
+
     for (IntervalIterator i(active.begin()); i != active.end(); i++) {
         JS_ASSERT(i->numRanges() > 0);
         JS_ASSERT(i->covers(current->start()));
@@ -1134,6 +1189,9 @@ LinearScanAllocator::validateIntervals()
 void
 LinearScanAllocator::validateAllocations()
 {
+    if (!js_IonOptions.assertGraphConsistency)
+        return;
+
     for (IntervalIterator i(handled.begin()); i != handled.end(); i++) {
         for (IntervalIterator j(handled.begin()); j != i; j++) {
             JS_ASSERT(*i != *j);
@@ -1243,8 +1301,8 @@ LinearScanAllocator::setIntervalRequirement(LiveInterval *interval)
         }
     }
 
-    UsePosition *fixedOp = NULL;
-    UsePosition *registerOp = NULL;
+    UsePosition *fixedOp = nullptr;
+    UsePosition *registerOp = nullptr;
 
     // Search uses at the start of the interval for requirements.
     UsePositionIterator usePos(interval->usesBegin());
@@ -1341,31 +1399,11 @@ LinearScanAllocator::UnhandledQueue::enqueueForward(LiveInterval *after, LiveInt
     insertBefore(*i, interval);
 }
 
-/*
- * Append to the queue head in O(1).
- */
-void
-LinearScanAllocator::UnhandledQueue::enqueueAtHead(LiveInterval *interval)
-{
-#ifdef DEBUG
-    // Assuming that the queue is in sorted order, assert that order is
-    // maintained by inserting at the back.
-    if (!empty()) {
-        LiveInterval *back = peekBack();
-        JS_ASSERT(back->start() >= interval->start());
-        JS_ASSERT_IF(back->start() == interval->start(),
-                     back->requirement()->priority() >= interval->requirement()->priority());
-    }
-#endif
-
-    pushBack(interval);
-}
-
 void
 LinearScanAllocator::UnhandledQueue::assertSorted()
 {
 #ifdef DEBUG
-    LiveInterval *prev = NULL;
+    LiveInterval *prev = nullptr;
     for (IntervalIterator i(begin()); i != end(); i++) {
         if (prev) {
             JS_ASSERT(prev->start() >= i->start());
@@ -1381,7 +1419,7 @@ LiveInterval *
 LinearScanAllocator::UnhandledQueue::dequeue()
 {
     if (rbegin() == rend())
-        return NULL;
+        return nullptr;
 
     LiveInterval *result = *rbegin();
     remove(result);

@@ -14,16 +14,14 @@
 #include "jsapi.h"
 #include "jscntxt.h"
 #include "jscompartment.h"
-#include "jsfun.h"
 #include "jsobj.h"
 #include "jsprf.h"
-#include "jsutil.h"
 
 #include "jsobjinlines.h"
 
 using namespace js;
 
-using mozilla::Move;
+using mozilla::OldMove;
 using mozilla::MoveRef;
 
 #ifdef DEBUG
@@ -77,7 +75,7 @@ class HeapReverser : public JSTracer, public JS::CustomAutoRooter
          * not assignments or copy construction.
          */
         Node(MoveRef<Node> rhs)
-          : kind(rhs->kind), incoming(Move(rhs->incoming)), marked(rhs->marked) { }
+          : kind(rhs->kind), incoming(OldMove(rhs->incoming)), marked(rhs->marked) { }
         Node &operator=(MoveRef<Node> rhs) {
             this->~Node();
             new(this) Node(rhs);
@@ -119,7 +117,7 @@ class HeapReverser : public JSTracer, public JS::CustomAutoRooter
          * resized.
          */
         Edge(MoveRef<Edge> rhs) : name(rhs->name), origin(rhs->origin) {
-            rhs->name = NULL;
+            rhs->name = nullptr;
         }
         Edge &operator=(MoveRef<Edge> rhs) {
             this->~Edge();
@@ -136,8 +134,8 @@ class HeapReverser : public JSTracer, public JS::CustomAutoRooter
         char *name;
 
         /*
-         * The Cell from which this edge originates. NULL means a root. This is
-         * a cell address instead of a Node * because Nodes live in HashMap
+         * The Cell from which this edge originates. nullptr means a root. This
+         * is a cell address instead of a Node * because Nodes live in HashMap
          * table entries; if the HashMap reallocates its table, all pointers to
          * the Nodes it contains would become invalid. You should look up the
          * address here in |map| to find its Node.
@@ -156,7 +154,7 @@ class HeapReverser : public JSTracer, public JS::CustomAutoRooter
     HeapReverser(JSContext *cx)
       : JS::CustomAutoRooter(cx),
         runtime(JS_GetRuntime(cx)),
-        parent(NULL)
+        parent(nullptr)
     {
         JS_TracerInit(this, runtime, traverseEdgeWithThis);
         JS::DisableGenerationalGC(runtime);
@@ -178,7 +176,7 @@ class HeapReverser : public JSTracer, public JS::CustomAutoRooter
     /*
      * Return the name of the most recent edge this JSTracer has traversed. The
      * result is allocated with malloc; if we run out of memory, raise an error
-     * in this HeapReverser's context and return NULL.
+     * in this HeapReverser's context and return nullptr.
      *
      * This may not be called after that edge's call to traverseEdge has
      * returned.
@@ -273,7 +271,7 @@ HeapReverser::traverseEdge(void *cell, JSGCTraceKind kind)
          */
         Node n(kind);
         uint32_t generation = map.generation();
-        if (!map.add(a, cell, Move(n)) ||
+        if (!map.add(a, cell, OldMove(n)) ||
             !work.append(Child(cell, kind)))
             return false;
         /* If the map has been resized, re-check the pointer. */
@@ -282,7 +280,7 @@ HeapReverser::traverseEdge(void *cell, JSGCTraceKind kind)
     }
 
     /* Add this edge to the reversed map. */
-    return a->value.incoming.append(Move(e));
+    return a->value.incoming.append(OldMove(e));
 }
 
 bool
@@ -314,7 +312,7 @@ HeapReverser::getEdgeDescription()
         const char *arg = static_cast<const char *>(debugPrintArg);
         char *name = js_pod_malloc<char>(strlen(arg) + 1);
         if (!name)
-            return NULL;
+            return nullptr;
         strcpy(name, arg);
         return name;
     }
@@ -323,7 +321,7 @@ HeapReverser::getEdgeDescription()
     static const int nameSize = 200;
     char *name = js_pod_malloc<char>(nameSize);
     if (!name)
-        return NULL;
+        return nullptr;
     if (debugPrinter)
         debugPrinter(this, name, nameSize);
     else
@@ -431,7 +429,7 @@ ReferenceFinder::visit(void *cell, Path *path)
     HeapReverser::Node *node = &p->value;
 
     /* Is |cell| a representable cell, reached via a non-empty path? */
-    if (path != NULL) {
+    if (path != nullptr) {
         jsval representation = representable(cell, node->kind);
         if (!JSVAL_IS_VOID(representation))
             return addReferrer(representation, path);
@@ -468,7 +466,7 @@ ReferenceFinder::Path::computeName(JSContext *cx)
 
     char *path = cx->pod_malloc<char>(size);
     if (!path)
-        return NULL;
+        return nullptr;
 
     /*
      * Walk the edge list again, and copy the edge names into place, with
@@ -524,34 +522,34 @@ ReferenceFinder::addReferrer(jsval referrerArg, Path *path)
     /* Append our referrer to this array. */
     uint32_t length;
     return JS_GetArrayLength(context, array, &length) &&
-           JS_SetElement(context, array, length, referrer.address());
+           JS_SetElement(context, array, length, &referrer);
 }
 
 JSObject *
 ReferenceFinder::findReferences(HandleObject target)
 {
-    result = JS_NewObject(context, NULL, NULL, NULL);
+    result = JS_NewObject(context, nullptr, nullptr, nullptr);
     if (!result)
-        return NULL;
-    if (!visit(target, NULL))
-        return NULL;
+        return nullptr;
+    if (!visit(target, nullptr))
+        return nullptr;
 
     return result;
 }
 
 /* See help(findReferences). */
-JSBool
+bool
 FindReferences(JSContext *cx, unsigned argc, jsval *vp)
 {
     if (argc < 1) {
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_MORE_ARGS_NEEDED,
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_MORE_ARGS_NEEDED,
                              "findReferences", "0", "s");
         return false;
     }
 
     RootedValue target(cx, JS_ARGV(cx, vp)[0]);
     if (!target.isObject()) {
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_UNEXPECTED_TYPE,
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_UNEXPECTED_TYPE,
                              "argument", "not an object");
         return false;
     }

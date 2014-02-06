@@ -3,19 +3,11 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DEPTH		= @DEPTH@
-topsrcdir	= @top_srcdir@
-srcdir		= @srcdir@
-VPATH		= @srcdir@
-
-include $(DEPTH)/config/autoconf.mk
-
-LIBRARY_NAME    = xpconnect_s
-MSVC_ENABLE_PGO := 1
-LIBXUL_LIBRARY = 1
-FAIL_ON_WARNINGS := 1
-
-include $(topsrcdir)/config/config.mk
+CPPSRCS += \
+  DictionaryHelpers.cpp \
+  GeneratedEvents.cpp \
+  dom_quickstubs.cpp \
+  $(NULL)
 
 LOCAL_INCLUDES = \
 		-I$(srcdir)/../wrappers \
@@ -34,6 +26,12 @@ LOCAL_INCLUDES = \
 		-I$(topsrcdir)/js/ipc \
 		$(NULL)
 
+ifdef MOZ_B2G_BT
+LOCAL_INCLUDES += \
+    -I$(topsrcdir)/dom/bluetooth \
+    $(NULL)
+endif
+
 SHARED_LIBRARY_LIBS = \
   ../loader/$(LIB_PREFIX)jsloader_s.$(LIB_SUFFIX) \
   ../wrappers/$(LIB_PREFIX)xpcwrappers_s.$(LIB_SUFFIX) \
@@ -41,13 +39,35 @@ SHARED_LIBRARY_LIBS = \
 
 EXTRA_MDDEPEND_FILES = dom_qsgen.pp dictionary_helper_gen.pp event_impl_gen.pp
 
+INSTALL_TARGETS += extra_export_files
+extra_export_files_FILES := \
+  DictionaryHelpers.h \
+  GeneratedEventClasses.h \
+  GeneratedEvents.h \
+  $(NULL)
+extra_export_files_DEST = $(DIST)/include
+extra_export_files_TARGET := export
+
+# XPCShellImpl.cpp requires hardcoded vendor/profile/appname stuff on Windows
+# This sucks, bug 921148 tracks this.
+ifeq (windows,$(MOZ_WIDGET_TOOLKIT))
+  ifdef MOZ_APP_PROFILE
+    DEFINES += -DMOZ_APP_PROFILE='"$(MOZ_APP_PROFILE)"'
+  else
+    ifdef MOZ_APP_VENDOR
+      DEFINES += -DMOZ_APP_VENDOR='"$(MOZ_APP_VENDOR)"'
+    endif
+    ifdef MOZ_APP_BASENAME
+      DEFINES += -DMOZ_APP_BASENAME='"$(MOZ_APP_BASENAME)"'
+    endif
+    DEFINES += -DMOZ_APP_NAME='"$(MOZ_APP_NAME)"'
+  endif
+endif
+
 include $(topsrcdir)/config/rules.mk
-include $(topsrcdir)/ipc/chromium/chromium-config.mk
 
 DEFINES += \
-  -DJSFILE \
   -DJS_THREADSAFE \
-  -DEXPORT_XPC_API \
   $(NULL)
 
 ifdef MOZ_JSDEBUGGER
@@ -148,14 +168,6 @@ GeneratedEvents-webidl: event_impl_gen.conf
 	  --webidltarget=$(top_srcdir)/dom/webidl \
 	  event_impl_gen.conf
 
-_EXTRA_EXPORT_FILES = \
-  DictionaryHelpers.h \
-  GeneratedEventClasses.h \
-  $(NULL)
-
-libs:: $(_EXTRA_EXPORT_FILES)
-	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/dist/include
-
 GARBAGE += \
 		dom_quickstubs.h \
 		dom_quickstubs.cpp \
@@ -172,5 +184,3 @@ GARBAGE += \
 		$(MDDEPDIR)/event_impl_gen.pp \
 		$(wildcard $(topsrcdir)/other-licenses/ply/ply/*.pyc) \
 		$(NULL)
-
-DEFINES += -D_IMPL_NS_LAYOUT

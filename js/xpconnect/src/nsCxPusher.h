@@ -5,7 +5,7 @@
 #define nsCxPusher_h
 
 #include "jsapi.h"
-#include "mozilla/Util.h"
+#include "mozilla/Maybe.h"
 #include "nsCOMPtr.h"
 
 namespace mozilla {
@@ -35,7 +35,6 @@ private:
   mozilla::Maybe<JSAutoRequest> mAutoRequest;
   mozilla::Maybe<JSAutoCompartment> mAutoCompartment;
   nsCOMPtr<nsIScriptContext> mScx;
-  bool mScriptIsRunning;
 #ifdef DEBUG
   JSContext* mPushedContext;
   unsigned mCompartmentDepthOnEntry;

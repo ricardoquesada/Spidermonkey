@@ -8,7 +8,6 @@
 #define jit_x64_CodeGenerator_x64_h
 
 #include "jit/shared/CodeGenerator-x86-shared.h"
-#include "jit/x64/Assembler-x64.h"
 
 namespace js {
 namespace jit {
@@ -37,7 +36,6 @@ class CodeGeneratorX64 : public CodeGeneratorX86Shared
 
   public:
     bool visitValue(LValue *value);
-    bool visitOsrValue(LOsrValue *value);
     bool visitBox(LBox *box);
     bool visitUnbox(LUnbox *unbox);
     bool visitLoadSlotV(LLoadSlotV *ins);
@@ -50,8 +48,8 @@ class CodeGeneratorX64 : public CodeGeneratorX86Shared
     bool visitCompareBAndBranch(LCompareBAndBranch *lir);
     bool visitCompareV(LCompareV *lir);
     bool visitCompareVAndBranch(LCompareVAndBranch *lir);
-    bool visitUInt32ToDouble(LUInt32ToDouble *lir);
     bool visitTruncateDToInt32(LTruncateDToInt32 *ins);
+    bool visitTruncateFToInt32(LTruncateFToInt32 *ins);
     bool visitLoadTypedArrayElementStatic(LLoadTypedArrayElementStatic *ins);
     bool visitStoreTypedArrayElementStatic(LStoreTypedArrayElementStatic *ins);
     bool visitAsmJSLoadHeap(LAsmJSLoadHeap *ins);
@@ -60,6 +58,8 @@ class CodeGeneratorX64 : public CodeGeneratorX86Shared
     bool visitAsmJSStoreGlobalVar(LAsmJSStoreGlobalVar *ins);
     bool visitAsmJSLoadFuncPtr(LAsmJSLoadFuncPtr *ins);
     bool visitAsmJSLoadFFIFunc(LAsmJSLoadFFIFunc *ins);
+    bool visitAsmJSUInt32ToDouble(LAsmJSUInt32ToDouble *lir);
+    bool visitAsmJSUInt32ToFloat32(LAsmJSUInt32ToFloat32 *lir);
 
     void postAsmJSCall(LAsmJSCall *lir) {}
 };

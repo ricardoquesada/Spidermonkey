@@ -8,7 +8,7 @@
 #define XPC_WRAPPER_H 1
 
 #include "xpcprivate.h"
-#include "xpcpublic.h"
+#include "jswrapper.h"
 
 class nsIScriptSecurityManager;
 
@@ -43,7 +43,7 @@ GetSecurityManager()
   return nsXPConnect::gScriptSecurityManager;
 }
 
-inline JSBool
+inline bool
 IsSecurityWrapper(JSObject *wrapper)
 {
   return js::IsWrapper(wrapper);

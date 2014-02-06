@@ -9,11 +9,14 @@
 
 #include "mozilla/MemoryReporting.h"
 
-#include "jsfun.h"
+#include "jsobj.h"
+
+#include "gc/Barrier.h"
 
 namespace js {
 
 class AbstractFramePtr;
+class ScriptFrameIter;
 
 namespace jit {
 class IonJSFrameLayout;
@@ -281,7 +284,7 @@ class ArgumentsObject : public JSObject
 class NormalArgumentsObject : public ArgumentsObject
 {
   public:
-    static Class class_;
+    static const Class class_;
 
     /*
      * Stores arguments.callee, or MagicValue(JS_ARGS_HOLE) if the callee has
@@ -300,7 +303,7 @@ class NormalArgumentsObject : public ArgumentsObject
 class StrictArgumentsObject : public ArgumentsObject
 {
   public:
-    static Class class_;
+    static const Class class_;
 };
 
 } // namespace js

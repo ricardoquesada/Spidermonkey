@@ -2,6 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
+import json
 import os
 import posixpath
 import shutil
@@ -10,14 +11,10 @@ import tempfile
 import threading
 import traceback
 
-try:
-    import json
-except ImportError:
-    import simplejson as json
-
-here = os.path.abspath(os.path.dirname(sys.argv[0]))
+here = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, here)
 
+from runtests import Mochitest
 from runtests import MochitestUtilsMixin
 from runtests import MochitestOptions
 from runtests import MochitestServer
@@ -26,7 +23,7 @@ from mochitest_options import B2GOptions, MochitestOptions
 from marionette import Marionette
 
 from mozdevice import DeviceManagerADB
-from mozprofile import Profile, Preferences, DEFAULT_PORTS
+from mozprofile import Profile, Preferences
 from mozrunner import B2GRunner
 import mozlog
 import mozinfo
@@ -116,12 +113,15 @@ class B2GMochitest(MochitestUtilsMixin):
         self.startWebSocketServer(options, None)
         self.buildURLOptions(options, {'MOZ_HIDE_RESULTS_TABLE': '1'})
 
-        if options.timeout:
-            timeout = options.timeout + 30
-        elif options.debugger or not options.autorun:
+        if options.debugger or not options.autorun:
             timeout = None
         else:
-            timeout = 330.0 # default JS harness timeout is 300 seconds
+            if not options.timeout:
+                if mozinfo.info['debug']:
+                    options.timeout = 420
+                else:
+                    options.timeout = 300
+            timeout = options.timeout + 30.0
 
         log.info("runtestsb2g.py | Running tests: start.")
         status = 0
@@ -130,17 +130,22 @@ class B2GMochitest(MochitestUtilsMixin):
                             'devicemanager': self._dm,
                             'marionette': self.marionette,
                             'remote_test_root': self.remote_test_root,
+                            'symbols_path': options.symbolsPath,
                             'test_script': self.test_script,
                             'test_script_args': self.test_script_args }
             self.runner = B2GRunner(**runner_args)
             self.runner.start(outputTimeout=timeout)
-            self.runner.wait()
+            status = self.runner.wait()
+            if status is None:
+                # the runner has timed out
+                status = 124
         except KeyboardInterrupt:
             log.info("runtests.py | Received keyboard interrupt.\n");
             status = -1
         except:
             traceback.print_exc()
             log.error("Automation Error: Received unexpected exception while running application\n")
+            self.runner.check_for_crashes()
             status = 1
 
         self.stopWebServer(options)
@@ -195,7 +200,7 @@ class B2GDeviceMochitest(B2GMochitest):
         d['profilePath'] = tempfile.mkdtemp()
         if d.get('httpdPath') is None:
             d['httpdPath'] = os.path.abspath(os.path.join(self.local_binary_dir, 'components'))
-        self.server = MochitestServer(None, d)
+        self.server = MochitestServer(d)
         self.server.start()
 
         if (options.pidFile != ""):
@@ -221,16 +226,23 @@ class B2GDeviceMochitest(B2GMochitest):
         return retVal
 
 
-class B2GDesktopMochitest(B2GMochitest):
+class B2GDesktopMochitest(B2GMochitest, Mochitest):
 
     def __init__(self, marionette, profile_data_dir):
-        B2GMochitest.__init__(self, out_of_process=False, profile_data_dir=profile_data_dir)
+        B2GMochitest.__init__(self, marionette, out_of_process=False, profile_data_dir=profile_data_dir)
+        Mochitest.__init__(self)
 
-    def runMarionetteScript(self, marionette, test_script):
+    def runMarionetteScript(self, marionette, test_script, test_script_args):
         assert(marionette.wait_for_port())
         marionette.start_session()
         marionette.set_context(marionette.CONTEXT_CHROME)
-        marionette.execute_script(test_script)
+
+        if os.path.isfile(test_script):
+            f = open(test_script, 'r')
+            test_script = f.read()
+            f.close()
+        self.marionette.execute_script(test_script,
+                                       script_args=test_script_args)
 
     def startTests(self):
         # This is run in a separate thread because otherwise, the app's
@@ -238,7 +250,8 @@ class B2GDesktopMochitest(B2GMochitest):
         # function returns, by waitForFinish), which causes the app to hang.
         thread = threading.Thread(target=self.runMarionetteScript,
                                   args=(self.marionette,
-                                        self.test_script))
+                                        self.test_script,
+                                        self.test_script_args))
         thread.start()
 
     def buildURLOptions(self, options, env):
@@ -257,6 +270,9 @@ class B2GDesktopMochitest(B2GMochitest):
                             os.path.join(bundlesDir, filename))
 
         return retVal
+
+    def buildProfile(self, options):
+        return self.build_profile(options)
 
 
 def run_remote_mochitests(parser, options):
@@ -331,12 +347,12 @@ def run_desktop_mochitests(parser, options):
         kwargs['host'] = host
         kwargs['port'] = int(port)
     marionette = Marionette.getMarionetteOrExit(**kwargs)
-
     mochitest = B2GDesktopMochitest(marionette, options.profile_data_dir)
 
-    # b2g desktop builds don't always have a b2g-bin file
-    if options.app[-4:] == '-bin':
-        options.app = options.app[:-4]
+    # add a -bin suffix if b2g-bin exists, but just b2g was specified
+    if options.app[-4:] != '-bin':
+        if os.path.isfile("%s-bin" % options.app):
+            options.app = "%s-bin" % options.app
 
     options = MochitestOptions.verifyOptions(parser, options, mochitest)
     if options == None:

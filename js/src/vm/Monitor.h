@@ -7,9 +7,15 @@
 #ifndef vm_Monitor_h
 #define vm_Monitor_h
 
+#ifdef JS_THREADSAFE
+#include "mozilla/DebugOnly.h"
+#endif
+
 #include <stddef.h>
 
 #include "jslock.h"
+
+#include "js/Utility.h"
 
 namespace js {
 
@@ -29,8 +35,8 @@ class Monitor
 
   public:
     Monitor()
-      : lock_(NULL),
-        condVar_(NULL)
+      : lock_(nullptr),
+        condVar_(nullptr)
     { }
 
     ~Monitor() {

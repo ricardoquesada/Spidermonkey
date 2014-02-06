@@ -7,14 +7,13 @@
 #ifndef jit_Safepoints_h
 #define jit_Safepoints_h
 
-#include "jit/BitSet.h"
 #include "jit/CompactBuffer.h"
-#include "jit/Registers.h"
 #include "jit/shared/Assembler-shared.h"
 
 namespace js {
 namespace jit {
 
+class BitSet;
 struct SafepointNunboxEntry;
 class LAllocation;
 class LSafepoint;
@@ -67,7 +66,8 @@ class SafepointReader
     GeneralRegisterSet gcSpills_;
     GeneralRegisterSet valueSpills_;
     GeneralRegisterSet slotsOrElementsSpills_;
-    GeneralRegisterSet allSpills_;
+    GeneralRegisterSet allGprSpills_;
+    FloatRegisterSet allFloatSpills_;
     uint32_t nunboxSlotsRemaining_;
     uint32_t slotsOrElementsSlotsRemaining_;
 
@@ -95,8 +95,11 @@ class SafepointReader
     GeneralRegisterSet valueSpills() const {
         return valueSpills_;
     }
-    GeneralRegisterSet allSpills() const {
-        return allSpills_;
+    GeneralRegisterSet allGprSpills() const {
+        return allGprSpills_;
+    }
+    FloatRegisterSet allFloatSpills() const {
+        return allFloatSpills_;
     }
     uint32_t osiReturnPointOffset() const;
 

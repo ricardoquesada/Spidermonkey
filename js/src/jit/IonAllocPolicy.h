@@ -28,7 +28,7 @@ class TempAllocator
   public:
     TempAllocator(LifoAlloc *lifoAlloc)
       : lifoScope_(lifoAlloc),
-        rootList_(NULL)
+        rootList_(nullptr)
     { }
 
     void *allocateInfallible(size_t bytes)
@@ -42,7 +42,7 @@ class TempAllocator
     {
         void *p = lifoScope_.alloc().alloc(bytes);
         if (!ensureBallast())
-            return NULL;
+            return nullptr;
         return p;
     }
 
@@ -90,7 +90,8 @@ class IonAllocPolicy
     }
     void *calloc_(size_t bytes) {
         void *p = GetIonContext()->temp->allocate(bytes);
-        memset(p, 0, bytes);
+        if (p)
+            memset(p, 0, bytes);
         return p;
     }
     void *realloc_(void *p, size_t oldBytes, size_t bytes) {

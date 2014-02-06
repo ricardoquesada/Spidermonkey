@@ -10,9 +10,7 @@
 // This file declares the structures that are used for attaching LIR to a
 // MIRGraph.
 
-#include "jit/IonAllocPolicy.h"
 #include "jit/LIR.h"
-#include "jit/MOpcodes.h"
 #if defined(JS_CPU_X86)
 # include "jit/x86/Lowering-x86.h"
 #elif defined(JS_CPU_X64)
@@ -80,7 +78,6 @@ class LIRGenerator : public LIRGeneratorSpecific
     // intercept without a bunch of explicit gunk in the .cpp.
     bool visitParameter(MParameter *param);
     bool visitCallee(MCallee *callee);
-    bool visitForceUse(MForceUse *forceUse);
     bool visitGoto(MGoto *ins);
     bool visitTableSwitch(MTableSwitch *tableswitch);
     bool visitNewSlots(MNewSlots *ins);
@@ -90,6 +87,7 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitNewDeclEnvObject(MNewDeclEnvObject *ins);
     bool visitNewCallObject(MNewCallObject *ins);
     bool visitNewStringObject(MNewStringObject *ins);
+    bool visitNewDerivedTypedObject(MNewDerivedTypedObject *ins);
     bool visitNewPar(MNewPar *ins);
     bool visitNewCallObjectPar(MNewCallObjectPar *ins);
     bool visitNewDenseArrayPar(MNewDenseArrayPar *ins);
@@ -111,16 +109,17 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitGetArgumentsObjectArg(MGetArgumentsObjectArg *ins);
     bool visitSetArgumentsObjectArg(MSetArgumentsObjectArg *ins);
     bool visitReturnFromCtor(MReturnFromCtor *ins);
+    bool visitComputeThis(MComputeThis *ins);
     bool visitCall(MCall *call);
     bool visitApplyArgs(MApplyArgs *apply);
     bool visitBail(MBail *bail);
+    bool visitAssertFloat32(MAssertFloat32 *ins);
     bool visitGetDynamicName(MGetDynamicName *ins);
-    bool visitFilterArguments(MFilterArguments *ins);
+    bool visitFilterArgumentsOrEval(MFilterArgumentsOrEval *ins);
     bool visitCallDirectEval(MCallDirectEval *ins);
     bool visitTest(MTest *test);
     bool visitFunctionDispatch(MFunctionDispatch *ins);
     bool visitTypeObjectDispatch(MTypeObjectDispatch *ins);
-    bool visitPolyInlineDispatch(MPolyInlineDispatch *ins);
     bool visitCompare(MCompare *comp);
     bool visitTypeOf(MTypeOf *ins);
     bool visitToId(MToId *ins);
@@ -154,7 +153,10 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitNop(MNop *nop);
     bool visitOsrValue(MOsrValue *value);
     bool visitOsrScopeChain(MOsrScopeChain *object);
+    bool visitOsrReturnValue(MOsrReturnValue *value);
+    bool visitOsrArgumentsObject(MOsrArgumentsObject *object);
     bool visitToDouble(MToDouble *convert);
+    bool visitToFloat32(MToFloat32 *convert);
     bool visitToInt32(MToInt32 *convert);
     bool visitTruncateToInt32(MTruncateToInt32 *truncate);
     bool visitToString(MToString *convert);
@@ -172,6 +174,7 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitFunctionEnvironment(MFunctionEnvironment *ins);
     bool visitForkJoinSlice(MForkJoinSlice *ins);
     bool visitGuardThreadLocalObject(MGuardThreadLocalObject *ins);
+    bool visitInterruptCheck(MInterruptCheck *ins);
     bool visitCheckInterruptPar(MCheckInterruptPar *ins);
     bool visitStoreSlot(MStoreSlot *ins);
     bool visitTypeBarrier(MTypeBarrier *ins);
@@ -180,6 +183,7 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitArrayLength(MArrayLength *ins);
     bool visitTypedArrayLength(MTypedArrayLength *ins);
     bool visitTypedArrayElements(MTypedArrayElements *ins);
+    bool visitTypedObjectElements(MTypedObjectElements *ins);
     bool visitInitializedLength(MInitializedLength *ins);
     bool visitSetInitializedLength(MSetInitializedLength *ins);
     bool visitNot(MNot *ins);
@@ -196,6 +200,8 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitLoadTypedArrayElement(MLoadTypedArrayElement *ins);
     bool visitLoadTypedArrayElementHole(MLoadTypedArrayElementHole *ins);
     bool visitLoadTypedArrayElementStatic(MLoadTypedArrayElementStatic *ins);
+    bool visitStoreTypedArrayElement(MStoreTypedArrayElement *ins);
+    bool visitStoreTypedArrayElementHole(MStoreTypedArrayElementHole *ins);
     bool visitClampToUint8(MClampToUint8 *ins);
     bool visitLoadFixedSlot(MLoadFixedSlot *ins);
     bool visitStoreFixedSlot(MStoreFixedSlot *ins);
@@ -207,8 +213,10 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitGuardClass(MGuardClass *ins);
     bool visitGuardObject(MGuardObject *ins);
     bool visitGuardString(MGuardString *ins);
+    bool visitAssertRange(MAssertRange *ins);
     bool visitCallGetProperty(MCallGetProperty *ins);
     bool visitDeleteProperty(MDeleteProperty *ins);
+    bool visitDeleteElement(MDeleteElement *ins);
     bool visitGetNameCache(MGetNameCache *ins);
     bool visitCallGetIntrinsicValue(MCallGetIntrinsicValue *ins);
     bool visitCallsiteCloneCache(MCallsiteCloneCache *ins);
@@ -224,7 +232,8 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitIteratorEnd(MIteratorEnd *ins);
     bool visitStringLength(MStringLength *ins);
     bool visitArgumentsLength(MArgumentsLength *ins);
-    bool visitGetArgument(MGetArgument *ins);
+    bool visitGetFrameArgument(MGetFrameArgument *ins);
+    bool visitSetFrameArgument(MSetFrameArgument *ins);
     bool visitRunOncePrologue(MRunOncePrologue *ins);
     bool visitRest(MRest *ins);
     bool visitRestPar(MRestPar *ins);
@@ -236,7 +245,6 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitFunctionBoundary(MFunctionBoundary *ins);
     bool visitIsCallable(MIsCallable *ins);
     bool visitHaveSameClass(MHaveSameClass *ins);
-    bool visitAsmJSLoadHeap(MAsmJSLoadHeap *ins);
     bool visitAsmJSLoadGlobalVar(MAsmJSLoadGlobalVar *ins);
     bool visitAsmJSStoreGlobalVar(MAsmJSStoreGlobalVar *ins);
     bool visitAsmJSLoadFFIFunc(MAsmJSLoadFFIFunc *ins);

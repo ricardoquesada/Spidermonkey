@@ -6,10 +6,8 @@
 
 #include "xpcprivate.h"
 #include "XPCWrapper.h"
-#include "AccessCheck.h"
 #include "WrapperFactory.h"
 #include "AccessCheck.h"
-#include "nsCxPusher.h"
 
 using namespace xpc;
 using namespace mozilla;
@@ -17,7 +15,7 @@ using namespace mozilla;
 namespace XPCNativeWrapper {
 
 static inline
-JSBool
+bool
 ThrowException(nsresult ex, JSContext *cx)
 {
   XPCThrower::Throw(ex, cx);
@@ -25,7 +23,7 @@ ThrowException(nsresult ex, JSContext *cx)
   return false;
 }
 
-static JSBool
+static bool
 UnwrapNW(JSContext *cx, unsigned argc, jsval *vp)
 {
   if (argc != 1) {
@@ -39,7 +37,7 @@ UnwrapNW(JSContext *cx, unsigned argc, jsval *vp)
   }
 
   if (AccessCheck::wrapperSubsumes(&v.toObject())) {
-    bool ok = xpc::WrapperFactory::WaiveXrayAndWrap(cx, v.address());
+    bool ok = xpc::WrapperFactory::WaiveXrayAndWrap(cx, &v);
     NS_ENSURE_TRUE(ok, false);
   }
 
@@ -47,21 +45,21 @@ UnwrapNW(JSContext *cx, unsigned argc, jsval *vp)
   return true;
 }
 
-static JSBool
+static bool
 XrayWrapperConstructor(JSContext *cx, unsigned argc, jsval *vp)
 {
-  if (argc == 0) {
+  JS::CallArgs args = CallArgsFromVp(argc, vp);
+  if (args.length() == 0) {
     return ThrowException(NS_ERROR_XPC_NOT_ENOUGH_ARGS, cx);
   }
 
-  JS::RootedValue v(cx, JS_ARGV(cx, vp)[0]);
-  if (!v.isObject()) {
-    JS_SET_RVAL(cx, vp, v);
+  if (!args[0].isObject()) {
+    args.rval().set(args[0]);
     return true;
   }
 
-  *vp = JS::ObjectValue(*js::UncheckedUnwrap(&v.toObject()));
-  return JS_WrapValue(cx, vp);
+  args.rval().setObject(*js::UncheckedUnwrap(&args[0].toObject()));
+  return JS_WrapValue(cx, args.rval());
 }
 // static
 bool

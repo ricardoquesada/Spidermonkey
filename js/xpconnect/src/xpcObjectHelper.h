@@ -24,8 +24,8 @@
 class xpcObjectHelper
 {
 public:
-    xpcObjectHelper(nsISupports *aObject, nsWrapperCache *aCache = NULL)
-      : mCanonical(NULL)
+    xpcObjectHelper(nsISupports *aObject, nsWrapperCache *aCache = nullptr)
+      : mCanonical(nullptr)
       , mObject(aObject)
       , mCache(aCache)
     {
@@ -33,7 +33,7 @@ public:
             if (aObject)
                 CallQueryInterface(aObject, &mCache);
             else
-                mCache = NULL;
+                mCache = nullptr;
         }
     }
 
@@ -53,11 +53,11 @@ public:
 
     already_AddRefed<nsISupports> forgetCanonical()
     {
-        NS_ASSERTION(mCanonical, "Huh, no canonical to forget?");
+        MOZ_ASSERT(mCanonical, "Huh, no canonical to forget?");
 
         if (!mCanonicalStrong)
             mCanonicalStrong = mCanonical;
-        mCanonical = NULL;
+        mCanonical = nullptr;
         return mCanonicalStrong.forget();
     }
 

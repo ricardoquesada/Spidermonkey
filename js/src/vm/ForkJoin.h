@@ -8,10 +8,10 @@
 #define vm_ForkJoin_h
 
 #include "jscntxt.h"
-#include "jsgc.h"
+
+#include "gc/GCInternals.h"
 
 #include "jit/Ion.h"
-#include "vm/ThreadPool.h"
 
 ///////////////////////////////////////////////////////////////////////////
 // Read Me First
@@ -201,6 +201,21 @@
 
 namespace js {
 
+class ForkJoinActivation : public Activation
+{
+    uint8_t *prevIonTop_;
+
+    // We ensure that incremental GC be finished before we enter into a fork
+    // join section, but the runtime/zone might still be marked as needing
+    // barriers due to being in the middle of verifying barriers. Pause
+    // verification during the fork join section.
+    gc::AutoStopVerifyingBarriers av_;
+
+  public:
+    ForkJoinActivation(JSContext *cx);
+    ~ForkJoinActivation();
+};
+
 class ForkJoinSlice;
 
 bool ForkJoin(JSContext *cx, CallArgs &args);
@@ -209,17 +224,15 @@ bool ForkJoin(JSContext *cx, CallArgs &args);
 // executed.
 uint32_t ForkJoinSlices(JSContext *cx);
 
-#ifdef DEBUG
 struct IonLIRTraceData {
-    uint32_t bblock;
-    uint32_t lir;
+    uint32_t blockIndex;
+    uint32_t lirIndex;
     uint32_t execModeInt;
     const char *lirOpName;
     const char *mirOpName;
     JSScript *script;
     jsbytecode *pc;
 };
-#endif
 
 ///////////////////////////////////////////////////////////////////////////
 // Bailout tracking
@@ -227,17 +240,17 @@ struct IonLIRTraceData {
 enum ParallelBailoutCause {
     ParallelBailoutNone,
 
-    // compiler returned Method_Skipped
+    // Compiler returned Method_Skipped
     ParallelBailoutCompilationSkipped,
 
-    // compiler returned Method_CantCompile
+    // Compiler returned Method_CantCompile
     ParallelBailoutCompilationFailure,
 
-    // the periodic interrupt failed, which can mean that either
+    // The periodic interrupt failed, which can mean that either
     // another thread canceled, the user interrupted us, etc
     ParallelBailoutInterrupt,
 
-    // an IC update failed
+    // An IC update failed
     ParallelBailoutFailedIC,
 
     // Heap busy flag was set during interrupt
@@ -250,8 +263,8 @@ enum ParallelBailoutCause {
     ParallelBailoutOverRecursed,
     ParallelBailoutOutOfMemory,
     ParallelBailoutUnsupported,
+    ParallelBailoutUnsupportedVM,
     ParallelBailoutUnsupportedStringComparison,
-    ParallelBailoutUnsupportedSparseArray,
     ParallelBailoutRequestedGC,
     ParallelBailoutRequestedZoneGC,
 };
@@ -275,9 +288,13 @@ struct ParallelBailoutRecord {
     void init(JSContext *cx);
     void reset(JSContext *cx);
     void setCause(ParallelBailoutCause cause,
-                  JSScript *outermostScript,   // inliner (if applicable)
-                  JSScript *currentScript,     // inlinee (if applicable)
-                  jsbytecode *currentPc);
+                  JSScript *outermostScript = nullptr,   // inliner (if applicable)
+                  JSScript *currentScript = nullptr,     // inlinee (if applicable)
+                  jsbytecode *currentPc = nullptr);
+    void updateCause(ParallelBailoutCause cause,
+                     JSScript *outermostScript,
+                     JSScript *currentScript,
+                     jsbytecode *currentPc);
     void addTrace(JSScript *script,
                   jsbytecode *pc);
 };
@@ -318,6 +335,18 @@ class ForkJoinSlice : public ThreadSafeContext
     // parallel section.
     void requestGC(JS::gcreason::Reason reason);
     void requestZoneGC(JS::Zone *zone, JS::gcreason::Reason reason);
+
+    // Set the fatal flag for the next abort. Used to distinguish retry or
+    // fatal aborts from VM functions.
+    bool setPendingAbortFatal(ParallelBailoutCause cause);
+
+    // Reports an unsupported operation, returning false if we are reporting
+    // an error. Otherwise drop the warning on the floor.
+    bool reportError(ParallelBailoutCause cause, unsigned report) {
+        if (report & JSREPORT_ERROR)
+            return setPendingAbortFatal(cause);
+        return true;
+    }
 
     // During the parallel phase, this method should be invoked
     // periodically, for example on every backedge, similar to the
@@ -385,7 +414,7 @@ class LockedJSContext
       : slice_(slice),
         cx_(slice->acquireContext())
 #else
-      : cx_(NULL)
+      : cx_(nullptr)
 #endif
     { }
 
@@ -404,18 +433,22 @@ InParallelSection()
 {
 #ifdef JS_THREADSAFE
     ForkJoinSlice *current = ForkJoinSlice::Current();
-    return current != NULL;
+    return current != nullptr;
 #else
     return false;
 #endif
 }
 
-bool InSequentialOrExclusiveParallelSection();
+bool InExclusiveParallelSection();
 
 bool ParallelTestsShouldPass(JSContext *cx);
 
 ///////////////////////////////////////////////////////////////////////////
 // Debug Spew
+
+namespace jit {
+    class MDefinition;
+}
 
 namespace parallel {
 
@@ -451,8 +484,7 @@ ExecutionStatus SpewEndOp(ExecutionStatus status);
 void SpewBeginCompile(HandleScript script);
 jit::MethodStatus SpewEndCompile(jit::MethodStatus status);
 void SpewMIR(jit::MDefinition *mir, const char *fmt, ...);
-void SpewBailoutIR(uint32_t bblockId, uint32_t lirId,
-                   const char *lir, const char *mir, JSScript *script, jsbytecode *pc);
+void SpewBailoutIR(IonLIRTraceData *data);
 
 #else
 
@@ -467,9 +499,7 @@ static inline void SpewBeginCompile(HandleScript script) { }
 static inline jit::MethodStatus SpewEndCompile(jit::MethodStatus status) { return status; }
 static inline void SpewMIR(jit::MDefinition *mir, const char *fmt, ...) { }
 #endif
-static inline void SpewBailoutIR(uint32_t bblockId, uint32_t lirId,
-                                 const char *lir, const char *mir,
-                                 JSScript *script, jsbytecode *pc) { }
+static inline void SpewBailoutIR(IonLIRTraceData *data) { }
 
 #endif // DEBUG && JS_THREADSAFE && JS_ION
 
@@ -482,7 +512,7 @@ js::ForkJoinSlice::Current()
 #if defined(JS_THREADSAFE) && defined(JS_ION)
     return (ForkJoinSlice*) PR_GetThreadPrivate(ThreadPrivateIndex);
 #else
-    return NULL;
+    return nullptr;
 #endif
 }
 

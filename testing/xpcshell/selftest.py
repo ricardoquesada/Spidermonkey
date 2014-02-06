@@ -9,9 +9,12 @@ import sys, os, unittest, tempfile, shutil
 from StringIO import StringIO
 from xml.etree.ElementTree import ElementTree
 
+from mozbuild.base import MozbuildObject
+build_obj = MozbuildObject.from_environment()
+
 from runxpcshelltests import XPCShellTests
 
-objdir = os.path.abspath(os.environ["OBJDIR"])
+objdir = build_obj.topobjdir.encode("utf-8")
 xpcshellBin = os.path.join(objdir, "dist", "bin", "xpcshell")
 if sys.platform == "win32":
     xpcshellBin += ".exe"
@@ -33,6 +36,37 @@ function run_test() { run_next_test(); }
 
 add_test(function test_failing() {
   do_check_true(false);
+  run_next_test();
+});
+'''
+
+CHILD_TEST_PASSING = '''
+function run_test () { run_next_test(); }
+
+add_test(function test_child_simple () {
+  run_test_in_child("test_pass.js");
+  run_next_test();
+});
+'''
+
+CHILD_TEST_FAILING = '''
+function run_test () { run_next_test(); }
+
+add_test(function test_child_simple () {
+  run_test_in_child("test_fail.js");
+  run_next_test();
+});
+'''
+
+CHILD_TEST_HANG = '''
+function run_test () { run_next_test(); }
+
+add_test(function test_child_simple () {
+  do_test_pending("hang test");
+  do_load_child_test_harness();
+  sendCommand("_log('child_test_start', {_message: 'CHILD-TEST-STARTED'}); " +
+              + "const _TEST_FILE=['test_pass.js']; _execute_test(); ",
+              do_test_finished);
   run_next_test();
 });
 '''
@@ -84,6 +118,43 @@ add_task(function test() {
 });
 '''
 
+ADD_TEST_THROW_STRING = '''
+function run_test() {do_throw("Passing a string to do_throw")};
+'''
+
+ADD_TEST_THROW_OBJECT = '''
+let error = {
+  message: "Error object",
+  fileName: "failure.js",
+  stack: "ERROR STACK",
+  toString: function() {return this.message;}
+};
+function run_test() {do_throw(error)};
+'''
+
+ADD_TEST_REPORT_OBJECT = '''
+let error = {
+  message: "Error object",
+  fileName: "failure.js",
+  stack: "ERROR STACK",
+  toString: function() {return this.message;}
+};
+function run_test() {do_report_unexpected_exception(error)};
+'''
+
+# A test for genuine JS-generated Error objects
+ADD_TEST_REPORT_REF_ERROR = '''
+function run_test() {
+  let obj = {blah: 0};
+  try {
+    obj.noSuchFunction();
+  }
+  catch (error) {
+    do_report_unexpected_exception(error);
+  }
+};
+'''
+
 class XPCShellTestsTests(unittest.TestCase):
     """
     Yes, these are unit tests for a unit test harness.
@@ -127,7 +198,7 @@ tail =
 
 """ + "\n".join(testlines))
 
-    def assertTestResult(self, expected, shuffle=False, xunitFilename=None):
+    def assertTestResult(self, expected, shuffle=False, xunitFilename=None, verbose=False):
         """
         Assert that self.x.runTests with manifest=self.manifest
         returns |expected|.
@@ -138,7 +209,9 @@ tail =
                                           mozInfo={},
                                           shuffle=shuffle,
                                           testsRootDir=self.tempdir,
-                                          xunitFilename=xunitFilename),
+                                          verbose=verbose,
+                                          xunitFilename=xunitFilename,
+                                          sequential=True),
                           msg="""Tests should have %s, log:
 ========
 %s
@@ -188,6 +261,84 @@ tail =
         self.writeManifest(["test_basic.js"])
 
         self.assertTestResult(False)
+        self.assertEquals(1, self.x.testCount)
+        self.assertEquals(0, self.x.passCount)
+        self.assertEquals(1, self.x.failCount)
+        self.assertEquals(0, self.x.todoCount)
+        self.assertInLog("TEST-UNEXPECTED-FAIL")
+        self.assertNotInLog("TEST-PASS")
+
+    @unittest.skipIf(build_obj.defines.get('MOZ_B2G'),
+                     'selftests with child processes fail on b2g desktop builds')
+    def testChildPass(self):
+        """
+        Check that a simple test running in a child process passes.
+        """
+        self.writeFile("test_pass.js", SIMPLE_PASSING_TEST)
+        self.writeFile("test_child_pass.js", CHILD_TEST_PASSING)
+        self.writeManifest(["test_child_pass.js"])
+
+        self.assertTestResult(True, verbose=True)
+        self.assertEquals(1, self.x.testCount)
+        self.assertEquals(1, self.x.passCount)
+        self.assertEquals(0, self.x.failCount)
+        self.assertEquals(0, self.x.todoCount)
+        self.assertInLog("TEST-PASS")
+        self.assertInLog("CHILD-TEST-STARTED")
+        self.assertInLog("CHILD-TEST-COMPLETED")
+        self.assertNotInLog("TEST-UNEXPECTED-FAIL")
+
+
+    @unittest.skipIf(build_obj.defines.get('MOZ_B2G'),
+                     'selftests with child processes fail on b2g desktop builds')
+    def testChildFail(self):
+        """
+        Check that a simple failing test running in a child process fails.
+        """
+        self.writeFile("test_fail.js", SIMPLE_FAILING_TEST)
+        self.writeFile("test_child_fail.js", CHILD_TEST_FAILING)
+        self.writeManifest(["test_child_fail.js"])
+
+        self.assertTestResult(False)
+        self.assertEquals(1, self.x.testCount)
+        self.assertEquals(0, self.x.passCount)
+        self.assertEquals(1, self.x.failCount)
+        self.assertEquals(0, self.x.todoCount)
+        self.assertInLog("TEST-UNEXPECTED-FAIL")
+        self.assertInLog("CHILD-TEST-STARTED")
+        self.assertInLog("CHILD-TEST-COMPLETED")
+        self.assertNotInLog("TEST-PASS")
+
+    @unittest.skipIf(build_obj.defines.get('MOZ_B2G'),
+                     'selftests with child processes fail on b2g desktop builds')
+    def testChildHang(self):
+        """
+        Check that incomplete output from a child process results in a
+        test failure.
+        """
+        self.writeFile("test_pass.js", SIMPLE_PASSING_TEST)
+        self.writeFile("test_child_hang.js", CHILD_TEST_HANG)
+        self.writeManifest(["test_child_hang.js"])
+
+        self.assertTestResult(False)
+        self.assertEquals(1, self.x.testCount)
+        self.assertEquals(0, self.x.passCount)
+        self.assertEquals(1, self.x.failCount)
+        self.assertEquals(0, self.x.todoCount)
+        self.assertInLog("TEST-UNEXPECTED-FAIL")
+        self.assertInLog("CHILD-TEST-STARTED")
+        self.assertNotInLog("CHILD-TEST-COMPLETED")
+        self.assertNotInLog("TEST-PASS")
+
+    def testSyntaxError(self):
+        """
+        Check that running a test file containing a syntax error produces
+        a test failure and expected output.
+        """
+        self.writeFile("test_syntax_error.js", '"')
+        self.writeManifest(["test_syntax_error.js"])
+
+        self.assertTestResult(False, verbose=True)
         self.assertEquals(1, self.x.testCount)
         self.assertEquals(0, self.x.passCount)
         self.assertEquals(1, self.x.failCount)
@@ -445,6 +596,66 @@ tail =
 
         self.assertTrue(testcases[1].find("failure") is not None)
         self.assertTrue(testcases[2].find("skipped") is not None)
+
+    def testDoThrowString(self):
+        """
+        Check that do_throw produces reasonable messages when the
+        input is a string instead of an object
+        """
+        self.writeFile("test_error.js", ADD_TEST_THROW_STRING)
+        self.writeManifest(["test_error.js"])
+
+        self.assertTestResult(False)
+        self.assertInLog("TEST-UNEXPECTED-FAIL")
+        self.assertInLog("Passing a string to do_throw")
+        self.assertNotInLog("TEST-PASS")
+
+    def testDoThrowForeignObject(self):
+        """
+        Check that do_throw produces reasonable messages when the
+        input is a generic object with 'filename', 'message' and 'stack' attributes
+        but 'object instanceof Error' returns false
+        """
+        self.writeFile("test_error.js", ADD_TEST_THROW_OBJECT)
+        self.writeManifest(["test_error.js"])
+
+        self.assertTestResult(False)
+        self.assertInLog("TEST-UNEXPECTED-FAIL")
+        self.assertInLog("failure.js")
+        self.assertInLog("Error object")
+        self.assertInLog("ERROR STACK")
+        self.assertNotInLog("TEST-PASS")
+
+    def testDoReportForeignObject(self):
+        """
+        Check that do_report_unexpected_exception produces reasonable messages when the
+        input is a generic object with 'filename', 'message' and 'stack' attributes
+        but 'object instanceof Error' returns false
+        """
+        self.writeFile("test_error.js", ADD_TEST_REPORT_OBJECT)
+        self.writeManifest(["test_error.js"])
+
+        self.assertTestResult(False)
+        self.assertInLog("TEST-UNEXPECTED-FAIL")
+        self.assertInLog("failure.js")
+        self.assertInLog("Error object")
+        self.assertInLog("ERROR STACK")
+        self.assertNotInLog("TEST-PASS")
+
+    def testDoReportRefError(self):
+        """
+        Check that do_report_unexpected_exception produces reasonable messages when the
+        input is a JS-generated Error
+        """
+        self.writeFile("test_error.js", ADD_TEST_REPORT_REF_ERROR)
+        self.writeManifest(["test_error.js"])
+
+        self.assertTestResult(False)
+        self.assertInLog("TEST-UNEXPECTED-FAIL")
+        self.assertInLog("test_error.js")
+        self.assertInLog("obj.noSuchFunction is not a function")
+        self.assertInLog("run_test@")
+        self.assertNotInLog("TEST-PASS")
 
 if __name__ == "__main__":
     unittest.main()

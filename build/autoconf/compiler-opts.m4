@@ -6,6 +6,18 @@ dnl Add compiler specific options
 
 AC_DEFUN([MOZ_DEFAULT_COMPILER],
 [
+dnl set DEVELOPER_OPTIONS early; MOZ_DEFAULT_COMPILER is usually the first non-setup directive
+  if test -z "$MOZILLA_OFFICIAL"; then
+    DEVELOPER_OPTIONS=1
+  fi
+  MOZ_ARG_ENABLE_BOOL(release,
+  [  --enable-release        Build with more conservative, release engineering-oriented options.
+                          This may slow down builds.],
+      DEVELOPER_OPTIONS=,
+      DEVELOPER_OPTIONS=1)
+
+  AC_SUBST(DEVELOPER_OPTIONS)
+
 dnl Default to MSVC for win32 and gcc-4.2 for darwin
 dnl ==============================================================
 if test -z "$CROSS_COMPILE"; then
@@ -78,9 +90,95 @@ if test -z "$_MOZ_USE_RTTI"; then
 fi
 ])
 
+dnl ========================================================
+dnl =
+dnl = Debugging Options
+dnl =
+dnl ========================================================
+AC_DEFUN([MOZ_DEBUGGING_OPTS],
+[
+dnl Debug info is ON by default.
+if test -z "$MOZ_DEBUG_FLAGS"; then
+  MOZ_DEBUG_FLAGS="-g"
+fi
+
+MOZ_ARG_ENABLE_STRING(debug,
+[  --enable-debug[=DBG]    Enable building with developer debug info
+                           (using compiler flags DBG)],
+[ if test "$enableval" != "no"; then
+    MOZ_DEBUG=1
+    if test -n "$enableval" -a "$enableval" != "yes"; then
+        MOZ_DEBUG_FLAGS=`echo $enableval | sed -e 's|\\\ | |g'`
+        _MOZ_DEBUG_FLAGS_SET=1
+    fi
+  else
+    MOZ_DEBUG=
+  fi ],
+  MOZ_DEBUG=)
+
+MOZ_DEBUG_ENABLE_DEFS="-DDEBUG -D_DEBUG -DTRACING"
+MOZ_ARG_WITH_STRING(debug-label,
+[  --with-debug-label=LABELS
+                          Define DEBUG_<value> for each comma-separated
+                          value given.],
+[ for option in `echo $withval | sed 's/,/ /g'`; do
+    MOZ_DEBUG_ENABLE_DEFS="$MOZ_DEBUG_ENABLE_DEFS -DDEBUG_${option}"
+done])
+
+MOZ_DEBUG_DISABLE_DEFS="-DNDEBUG -DTRIMMED"
+
+if test -n "$MOZ_DEBUG"; then
+    AC_MSG_CHECKING([for valid debug flags])
+    _SAVE_CFLAGS=$CFLAGS
+    CFLAGS="$CFLAGS $MOZ_DEBUG_FLAGS"
+    AC_TRY_COMPILE([#include <stdio.h>],
+        [printf("Hello World\n");],
+        _results=yes,
+        _results=no)
+    AC_MSG_RESULT([$_results])
+    if test "$_results" = "no"; then
+        AC_MSG_ERROR([These compiler flags are invalid: $MOZ_DEBUG_FLAGS])
+    fi
+    CFLAGS=$_SAVE_CFLAGS
+fi
+
+dnl ========================================================
+dnl = Enable generation of debug symbols
+dnl ========================================================
+MOZ_ARG_ENABLE_STRING(debug-symbols,
+[  --enable-debug-symbols[=DBG]
+                          Enable debugging symbols (using compiler flags DBG)],
+[ if test "$enableval" != "no"; then
+      MOZ_DEBUG_SYMBOLS=1
+      if test -n "$enableval" -a "$enableval" != "yes"; then
+          if test -z "$_MOZ_DEBUG_FLAGS_SET"; then
+              MOZ_DEBUG_FLAGS=`echo $enableval | sed -e 's|\\\ | |g'`
+          else
+              AC_MSG_ERROR([--enable-debug-symbols flags cannot be used with --enable-debug flags])
+          fi
+      fi
+  else
+      MOZ_DEBUG_SYMBOLS=
+  fi ],
+  MOZ_DEBUG_SYMBOLS=1)
+
+if test -n "$MOZ_DEBUG" -o -n "$MOZ_DEBUG_SYMBOLS"; then
+    AC_DEFINE(MOZ_DEBUG_SYMBOLS)
+    export MOZ_DEBUG_SYMBOLS
+fi
+
+])
+
 dnl A high level macro for selecting compiler options.
 AC_DEFUN([MOZ_COMPILER_OPTS],
 [
+  if test "${MOZ_PSEUDO_DERECURSE-unset}" = unset; then
+    dnl Don't enable on pymake, because of bug 918652. Bug 912979 is an annoyance
+    dnl with pymake, too.
+    MOZ_PSEUDO_DERECURSE=no-pymake
+  fi
+
+  MOZ_DEBUGGING_OPTS
   MOZ_RTTI
 if test "$CLANG_CXX"; then
     ## We disable return-type-c-linkage because jsval is defined as a C++ type but is
@@ -103,9 +201,48 @@ if test -z "$GNU_CC"; then
     esac
 fi
 
+if test -n "$DEVELOPER_OPTIONS"; then
+    MOZ_FORCE_GOLD=1
+fi
+
+MOZ_ARG_ENABLE_BOOL(gold,
+[  --enable-gold           Enable GNU Gold Linker when it is not already the default],
+    MOZ_FORCE_GOLD=1,
+    MOZ_FORCE_GOLD=
+    )
+
+if test "$GNU_CC" -a -n "$MOZ_FORCE_GOLD"; then
+    dnl if the default linker is BFD ld, check if gold is available and try to use it
+    dnl for local builds only.
+    if $CC -Wl,--version 2>&1 | grep -q "GNU ld"; then
+        GOLD=$($CC -print-prog-name=ld.gold)
+        case "$GOLD" in
+        /*)
+            ;;
+        *)
+            GOLD=$(which $GOLD)
+            ;;
+        esac
+        if test -n "$GOLD"; then
+            mkdir -p $_objdir/build/unix/gold
+            rm -f $_objdir/build/unix/gold/ld
+            ln -s "$GOLD" $_objdir/build/unix/gold/ld
+            if $CC -B $_objdir/build/unix/gold -Wl,--version 2>&1 | grep -q "GNU gold"; then
+                LDFLAGS="$LDFLAGS -B $_objdir/build/unix/gold"
+            else
+                rm -rf $_objdir/build/unix/gold
+            fi
+        fi
+    fi
+fi
+
 if test "$GNU_CC"; then
-    CFLAGS="$CFLAGS -ffunction-sections -fdata-sections"
-    CXXFLAGS="$CXXFLAGS -ffunction-sections -fdata-sections -fno-exceptions"
+    if test -z "$DEVELOPER_OPTIONS"; then
+        CFLAGS="$CFLAGS -ffunction-sections -fdata-sections"
+        CXXFLAGS="$CXXFLAGS -ffunction-sections -fdata-sections"
+    fi
+    CFLAGS="$CFLAGS -fno-math-errno"
+    CXXFLAGS="$CXXFLAGS -fno-exceptions -fno-math-errno"
 fi
 
 dnl ========================================================
@@ -117,7 +254,7 @@ MOZ_ARG_DISABLE_BOOL(icf,
     MOZ_DISABLE_ICF=1,
     MOZ_DISABLE_ICF= )
 
-if test "$GNU_CC" -a "$GCC_USE_GNU_LD" -a -z "$MOZ_DISABLE_ICF"; then
+if test "$GNU_CC" -a "$GCC_USE_GNU_LD" -a -z "$MOZ_DISABLE_ICF" -a -z "$DEVELOPER_OPTIONS"; then
     AC_CACHE_CHECK([whether the linker supports Identical Code Folding],
         LD_SUPPORTS_ICF,
         [echo 'int foo() {return 42;}' \
@@ -148,7 +285,7 @@ dnl ========================================================
 dnl = Automatically remove dead symbols
 dnl ========================================================
 
-if test "$GNU_CC" -a "$GCC_USE_GNU_LD"; then
+if test "$GNU_CC" -a "$GCC_USE_GNU_LD" -a -z "$DEVELOPER_OPTIONS"; then
     if test -n "$MOZ_DEBUG_FLAGS"; then
         dnl See bug 670659
         AC_CACHE_CHECK([whether removing dead symbols breaks debugging],

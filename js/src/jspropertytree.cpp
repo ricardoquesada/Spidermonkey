@@ -6,7 +6,6 @@
 
 #include "jspropertytree.h"
 
-#include "jsapi.h"
 #include "jscntxt.h"
 #include "jsgc.h"
 #include "jstypes.h"
@@ -46,7 +45,7 @@ HashChildren(Shape *kid1, Shape *kid2)
     KidsHash *hash = js_new<KidsHash>();
     if (!hash || !hash->init(2)) {
         js_delete(hash);
-        return NULL;
+        return nullptr;
     }
 
     JS_ALWAYS_TRUE(hash->putNew(kid1, kid1));
@@ -106,7 +105,7 @@ Shape::removeChild(Shape *child)
     if (kidp->isShape()) {
         JS_ASSERT(kidp->toShape() == child);
         kidp->setNull();
-        child->parent = NULL;
+        child->parent = nullptr;
         return;
     }
 
@@ -114,7 +113,7 @@ Shape::removeChild(Shape *child)
     JS_ASSERT(hash->count() >= 2);      /* otherwise kidp->isShape() should be true */
 
     hash->remove(child);
-    child->parent = NULL;
+    child->parent = nullptr;
 
     if (hash->count() == 1) {
         /* Convert from HASH form back to SHAPE form. */
@@ -130,7 +129,7 @@ Shape *
 PropertyTree::getChild(ExclusiveContext *cx, Shape *parent_, uint32_t nfixed, const StackShape &child)
 {
     {
-        Shape *shape = NULL;
+        Shape *shape = nullptr;
 
         JS_ASSERT(parent_);
 
@@ -174,7 +173,7 @@ PropertyTree::getChild(ExclusiveContext *cx, Shape *parent_, uint32_t nfixed, co
                  */
                 JS_ASSERT(parent_->isMarked());
                 parent_->removeChild(shape);
-                shape = NULL;
+                shape = nullptr;
             }
         }
 #endif
@@ -188,12 +187,42 @@ PropertyTree::getChild(ExclusiveContext *cx, Shape *parent_, uint32_t nfixed, co
 
     Shape *shape = newShape(cx);
     if (!shape)
-        return NULL;
+        return nullptr;
 
     new (shape) Shape(child, nfixed);
 
     if (!insertChild(cx, parent, shape))
-        return NULL;
+        return nullptr;
+
+    return shape;
+}
+
+Shape *
+PropertyTree::lookupChild(ThreadSafeContext *cx, Shape *parent, const StackShape &child)
+{
+    /* Keep this in sync with the logic of getChild above. */
+    Shape *shape = nullptr;
+
+    JS_ASSERT(parent);
+
+    KidsPointer *kidp = &parent->kids;
+    if (kidp->isShape()) {
+        Shape *kid = kidp->toShape();
+        if (kid->matches(child))
+            shape = kid;
+    } else if (kidp->isHash()) {
+        if (KidsHash::Ptr p = kidp->toHash()->readonlyThreadsafeLookup(child))
+            shape = *p;
+    } else {
+        return nullptr;
+    }
+
+#ifdef JSGC_INCREMENTAL
+    mozilla::DebugOnly<JS::Zone *> zone = shape->arenaHeader()->zone;
+    JS_ASSERT(!zone->needsBarrier());
+    JS_ASSERT(!(zone->isGCSweeping() && !shape->isMarked() &&
+		!shape->arenaHeader()->allocatedDuringIncremental));
+#endif
 
     return shape;
 }
@@ -270,7 +299,7 @@ Shape::dump(JSContext *cx, FILE *fp) const
             RootedValue v(cx, IdToValue(propid));
             JSString *s = ToStringSlow<CanGC>(cx, v);
             fputs("object ", fp);
-            str = s ? s->ensureLinear(cx) : NULL;
+            str = s ? s->ensureLinear(cx) : nullptr;
         }
         if (!str)
             fputs("<error>", fp);
@@ -345,7 +374,7 @@ void
 js::PropertyTree::dumpShapes(JSRuntime *rt)
 {
     static bool init = false;
-    static FILE *dumpfp = NULL;
+    static FILE *dumpfp = nullptr;
     if (!init) {
         init = true;
         const char *name = getenv("JS_DUMP_SHAPES_FILE");

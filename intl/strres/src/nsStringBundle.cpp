@@ -6,38 +6,27 @@
 #include "nsStringBundle.h"
 #include "nsID.h"
 #include "nsString.h"
-#include "nsReadableUtils.h"
 #include "nsIStringBundle.h"
 #include "nsStringBundleService.h"
-#include "nsStringBundle.h"
 #include "nsStringBundleTextOverride.h"
-#include "nsXPCOM.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIMutableArray.h"
 #include "nsArrayEnumerator.h"
 #include "nscore.h"
 #include "nsHashtable.h"
 #include "nsMemory.h"
-#include "plstr.h"
 #include "nsNetUtil.h"
-#include "nsIURL.h"
-#include "nsIComponentManager.h"
-#include "nsIMemory.h"
 #include "nsIObserverService.h"
 #include "nsCOMArray.h"
 #include "nsTextFormatter.h"
 #include "nsIErrorService.h"
 #include "nsICategoryManager.h"
 
-#include "nsPrintfCString.h"
 // for async loading
 #ifdef ASYNC_LOADING
 #include "nsIBinaryInputStream.h"
 #include "nsIStringStream.h"
 #endif
-
-#include "prenv.h"
-#include "nsCRT.h"
 
 using namespace mozilla;
 
@@ -771,7 +760,7 @@ nsStringBundleService::FormatStatusMessage(nsresult aStatus,
 
   // XXX hack for mailnews who has already formatted their messages:
   if (aStatus == NS_OK && aStatusArg) {
-    *result = nsCRT::strdup(aStatusArg);
+    *result = NS_strdup(aStatusArg);
     NS_ENSURE_TRUE(*result, NS_ERROR_OUT_OF_MEMORY);
     return NS_OK;
   }

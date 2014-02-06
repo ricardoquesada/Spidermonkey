@@ -15,7 +15,7 @@ import weakref
 import warnings
 
 from errors import *
-from marionette import HTMLElement, Marionette
+from marionette import Marionette
 
 class SkipTest(Exception):
     """
@@ -82,10 +82,12 @@ class CommonTestCase(unittest.TestCase):
     match_re = None
     failureException = AssertionError
 
-    def __init__(self, methodName):
+    def __init__(self, methodName, **kwargs):
         unittest.TestCase.__init__(self, methodName)
-        self.loglines = None
+        self.loglines = []
         self.duration = 0
+        self.start_time = 0
+        self.expected = kwargs.pop('expected', 'pass')
 
     def _addSkip(self, result, reason):
         addSkip = getattr(result, 'addSkip', None)
@@ -97,6 +99,7 @@ class CommonTestCase(unittest.TestCase):
             result.addSuccess(self)
 
     def run(self, result=None):
+        self.start_time = time.time()
         orig_result = result
         if result is None:
             result = self.defaultTestResult()
@@ -116,6 +119,7 @@ class CommonTestCase(unittest.TestCase):
                 self._addSkip(result, skip_why)
             finally:
                 result.stopTest(self)
+            self.stop_time = time.time()
             return
         try:
             success = False
@@ -129,7 +133,14 @@ class CommonTestCase(unittest.TestCase):
                 result.addError(self, sys.exc_info())
             else:
                 try:
-                    testMethod()
+                    if self.expected == 'fail':
+                        try:
+                            testMethod()
+                        except Exception:
+                            raise _ExpectedFailure(sys.exc_info())
+                        raise _UnexpectedSuccess
+                    else:
+                        testMethod()
                 except self.failureException:
                     result.addFailure(self, sys.exc_info())
                 except KeyboardInterrupt:
@@ -253,7 +264,7 @@ permissions.forEach(function (perm) {
         if hasattr(self.marionette, 'session'):
             if self.marionette.session is not None:
                 try:
-                    self.loglines = self.marionette.get_logs()
+                    self.loglines.extend(self.marionette.get_logs())
                 except Exception, inst:
                     self.loglines = [['Error getting log: %s' % inst]]
                 try:
@@ -300,12 +311,12 @@ class MarionetteTestCase(CommonTestCase):
     def setUp(self):
         CommonTestCase.setUp(self)
         self.marionette.test_name = self.test_name
-        self.marionette.execute_script("log('TEST-START: %s:%s')" % 
+        self.marionette.execute_script("log('TEST-START: %s:%s')" %
                                        (self.filepath.replace('\\', '\\\\'), self.methodName))
 
     def tearDown(self):
         self.marionette.set_context("content")
-        self.marionette.execute_script("log('TEST-END: %s:%s')" % 
+        self.marionette.execute_script("log('TEST-END: %s:%s')" %
                                        (self.filepath.replace('\\', '\\\\'), self.methodName))
         self.marionette.test_name = None
         CommonTestCase.tearDown(self)
@@ -337,8 +348,10 @@ class MarionetteTestCase(CommonTestCase):
 
 class MarionetteJSTestCase(CommonTestCase):
 
+    head_js_re = re.compile(r"MARIONETTE_HEAD_JS(\s*)=(\s*)['|\"](.*?)['|\"];")
     context_re = re.compile(r"MARIONETTE_CONTEXT(\s*)=(\s*)['|\"](.*?)['|\"];")
     timeout_re = re.compile(r"MARIONETTE_TIMEOUT(\s*)=(\s*)(\d+);")
+    inactivity_timeout_re = re.compile(r"MARIONETTE_INACTIVITY_TIMEOUT(\s*)=(\s*)(\d+);")
     match_re = re.compile(r"test_(.*)\.js$")
 
     def __init__(self, marionette_weakref, methodName='runTest', jsFile=None):
@@ -349,7 +362,7 @@ class MarionetteJSTestCase(CommonTestCase):
         CommonTestCase.__init__(self, methodName)
 
     @classmethod
-    def add_tests_to_suite(cls, mod_name, filepath, suite, testloader, marionette, testvars):
+    def add_tests_to_suite(cls, mod_name, filepath, suite, testloader, marionette, testvars, **kwargs):
         suite.addTest(cls(weakref.ref(marionette), jsFile=filepath))
 
     def runTest(self):
@@ -375,6 +388,13 @@ class MarionetteJSTestCase(CommonTestCase):
                 else:
                     js += line
 
+        if os.path.basename(self.jsFile).startswith('test_'):
+            head_js = self.head_js_re.search(js);
+            if head_js:
+                head_js = head_js.group(3)
+                head = open(os.path.join(os.path.dirname(self.jsFile), head_js), 'r')
+                js = head.read() + js;
+
         context = self.context_re.search(js)
         if context:
             context = context.group(3)
@@ -388,10 +408,15 @@ class MarionetteJSTestCase(CommonTestCase):
             timeout = timeout.group(3)
             self.marionette.set_script_timeout(timeout)
 
+        inactivity_timeout = self.inactivity_timeout_re.search(js)
+        if inactivity_timeout:
+            inactivity_timeout = inactivity_timeout.group(3)
+
         try:
             results = self.marionette.execute_js_script(js,
                                                         args,
                                                         special_powers=True,
+                                                        inactivity_timeout=inactivity_timeout,
                                                         filename=os.path.basename(self.jsFile))
 
             self.assertTrue(not 'timeout' in self.jsFile,

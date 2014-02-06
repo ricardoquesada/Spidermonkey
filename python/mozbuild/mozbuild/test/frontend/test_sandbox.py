@@ -169,7 +169,7 @@ class TestSandbox(unittest.TestCase):
         sandbox.exec_source('add_tier_dir("t1", "foo")', 'foo.py')
 
         self.assertEqual(sandbox['TIERS']['t1'],
-            {'regular': ['foo'], 'static': []})
+            {'regular': ['foo'], 'static': [], 'external': []})
 
     def test_add_tier_dir_regular_list(self):
         sandbox = self.sandbox()
@@ -177,7 +177,7 @@ class TestSandbox(unittest.TestCase):
         sandbox.exec_source('add_tier_dir("t1", ["foo", "bar"])', 'foo.py')
 
         self.assertEqual(sandbox['TIERS']['t1'],
-            {'regular': ['foo', 'bar'], 'static': []})
+            {'regular': ['foo', 'bar'], 'static': [], 'external': []})
 
     def test_add_tier_dir_static(self):
         sandbox = self.sandbox()
@@ -185,7 +185,15 @@ class TestSandbox(unittest.TestCase):
         sandbox.exec_source('add_tier_dir("t1", "foo", static=True)', 'foo.py')
 
         self.assertEqual(sandbox['TIERS']['t1'],
-            {'regular': [], 'static': ['foo']})
+            {'regular': [], 'static': ['foo'], 'external': []})
+
+    def test_add_tier_dir_static(self):
+        sandbox = self.sandbox()
+
+        sandbox.exec_source('add_tier_dir("t1", "foo", external=True)', 'foo.py')
+
+        self.assertEqual(sandbox['TIERS']['t1'],
+            {'regular': [], 'static': [], 'external': ['foo']})
 
     def test_tier_order(self):
         sandbox = self.sandbox()
@@ -303,9 +311,8 @@ add_tier_dir('t1', 'bat', static=True)
     def test_invalid_utf8_substs(self):
         """Ensure invalid UTF-8 in substs is converted with an error."""
 
-        config = MockConfig()
         # This is really mbcs. It's a bunch of invalid UTF-8.
-        config.substs['BAD_UTF8'] = b'\x83\x81\x83\x82\x3A'
+        config = MockConfig(extra_substs={'BAD_UTF8': b'\x83\x81\x83\x82\x3A'})
 
         sandbox = MozbuildSandbox(config, '/foo/moz.build')
 

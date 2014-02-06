@@ -1,9 +1,11 @@
+var sloppy_tolerance = 100;
 for (var i = -20; i < 20; i++)
-    assertNear(Math.sinh(i), (Math.exp(i) - Math.exp(-i)) / 2);
+    assertNear(Math.sinh(i), (Math.exp(i) - Math.exp(-i)) / 2, sloppy_tolerance);
 
-assertNear(Math.sinh(1e5), Infinity);
-assertNear(Math.sinh(1e-30), 1e-30);
-assertNear(Math.sinh(1e-10), 1e-10);
+assertEq(Math.sinh(1000), Infinity);
+assertEq(Math.sinh(Number.MAX_VALUE), Infinity);
+assertNear(Math.sinh(1e-30), 1e-30, sloppy_tolerance);
+assertNear(Math.sinh(1e-10), 1e-10, sloppy_tolerance);
 
 var sinh_data = [
     [-6.902103625349695, -497.1816406250001],
@@ -289,8 +291,8 @@ var sinh_data = [
     [28.78280496108106,  1581915832319.9973]
 ];
 
-for (let [x, y] of sinh_data)
-    assertNear(Math.sinh(x), y);
+for (var [x, y] of sinh_data)
+    assertNear(Math.sinh(x), y, sloppy_tolerance);
 
 reportCompare(0, 0, "ok");
 

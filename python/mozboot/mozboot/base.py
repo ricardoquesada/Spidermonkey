@@ -61,7 +61,14 @@ this shell. Try creating a new shell and run this bootstrapper again.
 
 If this continues to fail and you are sure you have a modern Python on your
 system, ensure it is on the $PATH and try again. If that fails, you'll need to
-install Python manually. See http://www.python.org/.
+install Python manually and ensure the path with the python binary is listed in
+the $PATH environment variable.
+
+We recommend the following tools for installing Python:
+
+    pyenv   -- https://github.com/yyuu/pyenv)
+    pythonz -- https://github.com/saghul/pythonz
+    official installers -- http://www.python.org/
 '''
 
 
@@ -96,7 +103,10 @@ class BaseBootstrapper(object):
 
     def run_as_root(self, command):
         if os.geteuid() != 0:
-            command.insert(0, 'sudo')
+            if self.which('sudo'):
+                command.insert(0, 'sudo')
+            else:
+                command = ['su', 'root', '-c', ' '.join(command)]
 
         print('Executing as root:', subprocess.list2cmdline(command))
 
@@ -247,6 +257,9 @@ class BaseBootstrapper(object):
             print('Your version of Python (%s) is new enough.' % version)
             return
 
+        print('Your version of Python (%s) is too old. Will try to upgrade.' %
+            version)
+
         self._ensure_package_manager_updated()
         self.upgrade_python(version)
 
@@ -254,6 +267,7 @@ class BaseBootstrapper(object):
 
         if not modern:
             print(PYTHON_UPGRADE_FAILED % (MODERN_PYTHON_VERSION, after))
+            sys.exit(1)
 
     def upgrade_python(self, current):
         """Upgrade Python.

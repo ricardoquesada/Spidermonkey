@@ -9,8 +9,8 @@ from contextlib import contextmanager
 from .copier import FilePurger
 from .files import (
     AbsoluteSymlinkFile,
+    ExistingFile,
     File,
-    RequiredExistingFile,
 )
 import mozpack.path as mozpath
 
@@ -32,80 +32,6 @@ def _auto_fileobj(path, fileobj, mode='r'):
     finally:
         if path:
             fileobj.close()
-
-
-class UnreadablePurgeManifest(Exception):
-    """Error for failure when reading content of a serialized PurgeManifest."""
-
-
-class PurgeManifest(object):
-    """Describes actions to be used with a copier.FilePurger instance.
-
-    This class facilitates serialization and deserialization of data used
-    to construct a copier.FilePurger and to perform a purge operation.
-
-    The manifest contains a set of entries (paths that are accounted for and
-    shouldn't be purged) and a relative path. The relative path is optional and
-    can be used to e.g. have several manifest files in a directory be
-    dynamically applied to subdirectories under a common base directory.
-
-    Don't be confused by the name of this class: entries are files that are
-    *not* purged.
-    """
-    def __init__(self, relpath='', path=None, fileobj=None):
-        self.relpath = relpath
-        self.entries = set()
-
-        if not path and not fileobj:
-            return
-
-        with _auto_fileobj(path, fileobj, mode='rt') as fh:
-            self._read_from_fh(fh)
-
-    def __eq__(self, other):
-        if not isinstance(other, PurgeManifest):
-            return False
-
-        return other.relpath == self.relpath and other.entries == self.entries
-
-    def _read_from_fh(self, fileobj):
-        version = fileobj.readline().rstrip()
-        if version != '1':
-            raise UnreadablePurgeManifest('Unknown manifest version: %s' %
-                version)
-
-        self.relpath = fileobj.readline().rstrip()
-
-        for entry in fileobj:
-            self.entries.add(entry.rstrip())
-
-    def add(self, path):
-        return self.entries.add(path)
-
-    def write(self, path=None, fileobj=None):
-        with _auto_fileobj(path, fileobj, 'wt') as fh:
-            fh.write('1\n')
-            fh.write('%s\n' % self.relpath)
-
-            # We write sorted so written output is consistent.
-            for entry in sorted(self.entries):
-                fh.write('%s\n' % entry)
-
-    def get_purger(self, prepend_relpath=False):
-        """Obtain a FilePurger instance from this manifest.
-
-        If :prepend_relpath is truish, the relative path in the manifest will
-        be prepended to paths added to the FilePurger. Otherwise, the raw paths
-        will be used.
-        """
-        p = FilePurger()
-        for entry in self.entries:
-            if prepend_relpath:
-                entry = mozpath.join(self.relpath, entry)
-
-            p.add(entry)
-
-        return p
 
 
 class UnreadableInstallManifest(Exception):
@@ -130,13 +56,22 @@ class InstallManifest(object):
           If symlinks are not supported, a copy will be performed.
 
       exists -- The destination path is accounted for and won't be deleted by
-          the FileCopier.
+          the FileCopier. If the destination path doesn't exist, an error is
+          raised.
+
+      optional -- The destination path is accounted for and won't be deleted by
+          the FileCopier. No error is raised if the destination path does not
+          exist.
+
+    Versions 1 and 2 of the manifest format are similar. Version 2 added
+    optional path support.
     """
     FIELD_SEPARATOR = '\x1f'
 
     SYMLINK = 1
     COPY = 2
     REQUIRED_EXISTS = 3
+    OPTIONAL_EXISTS = 4
 
     def __init__(self, path=None, fileobj=None):
         """Create a new InstallManifest entry.
@@ -159,7 +94,7 @@ class InstallManifest(object):
 
     def _load_from_fileobj(self, fileobj):
         version = fileobj.readline().rstrip()
-        if version != '1':
+        if version not in ('1', '2'):
             raise UnreadableInstallManifest('Unknown manifest version: ' %
                 version)
 
@@ -183,6 +118,11 @@ class InstallManifest(object):
             if record_type == self.REQUIRED_EXISTS:
                 _, path = fields
                 self.add_required_exists(path)
+                continue
+
+            if record_type == self.OPTIONAL_EXISTS:
+                _, path = fields
+                self.add_optional_exists(path)
                 continue
 
             raise UnreadableInstallManifest('Unknown record type: %d' %
@@ -218,7 +158,7 @@ class InstallManifest(object):
         It is an error if both are specified.
         """
         with _auto_fileobj(path, fileobj, 'wb') as fh:
-            fh.write('1\n')
+            fh.write('2\n')
 
             for dest in sorted(self._dests):
                 entry = self._dests[dest]
@@ -243,11 +183,20 @@ class InstallManifest(object):
         self._add_entry(dest, (self.COPY, source))
 
     def add_required_exists(self, dest):
-        """Record that a destination file may exist.
+        """Record that a destination file must exist.
 
         This effectively prevents the listed file from being deleted.
         """
         self._add_entry(dest, (self.REQUIRED_EXISTS,))
+
+    def add_optional_exists(self, dest):
+        """Record that a destination file may exist.
+
+        This effectively prevents the listed file from being deleted. Unlike a
+        "required exists" file, files of this type do not raise errors if the
+        destination file does not exist.
+        """
+        self._add_entry(dest, (self.OPTIONAL_EXISTS,))
 
     def _add_entry(self, dest, entry):
         if dest in self._dests:
@@ -275,7 +224,11 @@ class InstallManifest(object):
                 continue
 
             if install_type == self.REQUIRED_EXISTS:
-                registry.add(dest, RequiredExistingFile())
+                registry.add(dest, ExistingFile(required=True))
+                continue
+
+            if install_type == self.OPTIONAL_EXISTS:
+                registry.add(dest, ExistingFile(required=False))
                 continue
 
             raise Exception('Unknown install type defined in manifest: %d' %

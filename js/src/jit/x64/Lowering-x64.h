@@ -28,21 +28,33 @@ class LIRGeneratorX64 : public LIRGeneratorX86Shared
                 LUse::Policy policy = LUse::REGISTER, bool useAtStart = false);
     bool useBoxFixed(LInstruction *lir, size_t n, MDefinition *mir, Register reg1, Register);
 
+    // x86 has constraints on what registers can be formatted for 1-byte
+    // stores and loads; on x64 all registers are okay.
+    LAllocation useByteOpRegister(MDefinition *mir);
+    LAllocation useByteOpRegisterOrNonDoubleConstant(MDefinition *mir);
+
     LDefinition tempToUnbox();
 
-    LGetPropertyCacheT *newLGetPropertyCacheT(MGetPropertyCache *ins);
-    LGetElementCacheT *newLGetElementCacheT(MGetElementCache *ins);
+    // x64 has a scratch register, so no need for another temp for dispatch
+    // ICs.
+    LDefinition tempForDispatchCache(MIRType outputType = MIRType_None) {
+        return LDefinition::BogusTemp();
+    }
 
   public:
     bool visitBox(MBox *box);
     bool visitUnbox(MUnbox *unbox);
     bool visitReturn(MReturn *ret);
-    bool visitStoreTypedArrayElement(MStoreTypedArrayElement *ins);
-    bool visitStoreTypedArrayElementHole(MStoreTypedArrayElementHole *ins);
     bool visitAsmJSUnsignedToDouble(MAsmJSUnsignedToDouble *ins);
+    bool visitAsmJSUnsignedToFloat32(MAsmJSUnsignedToFloat32 *ins);
+    bool visitAsmJSLoadHeap(MAsmJSLoadHeap *ins);
     bool visitAsmJSStoreHeap(MAsmJSStoreHeap *ins);
     bool visitAsmJSLoadFuncPtr(MAsmJSLoadFuncPtr *ins);
     bool visitStoreTypedArrayElementStatic(MStoreTypedArrayElementStatic *ins);
+
+    static bool allowFloat32Optimizations() {
+        return true;
+    }
 };
 
 typedef LIRGeneratorX64 LIRGeneratorSpecific;

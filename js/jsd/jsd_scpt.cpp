@@ -45,7 +45,7 @@ _newJSDScript(JSDContext*  jsdc,
 {
     JS::RootedScript script(cx, script_);
     if ( JS_GetScriptIsSelfHosted(script) )
-        return NULL;
+        return nullptr;
 
     JSDScript*  jsdscript;
     unsigned     lineno;
@@ -56,11 +56,11 @@ _newJSDScript(JSDContext*  jsdc,
     /* these are inlined javascript: urls and we can't handle them now */
     lineno = (unsigned) JS_GetScriptBaseLineNumber(cx, script);
     if( lineno == 0 )
-        return NULL;
+        return nullptr;
 
     jsdscript = (JSDScript*) calloc(1, sizeof(JSDScript));
     if( ! jsdscript )
-        return NULL;
+        return nullptr;
 
     raw_filename = JS_GetScriptFilename(cx,script);
 
@@ -70,7 +70,7 @@ _newJSDScript(JSDContext*  jsdc,
     jsdscript->script       = script;  
     jsdscript->lineBase     = lineno;
     jsdscript->lineExtent   = (unsigned)NOT_SET_YET;
-    jsdscript->data         = NULL;
+    jsdscript->data         = nullptr;
     jsdscript->url          = (char*) jsd_BuildNormalizedURL(raw_filename);
 
     JS_INIT_CLIST(&jsdscript->hooks);
@@ -142,11 +142,11 @@ _dumpJSDScript(JSDContext* jsdc, JSDScript* jsdscript, const char* leadingtext)
 static void
 _dumpJSDScriptList( JSDContext* jsdc )
 {
-    JSDScript* iterp = NULL;
-    JSDScript* jsdscript = NULL;
+    JSDScript* iterp = nullptr;
+    JSDScript* jsdscript = nullptr;
     
     OutputDebugString( "*** JSDScriptDump\n" );
-    while( NULL != (jsdscript = jsd_IterateScripts(jsdc, &iterp)) )
+    while( nullptr != (jsdscript = jsd_IterateScripts(jsdc, &iterp)) )
         _dumpJSDScript( jsdc, jsdscript, "  script: " );
 }
 #endif /* JSD_DUMP */
@@ -186,7 +186,7 @@ jsd_free_script_entry(void *priv, JSHashEntry *he, unsigned flag)
     }
 }
 
-static JSHashAllocOps script_alloc_ops = {
+static const JSHashAllocOps script_alloc_ops = {
     jsd_alloc_script_table, jsd_free_script_table,
     jsd_alloc_script_entry, jsd_free_script_entry
 };
@@ -195,7 +195,7 @@ static JSHashAllocOps script_alloc_ops = {
 #define JSD_SCRIPT_HASH_SIZE 1024
 #endif
 
-JSBool
+bool
 jsd_InitScriptManager(JSDContext* jsdc)
 {
     JS_INIT_CLIST(&jsdc->scripts);
@@ -347,7 +347,7 @@ jsd_ClearScriptProfileData(JSDContext* jsdc, JSDScript *script)
     if (script->profileData)
     {
         free(script->profileData);
-        script->profileData = NULL;
+        script->profileData = nullptr;
     }
 }    
 
@@ -374,7 +374,7 @@ jsd_IterateScripts(JSDContext* jsdc, JSDScript **iterp)
     if( !jsdscript )
         jsdscript = (JSDScript *)jsdc->scripts.next;
     if( jsdscript == (JSDScript *)&jsdc->scripts )
-        return NULL;
+        return nullptr;
     *iterp = (JSDScript*) jsdscript->links.next;
     return jsdscript;
 }
@@ -393,7 +393,7 @@ jsd_GetScriptPrivate(JSDScript *jsdscript)
     return jsdscript->data;
 }
 
-JSBool
+bool
 jsd_IsActiveScript(JSDContext* jsdc, JSDScript *jsdscript)
 {
     JSDScript *current;
@@ -405,9 +405,9 @@ jsd_IsActiveScript(JSDContext* jsdc, JSDScript *jsdscript)
          current = (JSDScript *)current->links.next )
     {
         if(jsdscript == current)
-            return JS_TRUE;
+            return true;
     }
-    return JS_FALSE;
+    return false;
 }        
 
 const char*
@@ -423,7 +423,7 @@ jsd_GetScriptFunctionId(JSDContext* jsdc, JSDScript *jsdscript)
     JSFunction *fun = jsd_GetJSFunction(jsdc, jsdscript);
 
     if( ! fun )
-        return NULL;
+        return nullptr;
     str = JS_GetFunctionId(fun);
 
     /* For compatibility we return "anonymous", not an empty string here. */
@@ -481,19 +481,19 @@ jsd_GetClosestLine(JSDContext* jsdc, JSDScript* jsdscript, uintptr_t pc)
     return line;    
 }
 
-JSBool
+bool
 jsd_GetLinePCs(JSDContext* jsdc, JSDScript* jsdscript,
                unsigned startLine, unsigned maxLines,
                unsigned* count, unsigned** retLines, uintptr_t** retPCs)
 {
     unsigned first = jsdscript->lineBase;
     unsigned last = first + jsd_GetScriptLineExtent(jsdc, jsdscript) - 1;
-    JSBool ok;
+    bool ok;
     jsbytecode **pcs;
     unsigned i;
 
     if (last < startLine)
-        return JS_TRUE;
+        return true;
 
     AutoSafeJSContext cx;
     JSAutoCompartment ac(cx, jsdscript->script);
@@ -515,17 +515,17 @@ jsd_GetLinePCs(JSDContext* jsdc, JSDScript* jsdscript,
     return ok;
 }
 
-JSBool
+bool
 jsd_SetScriptHook(JSDContext* jsdc, JSD_ScriptHookProc hook, void* callerdata)
 {
     JSD_LOCK();
     jsdc->scriptHook = hook;
     jsdc->scriptHookData = callerdata;
     JSD_UNLOCK();
-    return JS_TRUE;
+    return true;
 }
 
-JSBool
+bool
 jsd_GetScriptHook(JSDContext* jsdc, JSD_ScriptHookProc* hook, void** callerdata)
 {
     JSD_LOCK();
@@ -534,13 +534,13 @@ jsd_GetScriptHook(JSDContext* jsdc, JSD_ScriptHookProc* hook, void** callerdata)
     if( callerdata )
         *callerdata = jsdc->scriptHookData;
     JSD_UNLOCK();
-    return JS_TRUE;
+    return true;
 }    
 
-JSBool
-jsd_EnableSingleStepInterrupts(JSDContext* jsdc, JSDScript* jsdscript, JSBool enable)
+bool
+jsd_EnableSingleStepInterrupts(JSDContext* jsdc, JSDScript* jsdscript, bool enable)
 {
-    JSBool rv;
+    bool rv;
     AutoSafeJSContext cx;
     JSAutoCompartment ac(cx, jsdscript->script);
     JSD_LOCK();
@@ -561,7 +561,7 @@ jsd_NewScriptHookProc(
                 JSFunction  *fun,                
                 void*       callerdata )
 {
-    JSDScript* jsdscript = NULL;
+    JSDScript* jsdscript = nullptr;
     JSDContext* jsdc = (JSDContext*) callerdata;
     JSD_ScriptHookProc      hook;
     void*                   hookData;
@@ -593,7 +593,7 @@ jsd_NewScriptHookProc(
     JSD_UNLOCK();
 
     if( hook )
-        hook(jsdc, jsdscript, JS_TRUE, hookData);
+        hook(jsdc, jsdscript, true, hookData);
 }
 
 void
@@ -602,7 +602,7 @@ jsd_DestroyScriptHookProc(
                 JSScript    *script_,
                 void*       callerdata )
 {
-    JSDScript* jsdscript = NULL;
+    JSDScript* jsdscript = nullptr;
     JSDContext* jsdc = (JSDContext*) callerdata;
     // NB: We're called during GC, so we can't push a cx. Root directly with
     // the runtime.
@@ -630,12 +630,13 @@ jsd_DestroyScriptHookProc(
 
     /* local in case hook gets cleared on another thread */
     JSD_LOCK();
-    hook = (jsdscript->flags & JSD_SCRIPT_CALL_DESTROY_HOOK_BIT) ? jsdc->scriptHook : NULL;
+    hook = (jsdscript->flags & JSD_SCRIPT_CALL_DESTROY_HOOK_BIT) ? jsdc->scriptHook
+                                                                 : nullptr;
     hookData = jsdc->scriptHookData;
     JSD_UNLOCK();
 
     if( hook )
-        hook(jsdc, jsdscript, JS_FALSE, hookData);
+        hook(jsdc, jsdscript, false, hookData);
 
     JSD_LOCK_SCRIPTS(jsdc);
     JS_HashTableRemove(jsdc->scriptsTable, (void *)script);
@@ -664,10 +665,10 @@ _findHook(JSDContext* jsdc, JSDScript* jsdscript, uintptr_t pc)
         if (jsdhook->pc == pc)
             return jsdhook;
     }
-    return NULL;
+    return nullptr;
 }
 
-static JSBool
+static bool
 _isActiveHook(JSDContext* jsdc, JSScript *script, JSDExecHook* jsdhook)
 {
     JSDExecHook* current;
@@ -679,7 +680,7 @@ _isActiveHook(JSDContext* jsdc, JSScript *script, JSDExecHook* jsdhook)
     if( ! jsdscript)
     {
         JSD_UNLOCK_SCRIPTS(jsdc);
-        return JS_FALSE;
+        return false;
     }
 
     list = &jsdscript->hooks;
@@ -691,11 +692,11 @@ _isActiveHook(JSDContext* jsdc, JSScript *script, JSDExecHook* jsdhook)
         if(current == jsdhook)
         {
             JSD_UNLOCK_SCRIPTS(jsdc);
-            return JS_TRUE;
+            return true;
         }
     }
     JSD_UNLOCK_SCRIPTS(jsdc);
-    return JS_FALSE;
+    return false;
 }
 
 
@@ -711,7 +712,7 @@ jsd_TrapHandler(JSContext *cx, JSScript *script_, jsbytecode *pc, jsval *rval,
 
     JSD_LOCK();
 
-    if( NULL == (jsdc = jsd_JSDContextForJSContext(cx)) ||
+    if( nullptr == (jsdc = jsd_JSDContextForJSContext(cx)) ||
         ! _isActiveHook(jsdc, script, jsdhook) )
     {
         JSD_UNLOCK();
@@ -741,7 +742,7 @@ jsd_TrapHandler(JSContext *cx, JSScript *script_, jsbytecode *pc, jsval *rval,
 
 
 
-JSBool
+bool
 jsd_SetExecutionHook(JSDContext*           jsdc, 
                      JSDScript*            jsdscript,
                      uintptr_t             pc,
@@ -749,14 +750,14 @@ jsd_SetExecutionHook(JSDContext*           jsdc,
                      void*                 callerdata)
 {
     JSDExecHook* jsdhook;
-    JSBool rv;
+    bool rv;
 
     JSD_LOCK();
     if( ! hook )
     {
         jsd_ClearExecutionHook(jsdc, jsdscript, pc);
         JSD_UNLOCK();
-        return JS_TRUE;
+        return true;
     }
 
     jsdhook = _findHook(jsdc, jsdscript, pc);
@@ -765,14 +766,14 @@ jsd_SetExecutionHook(JSDContext*           jsdc,
         jsdhook->hook       = hook;
         jsdhook->callerdata = callerdata;
         JSD_UNLOCK();
-        return JS_TRUE;
+        return true;
     }
     /* else... */
 
     jsdhook = (JSDExecHook*)calloc(1, sizeof(JSDExecHook));
     if( ! jsdhook ) {
         JSD_UNLOCK();
-        return JS_FALSE;
+        return false;
     }
     jsdhook->jsdscript  = jsdscript;
     jsdhook->pc         = pc;
@@ -790,16 +791,16 @@ jsd_SetExecutionHook(JSDContext*           jsdc,
     if ( ! rv ) {
         free(jsdhook);
         JSD_UNLOCK();
-        return JS_FALSE;
+        return false;
     }
 
     JS_APPEND_LINK(&jsdhook->links, &jsdscript->hooks);
     JSD_UNLOCK();
 
-    return JS_TRUE;
+    return true;
 }
 
-JSBool
+bool
 jsd_ClearExecutionHook(JSDContext*           jsdc, 
                        JSDScript*            jsdscript,
                        uintptr_t             pc)
@@ -812,24 +813,24 @@ jsd_ClearExecutionHook(JSDContext*           jsdc,
     if( ! jsdhook )
     {
         JSD_UNLOCK();
-        return JS_FALSE;
+        return false;
     }
 
     {
         AutoSafeJSContext cx;
         JSAutoCompartment ac(cx, jsdscript->script);
         JS_ClearTrap(cx, jsdscript->script, 
-                     (jsbytecode*)pc, NULL, NULL );
+                     (jsbytecode*)pc, nullptr, nullptr);
     }
 
     JS_REMOVE_LINK(&jsdhook->links);
     free(jsdhook);
 
     JSD_UNLOCK();
-    return JS_TRUE;
+    return true;
 }
 
-JSBool
+bool
 jsd_ClearAllExecutionHooksForScript(JSDContext* jsdc, JSDScript* jsdscript)
 {
     JSDExecHook* jsdhook;
@@ -845,20 +846,20 @@ jsd_ClearAllExecutionHooksForScript(JSDContext* jsdc, JSDScript* jsdscript)
     JS_ClearScriptTraps(jsdc->jsrt, jsdscript->script);
     JSD_UNLOCK();
 
-    return JS_TRUE;
+    return true;
 }
 
-JSBool
+bool
 jsd_ClearAllExecutionHooks(JSDContext* jsdc)
 {
     JSDScript* jsdscript;
-    JSDScript* iterp = NULL;
+    JSDScript* iterp = nullptr;
 
     JSD_LOCK();
-    while( NULL != (jsdscript = jsd_IterateScripts(jsdc, &iterp)) )
+    while( nullptr != (jsdscript = jsd_IterateScripts(jsdc, &iterp)) )
         jsd_ClearAllExecutionHooksForScript(jsdc, jsdscript);
     JSD_UNLOCK();
-    return JS_TRUE;
+    return true;
 }
 
 void

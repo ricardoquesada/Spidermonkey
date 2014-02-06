@@ -7,7 +7,13 @@
 #ifndef jit_MoveEmitter_x86_shared_h
 #define jit_MoveEmitter_x86_shared_h
 
-#include "jit/IonMacroAssembler.h"
+#if defined(JS_CPU_X86)
+# include "jit/x86/MacroAssembler-x86.h"
+#elif defined(JS_CPU_X64)
+# include "jit/x64/MacroAssembler-x64.h"
+#elif defined(JS_CPU_ARM)
+# include "jit/arm/MacroAssembler-arm.h"
+#endif
 #include "jit/MoveResolver.h"
 
 namespace js {
@@ -31,7 +37,8 @@ class MoveEmitterX86
     int32_t pushedAtCycle_;
 
     void assertDone();
-    Operand cycleSlot();
+    Address cycleSlot();
+    Address toAddress(const MoveOperand &operand) const;
     Operand toOperand(const MoveOperand &operand) const;
     Operand toPopOperand(const MoveOperand &operand) const;
 

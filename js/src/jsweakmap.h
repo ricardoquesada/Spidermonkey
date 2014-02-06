@@ -7,7 +7,6 @@
 #ifndef jsweakmap_h
 #define jsweakmap_h
 
-#include "jsapi.h"
 #include "jscompartment.h"
 #include "jsfriendapi.h"
 #include "jsobj.h"
@@ -118,9 +117,10 @@ class WeakMapBase {
   private:
     // Link in a list of WeakMaps to mark iteratively and sweep in this garbage
     // collection, headed by JSCompartment::gcWeakMapList. The last element of
-    // the list has NULL as its next. Maps not in the list have WeakMapNotInList
-    // as their next.  We must distinguish these cases to avoid creating
-    // infinite lists when a weak map gets traced twice due to delayed marking.
+    // the list has nullptr as its next. Maps not in the list have
+    // WeakMapNotInList as their next.  We must distinguish these cases to
+    // avoid creating infinite lists when a weak map gets traced twice due to
+    // delayed marking.
     WeakMapBase *next;
 };
 
@@ -133,7 +133,7 @@ class WeakMap : public HashMap<Key, Value, HashPolicy, RuntimeAllocPolicy>, publ
     typedef typename Base::Enum Enum;
     typedef typename Base::Range Range;
 
-    explicit WeakMap(JSContext *cx, JSObject *memOf=NULL)
+    explicit WeakMap(JSContext *cx, JSObject *memOf = nullptr)
         : Base(cx->runtime()), WeakMapBase(memOf, cx->compartment()) { }
 
   private:
@@ -180,19 +180,20 @@ class WeakMap : public HashMap<Key, Value, HashPolicy, RuntimeAllocPolicy>, publ
         bool markedAny = false;
         for (Enum e(*this); !e.empty(); e.popFront()) {
             /* If the entry is live, ensure its key and value are marked. */
-            Key prior(e.front().key);
-            if (gc::IsMarked(const_cast<Key *>(&e.front().key))) {
+            Key key(e.front().key);
+            if (gc::IsMarked(const_cast<Key *>(&key))) {
                 if (markValue(trc, &e.front().value))
                     markedAny = true;
-                if (prior != e.front().key)
-                    e.rekeyFront(e.front().key);
-            } else if (keyNeedsMark(e.front().key)) {
-                gc::Mark(trc, const_cast<Key *>(&e.front().key), "proxy-preserved WeakMap entry key");
-                if (prior != e.front().key)
-                    e.rekeyFront(e.front().key);
+                if (e.front().key != key)
+                    e.rekeyFront(key);
+            } else if (keyNeedsMark(key)) {
+                gc::Mark(trc, const_cast<Key *>(&key), "proxy-preserved WeakMap entry key");
+                if (e.front().key != key)
+                    e.rekeyFront(key);
                 gc::Mark(trc, &e.front().value, "WeakMap entry value");
                 markedAny = true;
             }
+            key.unsafeSet(nullptr);
         }
         return markedAny;
     }
@@ -213,7 +214,7 @@ class WeakMap : public HashMap<Key, Value, HashPolicy, RuntimeAllocPolicy>, publ
         assertEntriesNotAboutToBeFinalized();
     }
 
-    /* memberOf can be NULL, which means that the map is not part of a JSObject. */
+    /* memberOf can be nullptr, which means that the map is not part of a JSObject. */
     void traceMappings(WeakMapTracer *tracer) {
         for (Range r = Base::all(); !r.empty(); r.popFront()) {
             gc::Cell *key = gc::ToMarkable(r.front().key);

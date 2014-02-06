@@ -23,7 +23,7 @@ BEGIN_TEST(testArrayBuffer_bug720949_steal)
     CHECK(buf_len1 = JS_NewArrayBuffer(cx, sizes[0]));
     CHECK(tarray_len1 = JS_NewInt32ArrayWithBuffer(cx, testBuf[0], 0, -1));
 
-    jsval dummy = INT_TO_JSVAL(MAGIC_VALUE_1);
+    JS::RootedValue dummy(cx, INT_TO_JSVAL(MAGIC_VALUE_1));
     JS_SetElement(cx, testArray[0], 0, &dummy);
 
     // Many-element ArrayBuffer (uses dynamic storage)
@@ -46,16 +46,16 @@ BEGIN_TEST(testArrayBuffer_bug720949_steal)
 
         // Modifying the underlying data should update the value returned through the view
         uint8_t *data = JS_GetArrayBufferData(obj);
-        CHECK(data != NULL);
+        CHECK(data != nullptr);
         *reinterpret_cast<uint32_t*>(data) = MAGIC_VALUE_2;
-        CHECK(JS_GetElement(cx, view, 0, v.address()));
+        CHECK(JS_GetElement(cx, view, 0, &v));
         CHECK_SAME(v, INT_TO_JSVAL(MAGIC_VALUE_2));
 
         // Steal the contents
         void *contents;
         CHECK(JS_StealArrayBufferContents(cx, obj, &contents, &data));
-        CHECK(contents != NULL);
-        CHECK(data != NULL);
+        CHECK(contents != nullptr);
+        CHECK(data != nullptr);
 
         // Check that the original ArrayBuffer is neutered
         CHECK_EQUAL(JS_GetArrayBufferByteLength(obj), 0);
@@ -69,7 +69,7 @@ BEGIN_TEST(testArrayBuffer_bug720949_steal)
         CHECK_SAME(v, INT_TO_JSVAL(0));
         CHECK_EQUAL(JS_GetArrayBufferByteLength(obj), 0);
         v = JSVAL_VOID;
-        JS_GetElement(cx, obj, 0, v.address());
+        JS_GetElement(cx, obj, 0, &v);
         CHECK_SAME(v, JSVAL_VOID);
 
         // Transfer to a new ArrayBuffer
@@ -78,13 +78,13 @@ BEGIN_TEST(testArrayBuffer_bug720949_steal)
         data = JS_GetArrayBufferData(obj);
 
         JS::RootedObject dstview(cx, JS_NewInt32ArrayWithBuffer(cx, dst, 0, -1));
-        CHECK(dstview != NULL);
+        CHECK(dstview != nullptr);
 
         CHECK_EQUAL(JS_GetArrayBufferByteLength(dst), size);
         data = JS_GetArrayBufferData(dst);
-        CHECK(data != NULL);
+        CHECK(data != nullptr);
         CHECK_EQUAL(*reinterpret_cast<uint32_t*>(data), MAGIC_VALUE_2);
-        CHECK(JS_GetElement(cx, dstview, 0, v.address()));
+        CHECK(JS_GetElement(cx, dstview, 0, &v));
         CHECK_SAME(v, INT_TO_JSVAL(MAGIC_VALUE_2));
     }
 
@@ -105,7 +105,7 @@ BEGIN_TEST(testArrayBuffer_bug720949_viewList)
 
     // No views
     buffer = JS_NewArrayBuffer(cx, 2000);
-    buffer = NULL;
+    buffer = nullptr;
     GC(cx);
 
     // One view.
@@ -115,15 +115,15 @@ BEGIN_TEST(testArrayBuffer_bug720949_viewList)
         void *contents;
         uint8_t *data;
         CHECK(JS_StealArrayBufferContents(cx, buffer, &contents, &data));
-        CHECK(contents != NULL);
-        CHECK(data != NULL);
-        JS_free(NULL, contents);
+        CHECK(contents != nullptr);
+        CHECK(data != nullptr);
+        JS_free(nullptr, contents);
         GC(cx);
         CHECK(isNeutered(view));
         CHECK(isNeutered(buffer));
-        view = NULL;
+        view = nullptr;
         GC(cx);
-        buffer = NULL;
+        buffer = nullptr;
         GC(cx);
     }
 
@@ -135,7 +135,7 @@ BEGIN_TEST(testArrayBuffer_bug720949_viewList)
         JS::RootedObject view2(cx, JS_NewUint8ArrayWithBuffer(cx, buffer, 1, 200));
 
         // Remove, re-add a view
-        view2 = NULL;
+        view2 = nullptr;
         GC(cx);
         view2 = JS_NewUint8ArrayWithBuffer(cx, buffer, 1, 200);
 
@@ -143,19 +143,19 @@ BEGIN_TEST(testArrayBuffer_bug720949_viewList)
         void *contents;
         uint8_t *data;
         CHECK(JS_StealArrayBufferContents(cx, buffer, &contents, &data));
-        CHECK(contents != NULL);
-        CHECK(data != NULL);
-        JS_free(NULL, contents);
+        CHECK(contents != nullptr);
+        CHECK(data != nullptr);
+        JS_free(nullptr, contents);
 
         CHECK(isNeutered(view1));
         CHECK(isNeutered(view2));
         CHECK(isNeutered(buffer));
 
-        view1 = NULL;
+        view1 = nullptr;
         GC(cx);
-        view2 = NULL;
+        view2 = nullptr;
         GC(cx);
-        buffer = NULL;
+        buffer = nullptr;
         GC(cx);
     }
 

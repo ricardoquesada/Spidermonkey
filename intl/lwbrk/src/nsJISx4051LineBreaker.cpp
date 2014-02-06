@@ -10,7 +10,6 @@
 #include "jisx4051class.h"
 #include "nsComplexBreaker.h"
 #include "nsTArray.h"
-#include "nsUnicharUtils.h"
 
 /* 
 
@@ -497,6 +496,8 @@ GetClass(PRUnichar u)
      } else {
        c = CLASS_CHARACTER;
      }
+   } else if (u == 0xfeff) {
+     c = CLASS_NON_BREAKABLE;
    } else {
      c = CLASS_CHARACTER; // others
    }

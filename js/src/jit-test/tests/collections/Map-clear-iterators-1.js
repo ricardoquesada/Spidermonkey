@@ -1,17 +1,17 @@
 // A Map iterator does not visit entries removed by clear().
 
-load(libdir + "asserts.js");
+load(libdir + "iteration.js");
 
 var m = Map();
-var it = m.iterator();
+var it = m[std_iterator]();
 m.clear();
-assertThrowsValue(it.next.bind(it), StopIteration);
+assertIteratorDone(it, undefined);
 
 m = Map([["a", 1], ["b", 2], ["c", 3], ["d", 4]]);
-it = m.iterator();
-assertEq(it.next()[0], "a");
+it = m[std_iterator]();
+assertIteratorNext(it, ["a", 1]);
 m.clear();
-assertThrowsValue(it.next.bind(it), StopIteration);
+assertIteratorDone(it, undefined);
 
 var log = "";
 m = Map([["a", 1], ["b", 2], ["c", 3], ["d", 4]]);

@@ -11,6 +11,7 @@
 
 #include "jscompartment.h"
 #include "jsgc.h"
+#include "jsinfer.h"
 #include "jsutil.h"
 
 #include "gc/GCInternals.h"
@@ -19,7 +20,7 @@
 #include "vm/Debugger.h"
 #include "vm/TypedArrayObject.h"
 
-#include "vm/ObjectImpl-inl.h"
+#include "jsgcinlines.h"
 
 using namespace js;
 using namespace gc;
@@ -32,8 +33,6 @@ js::Nursery::init()
 
     if (!hugeSlots.init())
         return false;
-
-    fallbackBitmap.clear(false);
 
     void *heap = MapAlignedPages(runtime(), NurserySize, Alignment);
 #ifdef JSGC_ROOT_ANALYSIS
@@ -57,7 +56,7 @@ js::Nursery::init()
     rt->gcNurseryEnd_ = chunk(LastNurseryChunk).end();
     numActiveChunks_ = 1;
     setCurrentChunk(0);
-#ifdef DEBUG
+#ifdef JS_GC_ZEAL
     JS_POISON(heap, FreshNursery, NurserySize);
 #endif
     for (int i = 0; i < NumNurseryChunks; ++i)
@@ -78,7 +77,7 @@ js::Nursery::enable()
 {
     if (isEnabled())
         return;
-    JS_ASSERT(position_ == start());
+    JS_ASSERT_IF(runtime()->gcZeal_ != ZealGenerationalGCValue, position_ == start());
     numActiveChunks_ = 1;
     setCurrentChunk(0);
 }
@@ -88,7 +87,7 @@ js::Nursery::disable()
 {
     if (!isEnabled())
         return;
-    JS_ASSERT(position_ == start());
+    JS_ASSERT_IF(runtime()->gcZeal_ != ZealGenerationalGCValue, position_ == start());
     numActiveChunks_ = 0;
     currentEnd_ = 0;
 }
@@ -96,20 +95,21 @@ js::Nursery::disable()
 void *
 js::Nursery::allocate(size_t size)
 {
-    JS_ASSERT(size % ThingAlignment == 0);
-    JS_ASSERT(position() % ThingAlignment == 0);
     JS_ASSERT(!runtime()->isHeapBusy());
+
+    /* Ensure there's enough space to replace the contents with a RelocationOverlay. */
+    JS_ASSERT(size >= sizeof(RelocationOverlay));
 
     if (position() + size > currentEnd()) {
         if (currentChunk_ + 1 == numActiveChunks_)
-            return NULL;
+            return nullptr;
         setCurrentChunk(currentChunk_ + 1);
     }
 
     void *thing = (void *)position();
     position_ = position() + size;
 
-#ifdef DEBUG
+#ifdef JS_GC_ZEAL
     JS_POISON(thing, AllocatedThing, size);
 #endif
     return thing;
@@ -181,6 +181,15 @@ js::Nursery::reallocateElements(JSContext *cx, JSObject *obj, ObjectElements *ol
     return reinterpret_cast<ObjectElements *>(slots);
 }
 
+void
+js::Nursery::freeSlots(JSContext *cx, HeapSlot *slots)
+{
+    if (!isInside(slots)) {
+        hugeSlots.remove(slots);
+        js_free(slots);
+    }
+}
+
 HeapSlot *
 js::Nursery::allocateHugeSlots(JSContext *cx, size_t nslots)
 {
@@ -222,12 +231,13 @@ class MinorCollectionTracer : public JSTracer
     /* Save and restore all of the runtime state we use during MinorGC. */
     bool savedRuntimeNeedBarrier;
     AutoDisableProxyCheck disableStrictProxyChecking;
+    AutoEnterOOMUnsafeRegion oomUnsafeRegion;
 
     /* Insert the given relocation entry into the list of things to visit. */
     JS_ALWAYS_INLINE void insertIntoFixupList(RelocationOverlay *entry) {
         *tail = entry;
         tail = &entry->next_;
-        *tail = NULL;
+        *tail = nullptr;
     }
 
     MinorCollectionTracer(JSRuntime *rt, Nursery *nursery)
@@ -235,7 +245,7 @@ class MinorCollectionTracer : public JSTracer
         nursery(nursery),
         session(rt, MinorCollecting),
         tenuredSize(0),
-        head(NULL),
+        head(nullptr),
         tail(&head),
         savedRuntimeNeedBarrier(rt->needsBarrier()),
         disableStrictProxyChecking(rt)
@@ -340,19 +350,45 @@ js::Nursery::forwardBufferPointer(HeapSlot **pSlotsElems)
     JS_ASSERT(!isInside(*pSlotsElems));
 }
 
+static void
+MaybeInvalidateScriptUsedWithNew(JSRuntime *rt, types::TypeObject *type)
+{
+    types::TypeNewScript *newScript = type->newScript();
+    if (!newScript)
+        return;
+
+    JSScript *script = newScript->fun->nonLazyScript();
+    if (script && script->hasIonScript()) {
+        for (ContextIter cx(rt); !cx.done(); cx.next())
+            jit::Invalidate(cx, script);
+    }
+}
+
 void
 js::Nursery::collectToFixedPoint(MinorCollectionTracer *trc)
 {
     for (RelocationOverlay *p = trc->head; p; p = p->next()) {
         JSObject *obj = static_cast<JSObject*>(p->forwardingAddress());
         traceObject(trc, obj);
+
+        /*
+         * Increment tenure count and recompile the script for pre-tenuring if
+         * long-lived. Attempt to distinguish between tenuring because the
+         * object is long lived and tenuring while the nursery is still
+         * smaller than the working set size.
+         */
+        if (isFullyGrown() && !obj->hasLazyType() && obj->type()->hasNewScript() &&
+            obj->type()->incrementTenureCount())
+        {
+            MaybeInvalidateScriptUsedWithNew(trc->runtime, obj->type());
+        }
     }
 }
 
 JS_ALWAYS_INLINE void
 js::Nursery::traceObject(MinorCollectionTracer *trc, JSObject *obj)
 {
-    Class *clasp = obj->getClass();
+    const Class *clasp = obj->getClass();
     if (clasp->trace)
         clasp->trace(trc, obj);
 
@@ -458,6 +494,8 @@ js::Nursery::moveSlotsToTenured(JSObject *dst, JSObject *src, AllocKind dstKind)
     Zone *zone = src->zone();
     size_t count = src->numDynamicSlots();
     dst->slots = zone->pod_malloc<HeapSlot>(count);
+    if (!dst->slots)
+        MOZ_CRASH();
     PodCopy(dst->slots, src->slots, count);
     setSlotsForwardingPointer(src->slots, dst->slots, count);
     return count * sizeof(HeapSlot);
@@ -547,12 +585,12 @@ js::Nursery::collect(JSRuntime *rt, JS::gcreason::Reason reason)
     if (!isEnabled())
         return;
 
+    AutoStopVerifyingBarriers av(rt, false);
+
     if (position() == start())
         return;
 
     rt->gcHelperThread.waitBackgroundSweepEnd();
-
-    AutoStopVerifyingBarriers av(rt, false);
 
     /* Move objects pointed to by roots from the nursery to the major heap. */
     MinorCollectionTracer trc(rt, this);
@@ -581,7 +619,7 @@ js::Nursery::collect(JSRuntime *rt, JS::gcreason::Reason reason)
         shrinkAllocableSpace();
 
     /* Sweep. */
-    sweep(rt->defaultFreeOp());
+    sweep(rt);
     rt->gcStoreBuffer.clear();
 
     /*
@@ -594,16 +632,29 @@ js::Nursery::collect(JSRuntime *rt, JS::gcreason::Reason reason)
 }
 
 void
-js::Nursery::sweep(FreeOp *fop)
+js::Nursery::sweep(JSRuntime *rt)
 {
+    /* Free malloced pointers owned by freed things in the nursery. */
     for (HugeSlotsSet::Range r = hugeSlots.all(); !r.empty(); r.popFront())
-        fop->free_(r.front());
+        rt->defaultFreeOp()->free_(r.front());
     hugeSlots.clear();
 
-#ifdef DEBUG
+#ifdef JS_GC_ZEAL
+    /* Poison the nursery contents so touching a freed object will crash. */
     JS_POISON((void *)start(), SweptNursery, NurserySize - sizeof(JSRuntime *));
     for (int i = 0; i < NumNurseryChunks; ++i)
         chunk(i).runtime = runtime();
+
+    if (rt->gcZeal_ == ZealGenerationalGCValue) {
+        /* Undo any grow or shrink the collection may have done. */
+        numActiveChunks_ = NumNurseryChunks;
+
+        /* Only reset the alloc point when we are close to the end. */
+        if (currentChunk_ + 1 == NumNurseryChunks)
+            setCurrentChunk(0);
+
+        return;
+    }
 #endif
 
     setCurrentChunk(0);

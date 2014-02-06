@@ -34,17 +34,16 @@ RUN_MOCHITEST_B2G_DESKTOP = \
   $(PYTHON) _tests/testing/mochitest/runtestsb2g.py --autorun --close-when-done \
     --console-level=INFO --log-file=./$@.log --file-level=INFO \
     --desktop --profile ${GAIA_PROFILE_DIR} \
-    --failure-file=$(call core_abspath,_tests/testing/mochitest/makefailures.json) \
+    --failure-file=$(abspath _tests/testing/mochitest/makefailures.json) \
     $(TEST_PATH_ARG) $(EXTRA_TEST_ARGS)
 
 RUN_MOCHITEST = \
   rm -f ./$@.log && \
   $(PYTHON) _tests/testing/mochitest/runtests.py --autorun --close-when-done \
     --console-level=INFO --log-file=./$@.log --file-level=INFO \
-    --failure-file=$(call core_abspath,_tests/testing/mochitest/makefailures.json) \
-    --testing-modules-dir=$(call core_abspath,_tests/modules) \
+    --failure-file=$(abspath _tests/testing/mochitest/makefailures.json) \
+    --testing-modules-dir=$(abspath _tests/modules) \
     --extra-profile-file=$(DIST)/plugins \
-    --build-info-json=$(call core_abspath,$(DEPTH)/mozinfo.json) \
     $(SYMBOLS_PATH) $(TEST_PATH_ARG) $(EXTRA_TEST_ARGS)
 
 RERUN_MOCHITEST = \
@@ -52,9 +51,8 @@ RERUN_MOCHITEST = \
   $(PYTHON) _tests/testing/mochitest/runtests.py --autorun --close-when-done \
     --console-level=INFO --log-file=./$@.log --file-level=INFO \
     --run-only-tests=makefailures.json \
-    --testing-modules-dir=$(call core_abspath,_tests/modules) \
+    --testing-modules-dir=$(abspath _tests/modules) \
     --extra-profile-file=$(DIST)/plugins \
-    --build-info-json=$(call core_abspath,$(DEPTH)/mozinfo.json) \
     $(SYMBOLS_PATH) $(TEST_PATH_ARG) $(EXTRA_TEST_ARGS)
 
 RUN_MOCHITEST_REMOTE = \
@@ -62,7 +60,7 @@ RUN_MOCHITEST_REMOTE = \
   $(PYTHON) _tests/testing/mochitest/runtestsremote.py --autorun --close-when-done \
     --console-level=INFO --log-file=./$@.log --file-level=INFO $(DM_FLAGS) --dm_trans=$(DM_TRANS) \
     --app=$(TEST_PACKAGE_NAME) --deviceIP=${TEST_DEVICE} --xre-path=${MOZ_HOST_BIN} \
-    --testing-modules-dir=$(call core_abspath,_tests/modules) --httpd-path=. \
+    --testing-modules-dir=$(abspath _tests/modules) --httpd-path=. \
     $(SYMBOLS_PATH) $(TEST_PATH_ARG) $(EXTRA_TEST_ARGS)
 
 RUN_MOCHITEST_ROBOCOP = \
@@ -279,6 +277,7 @@ GARBAGE += $(addsuffix .log,$(MOCHITESTS) reftest crashtest jstestbrowser)
 # See also config/rules.mk 'xpcshell-tests' target for local execution.
 # Usage: |make [TEST_PATH=...] [EXTRA_TEST_ARGS=...] xpcshell-tests|.
 xpcshell-tests:
+	$(info Have you considered running xpcshell tests via |mach xpcshell-test|? mach is easier to use and has more features than make and it will eventually be the only way to run xpcshell tests. Please consider using mach today!)
 	$(PYTHON) -u $(topsrcdir)/config/pythonpath.py \
 	  -I$(DEPTH)/build \
 	  -I$(topsrcdir)/build \
@@ -288,9 +287,9 @@ xpcshell-tests:
 	  --build-info-json=$(DEPTH)/mozinfo.json \
 	  --no-logfiles \
 	  --test-plugin-path="$(DIST)/plugins" \
-	  --tests-root-dir=$(call core_abspath,_tests/xpcshell) \
-	  --testing-modules-dir=$(call core_abspath,_tests/modules) \
-	  --xunit-file=$(call core_abspath,_tests/xpcshell/results.xml) \
+	  --tests-root-dir=$(abspath _tests/xpcshell) \
+	  --testing-modules-dir=$(abspath _tests/modules) \
+	  --xunit-file=$(abspath _tests/xpcshell/results.xml) \
 	  --xunit-suite-name=xpcshell \
           $(SYMBOLS_PATH) \
 	  $(TEST_PATH_ARG) $(EXTRA_TEST_ARGS) \
@@ -335,7 +334,7 @@ xpcshell-tests-remote:
 	    --manifest=$(DEPTH)/_tests/xpcshell/xpcshell_android.ini \
 	    --build-info-json=$(DEPTH)/mozinfo.json \
 	    --no-logfiles \
-	    --testing-modules-dir=$(call core_abspath,_tests/modules) \
+	    --testing-modules-dir=$(abspath _tests/modules) \
 	    --dm_trans=$(DM_TRANS) \
 	    --deviceIP=${TEST_DEVICE} \
 	    --objdir=$(DEPTH) \
@@ -406,6 +405,8 @@ package-tests: \
   stage-modules \
   stage-marionette \
   stage-cppunittests \
+  stage-jittest \
+  stage-steeplechase \
   $(NULL)
 else
 # This staging area has been built for us by universal/flight.mk
@@ -416,13 +417,10 @@ package-tests:
 	@rm -f "$(DIST)/$(PKG_PATH)$(TEST_PACKAGE)"
 ifndef UNIVERSAL_BINARY
 	$(NSINSTALL) -D $(DIST)/$(PKG_PATH)
-else
-	#building tests.jar (bug 543800) fails on unify, so we build tests.jar after unify is run
-	$(MAKE) -C $(DEPTH)/testing/mochitest stage-chromejar PKG_STAGE=$(DIST)/universal
 endif
 	find $(PKG_STAGE) -name "*.pyc" -exec rm {} \;
 	cd $(PKG_STAGE) && \
-	  zip -rq9D "$(call core_abspath,$(DIST)/$(PKG_PATH)$(TEST_PACKAGE))" \
+	  zip -rq9D "$(abspath $(DIST))/$(PKG_PATH)$(TEST_PACKAGE)" \
 	  * -x \*/.mkdir.done
 
 ifeq ($(MOZ_WIDGET_TOOLKIT),android)
@@ -449,7 +447,8 @@ stage-b2g: make-stage-dir
 	$(NSINSTALL) $(topsrcdir)/b2g/test/b2g-unittest-requirements.txt $(PKG_STAGE)/b2g
 
 stage-config: make-stage-dir
-	$(NSINSTALL) $(topsrcdir)/testing/config/mozharness_config.py $(PKG_STAGE)/config
+	$(NSINSTALL) -D $(PKG_STAGE)/config
+	@(cd $(topsrcdir)/testing/config && tar $(TAR_CREATE_FLAGS) - *) | (cd $(PKG_STAGE)/config && tar -xf -)
 
 stage-mochitest: make-stage-dir
 	$(MAKE) -C $(DEPTH)/testing/mochitest stage-package
@@ -494,15 +493,39 @@ stage-modules: make-stage-dir
 
 CPP_UNIT_TEST_BINS=$(wildcard $(DIST)/cppunittests/*)
 
+ifdef OBJCOPY
+ifndef PKG_SKIP_STRIP
+STRIP_CPP_TESTS := 1
+endif
+endif
+
 stage-cppunittests:
 	$(NSINSTALL) -D $(PKG_STAGE)/cppunittests
-ifdef OBJCOPY
-	$(foreach bin,$(CPP_UNIT_TEST_BINS),$(OBJCOPY) --strip-unneeded $(bin) $(bin:$(DIST)/%=$(PKG_STAGE)/%);)
+ifdef STRIP_CPP_TESTS
+	$(foreach bin,$(CPP_UNIT_TEST_BINS),$(OBJCOPY) $(STRIP_FLAGS) $(bin) $(bin:$(DIST)/%=$(PKG_STAGE)/%);)
 else
 	cp -RL $(DIST)/cppunittests $(PKG_STAGE)
 endif
 	$(NSINSTALL) $(topsrcdir)/testing/runcppunittests.py $(PKG_STAGE)/cppunittests
 	$(NSINSTALL) $(topsrcdir)/testing/remotecppunittests.py $(PKG_STAGE)/cppunittests
+ifeq ($(MOZ_WIDGET_TOOLKIT),android)
+	$(NSINSTALL) $(topsrcdir)/testing/android_cppunittest_manifest.txt $(PKG_STAGE)/cppunittests
+endif
+	$(NSINSTALL) $(topsrcdir)/startupcache/test/TestStartupCacheTelemetry.js $(PKG_STAGE)/cppunittests
+	$(NSINSTALL) $(topsrcdir)/startupcache/test/TestStartupCacheTelemetry.manifest $(PKG_STAGE)/cppunittests
+
+stage-jittest:
+	$(NSINSTALL) -D $(PKG_STAGE)/jit-test/tests
+	cp -RL $(topsrcdir)/js/src/jsapi.h $(PKG_STAGE)/jit-test
+	cp -RL $(topsrcdir)/js/src/jit-test $(PKG_STAGE)/jit-test/jit-test
+	cp -RL $(topsrcdir)/js/src/tests/ecma_6 $(PKG_STAGE)/jit-test/tests/ecma_6
+	cp -RL $(topsrcdir)/js/src/tests/lib $(PKG_STAGE)/jit-test/tests/lib
+
+stage-steeplechase:
+	$(NSINSTALL) -D $(PKG_STAGE)/steeplechase/
+	cp -RL $(DEPTH)/_tests/steeplechase $(PKG_STAGE)/steeplechase/tests
+	cp -RL $(DIST)/xpi-stage/specialpowers $(PKG_STAGE)/steeplechase
+	cp -RL $(topsrcdir)/testing/profiles/prefs_general.js $(PKG_STAGE)/steeplechase
 
 MARIONETTE_DIR=$(PKG_STAGE)/marionette
 stage-marionette: make-stage-dir
@@ -542,5 +565,6 @@ stage-mozbase: make-stage-dir
   stage-tps \
   stage-modules \
   stage-marionette \
+  stage-steeplechase \
   $(NULL)
 

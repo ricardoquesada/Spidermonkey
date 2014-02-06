@@ -8,11 +8,13 @@
 #define vm_RegExpStatics_h
 
 #include "gc/Marking.h"
-#include "vm/GlobalObject.h"
 #include "vm/MatchPairs.h"
+#include "vm/RegExpObject.h"
 #include "vm/Runtime.h"
 
 namespace js {
+
+class GlobalObject;
 
 class RegExpStatics
 {
@@ -44,7 +46,7 @@ class RegExpStatics
     bool                    copied;
 
   public:
-    RegExpStatics() : bufferLink(NULL), copied(false) { clear(); }
+    RegExpStatics() : bufferLink(nullptr), copied(false) { clear(); }
     static JSObject *create(JSContext *cx, GlobalObject *parent);
 
   private:
@@ -78,7 +80,7 @@ class RegExpStatics
     void markFlagsSet(JSContext *cx);
 
     struct InitBuffer {};
-    explicit RegExpStatics(InitBuffer) : bufferLink(NULL), copied(false) {}
+    explicit RegExpStatics(InitBuffer) : bufferLink(nullptr), copied(false) {}
 
     friend class PreserveRegExpStatics;
     friend class AutoRegExpStaticsBuffer;
@@ -88,12 +90,27 @@ class RegExpStatics
     inline void updateLazily(JSContext *cx, JSLinearString *input,
                              RegExpShared *shared, size_t lastIndex);
     inline bool updateFromMatchPairs(JSContext *cx, JSLinearString *input, MatchPairs &newPairs);
-    inline void setMultiline(JSContext *cx, bool enabled);
+
+    void setMultiline(JSContext *cx, bool enabled) {
+        aboutToWrite();
+        if (enabled) {
+            flags = RegExpFlag(flags | MultilineFlag);
+            markFlagsSet(cx);
+        } else {
+            flags = RegExpFlag(flags & ~MultilineFlag);
+        }
+    }
 
     inline void clear();
 
     /* Corresponds to JSAPI functionality to set the pending RegExp input. */
-    inline void reset(JSContext *cx, JSString *newInput, bool newMultiline);
+    void reset(JSContext *cx, JSString *newInput, bool newMultiline) {
+        aboutToWrite();
+        clear();
+        pendingInput = newInput;
+        setMultiline(cx, newMultiline);
+        checkInvariants();
+    }
 
     inline void setPendingInput(JSString *newInput);
 
@@ -199,13 +216,6 @@ class PreserveRegExpStatics
 
     ~PreserveRegExpStatics() { original->restore(); }
 };
-
-inline js::RegExpStatics *
-js::GlobalObject::getRegExpStatics() const
-{
-    JSObject &resObj = getSlot(REGEXP_STATICS).toObject();
-    return static_cast<RegExpStatics *>(resObj.getPrivate());
-}
 
 inline bool
 RegExpStatics::createDependent(JSContext *cx, size_t start, size_t end, MutableHandleValue out)
@@ -457,7 +467,7 @@ RegExpStatics::updateFromMatchPairs(JSContext *cx, JSLinearString *input, MatchP
 
     /* Unset all lazy state. */
     pendingLazyEvaluation = false;
-    this->lazySource = NULL;
+    this->lazySource = nullptr;
     this->lazyIndex = size_t(-1);
 
     BarrieredSetPair<JSString, JSLinearString>(cx->zone(),
@@ -478,11 +488,11 @@ RegExpStatics::clear()
     aboutToWrite();
 
     matches.forgetArray();
-    matchesInput = NULL;
-    lazySource = NULL;
+    matchesInput = nullptr;
+    lazySource = nullptr;
     lazyFlags = RegExpFlag(0);
     lazyIndex = size_t(-1);
-    pendingInput = NULL;
+    pendingInput = nullptr;
     flags = RegExpFlag(0);
     pendingLazyEvaluation = false;
 }
@@ -526,12 +536,6 @@ RegExpStatics::checkInvariants()
         JS_ASSERT(mpiLen >= size_t(pair.limit) && pair.limit >= pair.start && pair.start >= 0);
     }
 #endif /* DEBUG */
-}
-
-inline RegExpStatics *
-ExclusiveContext::regExpStatics()
-{
-    return global()->getRegExpStatics();
 }
 
 } /* namespace js */

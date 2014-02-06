@@ -13,18 +13,17 @@
 #include "nsILocale.h"
 #include "nsILocaleService.h"
 #include "nsLocale.h"
-#include "nsLocaleCID.h"
-#include "nsServiceManagerUtils.h"
-#include "nsReadableUtils.h"
 #include "nsCRT.h"
 #include "prprf.h"
 #include "nsTArray.h"
+#include "nsString.h"
 
 #include <ctype.h>
 
 #if defined(XP_WIN)
 #  include "nsWin32Locale.h"
 #elif defined(XP_OS2)
+#  include "nsServiceManagerUtils.h"
 #  include "unidef.h"
 #  include "nsIOS2Locale.h"
 #elif defined(XP_MACOSX)
@@ -176,7 +175,7 @@ nsLocaleService::nsLocaleService(void)
 
         nsRefPtr<nsLocale> resultLocale(new nsLocale());
 
-        LocaleObject locale_object = NULL;
+        LocaleObject locale_object = nullptr;
         int result = UniCreateLocaleObject(UNI_UCS_STRING_POINTER,
                                            (UniChar *)L"", &locale_object);
         if (result != ULS_SUCCESS) {
@@ -231,7 +230,7 @@ nsLocaleService::nsLocaleService(void)
         buffer[size] = 0;
 
         // Convert the locale string to the format that Mozilla expects
-        nsAutoString xpLocale(buffer.Elements());
+        nsAutoString xpLocale(reinterpret_cast<PRUnichar*>(buffer.Elements()));
         xpLocale.ReplaceChar('_', '-');
 
         nsresult rv = NewLocale(xpLocale, getter_AddRefs(mSystemLocale));

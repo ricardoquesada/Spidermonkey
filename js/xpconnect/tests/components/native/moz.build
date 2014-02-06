@@ -7,9 +7,13 @@
 MODULE = 'xpctest'
 NO_DIST_INSTALL = True
 
-CPP_SOURCES += [
+SOURCES += [
     'xpctest_attributes.cpp',
     'xpctest_module.cpp',
     'xpctest_params.cpp',
 ]
+
+LIBRARY_NAME = 'xpctest'
+
+IS_COMPONENT = True
 

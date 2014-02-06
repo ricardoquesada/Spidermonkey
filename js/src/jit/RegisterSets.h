@@ -7,6 +7,7 @@
 #ifndef jit_RegisterSets_h
 #define jit_RegisterSets_h
 
+#include "mozilla/Alignment.h"
 #include "mozilla/MathAlgorithms.h"
 
 #include "jit/IonAllocPolicy.h"
@@ -162,6 +163,15 @@ class TypedOrValueRegister
         return *data.value.addr();
     }
 
+    const AnyRegister &dataTyped() const {
+        JS_ASSERT(hasTyped());
+        return *data.typed.addr();
+    }
+    const ValueOperand &dataValue() const {
+        JS_ASSERT(hasValue());
+        return *data.value.addr();
+    }
+
   public:
 
     TypedOrValueRegister()
@@ -192,11 +202,11 @@ class TypedOrValueRegister
         return type() == MIRType_Value;
     }
 
-    AnyRegister typedReg() {
+    AnyRegister typedReg() const {
         return dataTyped();
     }
 
-    ValueOperand valueReg() {
+    ValueOperand valueReg() const {
         return dataValue();
     }
 
@@ -390,8 +400,12 @@ class TypedRegisterSet
 #endif
     }
     T getAny() const {
-        JS_ASSERT(!empty());
-        return T::FromCode(mozilla::FloorLog2(bits_));
+        // The choice of first or last here is mostly arbitrary, as they are
+        // about the same speed on popular architectures. We choose first, as
+        // it has the advantage of using the "lower" registers more often. These
+        // registers are sometimes more efficient (e.g. optimized encodings for
+        // EAX on x86).
+        return getFirst();
     }
     T getFirst() const {
         JS_ASSERT(!empty());
@@ -448,11 +462,7 @@ class TypedRegisterSet
         return bits_;
     }
     uint32_t size() const {
-        uint32_t sum2  = (bits_ & 0x55555555) + ((bits_ & 0xaaaaaaaa) >> 1);
-        uint32_t sum4  = (sum2  & 0x33333333) + ((sum2  & 0xcccccccc) >> 2);
-        uint32_t sum8  = (sum4  & 0x0f0f0f0f) + ((sum4  & 0xf0f0f0f0) >> 4);
-        uint32_t sum16 = (sum8  & 0x00ff00ff) + ((sum8  & 0xff00ff00) >> 8);
-        return sum16;
+        return mozilla::CountPopulation32(bits_);
     }
     bool operator ==(const TypedRegisterSet<T> &other) const {
         return other.bits_ == bits_;
@@ -591,33 +601,26 @@ class RegisterSet {
         return other.gpr_ == gpr_ && other.fpu_ == fpu_;
     }
 
-    void maybeTake(Register reg) {
+    void takeUnchecked(Register reg) {
         gpr_.takeUnchecked(reg);
     }
-    void maybeTake(FloatRegister reg) {
+    void takeUnchecked(FloatRegister reg) {
         fpu_.takeUnchecked(reg);
     }
-    void maybeTake(AnyRegister reg) {
+    void takeUnchecked(AnyRegister reg) {
         if (reg.isFloat())
             fpu_.takeUnchecked(reg.fpu());
         else
             gpr_.takeUnchecked(reg.gpr());
     }
-    void maybeTake(ValueOperand value) {
-#if defined(JS_NUNBOX32)
-        gpr_.takeUnchecked(value.typeReg());
-        gpr_.takeUnchecked(value.payloadReg());
-#elif defined(JS_PUNBOX64)
-        gpr_.takeUnchecked(value.valueReg());
-#else
-#error "Bad architecture"
-#endif
+    void takeUnchecked(ValueOperand value) {
+        gpr_.takeUnchecked(value);
     }
-    void maybeTake(TypedOrValueRegister reg) {
+    void takeUnchecked(TypedOrValueRegister reg) {
         if (reg.hasValue())
-            maybeTake(reg.valueReg());
+            takeUnchecked(reg.valueReg());
         else if (reg.hasTyped())
-            maybeTake(reg.typedReg());
+            takeUnchecked(reg.typedReg());
     }
 };
 
@@ -782,6 +785,11 @@ class ABIArg
     AnyRegister reg() const { return kind_ == GPR ? AnyRegister(gpr()) : AnyRegister(fpu()); }
 };
 
+// Summarizes a heap access made by asm.js code that needs to be patched later
+// and/or looked up by the asm.js signal handlers. Different architectures need
+// to know different things (x64: offset and length, ARM: where to patch in
+// heap length, x86: where to patch in heap length and base) hence the massive
+// #ifdefery.
 class AsmJSHeapAccess
 {
     uint32_t offset_;
@@ -791,18 +799,21 @@ class AsmJSHeapAccess
 #if defined(JS_CPU_X86) || defined(JS_CPU_X64)
     uint8_t opLength_;  // the length of the load/store instruction
     uint8_t isFloat32Load_;
-    jit::AnyRegister::Code loadedReg_ : 8;
+    AnyRegister::Code loadedReg_ : 8;
 #endif
 
-    JS_STATIC_ASSERT(jit::AnyRegister::Total < UINT8_MAX);
+    JS_STATIC_ASSERT(AnyRegister::Total < UINT8_MAX);
 
   public:
+    AsmJSHeapAccess() {}
 #if defined(JS_CPU_X86) || defined(JS_CPU_X64)
+    // If 'cmp' equals 'offset' or if it is not supplied then the
+    // cmpDelta_ is zero indicating that there is no length to patch.
     AsmJSHeapAccess(uint32_t offset, uint32_t after, ArrayBufferView::ViewType vt,
                     AnyRegister loadedReg, uint32_t cmp = UINT32_MAX)
       : offset_(offset),
 # if defined(JS_CPU_X86)
-        cmpDelta_(offset - cmp),
+        cmpDelta_(cmp == UINT32_MAX ? 0 : offset - cmp),
 # endif
         opLength_(after - offset),
         isFloat32Load_(vt == ArrayBufferView::TYPE_FLOAT32),
@@ -811,7 +822,7 @@ class AsmJSHeapAccess
     AsmJSHeapAccess(uint32_t offset, uint8_t after, uint32_t cmp = UINT32_MAX)
       : offset_(offset),
 # if defined(JS_CPU_X86)
-        cmpDelta_(offset - cmp),
+        cmpDelta_(cmp == UINT32_MAX ? 0 : offset - cmp),
 # endif
         opLength_(after - offset),
         isFloat32Load_(false),
@@ -826,6 +837,7 @@ class AsmJSHeapAccess
     uint32_t offset() const { return offset_; }
     void setOffset(uint32_t offset) { offset_ = offset; }
 #if defined(JS_CPU_X86)
+    bool hasLengthCheck() const { return cmpDelta_ > 0; }
     void *patchLengthAt(uint8_t *code) const { return code + (offset_ - cmpDelta_); }
     void *patchOffsetAt(uint8_t *code) const { return code + (offset_ + opLength_); }
 #endif
@@ -833,7 +845,7 @@ class AsmJSHeapAccess
     unsigned opLength() const { return opLength_; }
     bool isLoad() const { return loadedReg_ != UINT8_MAX; }
     bool isFloat32Load() const { return isFloat32Load_; }
-    jit::AnyRegister loadedReg() const { return jit::AnyRegister::FromCode(loadedReg_); }
+    AnyRegister loadedReg() const { return AnyRegister::FromCode(loadedReg_); }
 #endif
 };
 

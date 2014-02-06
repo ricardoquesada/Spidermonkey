@@ -16,8 +16,8 @@ BEGIN_TEST(testBug795104)
     s[0] = '"';
     memset(s + 1, 'x', strLen - 2);
     s[strLen - 1] = '"';
-    CHECK(JS::Evaluate(cx, global, opts, s, strLen, NULL));
-    CHECK(JS::CompileFunction(cx, global, opts, "f", 0, NULL, s, strLen));
+    CHECK(JS::Evaluate(cx, global, opts, s, strLen, nullptr));
+    CHECK(JS::CompileFunction(cx, global, opts, "f", 0, nullptr, s, strLen));
     JS_free(cx, s);
 
     return true;
@@ -30,18 +30,18 @@ static void
 newScriptHook(JSContext *cx, const char *fn, unsigned lineno,
               JSScript *script, JSFunction *fun, void *data)
 {
-    if (!JS_StringEqualsAscii(cx, script->sourceData(cx), simpleSource, (JSBool *)data))
-        *((JSBool *)data) = JS_FALSE;
+    if (!JS_StringEqualsAscii(cx, script->sourceData(cx), simpleSource, (bool *)data))
+        *((bool *)data) = false;
 }
 
 BEGIN_TEST(testScriptSourceReentrant)
 {
     JS::CompileOptions opts(cx);
-    JSBool match = false;
+    bool match = false;
     JS_SetNewScriptHook(rt, newScriptHook, &match);
-    CHECK(JS::Evaluate(cx, global, opts, simpleSource, strlen(simpleSource), NULL));
+    CHECK(JS::Evaluate(cx, global, opts, simpleSource, strlen(simpleSource), nullptr));
     CHECK(match);
-    JS_SetNewScriptHook(rt, NULL, NULL);
+    JS_SetNewScriptHook(rt, nullptr, nullptr);
 
     return true;
 }

@@ -13,15 +13,8 @@
 
 #include "jscntxt.h"
 #include "jsfun.h"
-#include "jstypes.h"
-#include "jsutil.h"
 
-#include "jit/IonCode.h"
 #include "jit/IonFrameIterator.h"
-#include "jit/Registers.h"
-
-class JSFunction;
-class JSScript;
 
 namespace js {
 namespace jit {
@@ -31,26 +24,20 @@ typedef void * CalleeToken;
 enum CalleeTokenTag
 {
     CalleeToken_Function = 0x0, // untagged
-    CalleeToken_Script = 0x1,
-    CalleeToken_ParallelFunction = 0x2
+    CalleeToken_Script = 0x1
 };
 
 static inline CalleeTokenTag
 GetCalleeTokenTag(CalleeToken token)
 {
     CalleeTokenTag tag = CalleeTokenTag(uintptr_t(token) & 0x3);
-    JS_ASSERT(tag <= CalleeToken_ParallelFunction);
+    JS_ASSERT(tag <= CalleeToken_Script);
     return tag;
 }
 static inline CalleeToken
 CalleeToToken(JSFunction *fun)
 {
     return CalleeToken(uintptr_t(fun) | uintptr_t(CalleeToken_Function));
-}
-static inline CalleeToken
-CalleeToParallelToken(JSFunction *fun)
-{
-    return CalleeToken(uintptr_t(fun) | uintptr_t(CalleeToken_ParallelFunction));
 }
 static inline CalleeToken
 CalleeToToken(JSScript *script)
@@ -68,12 +55,6 @@ CalleeTokenToFunction(CalleeToken token)
     JS_ASSERT(CalleeTokenIsFunction(token));
     return (JSFunction *)token;
 }
-static inline JSFunction *
-CalleeTokenToParallelFunction(CalleeToken token)
-{
-    JS_ASSERT(GetCalleeTokenTag(token) == CalleeToken_ParallelFunction);
-    return (JSFunction *)(uintptr_t(token) & ~uintptr_t(0x3));
-}
 static inline JSScript *
 CalleeTokenToScript(CalleeToken token)
 {
@@ -89,8 +70,6 @@ ScriptFromCalleeToken(CalleeToken token)
         return CalleeTokenToScript(token);
       case CalleeToken_Function:
         return CalleeTokenToFunction(token)->nonLazyScript();
-      case CalleeToken_ParallelFunction:
-        return CalleeTokenToParallelFunction(token)->nonLazyScript();
     }
     MOZ_ASSUME_UNREACHABLE("invalid callee token tag");
 }
@@ -255,6 +234,8 @@ class FrameSizeClass
     }
 };
 
+struct BaselineBailoutInfo;
+
 // Data needed to recover from an exception.
 struct ResumeFromException
 {
@@ -262,6 +243,7 @@ struct ResumeFromException
     static const uint32_t RESUME_CATCH = 1;
     static const uint32_t RESUME_FINALLY = 2;
     static const uint32_t RESUME_FORCED_RETURN = 3;
+    static const uint32_t RESUME_BAILOUT = 4;
 
     uint8_t *framePointer;
     uint8_t *stackPointer;
@@ -270,6 +252,8 @@ struct ResumeFromException
 
     // Value to push when resuming into a |finally| block.
     Value exception;
+
+    BaselineBailoutInfo *bailoutInfo;
 };
 
 void HandleException(ResumeFromException *rfe);
@@ -288,17 +272,13 @@ MakeFrameDescriptor(uint32_t frameSize, FrameType type)
 
 // Returns the JSScript associated with the topmost Ion frame.
 inline JSScript *
-GetTopIonJSScript(PerThreadData *pt, const SafepointIndex **safepointIndexOut, void **returnAddrOut)
+GetTopIonJSScript(uint8_t *ionTop, void **returnAddrOut, ExecutionMode mode)
 {
-    IonFrameIterator iter(pt->ionTop);
+    IonFrameIterator iter(ionTop, mode);
     JS_ASSERT(iter.type() == IonFrame_Exit);
     ++iter;
 
-    // If needed, grab the safepoint index.
-    if (safepointIndexOut)
-        *safepointIndexOut = iter.safepoint();
-
-    JS_ASSERT(iter.returnAddressToFp() != NULL);
+    JS_ASSERT(iter.returnAddressToFp() != nullptr);
     if (returnAddrOut)
         *returnAddrOut = (void *) iter.returnAddressToFp();
 
@@ -309,12 +289,6 @@ GetTopIonJSScript(PerThreadData *pt, const SafepointIndex **safepointIndexOut, v
 
     JS_ASSERT(iter.isScripted());
     return iter.script();
-}
-
-inline JSScript *
-GetTopIonJSScript(JSContext *cx, const SafepointIndex **safepointIndexOut, void **returnAddrOut)
-{
-    return GetTopIonJSScript(&cx->mainThread(), safepointIndexOut, returnAddrOut);
 }
 
 } // namespace jit
@@ -330,11 +304,6 @@ GetTopIonJSScript(JSContext *cx, const SafepointIndex **safepointIndexOut, void 
 
 namespace js {
 namespace jit {
-
-JSScript *
-GetTopIonJSScript(JSContext *cx,
-                  const SafepointIndex **safepointIndexOut = NULL,
-                  void **returnAddrOut = NULL);
 
 void
 GetPcScript(JSContext *cx, JSScript **scriptRes, jsbytecode **pcRes);

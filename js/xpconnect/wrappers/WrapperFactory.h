@@ -8,7 +8,6 @@
 #ifndef _xpc_WRAPPERFACTORY_H
 #define _xpc_WRAPPERFACTORY_H
 
-#include "jsapi.h"
 #include "jswrapper.h"
 
 namespace xpc {
@@ -64,7 +63,7 @@ class WrapperFactory {
                                             JS::HandleObject obj);
 
     // Wrap wrapped object into a waiver wrapper and then re-wrap it.
-    static bool WaiveXrayAndWrap(JSContext *cx, jsval *vp);
+    static bool WaiveXrayAndWrap(JSContext *cx, JS::MutableHandleValue vp);
 
     // Wrap a (same compartment) object in a SOW.
     static JSObject *WrapSOWObject(JSContext *cx, JSObject *obj);
@@ -74,9 +73,6 @@ class WrapperFactory {
 
     // Wrap a (same compartment) Components object.
     static JSObject *WrapComponentsObject(JSContext *cx, JS::HandleObject obj);
-
-    // Wrap a same-compartment object for Xray inspection.
-    static JSObject *WrapForSameCompartmentXray(JSContext *cx, JSObject *obj);
 
     // Returns true if the wrapper is in not shadowing mode for the id.
     static bool XrayWrapperNotShadowing(JSObject *wrapper, jsid id);
