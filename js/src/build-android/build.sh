@@ -63,7 +63,7 @@ rm -f ./config.cache
              --enable-strip \
              --enable-install-strip \
              --disable-debug \
-             --enable-intl-api=no 
+             --disable-debug 
 
 # make
 make -j15

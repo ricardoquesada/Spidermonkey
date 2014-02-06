@@ -3,7 +3,7 @@
 # configure
 ../configure --disable-tests \
              --disable-debug \
-             --enable-intl-api=no
+             --without-intl-api
 
 # make
 make -j4
