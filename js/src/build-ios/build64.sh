@@ -26,7 +26,7 @@ make distclean
 
 ../configure --with-ios-target=iPhoneOS --with-ios-version=$IOS_SDK --with-ios-min-version=$MIN_IOS_VERSION --with-ios-arch=arm64 \
             --disable-shared-js --disable-tests --disable-ion --disable-jm --disable-tm --enable-llvm-hacks --disable-methodjit --disable-monoic --disable-polyic --disable-yarr-jit \
-            --enable-optimize=-O3 --with-thumb=yes --enable-strip --enable-install-strip --disable-debug --disable-debug
+            --enable-optimize=-O3 --with-thumb=yes --enable-strip --enable-install-strip --disable-debug --disable-debug --disable-threadsafe
 make -j$cpus
 if (( $? )) ; then
     echo "error when compiling iOS version of the library"
