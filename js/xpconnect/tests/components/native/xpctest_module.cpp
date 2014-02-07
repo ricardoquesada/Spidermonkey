@@ -6,11 +6,7 @@
 
 /* module registration and factory code. */
 
-#include "nsCOMPtr.h"
-#include "nsIModule.h"
 #include "mozilla/ModuleUtils.h"
-#include "nsCRT.h"
-#include "nsIClassInfoImpl.h"
 #include "xpctest_private.h"
 
 #define NS_XPCTESTOBJECTREADONLY_CID                                          \
@@ -33,17 +29,17 @@ NS_DEFINE_NAMED_CID(NS_XPCTESTOBJECTREADWRITE_CID);
 NS_DEFINE_NAMED_CID(NS_XPCTESTPARAMS_CID);
 
 static const mozilla::Module::CIDEntry kXPCTestCIDs[] = {
-    { &kNS_XPCTESTOBJECTREADONLY_CID, false, NULL, xpcTestObjectReadOnlyConstructor },
-    { &kNS_XPCTESTOBJECTREADWRITE_CID, false, NULL, xpcTestObjectReadWriteConstructor },
-    { &kNS_XPCTESTPARAMS_CID, false, NULL, nsXPCTestParamsConstructor },
-    { NULL }
+    { &kNS_XPCTESTOBJECTREADONLY_CID, false, nullptr, xpcTestObjectReadOnlyConstructor },
+    { &kNS_XPCTESTOBJECTREADWRITE_CID, false, nullptr, xpcTestObjectReadWriteConstructor },
+    { &kNS_XPCTESTPARAMS_CID, false, nullptr, nsXPCTestParamsConstructor },
+    { nullptr }
 };
 
 static const mozilla::Module::ContractIDEntry kXPCTestContracts[] = {
     { "@mozilla.org/js/xpc/test/native/ObjectReadOnly;1", &kNS_XPCTESTOBJECTREADONLY_CID },
     { "@mozilla.org/js/xpc/test/native/ObjectReadWrite;1", &kNS_XPCTESTOBJECTREADWRITE_CID },
     { "@mozilla.org/js/xpc/test/native/Params;1", &kNS_XPCTESTPARAMS_CID },
-    { NULL }
+    { nullptr }
 };
 
 static const mozilla::Module kXPCTestModule = {

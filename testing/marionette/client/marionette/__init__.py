@@ -11,3 +11,5 @@ from runtests import MarionetteTestResult
 from runtests import MarionetteTestRunner
 from runtests import MarionetteTestOptions
 from runtests import MarionetteTextTestRunner
+from errors import *
+from wait import Wait

@@ -6,12 +6,13 @@
 
 #include "jit/LIR.h"
 
+#include <ctype.h>
+
 #include "jsprf.h"
 
 #include "jit/IonSpewer.h"
 #include "jit/MIR.h"
-#include "jit/MIRGraph.h"
-#include "jit/shared/CodeGenerator-shared.h"
+#include "jit/MIRGenerator.h"
 
 using namespace js;
 using namespace js::jit;
@@ -21,8 +22,8 @@ LIRGraph::LIRGraph(MIRGraph *mir)
     numInstructions_(1), // First id is 1.
     localSlotCount_(0),
     argumentSlotCount_(0),
-    entrySnapshot_(NULL),
-    osrBlock_(NULL),
+    entrySnapshot_(nullptr),
+    osrBlock_(nullptr),
     mir_(*mir)
 {
 }
@@ -111,7 +112,7 @@ TotalOperandCount(MResumePoint *mir)
 
 LSnapshot::LSnapshot(MResumePoint *mir, BailoutKind kind)
   : numSlots_(TotalOperandCount(mir) * BOX_PIECES),
-    slots_(NULL),
+    slots_(nullptr),
     mir_(mir),
     snapshotOffset_(INVALID_SNAPSHOT_OFFSET),
     bailoutId_(INVALID_BAILOUT_ID),
@@ -130,7 +131,7 @@ LSnapshot::New(MIRGenerator *gen, MResumePoint *mir, BailoutKind kind)
 {
     LSnapshot *snapshot = new LSnapshot(mir, kind);
     if (!snapshot->init(gen))
-        return NULL;
+        return nullptr;
 
     IonSpew(IonSpew_Snapshots, "Generating LIR snapshot %p from MIR (%p)",
             (void *)snapshot, (void *)mir);
@@ -166,7 +167,7 @@ LPhi::New(MIRGenerator *gen, MPhi *ins)
 {
     LPhi *phi = new LPhi(ins);
     if (!phi->init(gen))
-        return NULL;
+        return nullptr;
     return phi;
 }
 

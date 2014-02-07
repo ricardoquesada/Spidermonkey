@@ -6,10 +6,10 @@
 
 #include "jit/x64/MacroAssembler-x64.h"
 
-#include "mozilla/Casting.h"
-
+#include "jit/Bailouts.h"
 #include "jit/BaselineFrame.h"
 #include "jit/IonFrames.h"
+#include "jit/JitCompartment.h"
 #include "jit/MoveEmitter.h"
 
 using namespace js;
@@ -50,17 +50,54 @@ MacroAssemblerX64::loadConstantDouble(double d, const FloatRegister &dest)
 }
 
 void
+MacroAssemblerX64::loadConstantFloat32(float f, const FloatRegister &dest)
+{
+    if (maybeInlineFloat(f, dest))
+        return;
+
+    if (!floatMap_.initialized()) {
+        enoughMemory_ &= floatMap_.init();
+        if (!enoughMemory_)
+            return;
+    }
+    size_t floatIndex;
+    if (FloatMap::AddPtr p = floatMap_.lookupForAdd(f)) {
+        floatIndex = p->value;
+    } else {
+        floatIndex = floats_.length();
+        enoughMemory_ &= floats_.append(Float(f));
+        enoughMemory_ &= floatMap_.add(p, f, floatIndex);
+        if (!enoughMemory_)
+            return;
+    }
+    Float &flt = floats_[floatIndex];
+    JS_ASSERT(!flt.uses.bound());
+
+    // See comment in loadConstantDouble
+    JmpSrc j = masm.movss_ripr(dest.code());
+    JmpSrc prev = JmpSrc(flt.uses.use(j.offset()));
+    masm.setNextJump(j, prev);
+}
+
+void
 MacroAssemblerX64::finish()
 {
     JS_STATIC_ASSERT(CodeAlignment >= sizeof(double));
 
-    if (!doubles_.empty())
+    if (!doubles_.empty() || !floats_.empty())
         masm.align(sizeof(double));
 
     for (size_t i = 0; i < doubles_.length(); i++) {
         Double &dbl = doubles_[i];
         bind(&dbl.uses);
         masm.doubleConstant(dbl.value);
+    }
+
+    // No need to align on sizeof(float) as we are aligned on sizeof(double);
+    for (size_t i = 0; i < floats_.length(); i++) {
+        Float &flt = floats_[i];
+        bind(&flt.uses);
+        masm.floatConstant(flt.value);
     }
 
     MacroAssemblerX86Shared::finish();
@@ -197,7 +234,16 @@ MacroAssemblerX64::callWithABI(void *fun, Result result)
 {
     uint32_t stackAdjust;
     callWithABIPre(&stackAdjust);
-    call(ImmWord(fun));
+    call(ImmPtr(fun));
+    callWithABIPost(stackAdjust, result);
+}
+
+void
+MacroAssemblerX64::callWithABI(AsmJSImmPtr imm, Result result)
+{
+    uint32_t stackAdjust;
+    callWithABIPre(&stackAdjust);
+    call(imm);
     callWithABIPost(stackAdjust, result);
 }
 
@@ -242,7 +288,7 @@ MacroAssemblerX64::handleFailureWithHandler(void *handler)
     passABIArg(rax);
     callWithABI(handler);
 
-    IonCode *excTail = GetIonContext()->runtime->ionRuntime()->getExceptionTail();
+    IonCode *excTail = GetIonContext()->runtime->jitRuntime()->getExceptionTail();
     jmp(excTail);
 }
 
@@ -253,12 +299,14 @@ MacroAssemblerX64::handleFailureWithHandlerTail()
     Label catch_;
     Label finally;
     Label return_;
+    Label bailout;
 
     loadPtr(Address(rsp, offsetof(ResumeFromException, kind)), rax);
     branch32(Assembler::Equal, rax, Imm32(ResumeFromException::RESUME_ENTRY_FRAME), &entryFrame);
     branch32(Assembler::Equal, rax, Imm32(ResumeFromException::RESUME_CATCH), &catch_);
     branch32(Assembler::Equal, rax, Imm32(ResumeFromException::RESUME_FINALLY), &finally);
     branch32(Assembler::Equal, rax, Imm32(ResumeFromException::RESUME_FORCED_RETURN), &return_);
+    branch32(Assembler::Equal, rax, Imm32(ResumeFromException::RESUME_BAILOUT), &bailout);
 
     breakpoint(); // Invalid kind.
 
@@ -266,15 +314,15 @@ MacroAssemblerX64::handleFailureWithHandlerTail()
     // and return from the entry frame.
     bind(&entryFrame);
     moveValue(MagicValue(JS_ION_ERROR), JSReturnOperand);
-    movq(Operand(rsp, offsetof(ResumeFromException, stackPointer)), rsp);
+    loadPtr(Address(rsp, offsetof(ResumeFromException, stackPointer)), rsp);
     ret();
 
     // If we found a catch handler, this must be a baseline frame. Restore state
     // and jump to the catch block.
     bind(&catch_);
-    movq(Operand(rsp, offsetof(ResumeFromException, target)), rax);
-    movq(Operand(rsp, offsetof(ResumeFromException, framePointer)), rbp);
-    movq(Operand(rsp, offsetof(ResumeFromException, stackPointer)), rsp);
+    loadPtr(Address(rsp, offsetof(ResumeFromException, target)), rax);
+    loadPtr(Address(rsp, offsetof(ResumeFromException, framePointer)), rbp);
+    loadPtr(Address(rsp, offsetof(ResumeFromException, stackPointer)), rsp);
     jmp(Operand(rax));
 
     // If we found a finally block, this must be a baseline frame. Push
@@ -282,11 +330,11 @@ MacroAssemblerX64::handleFailureWithHandlerTail()
     // exception.
     bind(&finally);
     ValueOperand exception = ValueOperand(rcx);
-    loadValue(Operand(esp, offsetof(ResumeFromException, exception)), exception);
+    loadValue(Address(esp, offsetof(ResumeFromException, exception)), exception);
 
-    movq(Operand(rsp, offsetof(ResumeFromException, target)), rax);
-    movq(Operand(rsp, offsetof(ResumeFromException, framePointer)), rbp);
-    movq(Operand(rsp, offsetof(ResumeFromException, stackPointer)), rsp);
+    loadPtr(Address(rsp, offsetof(ResumeFromException, target)), rax);
+    loadPtr(Address(rsp, offsetof(ResumeFromException, framePointer)), rbp);
+    loadPtr(Address(rsp, offsetof(ResumeFromException, stackPointer)), rsp);
 
     pushValue(BooleanValue(true));
     pushValue(exception);
@@ -294,18 +342,25 @@ MacroAssemblerX64::handleFailureWithHandlerTail()
 
     // Only used in debug mode. Return BaselineFrame->returnValue() to the caller.
     bind(&return_);
-    movq(Operand(rsp, offsetof(ResumeFromException, framePointer)), rbp);
-    movq(Operand(rsp, offsetof(ResumeFromException, stackPointer)), rsp);
+    loadPtr(Address(rsp, offsetof(ResumeFromException, framePointer)), rbp);
+    loadPtr(Address(rsp, offsetof(ResumeFromException, stackPointer)), rsp);
     loadValue(Address(rbp, BaselineFrame::reverseOffsetOfReturnValue()), JSReturnOperand);
     movq(rbp, rsp);
     pop(rbp);
     ret();
+
+    // If we are bailing out to baseline to handle an exception, jump to
+    // the bailout tail stub.
+    bind(&bailout);
+    loadPtr(Address(esp, offsetof(ResumeFromException, bailoutInfo)), r9);
+    mov(ImmWord(BAILOUT_RETURN_OK), rax);
+    jmp(Operand(rsp, offsetof(ResumeFromException, target)));
 }
 
 Assembler::Condition
 MacroAssemblerX64::testNegativeZero(const FloatRegister &reg, const Register &scratch)
 {
-    movqsd(reg, scratch);
-    subq(Imm32(1), scratch);
+    movq(reg, scratch);
+    cmpq(scratch, Imm32(1));
     return Overflow;
 }

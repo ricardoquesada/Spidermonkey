@@ -3,7 +3,8 @@
 # configure
 ../configure --disable-tests \
              --disable-debug \
-             --enable-intl-api=no
+             --without-intl-api \
+             --disable-threadsafe
 
 # make
-make -j4
+../../../build/pymake/make.py -j4

@@ -7,10 +7,10 @@
 
 #include "jsapi-tests/tests.h"
 
-static JSBool
+static bool
 native(JSContext *cx, unsigned argc, jsval *vp)
 {
-    return JS_TRUE;
+    return true;
 }
 
 static const char PROPERTY_NAME[] = "foo";
@@ -18,16 +18,16 @@ static const char PROPERTY_NAME[] = "foo";
 BEGIN_TEST(testDefineGetterSetterNonEnumerable)
 {
     JS::RootedValue vobj(cx);
-    JS::RootedObject obj(cx, JS_NewObject(cx, NULL, NULL, NULL));
+    JS::RootedObject obj(cx, JS_NewObject(cx, nullptr, nullptr, nullptr));
     CHECK(obj);
     vobj = OBJECT_TO_JSVAL(obj);
 
-    JSFunction *funGet = JS_NewFunction(cx, native, 0, 0, NULL, "get");
+    JSFunction *funGet = JS_NewFunction(cx, native, 0, 0, nullptr, "get");
     CHECK(funGet);
     JS::RootedObject funGetObj(cx, JS_GetFunctionObject(funGet));
     JS::RootedValue vget(cx, OBJECT_TO_JSVAL(funGetObj));
 
-    JSFunction *funSet = JS_NewFunction(cx, native, 1, 0, NULL, "set");
+    JSFunction *funSet = JS_NewFunction(cx, native, 1, 0, nullptr, "set");
     CHECK(funSet);
     JS::RootedObject funSetObj(cx, JS_GetFunctionObject(funSet));
     JS::RootedValue vset(cx, OBJECT_TO_JSVAL(funSetObj));
@@ -45,14 +45,13 @@ BEGIN_TEST(testDefineGetterSetterNonEnumerable)
                             JS_DATA_TO_FUNC_PTR(JSStrictPropertyOp, (JSObject*) funSetObj),
                             JSPROP_GETTER | JSPROP_SETTER | JSPROP_PERMANENT));
 
-    JSBool found = JS_FALSE;
-    unsigned attrs = 0;
-    CHECK(JS_GetPropertyAttributes(cx, vObject, PROPERTY_NAME, &attrs, &found));
-    CHECK(found);
-    CHECK(attrs & JSPROP_GETTER);
-    CHECK(attrs & JSPROP_SETTER);
-    CHECK(attrs & JSPROP_PERMANENT);
-    CHECK(!(attrs & JSPROP_ENUMERATE));
+    JS::Rooted<JSPropertyDescriptor> desc(cx);
+    CHECK(JS_GetOwnPropertyDescriptor(cx, vObject, PROPERTY_NAME, 0, &desc));
+    CHECK(desc.object());
+    CHECK(desc.hasGetterObject());
+    CHECK(desc.hasSetterObject());
+    CHECK(desc.isPermanent());
+    CHECK(!desc.isEnumerable());
 
     return true;
 }

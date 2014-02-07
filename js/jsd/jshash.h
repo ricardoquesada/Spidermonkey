@@ -11,8 +11,8 @@
  * API to portable hash table code.
  */
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
-#include "jstypes.h"
 
 extern "C" {
 
@@ -56,7 +56,7 @@ struct JSHashTable {
     JSHashFunction      keyHash;        /* key hash function */
     JSHashComparator    keyCompare;     /* key comparison function */
     JSHashComparator    valueCompare;   /* value comparison function */
-    JSHashAllocOps      *allocOps;      /* allocation operations */
+    const JSHashAllocOps *allocOps;     /* allocation operations */
     void                *allocPriv;     /* allocation private data */
 #ifdef JS_HASHMETER
     uint32_t            nlookups;       /* total number of lookups */
@@ -73,7 +73,7 @@ struct JSHashTable {
 extern JSHashTable * 
 JS_NewHashTable(uint32_t n, JSHashFunction keyHash,
                 JSHashComparator keyCompare, JSHashComparator valueCompare,
-                JSHashAllocOps *allocOps, void *allocPriv);
+                const JSHashAllocOps *allocOps, void *allocPriv);
 
 extern void
 JS_HashTableDestroy(JSHashTable *ht);
@@ -93,7 +93,7 @@ JS_HashTableRawRemove(JSHashTable *ht, JSHashEntry **hep, JSHashEntry *he);
 extern JSHashEntry *
 JS_HashTableAdd(JSHashTable *ht, const void *key, void *value);
 
-extern JSBool
+extern bool
 JS_HashTableRemove(JSHashTable *ht, const void *key);
 
 extern int

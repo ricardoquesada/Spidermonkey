@@ -9,17 +9,16 @@
 
 #include "mozilla/Attributes.h"
 
-#include "jit/InlineList.h"
-#include "jit/Ion.h"
 #include "jit/LIR.h"
-#include "jit/Lowering.h"
-#include "jit/MIR.h"
+#include "jit/MIRGenerator.h"
 #include "jit/MIRGraph.h"
 
 // Generic structures and functions for use by register allocators.
 
 namespace js {
 namespace jit {
+
+class LIRGenerator;
 
 // Structure for running a liveness analysis on a finished register allocation.
 // This analysis can be used for two purposes:
@@ -255,7 +254,7 @@ class InstructionDataMap
 
   public:
     InstructionDataMap()
-      : insData_(NULL),
+      : insData_(nullptr),
         numIns_(0)
     { }
 
@@ -351,6 +350,21 @@ class RegisterAllocator
                 break;
         }
         return i;
+    }
+
+    CodePosition minimalDefEnd(LInstruction *ins) {
+        // Compute the shortest interval that captures vregs defined by ins.
+        // Watch for instructions that are followed by an OSI point and/or Nop.
+        // If moves are introduced between the instruction and the OSI point then
+        // safepoint information for the instruction may be incorrect.
+        while (true) {
+            LInstruction *next = insData[outputOf(ins).next()].ins();
+            if (!next->isNop() && !next->isOsiPoint())
+                break;
+            ins = next;
+        }
+
+        return outputOf(ins);
     }
 };
 

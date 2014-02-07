@@ -86,15 +86,17 @@ char const * const js::nodeTypeNames[] = {
 #define ASTDEF(ast, str, method) str,
 #include "jsast.tbl"
 #undef ASTDEF
-    NULL
+    nullptr
 };
 
 static char const * const callbackNames[] = {
 #define ASTDEF(ast, str, method) method,
 #include "jsast.tbl"
 #undef ASTDEF
-    NULL
+    nullptr
 };
+
+enum YieldKind { Delegating, NotDelegating };
 
 typedef AutoValueVector NodeVector;
 
@@ -104,21 +106,38 @@ typedef AutoValueVector NodeVector;
  * parser and the AST serializer. We use these macros to check invariants on a
  * parse node and raise a dynamic error on failure.
  */
-#define LOCAL_ASSERT(expr)                                                             \
-    JS_BEGIN_MACRO                                                                     \
-        JS_ASSERT(expr);                                                               \
-        if (!(expr)) {                                                                 \
-            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_BAD_PARSE_NODE);  \
-            return false;                                                              \
-        }                                                                              \
+#define LOCAL_ASSERT(expr)                                                                \
+    JS_BEGIN_MACRO                                                                        \
+        JS_ASSERT(expr);                                                                  \
+        if (!(expr)) {                                                                    \
+            JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_BAD_PARSE_NODE);  \
+            return false;                                                                 \
+        }                                                                                 \
     JS_END_MACRO
 
-#define LOCAL_NOT_REACHED(expr)                                                        \
-    JS_BEGIN_MACRO                                                                     \
-        MOZ_ASSERT(false);                                                             \
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_BAD_PARSE_NODE);      \
-        return false;                                                                  \
+#define LOCAL_NOT_REACHED(expr)                                                           \
+    JS_BEGIN_MACRO                                                                        \
+        MOZ_ASSERT(false);                                                                \
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_BAD_PARSE_NODE);      \
+        return false;                                                                     \
     JS_END_MACRO
+
+namespace {
+
+/* Set 'result' to obj[id] if any such property exists, else defaultValue. */
+static bool
+GetPropertyDefault(JSContext *cx, HandleObject obj, HandleId id, HandleValue defaultValue,
+                   MutableHandleValue result)
+{
+    bool found;
+    if (!JSObject::hasProperty(cx, obj, id, &found))
+        return false;
+    if (!found) {
+        result.set(defaultValue);
+        return true;
+    }
+    return JSObject::getGeneric(cx, obj, obj, id, result);
+}
 
 /*
  * Builder class that constructs JavaScript AST node objects. See:
@@ -141,7 +160,7 @@ class NodeBuilder
 
   public:
     NodeBuilder(JSContext *c, bool l, char const *s)
-        : cx(c), tokenStream(NULL), saveLoc(l), src(s), srcval(c),
+        : cx(c), tokenStream(nullptr), saveLoc(l), src(s), srcval(c),
           callbacksRoots(c, callbacks, AST_LIMIT), userv(c), undefinedVal(c, UndefinedValue())
     {
         MakeRangeGCSafe(callbacks, mozilla::ArrayLength(callbacks));
@@ -173,7 +192,7 @@ class NodeBuilder
             if (!atom)
                 return false;
             RootedId id(cx, AtomToId(atom));
-            if (!baseops::GetPropertyDefault(cx, userobj, id, nullVal, &funv))
+            if (!GetPropertyDefault(cx, userobj, id, nullVal, &funv))
                 return false;
 
             if (funv.isNullOrUndefined()) {
@@ -183,7 +202,7 @@ class NodeBuilder
 
             if (!funv.isObject() || !funv.toObject().is<JSFunction>()) {
                 js_ReportValueErrorFlags(cx, JSREPORT_ERROR, JSMSG_NOT_FUNCTION,
-                                         JSDVG_SEARCH_STACK, funv, NullPtr(), NULL, NULL);
+                                         JSDVG_SEARCH_STACK, funv, NullPtr(), nullptr, nullptr);
                 return false;
             }
 
@@ -584,7 +603,7 @@ class NodeBuilder
 
     bool thisExpression(TokenPos *pos, MutableHandleValue dst);
 
-    bool yieldExpression(HandleValue arg, TokenPos *pos, MutableHandleValue dst);
+    bool yieldExpression(HandleValue arg, YieldKind kind, TokenPos *pos, MutableHandleValue dst);
 
     bool comprehensionBlock(HandleValue patt, HandleValue src, bool isForEach, bool isForOf, TokenPos *pos,
                             MutableHandleValue dst);
@@ -614,6 +633,8 @@ class NodeBuilder
 
     bool propertyPattern(HandleValue key, HandleValue patt, TokenPos *pos, MutableHandleValue dst);
 };
+
+} /* anonymous namespace */
 
 bool
 NodeBuilder::newNode(ASTType type, TokenPos *pos, MutableHandleObject dst)
@@ -1223,13 +1244,23 @@ NodeBuilder::thisExpression(TokenPos *pos, MutableHandleValue dst)
 }
 
 bool
-NodeBuilder::yieldExpression(HandleValue arg, TokenPos *pos, MutableHandleValue dst)
+NodeBuilder::yieldExpression(HandleValue arg, YieldKind kind, TokenPos *pos, MutableHandleValue dst)
 {
     RootedValue cb(cx, callbacks[AST_YIELD_EXPR]);
-    if (!cb.isNull())
-        return callback(cb, opt(arg), pos, dst);
+    RootedValue delegateVal(cx);
 
-    return newNode(AST_YIELD_EXPR, pos, "argument", arg, dst);
+    switch (kind) {
+      case Delegating:
+        delegateVal = BooleanValue(true);
+        break;
+      case NotDelegating:
+        delegateVal = BooleanValue(false);
+        break;
+    }
+
+    if (!cb.isNull())
+        return callback(cb, opt(arg), delegateVal, pos, dst);
+    return newNode(AST_YIELD_EXPR, pos, "argument", arg, "delegate", delegateVal, dst);
 }
 
 bool
@@ -1471,6 +1502,8 @@ NodeBuilder::function(ASTType type, TokenPos *pos,
                    dst);
 }
 
+namespace {
+
 /*
  * Serialization of parse nodes to JavaScript objects.
  *
@@ -1513,8 +1546,10 @@ class ASTSerializer
     }
 
     bool forInit(ParseNode *pn, MutableHandleValue dst);
-    bool forOfOrIn(ParseNode *loop, ParseNode *head, HandleValue var, HandleValue stmt,
-                   MutableHandleValue dst);
+    bool forIn(ParseNode *loop, ParseNode *head, HandleValue var, HandleValue stmt,
+               MutableHandleValue dst);
+    bool forOf(ParseNode *loop, ParseNode *head, HandleValue var, HandleValue stmt,
+               MutableHandleValue dst);
     bool statement(ParseNode *pn, MutableHandleValue dst);
     bool blockStatement(ParseNode *pn, MutableHandleValue dst);
     bool switchStatement(ParseNode *pn, MutableHandleValue dst);
@@ -1581,6 +1616,8 @@ class ASTSerializer
 
     bool program(ParseNode *pn, MutableHandleValue dst);
 };
+
+} /* anonymous namespace */
 
 AssignmentOperator
 ASTSerializer::aop(JSOp op)
@@ -1807,7 +1844,7 @@ ASTSerializer::variableDeclarator(ParseNode *pn, VarDeclKind *pkind, MutableHand
 
     if (pn->isKind(PNK_NAME)) {
         pnleft = pn;
-        pnright = pn->isUsed() ? NULL : pn->pn_expr;
+        pnright = pn->isUsed() ? nullptr : pn->pn_expr;
         JS_ASSERT_IF(pnright, pn->pn_pos.encloses(pnright->pn_pos));
     } else if (pn->isKind(PNK_ASSIGN)) {
         pnleft = pn->pn_left;
@@ -1817,7 +1854,7 @@ ASTSerializer::variableDeclarator(ParseNode *pn, VarDeclKind *pkind, MutableHand
     } else {
         /* This happens for a destructuring declarator in a for-in/of loop. */
         pnleft = pn;
-        pnright = NULL;
+        pnright = nullptr;
     }
 
     RootedValue left(cx), right(cx);
@@ -1923,7 +1960,7 @@ ASTSerializer::catchClause(ParseNode *pn, bool *isGuarded, MutableHandleValue ds
 
     RootedValue var(cx), guard(cx), body(cx);
 
-    if (!pattern(pn->pn_kid1, NULL, &var) ||
+    if (!pattern(pn->pn_kid1, nullptr, &var) ||
         !optExpression(pn->pn_kid2, &guard)) {
         return false;
     }
@@ -1983,17 +2020,24 @@ ASTSerializer::forInit(ParseNode *pn, MutableHandleValue dst)
 }
 
 bool
-ASTSerializer::forOfOrIn(ParseNode *loop, ParseNode *head, HandleValue var, HandleValue stmt,
+ASTSerializer::forOf(ParseNode *loop, ParseNode *head, HandleValue var, HandleValue stmt,
+                         MutableHandleValue dst)
+{
+    RootedValue expr(cx);
+
+    return expression(head->pn_kid3, &expr) &&
+        builder.forOfStatement(var, expr, stmt, &loop->pn_pos, dst);
+}
+
+bool
+ASTSerializer::forIn(ParseNode *loop, ParseNode *head, HandleValue var, HandleValue stmt,
                          MutableHandleValue dst)
 {
     RootedValue expr(cx);
     bool isForEach = loop->pn_iflags & JSITER_FOREACH;
-    bool isForOf = loop->pn_iflags & JSITER_FOR_OF;
-    JS_ASSERT(!isForOf || !isForEach);
 
     return expression(head->pn_kid3, &expr) &&
-        (isForOf ? builder.forOfStatement(var, expr, stmt, &loop->pn_pos, dst) :
-         builder.forInStatement(var, expr, stmt, isForEach, &loop->pn_pos, dst));
+        builder.forInStatement(var, expr, stmt, isForEach, &loop->pn_pos, dst);
 }
 
 bool
@@ -2100,11 +2144,21 @@ ASTSerializer::statement(ParseNode *pn, MutableHandleValue dst)
         if (head->isKind(PNK_FORIN)) {
             RootedValue var(cx);
             return (!head->pn_kid1
-                    ? pattern(head->pn_kid2, NULL, &var)
+                    ? pattern(head->pn_kid2, nullptr, &var)
                     : head->pn_kid1->isKind(PNK_LEXICALSCOPE)
                     ? variableDeclaration(head->pn_kid1->pn_expr, true, &var)
                     : variableDeclaration(head->pn_kid1, false, &var)) &&
-                forOfOrIn(pn, head, var, stmt, dst);
+                forIn(pn, head, var, stmt, dst);
+        }
+
+        if (head->isKind(PNK_FOROF)) {
+            RootedValue var(cx);
+            return (!head->pn_kid1
+                    ? pattern(head->pn_kid2, nullptr, &var)
+                    : head->pn_kid1->isKind(PNK_LEXICALSCOPE)
+                    ? variableDeclaration(head->pn_kid1->pn_expr, true, &var)
+                    : variableDeclaration(head->pn_kid1, false, &var)) &&
+                forOf(pn, head, var, stmt, dst);
         }
 
         RootedValue init(cx), test(cx), update(cx);
@@ -2134,7 +2188,7 @@ ASTSerializer::statement(ParseNode *pn, MutableHandleValue dst)
 
         RootedValue stmt(cx);
 
-        return statement(loop->pn_right, &stmt) && forOfOrIn(loop, head, var, stmt, dst);
+        return statement(loop->pn_right, &stmt) && forIn(loop, head, var, stmt, dst);
       }
 
       case PNK_BREAK:
@@ -2142,7 +2196,7 @@ ASTSerializer::statement(ParseNode *pn, MutableHandleValue dst)
       {
         RootedValue label(cx);
         RootedAtom pnAtom(cx, pn->pn_atom);
-        return optIdentifier(pnAtom, NULL, &label) &&
+        return optIdentifier(pnAtom, nullptr, &label) &&
                (pn->isKind(PNK_BREAK)
                 ? builder.breakStatement(label, &pn->pn_pos, dst)
                 : builder.continueStatement(label, &pn->pn_pos, dst));
@@ -2154,7 +2208,7 @@ ASTSerializer::statement(ParseNode *pn, MutableHandleValue dst)
 
         RootedValue label(cx), stmt(cx);
         RootedAtom pnAtom(cx, pn->as<LabeledStatement>().label());
-        return identifier(pnAtom, NULL, &label) &&
+        return identifier(pnAtom, nullptr, &label) &&
                statement(pn->pn_expr, &stmt) &&
                builder.labeledStatement(label, stmt, &pn->pn_pos, dst);
       }
@@ -2227,13 +2281,13 @@ ASTSerializer::comprehensionBlock(ParseNode *pn, MutableHandleValue dst)
 
     ParseNode *in = pn->pn_left;
 
-    LOCAL_ASSERT(in && in->isKind(PNK_FORIN));
+    LOCAL_ASSERT(in && (in->isKind(PNK_FORIN) || in->isKind(PNK_FOROF)));
 
     bool isForEach = pn->pn_iflags & JSITER_FOREACH;
-    bool isForOf = pn->pn_iflags & JSITER_FOR_OF;
+    bool isForOf = in->isKind(PNK_FOROF);
 
     RootedValue patt(cx), src(cx);
-    return pattern(in->pn_kid2, NULL, &patt) &&
+    return pattern(in->pn_kid2, nullptr, &patt) &&
            expression(in->pn_kid3, &src) &&
            builder.comprehensionBlock(patt, src, isForEach, isForOf, &in->pn_pos, dst);
 }
@@ -2395,7 +2449,7 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
         LOCAL_ASSERT(op > AOP_ERR && op < AOP_LIMIT);
 
         RootedValue lhs(cx), rhs(cx);
-        return pattern(pn->pn_left, NULL, &lhs) &&
+        return pattern(pn->pn_left, nullptr, &lhs) &&
                expression(pn->pn_right, &rhs) &&
                builder.assignmentExpression(op, lhs, rhs, &pn->pn_pos, dst);
       }
@@ -2493,7 +2547,7 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
         RootedValue expr(cx), id(cx);
         RootedAtom pnAtom(cx, pn->pn_atom);
         return expression(pn->pn_expr, &expr) &&
-               identifier(pnAtom, NULL, &id) &&
+               identifier(pnAtom, nullptr, &id) &&
                builder.memberExpression(false, expr, id, &pn->pn_pos, dst);
       }
 
@@ -2541,7 +2595,7 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
       {
         /* The parser notes any uninitialized properties by setting the PNX_DESTRUCT flag. */
         if (pn->pn_xflags & PNX_DESTRUCT) {
-            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_BAD_OBJECT_INIT);
+            JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_BAD_OBJECT_INIT);
             return false;
         }
         NodeVector elts(cx);
@@ -2574,13 +2628,22 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
       case PNK_NULL:
         return literal(pn, dst);
 
+      case PNK_YIELD_STAR:
+      {
+        JS_ASSERT(pn->pn_pos.encloses(pn->pn_kid->pn_pos));
+
+        RootedValue arg(cx);
+        return expression(pn->pn_kid, &arg) &&
+               builder.yieldExpression(arg, Delegating, &pn->pn_pos, dst);
+      }
+
       case PNK_YIELD:
       {
         JS_ASSERT_IF(pn->pn_kid, pn->pn_pos.encloses(pn->pn_kid->pn_pos));
 
         RootedValue arg(cx);
         return optExpression(pn->pn_kid, &arg) &&
-               builder.yieldExpression(arg, &pn->pn_pos, dst);
+               builder.yieldExpression(arg, NotDelegating, &pn->pn_pos, dst);
       }
 
       case PNK_ARRAYCOMP:
@@ -2787,6 +2850,7 @@ ASTSerializer::function(ParseNode *pn, ASTType type, MutableHandleValue dst)
 {
     RootedFunction func(cx, pn->pn_funbox->function());
 
+    // FIXME: Provide more information (legacy generator vs star generator).
     bool isGenerator = pn->pn_funbox->isGenerator();
 
     bool isExpression =
@@ -2798,7 +2862,7 @@ ASTSerializer::function(ParseNode *pn, ASTType type, MutableHandleValue dst)
 
     RootedValue id(cx);
     RootedAtom funcAtom(cx, func->atom());
-    if (!optIdentifier(funcAtom, NULL, &id))
+    if (!optIdentifier(funcAtom, nullptr, &id))
         return false;
 
     NodeVector args(cx);
@@ -2826,7 +2890,7 @@ ASTSerializer::functionArgsAndBody(ParseNode *pn, NodeVector &args, NodeVector &
         pnargs = pn;
         pnbody = pn->last();
     } else {
-        pnargs = NULL;
+        pnargs = nullptr;
         pnbody = pn;
     }
 
@@ -2841,13 +2905,13 @@ ASTSerializer::functionArgsAndBody(ParseNode *pn, NodeVector &args, NodeVector &
         LOCAL_ASSERT(pndestruct);
         LOCAL_ASSERT(pndestruct->isKind(PNK_VAR));
     } else {
-        pndestruct = NULL;
+        pndestruct = nullptr;
     }
 
     /* Serialize the arguments and body. */
     switch (pnbody->getKind()) {
       case PNK_RETURN: /* expression closure, no destructured args */
-        return functionArgs(pn, pnargs, NULL, pnbody, args, defaults, rest) &&
+        return functionArgs(pn, pnargs, nullptr, pnbody, args, defaults, rest) &&
                expression(pnbody->pn_kid, body);
 
       case PNK_SEQ:    /* expression closure with destructured args */
@@ -2880,8 +2944,8 @@ ASTSerializer::functionArgs(ParseNode *pn, ParseNode *pnargs, ParseNode *pndestr
                             MutableHandleValue rest)
 {
     uint32_t i = 0;
-    ParseNode *arg = pnargs ? pnargs->pn_head : NULL;
-    ParseNode *destruct = pndestruct ? pndestruct->pn_head : NULL;
+    ParseNode *arg = pnargs ? pnargs->pn_head : nullptr;
+    ParseNode *destruct = pndestruct ? pndestruct->pn_head : nullptr;
     RootedValue node(cx);
 
     /*
@@ -2894,7 +2958,7 @@ ASTSerializer::functionArgs(ParseNode *pn, ParseNode *pnargs, ParseNode *pndestr
      */
     while ((arg && arg != pnbody) || destruct) {
         if (destruct && destruct->pn_right->frameSlot() == i) {
-            if (!pattern(destruct->pn_left, NULL, &node) || !args.append(node))
+            if (!pattern(destruct->pn_left, nullptr, &node) || !args.append(node))
                 return false;
             destruct = destruct->pn_next;
         } else if (arg && arg != pnbody) {
@@ -2949,20 +3013,20 @@ ASTSerializer::moduleOrFunctionBody(ParseNode *pn, TokenPos *pos, MutableHandleV
     return builder.blockStatement(elts, pos, dst);
 }
 
-static JSBool
+static bool
 reflect_parse(JSContext *cx, uint32_t argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
     if (args.length() < 1) {
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_MORE_ARGS_NEEDED,
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_MORE_ARGS_NEEDED,
                              "Reflect.parse", "0", "s");
-        return JS_FALSE;
+        return false;
     }
 
     RootedString src(cx, ToString<CanGC>(cx, args[0]));
     if (!src)
-        return JS_FALSE;
+        return false;
 
     ScopedJSFreePtr<char> filename;
     uint32_t lineno = 1;
@@ -2975,8 +3039,9 @@ reflect_parse(JSContext *cx, uint32_t argc, jsval *vp)
     if (!arg.isNullOrUndefined()) {
         if (!arg.isObject()) {
             js_ReportValueErrorFlags(cx, JSREPORT_ERROR, JSMSG_UNEXPECTED_TYPE,
-                                     JSDVG_SEARCH_STACK, arg, NullPtr(), "not an object", NULL);
-            return JS_FALSE;
+                                     JSDVG_SEARCH_STACK, arg, NullPtr(),
+                                     "not an object", nullptr);
+            return false;
         }
 
         RootedObject config(cx, &arg.toObject());
@@ -2986,8 +3051,8 @@ reflect_parse(JSContext *cx, uint32_t argc, jsval *vp)
         /* config.loc */
         RootedId locId(cx, NameToId(cx->names().loc));
         RootedValue trueVal(cx, BooleanValue(true));
-        if (!baseops::GetPropertyDefault(cx, config, locId, trueVal, &prop))
-            return JS_FALSE;
+        if (!GetPropertyDefault(cx, config, locId, trueVal, &prop))
+            return false;
 
         loc = ToBoolean(prop);
 
@@ -2995,45 +3060,46 @@ reflect_parse(JSContext *cx, uint32_t argc, jsval *vp)
             /* config.source */
             RootedId sourceId(cx, NameToId(cx->names().source));
             RootedValue nullVal(cx, NullValue());
-            if (!baseops::GetPropertyDefault(cx, config, sourceId, nullVal, &prop))
-                return JS_FALSE;
+            if (!GetPropertyDefault(cx, config, sourceId, nullVal, &prop))
+                return false;
 
             if (!prop.isNullOrUndefined()) {
                 RootedString str(cx, ToString<CanGC>(cx, prop));
                 if (!str)
-                    return JS_FALSE;
+                    return false;
 
                 size_t length = str->length();
                 const jschar *chars = str->getChars(cx);
                 if (!chars)
-                    return JS_FALSE;
+                    return false;
 
                 TwoByteChars tbchars(chars, length);
                 filename = LossyTwoByteCharsToNewLatin1CharsZ(cx, tbchars).c_str();
                 if (!filename)
-                    return JS_FALSE;
+                    return false;
             }
 
             /* config.line */
             RootedId lineId(cx, NameToId(cx->names().line));
             RootedValue oneValue(cx, Int32Value(1));
-            if (!baseops::GetPropertyDefault(cx, config, lineId, oneValue, &prop) ||
+            if (!GetPropertyDefault(cx, config, lineId, oneValue, &prop) ||
                 !ToUint32(cx, prop, &lineno)) {
-                return JS_FALSE;
+                return false;
             }
         }
 
         /* config.builder */
         RootedId builderId(cx, NameToId(cx->names().builder));
         RootedValue nullVal(cx, NullValue());
-        if (!baseops::GetPropertyDefault(cx, config, builderId, nullVal, &prop))
-            return JS_FALSE;
+        if (!GetPropertyDefault(cx, config, builderId, nullVal, &prop))
+            return false;
 
         if (!prop.isNullOrUndefined()) {
             if (!prop.isObject()) {
                 js_ReportValueErrorFlags(cx, JSREPORT_ERROR, JSMSG_UNEXPECTED_TYPE,
-                                         JSDVG_SEARCH_STACK, prop, NullPtr(), "not an object", NULL);
-                return JS_FALSE;
+                                         JSDVG_SEARCH_STACK, prop, NullPtr(),
+                                         "not an object", nullptr);
+                return false;
             }
             builder = &prop.toObject();
         }
@@ -3042,11 +3108,11 @@ reflect_parse(JSContext *cx, uint32_t argc, jsval *vp)
     /* Extract the builder methods first to report errors before parsing. */
     ASTSerializer serialize(cx, loc, filename, lineno);
     if (!serialize.init(builder))
-        return JS_FALSE;
+        return false;
 
     JSStableString *stable = src->ensureStable(cx);
     if (!stable)
-        return JS_FALSE;
+        return false;
 
     const StableCharPtr chars = stable->chars();
     size_t length = stable->length();
@@ -3054,22 +3120,22 @@ reflect_parse(JSContext *cx, uint32_t argc, jsval *vp)
     options.setFileAndLine(filename, lineno);
     options.setCanLazilyParse(false);
     Parser<FullParseHandler> parser(cx, &cx->tempLifoAlloc(), options, chars.get(), length,
-                                    /* foldConstants = */ false, NULL, NULL);
+                                    /* foldConstants = */ false, nullptr, nullptr);
 
     serialize.setParser(&parser);
 
-    ParseNode *pn = parser.parse(NULL);
+    ParseNode *pn = parser.parse(nullptr);
     if (!pn)
-        return JS_FALSE;
+        return false;
 
     RootedValue val(cx);
     if (!serialize.program(pn, &val)) {
         args.rval().setNull();
-        return JS_FALSE;
+        return false;
     }
 
     args.rval().set(val);
-    return JS_TRUE;
+    return true;
 }
 
 static const JSFunctionSpec static_methods[] = {
@@ -3081,17 +3147,18 @@ JS_PUBLIC_API(JSObject *)
 JS_InitReflect(JSContext *cx, JSObject *objArg)
 {
     RootedObject obj(cx, objArg);
-    RootedObject Reflect(cx, NewObjectWithClassProto(cx, &JSObject::class_, NULL, obj, SingletonObject));
+    RootedObject Reflect(cx, NewObjectWithClassProto(cx, &JSObject::class_, nullptr,
+                                                     obj, SingletonObject));
     if (!Reflect)
-        return NULL;
+        return nullptr;
 
     if (!JS_DefineProperty(cx, obj, "Reflect", OBJECT_TO_JSVAL(Reflect),
                            JS_PropertyStub, JS_StrictPropertyStub, 0)) {
-        return NULL;
+        return nullptr;
     }
 
     if (!JS_DefineFunctions(cx, Reflect, static_methods))
-        return NULL;
+        return nullptr;
 
     return Reflect;
 }

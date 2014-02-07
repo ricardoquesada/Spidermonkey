@@ -7,7 +7,9 @@
 
 #include "jsapi-tests/tests.h"
 
-#include "vm/Stack-inl.h"
+#include "jsobjinlines.h"
+
+#include "vm/ArgumentsObject-inl.h"
 
 using namespace js;
 

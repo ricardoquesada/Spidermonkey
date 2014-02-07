@@ -6,12 +6,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <limits>
-#include <math.h>
 
 #include "jsstr.h"
 
 #include "jsapi-tests/tests.h"
-#include "vm/String.h"
 
 using namespace js;
 
@@ -21,7 +19,7 @@ class AutoInflatedString {
     size_t length_;
 
   public:
-    AutoInflatedString(JSContext *cx) : cx(cx), chars_(NULL), length_(0) { }
+    AutoInflatedString(JSContext *cx) : cx(cx), chars_(nullptr), length_(0) { }
     ~AutoInflatedString() {
         JS_free(cx, chars_);
     }
@@ -190,9 +188,9 @@ Error(JSContext *cx, const char (&input)[N])
     CHECK(!JS_GetContextPrivate(cx));
     JS_SetContextPrivate(cx, &p);
     JSErrorReporter old = JS_SetErrorReporter(cx, reportJSONEror);
-    JSBool ok = JS_ParseJSON(cx, str.chars(), str.length(), &dummy);
+    bool ok = JS_ParseJSON(cx, str.chars(), str.length(), &dummy);
     JS_SetErrorReporter(cx, old);
-    JS_SetContextPrivate(cx, NULL);
+    JS_SetContextPrivate(cx, nullptr);
 
     CHECK(!ok);
     CHECK(!p.unexpectedErrorCount);
@@ -221,7 +219,7 @@ reportJSONEror(JSContext *cx, const char *message, JSErrorReport *report)
 
 END_TEST(testParseJSON_error)
 
-static JSBool
+static bool
 Censor(JSContext *cx, unsigned argc, jsval *vp)
 {
     JS_ASSERT(argc == 2);
@@ -257,7 +255,7 @@ TryParse(JSContext *cx, const char (&input)[N], JS::HandleValue filter)
     AutoInflatedString str(cx);
     JS::RootedValue v(cx);
     str = input;
-    CHECK(JS_ParseJSONWithReviver(cx, str.chars(), str.length(), filter, v.address()));
+    CHECK(JS_ParseJSONWithReviver(cx, str.chars(), str.length(), filter, &v));
     CHECK_SAME(v, JSVAL_NULL);
     return true;
 }

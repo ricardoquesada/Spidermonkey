@@ -31,9 +31,9 @@ BaselineCompilerShared::BaselineCompilerShared(JSContext *cx, HandleScript scrip
 { }
 
 bool
-BaselineCompilerShared::callVM(const VMFunction &fun)
+BaselineCompilerShared::callVM(const VMFunction &fun, bool preInitialize)
 {
-    IonCode *code = cx->runtime()->ionRuntime()->getVMWrapper(fun);
+    IonCode *code = cx->runtime()->jitRuntime()->getVMWrapper(fun);
     if (!code)
         return false;
 
@@ -50,8 +50,9 @@ BaselineCompilerShared::callVM(const VMFunction &fun)
     // Assert all arguments were pushed.
     JS_ASSERT(masm.framePushed() - pushedBeforeCall_ == argSize);
 
+    uint32_t frameVals = preInitialize ? 0 : frame.nlocals() + frame.stackDepth();
     uint32_t frameSize = BaselineFrame::FramePointerOffset + BaselineFrame::Size() +
-        (frame.nlocals() + frame.stackDepth()) * sizeof(Value);
+                         (frameVals * sizeof(Value));
 
     masm.store32(Imm32(frameSize), Address(BaselineFrameReg, BaselineFrame::reverseOffsetOfFrameSize()));
 

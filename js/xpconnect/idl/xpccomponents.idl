@@ -4,9 +4,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsISupports.idl"
-#include "xpcexception.idl"
-#include "xpcjsid.idl"
-#include "nsIComponentManager.idl"
 
 %{C++
 #include "jspubtd.h"
@@ -14,6 +11,10 @@
 
 interface xpcIJSWeakReference;
 interface nsIClassInfo;
+interface nsIComponentManager;
+interface nsIJSCID;
+interface nsIJSIID;
+interface nsIStackFrame;
 
 /**
 * interface of Components.interfacesByID
@@ -119,7 +120,7 @@ interface ScheduledGCCallback : nsISupports
 /**
 * interface of Components.utils
 */
-[scriptable, uuid(35d5b0e5-9b29-48de-9f79-d2534b497435)]
+[scriptable, uuid(08a49c33-0704-4b88-bebb-9a0cf1309f30)]
 interface nsIXPCComponents_Utils : nsISupports
 {
 
@@ -134,22 +135,6 @@ interface nsIXPCComponents_Utils : nsISupports
      * is converted to a string and reported as a new error.
      */
     [implicit_jscontext] void reportError(in jsval error);
-
-    /* lookupMethod is designed to be called from JavaScript only.
-     *
-     * It returns a method looking only at the idl interfaces and
-     * ignores any overrides or resolvers that might be in place for
-     * a given scriptable wrapped native.
-     * It must be called with two params: an object and a method name.
-     * It returns a function object or throws an exception on error.
-     * This method exists only to solve mozilla browser problems
-     * when chrome attempts to lookup and call methods in content
-     * and *must* not get confused by method properties that have been
-     * replaced in the content JS code. This method is not recommended for
-     * any other use.
-     */
-    [implicit_jscontext]
-    jsval lookupMethod(in jsval obj, in jsval name);
 
     readonly attribute nsIXPCComponents_utils_Sandbox Sandbox;
 
@@ -171,6 +156,32 @@ interface nsIXPCComponents_Utils : nsISupports
                         [optional] in jsval filename,
                         [optional] in long lineNo);
 
+    /*
+     * getSandboxMetadata is designed to be called from JavaScript only.
+     *
+     * getSandboxMetadata retrieves the metadata associated with
+     * a sandbox object. It will return undefined if there
+     * is no metadata attached to the sandbox.
+     *
+     * var s = C.u.Sandbox(..., { metadata: "metadata" });
+     * var metadata = C.u.getSandboxMetadata(s);
+     */
+    [implicit_jscontext]
+    jsval getSandboxMetadata(in jsval sandbox);
+
+    /*
+     * setSandboxMetadata is designed to be called from JavaScript only.
+     *
+     * setSandboxMetadata sets the metadata associated with
+     * a sandbox object.
+     *
+     * Note that the metadata object will be copied before being used.
+     * The copy will be performed using the structured clone algorithm.
+     * Note that this algorithm does not support reflectors and
+     * it will throw if it encounters them.
+     */
+    [implicit_jscontext]
+    void setSandboxMetadata(in jsval sandbox, in jsval metadata);
 
     /*
      * import is designed to be called from JavaScript only.
@@ -214,6 +225,17 @@ interface nsIXPCComponents_Utils : nsISupports
      * @param resourceURI A resource:// URI string to unload the module from.
      */
     void unload(in AUTF8String registryLocation);
+
+    /*
+     * Imports global properties (like DOM constructors) into the scope, defining
+     * them on the caller's global. aPropertyList should be an array of property
+     * names.
+     *
+     * See xpc::GlobalProperties::Parse for the current list of supported
+     * properties.
+     */
+    [implicit_jscontext]
+    void importGlobalProperties(in jsval aPropertyList);
 
     /*
      * To be called from JS only.
@@ -443,7 +465,7 @@ interface nsIXPCComponents_Utils : nsISupports
 /**
 * interface of JavaScript's 'Components' object
 */
-[scriptable, uuid(8406dedb-23cc-42db-9f69-1f18785091b5)]
+[scriptable, uuid(4229848f-f49e-40e5-90cc-66968aaf4e1b)]
 interface nsIXPCComponents : nsISupports
 {
     readonly attribute nsIXPCComponents_Interfaces      interfaces;
@@ -460,13 +482,6 @@ interface nsIXPCComponents : nsISupports
     readonly attribute nsIXPCComponents_Constructor     Constructor;
 
     boolean isSuccessCode(in nsresult result);
-
-    /* @deprecated Use Components.utils.lookupMethod instead.
-     * (But are you sure you really want this method any more?
-     *  See http://developer-test.mozilla.org/en/docs/XPCNativeWrapper )
-     */
-    [deprecated,implicit_jscontext]
-    jsval lookupMethod(in jsval obj, in jsval name);
 
     /* @deprecated Use Components.utils.reportError instead. */
     [deprecated, implicit_jscontext] void reportError(in jsval error);

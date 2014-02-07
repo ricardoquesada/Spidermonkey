@@ -35,6 +35,7 @@ class BoxInputsPolicy : public TypePolicy
     static MDefinition *boxAt(MInstruction *at, MDefinition *operand);
 
   public:
+    static MDefinition *alwaysBoxAt(MInstruction *at, MDefinition *operand);
     virtual bool adjustInputs(MInstruction *def);
 };
 
@@ -81,6 +82,12 @@ class ComparePolicy : public BoxInputsPolicy
 
 // Policy for MTest instructions.
 class TestPolicy : public BoxInputsPolicy
+{
+  public:
+    bool adjustInputs(MInstruction *ins);
+};
+
+class TypeBarrierPolicy : public BoxInputsPolicy
 {
   public:
     bool adjustInputs(MInstruction *ins);
@@ -138,8 +145,57 @@ class DoublePolicy : public BoxInputsPolicy
     }
 };
 
+// Expect a float32 for operand Op. If the input is a Value, it is unboxed.
+template <unsigned Op>
+class Float32Policy : public BoxInputsPolicy
+{
+  public:
+    static bool staticAdjustInputs(MInstruction *def);
+    bool adjustInputs(MInstruction *def) {
+        return staticAdjustInputs(def);
+    }
+};
+
+// Expect a float32 OR a double for operand Op, but will prioritize Float32
+// if the result type is set as such. If the input is a Value, it is unboxed.
+template <unsigned Op>
+class FloatingPointPolicy : public TypePolicy
+{
+    MIRType policyType_;
+
+  public:
+    bool adjustInputs(MInstruction *def) {
+        if (policyType_ == MIRType_Double)
+            return DoublePolicy<Op>::staticAdjustInputs(def);
+        return Float32Policy<Op>::staticAdjustInputs(def);
+    }
+    void setPolicyType(MIRType type) {
+        policyType_ = type;
+    }
+};
+
+template <unsigned Op>
+class NoFloatPolicy : public TypePolicy
+{
+  public:
+    static bool staticAdjustInputs(MInstruction *def);
+    bool adjustInputs(MInstruction *def) {
+        return staticAdjustInputs(def);
+    }
+};
+
 // Box objects or strings as an input to a ToDouble instruction.
 class ToDoublePolicy : public BoxInputsPolicy
+{
+  public:
+    static bool staticAdjustInputs(MInstruction *def);
+    bool adjustInputs(MInstruction *def) {
+        return staticAdjustInputs(def);
+    }
+};
+
+// Box objects, strings and undefined as input to a ToInt32 instruction.
+class ToInt32Policy : public BoxInputsPolicy
 {
   public:
     static bool staticAdjustInputs(MInstruction *def);
@@ -245,7 +301,7 @@ class ClampPolicy : public BoxInputsPolicy
 static inline bool
 CoercesToDouble(MIRType type)
 {
-    if (type == MIRType_Undefined || type == MIRType_Double)
+    if (type == MIRType_Undefined || IsFloatingPointType(type))
         return true;
     return false;
 }

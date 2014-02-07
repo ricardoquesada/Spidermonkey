@@ -56,7 +56,8 @@ struct JSDStaticLock
 JS_BEGIN_MACRO                                                                \
     out = (void*) PR_GetCurrentThread();                                      \
     if(!out)                                                                  \
-        out = (void*) JS_AttachThread(PR_USER_THREAD,PR_PRIORITY_NORMAL,NULL);\
+        out = (void*) JS_AttachThread(PR_USER_THREAD, PR_PRIORITY_NORMAL,     \
+                                      nullptr);                               \
     JS_ASSERT(out);                                                           \
 JS_END_MACRO
 #else
@@ -91,7 +92,7 @@ jsd_CreateLock()
         if(lock)
         {
             free(lock);
-            lock = NULL;
+            lock = nullptr;
         }
     }
 #ifdef DEBUG
@@ -136,22 +137,22 @@ jsd_Unlock(JSDStaticLock* lock)
 
     if(--lock->count == 0)
     {
-        lock->owner = NULL;
+        lock->owner = nullptr;
         PR_Unlock(lock->lock);
     }
 }    
 
 #ifdef DEBUG
-JSBool
+bool
 jsd_IsLocked(JSDStaticLock* lock)
 {
     void* me;
     ASSERT_VALID_LOCK(lock);
     _CURRENT_THREAD(me);
     if (lock->owner != me)
-        return JS_FALSE;
+        return false;
     JS_ASSERT(lock->count > 0);
-    return JS_TRUE;
+    return true;
 }    
 #endif /* DEBUG */
 
@@ -194,10 +195,10 @@ jsd_Unlock(void* lock)
 }    
 
 #ifdef DEBUG
-JSBool
+bool
 jsd_IsLocked(void* lock)
 {
-    return JS_TRUE;
+    return true;
 }    
 #endif /* DEBUG */
 

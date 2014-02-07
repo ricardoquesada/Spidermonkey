@@ -5,8 +5,31 @@
 
 from __future__ import with_statement
 import glob, logging, os, platform, shutil, subprocess, sys, tempfile, urllib2, zipfile
+import base64
 import re
 from urlparse import urlparse
+
+try:
+  import mozinfo
+except ImportError:
+  # Stub out fake mozinfo since this is not importable on Android 4.0 Opt.
+  # This should be fixed; see
+  # https://bugzilla.mozilla.org/show_bug.cgi?id=650881
+  mozinfo = type('mozinfo', (), dict(info={}))()
+  mozinfo.isWin = mozinfo.isLinux = mozinfo.isUnix = mozinfo.isMac = False
+
+  # TODO! FILE: localautomation :/
+  # mapping from would-be mozinfo attr <-> sys.platform
+  mapping = {'isMac': ['mac', 'darwin'],
+             'isLinux': ['linux', 'linux2'],
+             'isWin': ['win32', 'win64'],
+             }
+  mapping = dict(sum([[(value, key) for value in values] for key, values in mapping.items()], []))
+  attr = mapping.get(sys.platform)
+  if attr:
+    setattr(mozinfo, attr, True)
+  if mozinfo.isLinux:
+    mozinfo.isUnix = True
 
 __all__ = [
   "ZipFileReader",
@@ -18,6 +41,11 @@ __all__ = [
   "DEBUGGER_INFO",
   "replaceBackSlashes",
   "wrapCommand",
+  'KeyValueParseError',
+  'parseKeyValue',
+  'systemMemory',
+  'environment',
+  'dumpScreen',
   ]
 
 # Map of debugging programs to information about them, like default arguments
@@ -345,3 +373,164 @@ def wrapCommand(cmd):
     return ["arch", "-arch", "i386"] + cmd
   # otherwise just execute the command normally
   return cmd
+
+class KeyValueParseError(Exception):
+  """error when parsing strings of serialized key-values"""
+  def __init__(self, msg, errors=()):
+    self.errors = errors
+    Exception.__init__(self, msg)
+
+def parseKeyValue(strings, separator='=', context='key, value: '):
+  """
+  parse string-serialized key-value pairs in the form of
+  `key = value`. Returns a list of 2-tuples.
+  Note that whitespace is not stripped.
+  """
+
+  # syntax check
+  missing = [string for string in strings if separator not in string]
+  if missing:
+    raise KeyValueParseError("Error: syntax error in %s" % (context,
+                                                            ','.join(missing)),
+                                                            errors=missing)
+  return [string.split(separator, 1) for string in strings]
+
+def systemMemory():
+  """
+  Returns total system memory in kilobytes.
+  Works only on unix-like platforms where `free` is in the path.
+  """
+  return int(os.popen("free").readlines()[1].split()[1])
+
+def environment(xrePath, env=None, crashreporter=True):
+  """populate OS environment variables for mochitest"""
+
+  env = os.environ.copy() if env is None else env
+
+  assert os.path.isabs(xrePath)
+
+  ldLibraryPath = xrePath
+
+  envVar = None
+  if mozinfo.isUnix:
+    envVar = "LD_LIBRARY_PATH"
+    env['MOZILLA_FIVE_HOME'] = xrePath
+  elif mozinfo.isMac:
+    envVar = "DYLD_LIBRARY_PATH"
+  elif mozinfo.isWin:
+    envVar = "PATH"
+  if envVar:
+    envValue = ((env.get(envVar), str(ldLibraryPath))
+                if mozinfo.isWin
+                else (ldLibraryPath, env.get(envVar)))
+    env[envVar] = os.path.pathsep.join([path for path in envValue if path])
+
+  # crashreporter
+  env['GNOME_DISABLE_CRASH_DIALOG'] = '1'
+  env['XRE_NO_WINDOWS_CRASH_DIALOG'] = '1'
+  env['NS_TRACE_MALLOC_DISABLE_STACKS'] = '1'
+
+  if crashreporter:
+    env['MOZ_CRASHREPORTER_NO_REPORT'] = '1'
+    env['MOZ_CRASHREPORTER'] = '1'
+  else:
+    env['MOZ_CRASHREPORTER_DISABLE'] = '1'
+
+  # Additional temporary logging while we try to debug some intermittent
+  # WebRTC conditions. This is necessary to troubleshoot bugs 841496,
+  # 841150, and 839677 (at least)
+  # Also (temporary) bug 870002 (mediastreamgraph)
+  env.setdefault('NSPR_LOG_MODULES', 'signaling:5,mtransport:3')
+  env['R_LOG_LEVEL'] = '5'
+  env['R_LOG_DESTINATION'] = 'stderr'
+  env['R_LOG_VERBOSE'] = '1'
+
+  # ASan specific environment stuff
+  asan = bool(mozinfo.info.get("asan"))
+  if asan and (mozinfo.isLinux or mozinfo.isMac):
+    try:
+      # Symbolizer support
+      llvmsym = os.path.join(xrePath, "llvm-symbolizer")
+      if os.path.isfile(llvmsym):
+        env["ASAN_SYMBOLIZER_PATH"] = llvmsym
+        log.info("ASan using symbolizer at %s", llvmsym)
+
+      totalMemory = systemMemory()
+
+      # Only 2 GB RAM or less available? Use custom ASan options to reduce
+      # the amount of resources required to do the tests. Standard options
+      # will otherwise lead to OOM conditions on the current test slaves.
+      #
+      # If we have more than 2 GB or RAM but still less than 4 GB, we need
+      # another set of options to prevent OOM in some memory-intensive
+      # tests.
+      message = "INFO | runtests.py | ASan running in %s configuration"
+      if totalMemory <= 1024 * 1024 * 2:
+        message = message % 'low-memory'
+        env["ASAN_OPTIONS"] = "quarantine_size=50331648:redzone=64"
+      elif totalMemory <= 1024 * 1024 * 4:
+        message = message % 'mid-memory'
+        env["ASAN_OPTIONS"] = "quarantine_size=100663296:redzone=64"
+      else:
+        message = message % 'default memory'
+    except OSError,err:
+      log.info("Failed determine available memory, disabling ASan low-memory configuration: %s", err.strerror)
+    except:
+      log.info("Failed determine available memory, disabling ASan low-memory configuration")
+    else:
+      log.info(message)
+
+  return env
+
+
+def dumpScreen(utilityPath):
+  """dumps the screen to the log file as a data URI"""
+
+  # Need to figure out what tool and whether it write to a file or stdout
+  if mozinfo.isUnix:
+    utility = [os.path.join(utilityPath, "screentopng")]
+    imgoutput = 'stdout'
+  elif mozinfo.isMac:
+    utility = ['/usr/sbin/screencapture', '-C', '-x', '-t', 'png']
+    imgoutput = 'file'
+  elif mozinfo.isWin:
+    utility = [os.path.join(utilityPath, "screenshot.exe")]
+    imgoutput = 'file'
+  else:
+    log.warn("Unable to dump screen on platform '%s'", sys.platform)
+
+  # Run the capture correctly for the type of capture
+  kwargs = {'stdout': subprocess.PIPE}
+  if imgoutput == 'file':
+    tmpfd, imgfilename = tempfile.mkstemp(prefix='mozilla-test-fail_')
+    os.close(tmpfd)
+    utility.append(imgfilename)
+  elif imgoutput == 'stdout':
+    kwargs.update(dict(bufsize=-1, close_fds=True))
+  try:
+    dumper = subprocess.Popen(utility, **kwargs)
+  except OSError, err:
+    log.info("Failed to start %s for screenshot: %s",
+             utility[0], err.strerror)
+    return
+
+  # Check whether the capture utility ran successfully
+  stdout, _ = dumper.communicate()
+  returncode = dumper.poll()
+  if returncode:
+    log.info("%s exited with code %d", utility, returncode)
+    return
+
+  try:
+    if imgoutput == 'stdout':
+      image = stdout
+    elif imgoutput == 'file':
+      with open(imgfilename, 'rb') as imgfile:
+        image = imgfile.read()
+  except IOError, err:
+    log.info("Failed to read image from %s", imgoutput)
+
+  encoded = base64.b64encode(image)
+  uri = "data:image/png;base64,%s" %  encoded
+  log.info("SCREENSHOT: %s", uri)
+  return uri

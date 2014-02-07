@@ -13,8 +13,11 @@ import os
 import sys
 import time
 
+from contextlib import contextmanager
+
 from mach.mixin.logging import LoggingMixin
 
+from ..util import FileAvoidWrite
 from ..frontend.data import (
     ReaderSummary,
     SandboxDerived,
@@ -34,6 +37,18 @@ class BackendConsumeSummary(object):
 
         # The number of derived objects from the read moz.build files.
         self.object_count = 0
+
+        # The number of backend files managed.
+        self.managed_count = 0
+
+        # The number of backend files created.
+        self.created_count = 0
+
+        # The number of backend files updated.
+        self.updated_count = 0
+
+        # The number of unchanged backend files.
+        self.unchanged_count = 0
 
         # The total wall time this backend spent consuming objects. If
         # the iterable passed into consume() is a generator, this includes the
@@ -189,8 +204,10 @@ class BuildBackend(LoggingMixin):
         # Write out a file indicating when this backend was last generated.
         age_file = os.path.join(self.environment.topobjdir,
             'backend.%s.built' % self.__class__.__name__)
-        with open(age_file, 'a'):
-            os.utime(age_file, None)
+        if self.summary.updated_count or self.summary.created_count or \
+                not os.path.exists(age_file):
+            with open(age_file, 'a'):
+                os.utime(age_file, None)
 
         finished_start = time.time()
         self.consume_finished()
@@ -216,3 +233,26 @@ class BuildBackend(LoggingMixin):
     def consume_finished(self):
         """Called when consume() has completed handling all objects."""
 
+    @contextmanager
+    def _write_file(self, path):
+        """Context manager to write a file.
+
+        This is a glorified wrapper around FileAvoidWrite with integration to
+        update the BackendConsumeSummary on this instance.
+
+        Example usage:
+
+            with self._write_file('foo.txt') as fh:
+                fh.write('hello world')
+        """
+
+        fh = FileAvoidWrite(path)
+        yield fh
+
+        existed, updated = fh.close()
+        if not existed:
+            self.summary.created_count += 1
+        elif updated:
+            self.summary.updated_count += 1
+        else:
+            self.summary.unchanged_count += 1

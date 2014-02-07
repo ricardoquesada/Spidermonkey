@@ -8,9 +8,9 @@
 #define jspropertytree_h
 
 #include "jsalloc.h"
+#include "jspubtd.h"
 
 #include "js/HashTable.h"
-#include "js/RootingAPI.h"
 
 namespace js {
 
@@ -98,6 +98,7 @@ class PropertyTree
 
     Shape *newShape(ExclusiveContext *cx);
     Shape *getChild(ExclusiveContext *cx, Shape *parent, uint32_t nfixed, const StackShape &child);
+    Shape *lookupChild(ThreadSafeContext *cx, Shape *parent, const StackShape &child);
 
 #ifdef DEBUG
     static void dumpShapes(JSRuntime *rt);

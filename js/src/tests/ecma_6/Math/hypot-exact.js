@@ -1,11 +1,11 @@
-// |reftest| skip
-// Math.hypot is disabled pending the resolution of spec issues (bug 896264).
-
 // Properties of Math.hypot that are guaranteed by the spec.
+
+// If no arguments are passed, the result is +0.
+assertEq(Math.hypot(), +0);
 
 // If any argument is +∞, the result is +∞.
 // If any argument is −∞, the result is +∞.
-for (let inf of [Infinity, -Infinity]) {
+for (var inf of [Infinity, -Infinity]) {
     assertEq(Math.hypot(inf, 0), Infinity);
     assertEq(Math.hypot(0, inf), Infinity);
     assertEq(Math.hypot(inf, inf), Infinity);
@@ -31,8 +31,7 @@ for (let inf of [Infinity, -Infinity]) {
 }
 
 // If no argument is +∞ or −∞, and any argument is NaN, the result is NaN.
-assertEq(Math.hypot(), NaN);
-assertEq(Math.hypot(1), NaN);
+assertEq(Math.hypot(NaN), NaN);
 
 assertEq(Math.hypot(NaN, 0), NaN);
 assertEq(Math.hypot(0, NaN), NaN);

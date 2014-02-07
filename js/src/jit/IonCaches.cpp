@@ -7,21 +7,32 @@
 #include "jit/IonCaches.h"
 
 #include "mozilla/DebugOnly.h"
+#include "mozilla/TemplateLib.h"
 
-#include "jit/CodeGenerator.h"
+#include "jsproxy.h"
+#include "jstypes.h"
+
+#include "builtin/TypeRepresentation.h"
 #include "jit/Ion.h"
 #include "jit/IonLinker.h"
 #include "jit/IonSpewer.h"
-#include "jit/PerfSpewer.h"
+#include "jit/Lowering.h"
+#ifdef JS_ION_PERF
+# include "jit/PerfSpewer.h"
+#endif
+#include "jit/ParallelFunctions.h"
 #include "jit/VMFunctions.h"
 #include "vm/Shape.h"
 
+#include "jit/IonFrames-inl.h"
 #include "vm/Interpreter-inl.h"
+#include "vm/Shape-inl.h"
 
 using namespace js;
 using namespace js::jit;
 
 using mozilla::DebugOnly;
+using mozilla::tl::FloorLog2;
 
 void
 CodeLocationJump::repoint(IonCode *code, MacroAssembler *masm)
@@ -31,7 +42,7 @@ CodeLocationJump::repoint(IonCode *code, MacroAssembler *masm)
 #ifdef JS_SMALL_BRANCH
     size_t jumpTableEntryOffset = reinterpret_cast<size_t>(jumpTableEntry_);
 #endif
-    if (masm != NULL) {
+    if (masm != nullptr) {
 #ifdef JS_CPU_X64
         JS_ASSERT((uint64_t)raw_ <= UINT32_MAX);
 #endif
@@ -52,7 +63,7 @@ CodeLocationLabel::repoint(IonCode *code, MacroAssembler *masm)
 {
      JS_ASSERT(state_ == Relative);
      size_t new_off = (size_t)raw_;
-     if (masm != NULL) {
+     if (masm != nullptr) {
 #ifdef JS_CPU_X64
         JS_ASSERT((uint64_t)raw_ <= UINT32_MAX);
 #endif
@@ -146,8 +157,8 @@ const size_t IonCache::MAX_STUBS = 16;
 //
 // A convenience function |branchNextStubOrLabel| is provided in the case that
 // the stub sometimes has multiple next stub jumps and sometimes a single
-// one. If a non-NULL label is passed in, a |branchPtr| will be made to that
-// label instead of a |branchPtrWithPatch| to the next stub.
+// one. If a non-nullptr label is passed in, a |branchPtr| will be made to
+// that label instead of a |branchPtrWithPatch| to the next stub.
 class IonCache::StubAttacher
 {
   protected:
@@ -174,7 +185,7 @@ class IonCache::StubAttacher
     // value would be replaced by the attachStub function after the allocation
     // of the IonCode. The self-reference is used to keep the stub path alive
     // even if the IonScript is invalidated or if the IC is flushed.
-    static const ImmWord STUB_ADDR;
+    static const ImmPtr STUB_ADDR;
 
     template <class T1, class T2>
     void branchNextStub(MacroAssembler &masm, Assembler::Condition cond, T1 op1, T2 op2) {
@@ -189,7 +200,7 @@ class IonCache::StubAttacher
     void branchNextStubOrLabel(MacroAssembler &masm, Assembler::Condition cond, T1 op1, T2 op2,
                                Label *label)
     {
-        if (label != NULL)
+        if (label != nullptr)
             masm.branchPtr(cond, op1, op2, label);
         else
             branchNextStub(masm, cond, op1, op2);
@@ -235,14 +246,14 @@ class IonCache::StubAttacher
         if (hasStubCodePatchOffset_) {
             stubCodePatchOffset_.fixup(&masm);
             Assembler::patchDataWithValueCheck(CodeLocationLabel(code, stubCodePatchOffset_),
-                                               ImmWord(uintptr_t(code)), STUB_ADDR);
+                                               ImmPtr(code), STUB_ADDR);
         }
     }
 
     virtual void patchNextStubJump(MacroAssembler &masm, IonCode *code) = 0;
 };
 
-const ImmWord IonCache::StubAttacher::STUB_ADDR = ImmWord(uintptr_t(0xdeadc0de));
+const ImmPtr IonCache::StubAttacher::STUB_ADDR = ImmPtr((void*)0xdeadc0de);
 
 class RepatchIonCache::RepatchStubAppender : public IonCache::StubAttacher
 {
@@ -341,7 +352,7 @@ void
 DispatchIonCache::emitInitialJump(MacroAssembler &masm, AddCacheState &addState)
 {
     Register scratch = addState.dispatchScratch;
-    dispatchLabel_ = masm.movWithPatch(ImmWord(uintptr_t(-1)), scratch);
+    dispatchLabel_ = masm.movWithPatch(ImmPtr((void*)-1), scratch);
     masm.loadPtr(Address(scratch, 0), scratch);
     masm.jump(scratch);
     rejoinLabel_ = masm.labelForPatch();
@@ -362,8 +373,8 @@ DispatchIonCache::updateBaseAddress(IonCode *code, MacroAssembler &masm)
     IonCache::updateBaseAddress(code, masm);
     dispatchLabel_.fixup(&masm);
     Assembler::patchDataWithValueCheck(CodeLocationLabel(code, dispatchLabel_),
-                                       ImmWord(uintptr_t(&firstStub_)),
-                                       ImmWord(uintptr_t(-1)));
+                                       ImmPtr(&firstStub_),
+                                       ImmPtr((void*)-1));
     firstStub_ = fallbackLabel_.raw();
     rejoinLabel_.repoint(code, &masm);
 }
@@ -397,14 +408,19 @@ IonCache::linkAndAttachStub(JSContext *cx, MacroAssembler &masm, StubAttacher &a
 
     attachStub(masm, attacher, code);
 
-    if (pc) {
+    if (pc_) {
         IonSpew(IonSpew_InlineCaches, "Cache %p(%s:%d/%d) generated %s %s stub at %p",
-                this, script->filename(), script->lineno, pc - script->code,
+                this, script_->filename(), script_->lineno, pc_ - script_->code,
                 attachKind, CacheName(kind()), code->raw());
     } else {
         IonSpew(IonSpew_InlineCaches, "Cache %p generated %s %s stub at %p",
                 this, attachKind, CacheName(kind()), code->raw());
     }
+
+#ifdef JS_ION_PERF
+    writePerfSpewerIonCodeProfile(code, "IonCache");
+#endif
+
     return true;
 }
 
@@ -441,6 +457,11 @@ GeneratePrototypeGuards(JSContext *cx, IonScript *ion, MacroAssembler &masm, JSO
                         JSObject *holder, Register objectReg, Register scratchReg,
                         Label *failures)
 {
+    /* The guards here protect against the effects of TradeGuts(). If the prototype chain
+     * is directly altered, then TI will toss the jitcode, so we don't have to worry about
+     * it, and any other change to the holder, or adding a shadowing property will result
+     * in reshaping the holder, and thus the failure of the shape guard.
+     */
     JS_ASSERT(obj != holder);
 
     if (obj->hasUncacheableProto()) {
@@ -477,9 +498,7 @@ IsCacheableProtoChain(JSObject *obj, JSObject *holder)
          * chain and must check for null proto. The prototype chain can be
          * altered during the lookupProperty call.
          */
-        JSObject *proto = IsCacheableDOMProxy(obj)
-                     ? obj->getTaggedProto().toObjectOrNull()
-                     : obj->getProto();
+        JSObject *proto = obj->getProto();
         if (!proto || !proto->isNative())
             return false;
         obj = proto;
@@ -523,7 +542,7 @@ IsCacheableNoProperty(JSObject *obj, JSObject *holder, Shape *shape, jsbytecode 
         obj2 = obj2->getProto();
     }
 
-    // The pc is NULL if the cache is idempotent. We cannot share missing
+    // The pc is nullptr if the cache is idempotent. We cannot share missing
     // properties between caches because TI can only try to prove that a type is
     // contained, but does not attempts to check if something does not exists.
     // So the infered type of getprop would be missing and would not contain
@@ -592,6 +611,10 @@ IsCacheableGetPropCallNative(JSObject *obj, JSObject *holder, Shape *shape)
     if (!shape->hasGetterValue() || !shape->getterValue().isObject())
         return false;
 
+    // Don't cache if obj has an outerObject hook.
+    if (obj->getClass()->ext.outerObject)
+        return false;
+
     return shape->getterValue().toObject().is<JSFunction>() &&
            shape->getterValue().toObject().as<JSFunction>().isNative();
 }
@@ -629,7 +652,7 @@ GenerateDOMProxyChecks(JSContext *cx, MacroAssembler &masm, JSObject *obj,
                        PropertyName *name, Register object, Label *stubFailure,
                        bool skipExpandoCheck = false)
 {
-    MOZ_ASSERT(IsCacheableDOMProxy(obj));
+    JS_ASSERT(IsCacheableDOMProxy(obj));
 
     // Guard the following:
     //      1. The object is a DOMProxy.
@@ -640,7 +663,7 @@ GenerateDOMProxyChecks(JSContext *cx, MacroAssembler &masm, JSObject *obj,
 
     // Check that object is a DOMProxy.
     masm.branchPrivatePtr(Assembler::NotEqual, handlerAddr,
-                          ImmWord(obj->as<ProxyObject>().handler()), stubFailure);
+                          ImmPtr(obj->as<ProxyObject>().handler()), stubFailure);
 
     if (skipExpandoCheck)
         return;
@@ -662,7 +685,7 @@ GenerateDOMProxyChecks(JSContext *cx, MacroAssembler &masm, JSObject *obj,
         masm.branchTestValue(Assembler::NotEqual, tempVal, expandoVal, &failDOMProxyCheck);
 
         ExpandoAndGeneration *expandoAndGeneration = (ExpandoAndGeneration*)expandoVal.toPrivate();
-        masm.movePtr(ImmWord(expandoAndGeneration), tempVal.scratchReg());
+        masm.movePtr(ImmPtr(expandoAndGeneration), tempVal.scratchReg());
 
         masm.branch32(Assembler::NotEqual, Address(tempVal.scratchReg(), sizeof(Value)),
                                                    Imm32(expandoAndGeneration->generation),
@@ -701,14 +724,15 @@ GenerateDOMProxyChecks(JSContext *cx, MacroAssembler &masm, JSObject *obj,
 
 static void
 GenerateReadSlot(JSContext *cx, IonScript *ion, MacroAssembler &masm,
-                 IonCache::StubAttacher &attacher, JSObject *obj, PropertyName *name,
-                 JSObject *holder, Shape *shape, Register object, TypedOrValueRegister output,
-                 Label *failures = NULL)
+                 IonCache::StubAttacher &attacher, JSObject *obj, JSObject *holder,
+                 Shape *shape, Register object, TypedOrValueRegister output,
+                 Label *failures = nullptr)
 {
+    JS_ASSERT(obj->isNative());
     // If there's a single jump to |failures|, we can patch the shape guard
     // jump directly. Otherwise, jump to the end of the stub, so there's a
     // common point to patch.
-    bool multipleFailureJumps = (obj != holder) || (failures != NULL && failures->used());
+    bool multipleFailureJumps = (obj != holder) || (failures != nullptr && failures->used());
 
     // If we have multiple failure jumps but didn't get a label from the
     // outside, make one ourselves.
@@ -721,13 +745,6 @@ GenerateReadSlot(JSContext *cx, IonScript *ion, MacroAssembler &masm,
                                    Address(object, JSObject::offsetOfShape()),
                                    ImmGCPtr(obj->lastProperty()),
                                    failures);
-
-    bool isCacheableDOMProxy = IsCacheableDOMProxy(obj);
-    Label domProxyFailures;
-    if (isCacheableDOMProxy) {
-        JS_ASSERT(multipleFailureJumps);
-        GenerateDOMProxyChecks(cx, masm, obj, name, object, &domProxyFailures);
-    }
 
     // If we need a scratch register, use either an output register or the
     // object register. After this point, we cannot jump directly to
@@ -762,7 +779,7 @@ GenerateReadSlot(JSContext *cx, IonScript *ion, MacroAssembler &masm,
     if (obj != holder) {
         // Note: this may clobber the object register if it's used as scratch.
         GeneratePrototypeGuards(cx, ion, masm, obj, holder, object, scratchReg,
-                                failures);
+                                &prototypeFailures);
 
         if (holder) {
             // Guard on the holder's shape.
@@ -813,54 +830,26 @@ GenerateReadSlot(JSContext *cx, IonScript *ion, MacroAssembler &masm,
 
     attacher.jumpRejoin(masm);
 
-    if (multipleFailureJumps) {
-        masm.bind(&prototypeFailures);
-        if (restoreScratch)
-            masm.pop(scratchReg);
-        if (isCacheableDOMProxy)
-            masm.bind(&domProxyFailures);
-        masm.bind(failures);
-    }
+    masm.bind(&prototypeFailures);
+    if (restoreScratch)
+        masm.pop(scratchReg);
+    masm.bind(failures);
 
     attacher.jumpNextStub(masm);
 
-    if (restoreScratch)
-        masm.pop(scratchReg);
 }
 
 static bool
-GenerateCallGetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
-                   IonCache::StubAttacher &attacher, JSObject *obj, PropertyName *name,
-                   JSObject *holder, HandleShape shape, RegisterSet &liveRegs, Register object,
-                   TypedOrValueRegister output, void *returnAddr, jsbytecode *pc)
+EmitGetterCall(JSContext *cx, MacroAssembler &masm,
+               IonCache::StubAttacher &attacher, JSObject *obj,
+               JSObject *holder, HandleShape shape,
+               RegisterSet liveRegs, Register object,
+               Register scratchReg, TypedOrValueRegister output,
+               void *returnAddr)
 {
-    // Initial shape check.
-    Label stubFailure;
-    masm.branchPtr(Assembler::NotEqual, Address(object, JSObject::offsetOfShape()),
-                   ImmGCPtr(obj->lastProperty()), &stubFailure);
-
-    if (IsCacheableDOMProxy(obj))
-        GenerateDOMProxyChecks(cx, masm, obj, name, object, &stubFailure);
-
     JS_ASSERT(output.hasValue());
-    Register scratchReg = output.valueReg().scratchReg();
-
-    // Note: this may clobber the object register if it's used as scratch.
-    if (obj != holder)
-        GeneratePrototypeGuards(cx, ion, masm, obj, holder, object, scratchReg, &stubFailure);
-
-    // Guard on the holder's shape.
-    Register holderReg = scratchReg;
-    masm.moveNurseryPtr(ImmMaybeNurseryPtr(holder), holderReg);
-    masm.branchPtr(Assembler::NotEqual,
-                   Address(holderReg, JSObject::offsetOfShape()),
-                   ImmGCPtr(holder->lastProperty()),
-                   &stubFailure);
-
-    // Now we're good to go to invoke the native call.
-
     // saveLive()
-    masm.PushRegsInMask(liveRegs);
+    MacroAssembler::AfterICSaveLive aic = masm.icSaveLive(liveRegs);
 
     // Remaining registers should basically be free, but we need to use |object| still
     // so leave it alone.
@@ -882,10 +871,6 @@ GenerateCallGetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
 
     // TODO: ensure stack is aligned?
     DebugOnly<uint32_t> initialStack = masm.framePushed();
-
-    Label success, exception;
-
-    attacher.pushStubCodePointer(masm);
 
     if (callNative) {
         JS_ASSERT(shape->hasGetterValue() && shape->getterValue().isObject() &&
@@ -911,9 +896,13 @@ GenerateCallGetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
         masm.move32(Imm32(0), argUintNReg);
         masm.movePtr(StackPointer, argVpReg);
 
-        if (!masm.buildOOLFakeExitFrame(returnAddr))
+        // Push marking data for later use.
+        masm.Push(argUintNReg);
+        attacher.pushStubCodePointer(masm);
+
+        if (!masm.icBuildOOLFakeExitFrame(returnAddr, aic))
             return false;
-        masm.enterFakeExitFrame(ION_FRAME_OOL_NATIVE_GETTER);
+        masm.enterFakeExitFrame(ION_FRAME_OOL_NATIVE);
 
         // Construct and execute call.
         masm.setupUnalignedABICall(3, scratchReg);
@@ -923,11 +912,11 @@ GenerateCallGetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
         masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, target->native()));
 
         // Test for failure.
-        masm.branchTest32(Assembler::Zero, ReturnReg, ReturnReg, &exception);
+        masm.branchIfFalseBool(ReturnReg, masm.exceptionLabel());
 
         // Load the outparam vp[0] into output register(s).
         masm.loadValue(
-            Address(StackPointer, IonOOLNativeGetterExitFrameLayout::offsetOfResult()),
+            Address(StackPointer, IonOOLNativeExitFrameLayout::offsetOfResult()),
             JSReturnOperand);
     } else {
         Register argObjReg       = argUintNReg;
@@ -935,7 +924,11 @@ GenerateCallGetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
 
         PropertyOp target = shape->getterOp();
         JS_ASSERT(target);
-        // JSPropertyOp: JSBool fn(JSContext *cx, HandleObject obj, HandleId id, MutableHandleValue vp)
+
+        // Push stubCode for marking.
+        attacher.pushStubCodePointer(masm);
+
+        // JSPropertyOp: bool fn(JSContext *cx, HandleObject obj, HandleId id, MutableHandleValue vp)
 
         // Push args on stack first so we can take pointers to make handles.
         masm.Push(UndefinedValue());
@@ -953,7 +946,7 @@ GenerateCallGetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
 
         masm.loadJSContext(argJSContextReg);
 
-        if (!masm.buildOOLFakeExitFrame(returnAddr))
+        if (!masm.icBuildOOLFakeExitFrame(returnAddr, aic))
             return false;
         masm.enterFakeExitFrame(ION_FRAME_OOL_PROPERTY_OP);
 
@@ -966,7 +959,7 @@ GenerateCallGetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
         masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, target));
 
         // Test for failure.
-        masm.branchTest32(Assembler::Zero, ReturnReg, ReturnReg, &exception);
+        masm.branchIfFalseBool(ReturnReg, masm.exceptionLabel());
 
         // Load the outparam vp[0] into output register(s).
         masm.loadValue(
@@ -976,14 +969,6 @@ GenerateCallGetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
 
     // If generating getter call stubs, then return type MUST have been generalized
     // to MIRType_Value.
-    masm.jump(&success);
-
-    // Handle exception case.
-    masm.bind(&exception);
-    masm.handleException();
-
-    // Handle success case.
-    masm.bind(&success);
     masm.storeCallResultValue(output);
 
     // The next instruction is removing the footer of the exit frame, so there
@@ -991,7 +976,7 @@ GenerateCallGetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
 
     // Move the StackPointer back to its original location, unwinding the native exit frame.
     if (callNative)
-        masm.adjustStack(IonOOLNativeGetterExitFrameLayout::Size());
+        masm.adjustStack(IonOOLNativeExitFrameLayout::Size(0));
     else
         masm.adjustStack(IonOOLPropertyOpExitFrameLayout::Size());
     JS_ASSERT(masm.framePushed() == initialStack);
@@ -999,11 +984,50 @@ GenerateCallGetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
     // restoreLive()
     masm.PopRegsInMask(liveRegs);
 
+    return true;
+}
+
+static bool
+GenerateCallGetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
+                   IonCache::StubAttacher &attacher, JSObject *obj, PropertyName *name,
+                   JSObject *holder, HandleShape shape, RegisterSet &liveRegs, Register object,
+                   TypedOrValueRegister output, void *returnAddr, Label *failures = nullptr)
+{
+    JS_ASSERT(obj->isNative());
+    JS_ASSERT(output.hasValue());
+
+    // Use the passed in label if there was one. Otherwise, we'll have to make our own.
+    Label stubFailure;
+    failures = failures ? failures : &stubFailure;
+
+    // Initial shape check.
+    masm.branchPtr(Assembler::NotEqual, Address(object, JSObject::offsetOfShape()),
+                   ImmGCPtr(obj->lastProperty()), failures);
+
+    Register scratchReg = output.valueReg().scratchReg();
+
+    // Note: this may clobber the object register if it's used as scratch.
+    if (obj != holder)
+        GeneratePrototypeGuards(cx, ion, masm, obj, holder, object, scratchReg, failures);
+
+    // Guard on the holder's shape.
+    Register holderReg = scratchReg;
+    masm.moveNurseryPtr(ImmMaybeNurseryPtr(holder), holderReg);
+    masm.branchPtr(Assembler::NotEqual,
+                   Address(holderReg, JSObject::offsetOfShape()),
+                   ImmGCPtr(holder->lastProperty()),
+                   failures);
+
+    // Now we're good to go to invoke the native call.
+    if (!EmitGetterCall(cx, masm, attacher, obj, holder, shape, liveRegs, object,
+                        scratchReg, output, returnAddr))
+        return false;
+
     // Rejoin jump.
     attacher.jumpRejoin(masm);
 
     // Jump to next stub.
-    masm.bind(&stubFailure);
+    masm.bind(failures);
     attacher.jumpNextStub(masm);
 
     return true;
@@ -1071,8 +1095,11 @@ GenerateTypedArrayLength(JSContext *cx, MacroAssembler &masm, IonCache::StubAtta
 
     // Implement the negated version of JSObject::isTypedArray predicate.
     masm.loadObjClass(object, tmpReg);
-    masm.branchPtr(Assembler::Below, tmpReg, ImmWord(&TypedArrayObject::classes[0]), &failures);
-    masm.branchPtr(Assembler::AboveOrEqual, tmpReg, ImmWord(&TypedArrayObject::classes[TypedArrayObject::TYPE_MAX]), &failures);
+    masm.branchPtr(Assembler::Below, tmpReg, ImmPtr(&TypedArrayObject::classes[0]),
+                   &failures);
+    masm.branchPtr(Assembler::AboveOrEqual, tmpReg,
+                   ImmPtr(&TypedArrayObject::classes[ScalarTypeRepresentation::TYPE_MAX]),
+                   &failures);
 
     // Load length.
     masm.loadTypedOrValue(Address(object, TypedArrayObject::lengthOffset()), output);
@@ -1085,26 +1112,368 @@ GenerateTypedArrayLength(JSContext *cx, MacroAssembler &masm, IonCache::StubAtta
     attacher.jumpNextStub(masm);
 }
 
-bool
-GetPropertyIC::attachReadSlot(JSContext *cx, IonScript *ion, JSObject *obj, JSObject *holder,
-                              HandleShape shape)
+static bool
+IsCacheableArrayLength(JSContext *cx, HandleObject obj, HandlePropertyName name,
+                       TypedOrValueRegister output)
 {
+    if (!obj->is<ArrayObject>())
+        return false;
+
+    if (output.type() != MIRType_Value && output.type() != MIRType_Int32) {
+        // The stub assumes that we always output Int32, so make sure our output
+        // is equipped to handle that.
+        return false;
+    }
+
+    return true;
+}
+
+template <class GetPropCache>
+static GetPropertyIC::NativeGetPropCacheability
+CanAttachNativeGetProp(typename GetPropCache::Context cx, const GetPropCache &cache,
+                       HandleObject obj, HandlePropertyName name,
+                       MutableHandleObject holder, MutableHandleShape shape,
+                       bool skipArrayLen = false)
+{
+    if (!obj || !obj->isNative())
+        return GetPropertyIC::CanAttachNone;
+
+    // The lookup needs to be universally pure, otherwise we risk calling hooks out
+    // of turn. We don't mind doing this even when purity isn't required, because we
+    // only miss out on shape hashification, which is only a temporary perf cost.
+    // The limits were arbitrarily set, anyways.
+    if (!LookupPropertyPure(obj, NameToId(name), holder.address(), shape.address()))
+        return GetPropertyIC::CanAttachNone;
+
+    RootedScript script(cx);
+    jsbytecode *pc;
+    cache.getScriptedLocation(&script, &pc);
+    if (IsCacheableGetPropReadSlot(obj, holder, shape) ||
+        IsCacheableNoProperty(obj, holder, shape, pc, cache.output()))
+    {
+        // TI infers the possible types of native object properties. There's one
+        // edge case though: for singleton objects it does not add the initial
+        // "undefined" type, see the propertySet comment in jsinfer.h.
+        if (!cache.canMonitorSingletonUndefinedSlot(holder, shape))
+            return GetPropertyIC::CanAttachNone;
+        return GetPropertyIC::CanAttachReadSlot;
+    }
+
+    // |length| is a non-configurable getter property on ArrayObjects. Any time this
+    // check would have passed, we can install a getter stub instead. Allow people to
+    // make that decision themselves with skipArrayLen
+    if (!skipArrayLen && cx->names().length == name && cache.allowArrayLength(cx, obj) &&
+        IsCacheableArrayLength(cx, obj, name, cache.output()))
+    {
+        // The array length property is non-configurable, which means both that
+        // checking the class of the object and the name of the property is enough
+        // and that we don't need to worry about monitoring, since we know the
+        // return type statically.
+        return GetPropertyIC::CanAttachArrayLength;
+    }
+
+    // IonBuilder guarantees that it's impossible to generate a GetPropertyIC with
+    // allowGetters() true and cache.output().hasValue() false. If this isn't true,
+    // we will quickly assert during stub generation.
+    if (cache.allowGetters() &&
+        (IsCacheableGetPropCallNative(obj, holder, shape) ||
+         IsCacheableGetPropCallPropertyOp(obj, holder, shape)))
+    {
+        // Don't enable getter call if cache is parallel or idempotent, since
+        // they can be effectful. This is handled by allowGetters()
+        return GetPropertyIC::CanAttachCallGetter;
+    }
+
+    return GetPropertyIC::CanAttachNone;
+}
+
+bool
+GetPropertyIC::allowArrayLength(Context cx, HandleObject obj) const
+{
+    if (!idempotent())
+        return true;
+
+    uint32_t locationIndex, numLocations;
+    getLocationInfo(&locationIndex, &numLocations);
+
+    IonScript *ion = GetTopIonJSScript(cx)->ionScript();
+    CacheLocation *locs = ion->getCacheLocs(locationIndex);
+    for (size_t i = 0; i < numLocations; i++) {
+        CacheLocation &curLoc = locs[i];
+        types::StackTypeSet *bcTypes =
+            types::TypeScript::BytecodeTypes(curLoc.script, curLoc.pc);
+
+        if (!bcTypes->hasType(types::Type::Int32Type()))
+            return false;
+    }
+
+    return true;
+}
+
+bool
+GetPropertyIC::canMonitorSingletonUndefinedSlot(HandleObject holder, HandleShape shape) const
+{
+    // We can't monitor the return type inside an idempotent cache,
+    // so we don't handle this case.
+    return !(idempotent() &&
+             holder &&
+             holder->hasSingletonType() &&
+             holder->getSlot(shape->slot()).isUndefined());
+}
+
+bool
+GetPropertyIC::tryAttachNative(JSContext *cx, IonScript *ion, HandleObject obj,
+                               HandlePropertyName name, void *returnAddr, bool *emitted)
+{
+    JS_ASSERT(canAttachStub());
+    JS_ASSERT(!*emitted);
+
+    RootedShape shape(cx);
+    RootedObject holder(cx);
+
+    NativeGetPropCacheability type =
+        CanAttachNativeGetProp(cx, *this, obj, name, &holder, &shape);
+    if (type == CanAttachNone)
+        return true;
+
+    *emitted = true;
+
     MacroAssembler masm(cx);
+    SkipRoot skip(cx, &masm);
+
     RepatchStubAppender attacher(*this);
-    GenerateReadSlot(cx, ion, masm, attacher, obj, name(), holder, shape, object(), output());
-    const char *attachKind = "non idempotent reading";
-    if (idempotent())
-        attachKind = "idempotent reading";
+    const char *attachKind;
+
+    switch (type) {
+      case CanAttachReadSlot:
+        GenerateReadSlot(cx, ion, masm, attacher, obj, holder,
+                         shape, object(), output());
+        attachKind = idempotent() ? "idempotent reading"
+                                    : "non idempotent reading";
+        break;
+      case CanAttachCallGetter:
+        masm.setFramePushed(ion->frameSize());
+        if (!GenerateCallGetter(cx, ion, masm, attacher, obj, name, holder, shape,
+                                liveRegs_, object(), output(), returnAddr))
+        {
+            return false;
+        }
+        attachKind = "getter call";
+        break;
+      case CanAttachArrayLength:
+        if (!GenerateArrayLength(cx, masm, attacher, obj, object(), output()))
+            return false;
+
+        attachKind = "array length";
+        break;
+      default:
+        MOZ_ASSUME_UNREACHABLE("Bad NativeGetPropCacheability");
+    }
     return linkAndAttachStub(cx, masm, attacher, ion, attachKind);
 }
 
 bool
-GetPropertyIC::attachDOMProxyShadowed(JSContext *cx, IonScript *ion, JSObject *obj,
-                                      void *returnAddr)
+GetPropertyIC::tryAttachTypedArrayLength(JSContext *cx, IonScript *ion, HandleObject obj,
+                                         HandlePropertyName name, bool *emitted)
 {
-    JS_ASSERT(!idempotent());
+    JS_ASSERT(canAttachStub());
+    JS_ASSERT(!*emitted);
+
+    if (!obj->is<TypedArrayObject>())
+        return true;
+
+    if (cx->names().length != name)
+        return true;
+
+    if (hasTypedArrayLengthStub())
+        return true;
+
+    if (output().type() != MIRType_Value && output().type() != MIRType_Int32) {
+        // The next execution should cause an invalidation because the type
+        // does not fit.
+        return true;
+    }
+
+    if (idempotent())
+        return true;
+
+    *emitted = true;
+
+    MacroAssembler masm(cx);
+    RepatchStubAppender attacher(*this);
+    GenerateTypedArrayLength(cx, masm, attacher, obj, object(), output());
+
+    JS_ASSERT(!hasTypedArrayLengthStub_);
+    hasTypedArrayLengthStub_ = true;
+    return linkAndAttachStub(cx, masm, attacher, ion, "typed array length");
+}
+
+
+static bool
+EmitCallProxyGet(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &attacher,
+                 PropertyName *name, RegisterSet liveRegs, Register object,
+                 TypedOrValueRegister output, jsbytecode *pc, void *returnAddr)
+{
+    JS_ASSERT(output.hasValue());
+    // saveLive()
+    MacroAssembler::AfterICSaveLive aic = masm.icSaveLive(liveRegs);
+
+    // Remaining registers should be free, but we need to use |object| still
+    // so leave it alone.
+    RegisterSet regSet(RegisterSet::All());
+    regSet.take(AnyRegister(object));
+
+    // Proxy::get(JSContext *cx, HandleObject proxy, HandleObject receiver, HandleId id,
+    //            MutableHandleValue vp)
+    Register argJSContextReg = regSet.takeGeneral();
+    Register argProxyReg     = regSet.takeGeneral();
+    Register argIdReg        = regSet.takeGeneral();
+    Register argVpReg        = regSet.takeGeneral();
+
+    Register scratch         = regSet.takeGeneral();
+
+    DebugOnly<uint32_t> initialStack = masm.framePushed();
+    void *getFunction = JSOp(*pc) == JSOP_CALLPROP                      ?
+                            JS_FUNC_TO_DATA_PTR(void *, Proxy::callProp) :
+                            JS_FUNC_TO_DATA_PTR(void *, Proxy::get);
+
+    // Push stubCode for marking.
+    attacher.pushStubCodePointer(masm);
+
+    // Push args on stack first so we can take pointers to make handles.
+    masm.Push(UndefinedValue());
+    masm.movePtr(StackPointer, argVpReg);
+
+    RootedId propId(cx, AtomToId(name));
+    masm.Push(propId, scratch);
+    masm.movePtr(StackPointer, argIdReg);
+
+    // Pushing object and receiver.  Both are the same, so Handle to one is equivalent to
+    // handle to other.
+    masm.Push(object);
+    masm.Push(object);
+    masm.movePtr(StackPointer, argProxyReg);
+
+    masm.loadJSContext(argJSContextReg);
+
+    if (!masm.icBuildOOLFakeExitFrame(returnAddr, aic))
+        return false;
+    masm.enterFakeExitFrame(ION_FRAME_OOL_PROXY);
+
+    // Make the call.
+    masm.setupUnalignedABICall(5, scratch);
+    masm.passABIArg(argJSContextReg);
+    masm.passABIArg(argProxyReg);
+    masm.passABIArg(argProxyReg);
+    masm.passABIArg(argIdReg);
+    masm.passABIArg(argVpReg);
+    masm.callWithABI(getFunction);
+
+    // Test for failure.
+    masm.branchIfFalseBool(ReturnReg, masm.exceptionLabel());
+
+    // Load the outparam vp[0] into output register(s).
+    masm.loadValue(
+        Address(StackPointer, IonOOLProxyExitFrameLayout::offsetOfResult()),
+        JSReturnOperand);
+
+    masm.storeCallResultValue(output);
+
+    // The next instruction is removing the footer of the exit frame, so there
+    // is no need for leaveFakeExitFrame.
+
+    // Move the StackPointer back to its original location, unwinding the exit frame.
+    masm.adjustStack(IonOOLProxyExitFrameLayout::Size());
+    JS_ASSERT(masm.framePushed() == initialStack);
+
+    // restoreLive()
+    masm.PopRegsInMask(liveRegs);
+
+    return true;
+}
+
+bool
+GetPropertyIC::tryAttachDOMProxyShadowed(JSContext *cx, IonScript *ion,
+                                         HandleObject obj, void *returnAddr,
+                                         bool *emitted)
+{
+    JS_ASSERT(canAttachStub());
+    JS_ASSERT(!*emitted);
     JS_ASSERT(IsCacheableDOMProxy(obj));
-    JS_ASSERT(output().hasValue());
+
+    if (idempotent() || !output().hasValue())
+        return true;
+
+    *emitted = true;
+
+    Label failures;
+    MacroAssembler masm(cx);
+    RepatchStubAppender attacher(*this);
+
+    masm.setFramePushed(ion->frameSize());
+
+    // Guard on the shape of the object.
+    attacher.branchNextStubOrLabel(masm, Assembler::NotEqual,
+                                   Address(object(), JSObject::offsetOfShape()),
+                                   ImmGCPtr(obj->lastProperty()),
+                                   &failures);
+
+    // Make sure object is a DOMProxy
+    GenerateDOMProxyChecks(cx, masm, obj, name(), object(), &failures,
+                           /*skipExpandoCheck=*/true);
+
+    if (!EmitCallProxyGet(cx, masm, attacher, name(), liveRegs_, object(), output(),
+                          pc(), returnAddr))
+    {
+        return false;
+    }
+
+    // Success.
+    attacher.jumpRejoin(masm);
+
+    // Failure.
+    masm.bind(&failures);
+    attacher.jumpNextStub(masm);
+
+    return linkAndAttachStub(cx, masm, attacher, ion, "list base shadowed get");
+}
+
+bool
+GetPropertyIC::tryAttachDOMProxyUnshadowed(JSContext *cx, IonScript *ion, HandleObject obj,
+                                           HandlePropertyName name, bool resetNeeded,
+                                           void *returnAddr, bool *emitted)
+{
+    JS_ASSERT(canAttachStub());
+    JS_ASSERT(!*emitted);
+    JS_ASSERT(IsCacheableDOMProxy(obj));
+
+    RootedObject checkObj(cx, obj->getTaggedProto().toObjectOrNull());
+    RootedObject holder(cx);
+    RootedShape shape(cx);
+
+    NativeGetPropCacheability canCache =
+        CanAttachNativeGetProp(cx, *this, checkObj, name, &holder, &shape,
+                               /* skipArrayLen = */true);
+    JS_ASSERT(canCache != CanAttachArrayLength);
+
+    if (canCache == CanAttachNone)
+        return true;
+
+    // Make sure we observe our invariants if we're gonna deoptimize.
+    if (!holder && (idempotent() || !output().hasValue()))
+        return true;
+
+    *emitted = true;
+
+    if (resetNeeded) {
+        // If we know that we have a DoesntShadowUnique object, then
+        // we reset the cache to clear out an existing IC for the object
+        // (if there is one). The generation is a constant in the generated
+        // code and we will not have the same generation again for this
+        // object, so the generation check in the existing IC would always
+        // fail anyway.
+        reset();
+    }
 
     Label failures;
     MacroAssembler masm(cx);
@@ -1119,157 +1488,170 @@ GetPropertyIC::attachDOMProxyShadowed(JSContext *cx, IonScript *ion, JSObject *o
                                    &failures);
 
     // Make sure object is a DOMProxy proxy
-    GenerateDOMProxyChecks(cx, masm, obj, name(), object(), &failures,
-                           /*skipExpandoCheck=*/true);
+    GenerateDOMProxyChecks(cx, masm, obj, name, object(), &failures);
 
-    // saveLive()
-    masm.PushRegsInMask(liveRegs_);
+    if (holder) {
+        // Found the property on the prototype chain. Treat it like a native
+        // getprop.
+        Register scratchReg = output().valueReg().scratchReg();
+        GeneratePrototypeGuards(cx, ion, masm, obj, holder, object(), scratchReg, &failures);
 
-    DebugOnly<uint32_t> initialStack = masm.framePushed();
+        // Rename scratch for clarity.
+        Register holderReg = scratchReg;
 
-    // Remaining registers should be free, but we need to use |object| still
-    // so leave it alone.
-    RegisterSet regSet(RegisterSet::All());
-    regSet.take(AnyRegister(object()));
+        // Guard on the holder of the property
+        masm.moveNurseryPtr(ImmMaybeNurseryPtr(holder), holderReg);
+        masm.branchPtr(Assembler::NotEqual,
+                    Address(holderReg, JSObject::offsetOfShape()),
+                    ImmGCPtr(holder->lastProperty()),
+                    &failures);
 
-    // Proxy::get(JSContext *cx, HandleObject proxy, HandleObject receiver, HandleId id,
-    //            MutableHandleValue vp)
-    Register argJSContextReg = regSet.takeGeneral();
-    Register argProxyReg     = regSet.takeGeneral();
-    Register argIdReg        = regSet.takeGeneral();
-    Register argVpReg        = regSet.takeGeneral();
+        if (canCache == CanAttachReadSlot) {
+            EmitLoadSlot(masm, holder, shape, holderReg, output(), scratchReg);
+        } else {
+            // EmitGetterCall() expects |obj| to be the object the property is
+            // on to do some checks. Since we actually looked at checkObj, and
+            // no extra guards will be generated, we can just pass that instead.
+            JS_ASSERT(canCache == CanAttachCallGetter);
+            JS_ASSERT(!idempotent());
+            if (!EmitGetterCall(cx, masm, attacher, checkObj, holder, shape, liveRegs_,
+                                object(), scratchReg, output(), returnAddr))
+            {
+                return false;
+            }
+        }
+    } else {
+        // Property was not found on the prototype chain. Deoptimize down to
+        // proxy get call
+        JS_ASSERT(!idempotent());
+        if (!EmitCallProxyGet(cx, masm, attacher, name, liveRegs_, object(), output(),
+                              pc(), returnAddr))
+        {
+            return false;
+        }
+    }
 
-    Register scratch         = regSet.takeGeneral();
-
-    // Push args on stack first so we can take pointers to make handles.
-    masm.Push(UndefinedValue());
-    masm.movePtr(StackPointer, argVpReg);
-
-    RootedId propId(cx, AtomToId(name()));
-    masm.Push(propId, scratch);
-    masm.movePtr(StackPointer, argIdReg);
-
-    // Pushing object and receiver.  Both are same, so Handle to one is equivalent to
-    // handle to other.
-    masm.Push(object());
-    masm.Push(object());
-    masm.movePtr(StackPointer, argProxyReg);
-
-    masm.loadJSContext(argJSContextReg);
-
-    if (!masm.buildOOLFakeExitFrame(returnAddr))
-        return false;
-    masm.enterFakeExitFrame(ION_FRAME_OOL_PROXY_GET);
-
-    // Make the call.
-    masm.setupUnalignedABICall(5, scratch);
-    masm.passABIArg(argJSContextReg);
-    masm.passABIArg(argProxyReg);
-    masm.passABIArg(argProxyReg);
-    masm.passABIArg(argIdReg);
-    masm.passABIArg(argVpReg);
-    masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, Proxy::get));
-
-    // Test for failure.
-    Label exception;
-    masm.branchTest32(Assembler::Zero, ReturnReg, ReturnReg, &exception);
-
-    // Load the outparam vp[0] into output register(s).
-    masm.loadValue(
-        Address(StackPointer, IonOOLProxyGetExitFrameLayout::offsetOfResult()),
-        JSReturnOperand);
-
-    Label success;
-    masm.jump(&success);
-
-    // Handle exception case.
-    masm.bind(&exception);
-    masm.handleException();
-
-    // Handle success case.
-    masm.bind(&success);
-    masm.storeCallResultValue(output());
-
-    // The next instruction is removing the footer of the exit frame, so there
-    // is no need for leaveFakeExitFrame.
-
-    // Move the StackPointer back to its original location, unwinding the exit frame.
-    masm.adjustStack(IonOOLPropertyOpExitFrameLayout::Size());
-    JS_ASSERT(masm.framePushed() == initialStack);
-
-    // restoreLive()
-    masm.PopRegsInMask(liveRegs_);
-
-    // Success.
     attacher.jumpRejoin(masm);
-
-    // Failure.
     masm.bind(&failures);
     attacher.jumpNextStub(masm);
 
-    return linkAndAttachStub(cx, masm, attacher, ion, "list base shadowed get");
+    return linkAndAttachStub(cx, masm, attacher, ion, "unshadowed proxy get");
 }
 
 bool
-GetPropertyIC::attachCallGetter(JSContext *cx, IonScript *ion, JSObject *obj,
-                                JSObject *holder, HandleShape shape,
-                                const SafepointIndex *safepointIndex, void *returnAddr)
+GetPropertyIC::tryAttachProxy(JSContext *cx, IonScript *ion, HandleObject obj,
+                              HandlePropertyName name, void *returnAddr,
+                              bool *emitted)
 {
-    MacroAssembler masm(cx);
+    JS_ASSERT(canAttachStub());
+    JS_ASSERT(!*emitted);
 
-    JS_ASSERT(!idempotent());
-    JS_ASSERT(allowGetters());
+    if (!obj->is<ProxyObject>())
+        return true;
 
-    // Need to set correct framePushed on the masm so that exit frame descriptors are
-    // properly constructed.
-    masm.setFramePushed(ion->frameSize());
+    // Skim off DOM proxies.
+    if (IsCacheableDOMProxy(obj)) {
+        RootedId id(cx, NameToId(name));
+        DOMProxyShadowsResult shadows = GetDOMProxyShadowsCheck()(cx, obj, id);
+        if (shadows == ShadowCheckFailed)
+            return false;
+        if (shadows == Shadows)
+            return tryAttachDOMProxyShadowed(cx, ion, obj, returnAddr, emitted);
 
-    RepatchStubAppender attacher(*this);
-    if (!GenerateCallGetter(cx, ion, masm, attacher, obj, name(), holder, shape, liveRegs_,
-                            object(), output(), returnAddr, pc))
-    {
-         return false;
+        return tryAttachDOMProxyUnshadowed(cx, ion, obj, name, shadows == DoesntShadowUnique,
+                                           returnAddr, emitted);
     }
 
-    const char *attachKind = "non idempotent calling";
-    if (idempotent())
-        attachKind = "idempotent calling";
-    return linkAndAttachStub(cx, masm, attacher, ion, attachKind);
+    return tryAttachGenericProxy(cx, ion, obj, name, returnAddr, emitted);
+}
+
+static void
+GenerateProxyClassGuards(MacroAssembler &masm, Register object, Register scratchReg,
+                         Label *failures)
+{
+    Label success;
+    // Ensure that the incoming object has one of the magic class pointers, i.e,
+    // that it is one of an ObjectProxy, FunctionProxy, or OuterWindowProxy.
+    // This is equivalent to obj->is<ProxyObject>().
+    masm.branchTestObjClass(Assembler::Equal, object, scratchReg,
+                            CallableProxyClassPtr, &success);
+    masm.branchTestObjClass(Assembler::Equal, object, scratchReg,
+                            UncallableProxyClassPtr, &success);
+    masm.branchTestObjClass(Assembler::NotEqual, object, scratchReg,
+                            OuterWindowProxyClassPtr, failures);
+    masm.bind(&success);
 }
 
 bool
-GetPropertyIC::attachArrayLength(JSContext *cx, IonScript *ion, JSObject *obj)
+GetPropertyIC::tryAttachGenericProxy(JSContext *cx, IonScript *ion, HandleObject obj,
+                                     HandlePropertyName name, void *returnAddr,
+                                     bool *emitted)
 {
-    JS_ASSERT(!idempotent());
+    JS_ASSERT(canAttachStub());
+    JS_ASSERT(!*emitted);
+    JS_ASSERT(obj->is<ProxyObject>());
 
+    if (hasGenericProxyStub())
+        return true;
+
+    if (idempotent() || !output().hasValue())
+        return true;
+
+    *emitted = true;
+
+    Label failures;
     MacroAssembler masm(cx);
     RepatchStubAppender attacher(*this);
-    if (!GenerateArrayLength(cx, masm, attacher, obj, object(), output()))
+
+    Register scratchReg = output().valueReg().scratchReg();
+
+    masm.setFramePushed(ion->frameSize());
+
+    GenerateProxyClassGuards(masm, object(), scratchReg, &failures);
+
+    // Ensure that the incoming object is not a DOM proxy, so that we can get to
+    // the specialized stubs
+    masm.branchTestProxyHandlerFamily(Assembler::Equal, object(), scratchReg,
+                                      GetDOMProxyHandlerFamily(), &failures);
+
+    if (!EmitCallProxyGet(cx, masm, attacher, name, liveRegs_, object(), output(),
+                          pc(), returnAddr))
+    {
         return false;
+    }
 
-    JS_ASSERT(!hasArrayLengthStub_);
-    hasArrayLengthStub_ = true;
-    return linkAndAttachStub(cx, masm, attacher, ion, "array length");
+    attacher.jumpRejoin(masm);
+
+    masm.bind(&failures);
+    attacher.jumpNextStub(masm);
+
+    JS_ASSERT(!hasGenericProxyStub_);
+    hasGenericProxyStub_ = true;
+
+    return linkAndAttachStub(cx, masm, attacher, ion, "Generic Proxy get");
 }
 
 bool
-GetPropertyIC::attachTypedArrayLength(JSContext *cx, IonScript *ion, JSObject *obj)
+GetPropertyIC::tryAttachArgumentsLength(JSContext *cx, IonScript *ion, HandleObject obj,
+                                        HandlePropertyName name, bool *emitted)
 {
-    JS_ASSERT(!idempotent());
+    JS_ASSERT(canAttachStub());
+    JS_ASSERT(!*emitted);
 
-    MacroAssembler masm(cx);
-    RepatchStubAppender attacher(*this);
-    GenerateTypedArrayLength(cx, masm, attacher, obj, object(), output());
+    if (name != cx->names().length)
+        return true;
+    if (!IsOptimizableArgumentsObjectForLength(obj))
+        return true;
 
-    JS_ASSERT(!hasTypedArrayLengthStub_);
-    hasTypedArrayLengthStub_ = true;
-    return linkAndAttachStub(cx, masm, attacher, ion, "typed array length");
-}
+    MIRType outputType = output().type();
+    if (!(outputType == MIRType_Value || outputType == MIRType_Int32))
+        return true;
 
-bool
-GetPropertyIC::attachArgumentsLength(JSContext *cx, IonScript *ion, JSObject *obj)
-{
-    JS_ASSERT(obj->is<ArgumentsObject>());
+    if (hasArgumentsLengthStub(obj->is<StrictArgumentsObject>()))
+        return true;
+
+    *emitted = true;
+
     JS_ASSERT(!idempotent());
 
     Label failures;
@@ -1285,11 +1667,9 @@ GetPropertyIC::attachArgumentsLength(JSContext *cx, IonScript *ion, JSObject *ob
     }
     JS_ASSERT(object() != tmpReg);
 
-    Class *clasp = obj->is<StrictArgumentsObject>() ? &StrictArgumentsObject::class_
-                                                    : &NormalArgumentsObject::class_;
+    const Class *clasp = obj->is<StrictArgumentsObject>() ? &StrictArgumentsObject::class_
+                                                          : &NormalArgumentsObject::class_;
 
-    Label fail;
-    Label pass;
     masm.branchTestObjClass(Assembler::NotEqual, object(), tmpReg, clasp, &failures);
 
     // Get initial ArgsObj length value, test if length has been overridden.
@@ -1321,148 +1701,42 @@ GetPropertyIC::attachArgumentsLength(JSContext *cx, IonScript *ion, JSObject *ob
     return linkAndAttachStub(cx, masm, attacher, ion, "ArgsObj length (normal)");
 }
 
-static bool
-IsIdempotentAndMaybeHasHooks(IonCache &cache, JSObject *obj)
+bool
+GetPropertyIC::tryAttachStub(JSContext *cx, IonScript *ion, HandleObject obj,
+                             HandlePropertyName name, void *returnAddr, bool *emitted)
 {
-    // If the cache is idempotent, watch out for resolve hooks or non-native
-    // objects on the proto chain. We check this before calling lookupProperty,
-    // to make sure no effectful lookup hooks or resolve hooks are called.
-    return cache.idempotent() && !obj->hasIdempotentProtoChain();
-}
+    JS_ASSERT(!*emitted);
 
-/*
- * The receiver is the object the get is actually happening on, and what should
- * be used for missing-property checks.  The checkObj is the object that we want
- * to do the get on if the property is present on it.
- */
-static bool
-DetermineGetPropKind(JSContext *cx, IonCache &cache, JSObject *receiver,
-                     JSObject *checkObj, JSObject *holder, HandleShape shape,
-                     TypedOrValueRegister output, bool allowGetters,
-                     bool *readSlot, bool *callGetter)
-{
-    // Check what kind of cache stub we can emit: either a slot read,
-    // or a getter call.
-    *readSlot = false;
-    *callGetter = false;
-
-    RootedScript script(cx);
-    jsbytecode *pc;
-    cache.getScriptedLocation(&script, &pc);
-
-    if (IsCacheableGetPropReadSlot(checkObj, holder, shape) ||
-        IsCacheableNoProperty(receiver, holder, shape, pc, output))
-    {
-        // With Proxies, we cannot garantee any property access as the proxy can
-        // mask any property from the prototype chain.
-        JS_ASSERT(!checkObj->is<ProxyObject>());
-        *readSlot = true;
-    } else if (IsCacheableGetPropCallNative(checkObj, holder, shape) ||
-               IsCacheableGetPropCallPropertyOp(checkObj, holder, shape))
-    {
-        // Don't enable getter call if cache is idempotent, since
-        // they can be effectful.
-        if (!cache.idempotent() && allowGetters)
-            *callGetter = true;
-    }
-
-    // readSlot and callGetter are mutually exclusive
-    JS_ASSERT_IF(*readSlot, !*callGetter);
-    JS_ASSERT_IF(*callGetter, !*readSlot);
-
-    // Return true only if one strategy is viable.
-    return *readSlot || *callGetter;
-}
-
-static bool
-IsIdempotentAndHasSingletonHolder(IonCache &cache, HandleObject holder, HandleShape shape)
-{
-    // TI infers the possible types of native object properties. There's one
-    // edge case though: for singleton objects it does not add the initial
-    // "undefined" type, see the propertySet comment in jsinfer.h. We can't
-    // monitor the return type inside an idempotent cache though, so we don't
-    // handle this case.
-    return (cache.idempotent() &&
-            holder &&
-            holder->hasSingletonType() &&
-            holder->getSlot(shape->slot()).isUndefined());
-}
-
-static bool
-TryAttachNativeGetPropStub(JSContext *cx, IonScript *ion,
-                           GetPropertyIC &cache, HandleObject obj,
-                           HandlePropertyName name,
-                           const SafepointIndex *safepointIndex,
-                           void *returnAddr, bool *isCacheable)
-{
-    JS_ASSERT(!*isCacheable);
-    JS_ASSERT(cache.canAttachStub());
-
-    RootedObject checkObj(cx, obj);
-    if (IsCacheableDOMProxy(obj)) {
-        RootedId id(cx, NameToId(name));
-        DOMProxyShadowsResult shadows = GetDOMProxyShadowsCheck()(cx, obj, id);
-        if (shadows == ShadowCheckFailed)
-            return false;
-        if (shadows == Shadows) {
-            if (cache.idempotent() || !cache.output().hasValue())
-                return true;
-            *isCacheable = true;
-            return cache.attachDOMProxyShadowed(cx, ion, obj, returnAddr);
-        }
-        if (shadows == DoesntShadowUnique)
-            // We reset the cache to clear out an existing IC for this object
-            // (if there is one). The generation is a constant in the generated
-            // code and we will not have the same generation again for this
-            // object, so the generation check in the existing IC would always
-            // fail anyway.
-            cache.reset();
-        checkObj = obj->getTaggedProto().toObjectOrNull();
-    }
-
-    if (!checkObj || !checkObj->isNative())
+    if (!canAttachStub())
         return true;
 
-    if (IsIdempotentAndMaybeHasHooks(cache, checkObj))
-        return true;
-
-    RootedShape shape(cx);
-    RootedObject holder(cx);
-    if (!JSObject::lookupProperty(cx, checkObj, name, &holder, &shape))
+    if (!*emitted && !tryAttachArgumentsLength(cx, ion, obj, name, emitted))
         return false;
 
-    bool readSlot;
-    bool callGetter;
-    if (!DetermineGetPropKind(cx, cache, obj, checkObj, holder, shape, cache.output(),
-                              cache.allowGetters(), &readSlot, &callGetter))
-    {
-        return true;
-    }
+    if (!*emitted && !tryAttachProxy(cx, ion, obj, name, returnAddr, emitted))
+        return false;
 
-    if (IsIdempotentAndHasSingletonHolder(cache, holder, shape))
-        return true;
+    if (!*emitted && !tryAttachNative(cx, ion, obj, name, returnAddr, emitted))
+        return false;
 
-    *isCacheable = true;
+    if (!*emitted && !tryAttachTypedArrayLength(cx, ion, obj, name, emitted))
+        return false;
 
-    if (readSlot)
-        return cache.attachReadSlot(cx, ion, obj, holder, shape);
-    else if (obj->is<ArrayObject>() && !cache.hasArrayLengthStub() && cx->names().length == name)
-        return cache.attachArrayLength(cx, ion, obj);
-    return cache.attachCallGetter(cx, ion, obj, holder, shape, safepointIndex, returnAddr);
+    return true;
 }
 
-bool
+/* static */ bool
 GetPropertyIC::update(JSContext *cx, size_t cacheIndex,
                       HandleObject obj, MutableHandleValue vp)
 {
-    AutoFlushCache afc ("GetPropertyCache");
-    const SafepointIndex *safepointIndex;
     void *returnAddr;
-    RootedScript topScript(cx, GetTopIonJSScript(cx, &safepointIndex, &returnAddr));
+    RootedScript topScript(cx, GetTopIonJSScript(cx, &returnAddr));
     IonScript *ion = topScript->ionScript();
 
     GetPropertyIC &cache = ion->getCache(cacheIndex).toGetProperty();
     RootedPropertyName name(cx, cache.name());
+
+    AutoFlushCache afc ("GetPropertyCache", cx->runtime()->jitRuntime());
 
     // Override the return value if we are invalidated (bug 728188).
     AutoDetectInvalidation adi(cx, vp.address(), ion);
@@ -1474,39 +1748,11 @@ GetPropertyIC::update(JSContext *cx, size_t cacheIndex,
     // For now, just stop generating new stubs once we hit the stub count
     // limit. Once we can make calls from within generated stubs, a new call
     // stub will be generated instead and the previous stubs unlinked.
-    bool isCacheable = false;
-    if (cache.canAttachStub()) {
-        if (name == cx->names().length &&
-            IsOptimizableArgumentsObjectForLength(obj) &&
-            (cache.output().type() == MIRType_Value || cache.output().type() == MIRType_Int32) &&
-            !cache.hasArgumentsLengthStub(obj->is<StrictArgumentsObject>()))
-        {
-            isCacheable = true;
-            if (!cache.attachArgumentsLength(cx, ion, obj))
-                return false;
-        }
+    bool emitted = false;
+    if (!cache.tryAttachStub(cx, ion, obj, name, returnAddr, &emitted))
+        return false;
 
-        if (!isCacheable && !TryAttachNativeGetPropStub(cx, ion, cache, obj, name,
-                                                        safepointIndex, returnAddr,
-                                                        &isCacheable))
-        {
-            return false;
-        }
-
-        if (!isCacheable && !cache.idempotent() && cx->names().length == name) {
-            if (cache.output().type() != MIRType_Value && cache.output().type() != MIRType_Int32) {
-                // The next execution should cause an invalidation because the type
-                // does not fit.
-                isCacheable = false;
-            } else if (obj->is<TypedArrayObject>() && !cache.hasTypedArrayLengthStub()) {
-                isCacheable = true;
-                if (!cache.attachTypedArrayLength(cx, ion, obj))
-                    return false;
-            }
-        }
-    }
-
-    if (cache.idempotent() && !isCacheable) {
+    if (cache.idempotent() && !emitted) {
         // Invalidate the cache if the property was not found, or was found on
         // a non-native object. This ensures:
         // 1) The property read has no observable side-effects.
@@ -1526,13 +1772,8 @@ GetPropertyIC::update(JSContext *cx, size_t cacheIndex,
     }
 
     RootedId id(cx, NameToId(name));
-    if (obj->getOps()->getProperty) {
-        if (!JSObject::getGeneric(cx, obj, obj, id, vp))
-            return false;
-    } else {
-        if (!GetPropertyHelper(cx, obj, id, 0, vp))
-            return false;
-    }
+    if (!JSObject::getGeneric(cx, obj, obj, id, vp))
+        return false;
 
     if (!cache.idempotent()) {
         RootedScript script(cx);
@@ -1544,7 +1785,7 @@ GetPropertyIC::update(JSContext *cx, size_t cacheIndex,
 
 #if JS_HAS_NO_SUCH_METHOD
         // Handle objects with __noSuchMethod__.
-        if (JSOp(*pc) == JSOP_CALLPROP && JS_UNLIKELY(vp.isPrimitive())) {
+        if (JSOp(*pc) == JSOP_CALLPROP && JS_UNLIKELY(vp.isUndefined())) {
             if (!OnUnknownMethod(cx, obj, IdToValue(id), vp))
                 return false;
         }
@@ -1561,10 +1802,10 @@ void
 GetPropertyIC::reset()
 {
     RepatchIonCache::reset();
-    hasArrayLengthStub_ = false;
     hasTypedArrayLengthStub_ = false;
     hasStrictArgumentsLengthStub_ = false;
     hasNormalArgumentsLengthStub_ = false;
+    hasGenericProxyStub_ = false;
 }
 
 bool
@@ -1603,8 +1844,7 @@ void
 ParallelIonCache::destroy()
 {
     DispatchIonCache::destroy();
-    if (stubbedShapes_)
-        js_delete(stubbedShapes_);
+    js_delete(stubbedShapes_);
 }
 
 void
@@ -1614,32 +1854,6 @@ GetPropertyParIC::reset()
     hasTypedArrayLengthStub_ = false;
 }
 
-/* static */ bool
-GetPropertyParIC::canAttachReadSlot(LockedJSContext &cx, IonCache &cache,
-                                    TypedOrValueRegister output, JSObject *obj,
-                                    PropertyName *name, MutableHandleObject holder,
-                                    MutableHandleShape shape)
-{
-    // Bail if we have hooks or are not native.
-    if (!obj->hasIdempotentProtoChain())
-        return false;
-
-    if (!js::LookupPropertyPure(obj, NameToId(name), holder.address(), shape.address()))
-        return false;
-
-    // In parallel execution we can't cache getters due to possible
-    // side-effects, so only check if we can cache slot reads.
-    bool readSlot;
-    bool callGetter;
-    if (!DetermineGetPropKind(cx, cache, obj, obj, holder, shape, output, false,
-                              &readSlot, &callGetter) || !readSlot)
-    {
-        return false;
-    }
-
-    return true;
-}
-
 bool
 GetPropertyParIC::attachReadSlot(LockedJSContext &cx, IonScript *ion, JSObject *obj,
                                  JSObject *holder, Shape *shape)
@@ -1647,7 +1861,7 @@ GetPropertyParIC::attachReadSlot(LockedJSContext &cx, IonScript *ion, JSObject *
     // Ready to generate the read slot stub.
     DispatchStubPrepender attacher(*this);
     MacroAssembler masm(cx);
-    GenerateReadSlot(cx, ion, masm, attacher, obj, name(), holder, shape, object(), output());
+    GenerateReadSlot(cx, ion, masm, attacher, obj, holder, shape, object(), output());
 
     return linkAndAttachStub(cx, masm, attacher, ion, "parallel reading");
 }
@@ -1675,28 +1889,23 @@ GetPropertyParIC::attachTypedArrayLength(LockedJSContext &cx, IonScript *ion, JS
     return linkAndAttachStub(cx, masm, attacher, ion, "parallel typed array length");
 }
 
-ParallelResult
+bool
 GetPropertyParIC::update(ForkJoinSlice *slice, size_t cacheIndex,
                          HandleObject obj, MutableHandleValue vp)
 {
-    AutoFlushCache afc("GetPropertyParCache");
-    PerThreadData *pt = slice->perThreadData;
+    AutoFlushCache afc("GetPropertyParCache", slice->runtime()->jitRuntime());
 
-    const SafepointIndex *safepointIndex;
-    void *returnAddr;
-    RootedScript topScript(pt, GetTopIonJSScript(pt, &safepointIndex, &returnAddr));
-    IonScript *ion = topScript->parallelIonScript();
-
+    IonScript *ion = GetTopIonJSScript(slice)->parallelIonScript();
     GetPropertyParIC &cache = ion->getCache(cacheIndex).toGetPropertyPar();
 
     // Grab the property early, as the pure path is fast anyways and doesn't
     // need a lock. If we can't do it purely, bail out of parallel execution.
     if (!GetPropertyPure(slice, obj, NameToId(cache.name()), vp.address()))
-        return TP_RETRY_SEQUENTIALLY;
+        return false;
 
     // Avoid unnecessary locking if cannot attach stubs.
     if (!cache.canAttachStub())
-        return TP_SUCCESS;
+        return true;
 
     {
         // Lock the context before mutating the cache. Ideally we'd like to do
@@ -1707,9 +1916,9 @@ GetPropertyParIC::update(ForkJoinSlice *slice, size_t cacheIndex,
         if (cache.canAttachStub()) {
             bool alreadyStubbed;
             if (!cache.hasOrAddStubbedShape(cx, obj->lastProperty(), &alreadyStubbed))
-                return TP_FATAL;
+                return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
             if (alreadyStubbed)
-                return TP_SUCCESS;
+                return true;
 
             // See note about the stub limit in GetPropertyCache.
             bool attachedStub = false;
@@ -1717,19 +1926,22 @@ GetPropertyParIC::update(ForkJoinSlice *slice, size_t cacheIndex,
             {
                 RootedShape shape(cx);
                 RootedObject holder(cx);
-                if (canAttachReadSlot(cx, cache, cache.output(), obj, cache.name(),
-                                      &holder, &shape))
-                {
+                RootedPropertyName name(cx, cache.name());
+
+                GetPropertyIC::NativeGetPropCacheability canCache =
+                    CanAttachNativeGetProp(cx, cache, obj, name, &holder, &shape);
+
+                if (canCache == GetPropertyIC::CanAttachReadSlot) {
                     if (!cache.attachReadSlot(cx, ion, obj, holder, shape))
-                        return TP_FATAL;
+                        return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
                     attachedStub = true;
                 }
-            }
 
-            if (!attachedStub && obj->is<ArrayObject>() && slice->names().length == cache.name()) {
-                if (!cache.attachArrayLength(cx, ion, obj))
-                    return TP_FATAL;
-                attachedStub = true;
+                if (!attachedStub && canCache == GetPropertyIC::CanAttachArrayLength) {
+                    if (!cache.attachArrayLength(cx, ion, obj))
+                        return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
+                    attachedStub = true;
+                }
             }
 
             if (!attachedStub && !cache.hasTypedArrayLengthStub() &&
@@ -1737,13 +1949,13 @@ GetPropertyParIC::update(ForkJoinSlice *slice, size_t cacheIndex,
                 (cache.output().type() == MIRType_Value || cache.output().type() == MIRType_Int32))
             {
                 if (!cache.attachTypedArrayLength(cx, ion, obj))
-                    return TP_FATAL;
+                    return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
                 attachedStub = true;
             }
         }
     }
 
-    return TP_SUCCESS;
+    return true;
 }
 
 void
@@ -1764,46 +1976,562 @@ IonCache::destroy()
 {
 }
 
-bool
-SetPropertyIC::attachNativeExisting(JSContext *cx, IonScript *ion,
-                                    HandleObject obj, HandleShape shape)
+static void
+GenerateSetSlot(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &attacher,
+                JSObject *obj, Shape *shape, Register object, ConstantOrRegister value,
+                bool needsTypeBarrier, bool checkTypeset)
 {
-    MacroAssembler masm(cx);
-    RepatchStubAppender attacher(*this);
+    JS_ASSERT(obj->isNative());
 
-    attacher.branchNextStub(masm, Assembler::NotEqual,
-                            Address(object(), JSObject::offsetOfShape()),
-                            ImmGCPtr(obj->lastProperty()));
+    Label failures, barrierFailure;
+    masm.branchPtr(Assembler::NotEqual,
+                   Address(object, JSObject::offsetOfShape()),
+                   ImmGCPtr(obj->lastProperty()), &failures);
+
+    // Guard that the incoming value is in the type set for the property
+    // if a type barrier is required.
+    if (needsTypeBarrier) {
+        // We can't do anything that would change the HeapTypeSet, so
+        // just guard that it's already there.
+
+        // Obtain and guard on the TypeObject of the object.
+        types::TypeObject *type = obj->type();
+        masm.branchPtr(Assembler::NotEqual,
+                       Address(object, JSObject::offsetOfType()),
+                       ImmGCPtr(type), &failures);
+
+        if (checkTypeset) {
+            TypedOrValueRegister valReg = value.reg();
+            types::HeapTypeSet *propTypes = type->maybeGetProperty(shape->propid());
+            JS_ASSERT(propTypes);
+            JS_ASSERT(!propTypes->unknown());
+
+            Register scratchReg = object;
+            masm.push(scratchReg);
+
+            masm.guardTypeSet(valReg, propTypes, scratchReg, &barrierFailure);
+            masm.pop(object);
+        }
+    }
 
     if (obj->isFixedSlot(shape->slot())) {
-        Address addr(object(), JSObject::getFixedSlotOffset(shape->slot()));
+        Address addr(object, JSObject::getFixedSlotOffset(shape->slot()));
 
         if (cx->zone()->needsBarrier())
             masm.callPreBarrier(addr, MIRType_Value);
 
-        masm.storeConstantOrRegister(value(), addr);
+        masm.storeConstantOrRegister(value, addr);
     } else {
-        Register slotsReg = object();
-        masm.loadPtr(Address(object(), JSObject::offsetOfSlots()), slotsReg);
+        Register slotsReg = object;
+        masm.loadPtr(Address(object, JSObject::offsetOfSlots()), slotsReg);
 
         Address addr(slotsReg, obj->dynamicSlotIndex(shape->slot()) * sizeof(Value));
 
         if (cx->zone()->needsBarrier())
             masm.callPreBarrier(addr, MIRType_Value);
 
-        masm.storeConstantOrRegister(value(), addr);
+        masm.storeConstantOrRegister(value, addr);
     }
 
     attacher.jumpRejoin(masm);
 
-    return linkAndAttachStub(cx, masm, attacher, ion, "setting");
+    if (barrierFailure.used()) {
+        masm.bind(&barrierFailure);
+        masm.pop(object);
+    }
+
+    masm.bind(&failures);
+    attacher.jumpNextStub(masm);
 }
 
 bool
-SetPropertyIC::attachSetterCall(JSContext *cx, IonScript *ion,
+SetPropertyIC::attachSetSlot(JSContext *cx, IonScript *ion, HandleObject obj,
+                             HandleShape shape, bool checkTypeset)
+{
+    MacroAssembler masm(cx);
+    RepatchStubAppender attacher(*this);
+    GenerateSetSlot(cx, masm, attacher, obj, shape, object(), value(), needsTypeBarrier(),
+                    checkTypeset);
+    return linkAndAttachStub(cx, masm, attacher, ion, "setting");
+}
+
+static bool
+IsCacheableSetPropCallNative(HandleObject obj, HandleObject holder, HandleShape shape)
+{
+    JS_ASSERT(obj->isNative());
+
+    if (!shape || !IsCacheableProtoChain(obj, holder))
+        return false;
+
+    return shape->hasSetterValue() && shape->setterObject() &&
+           shape->setterObject()->is<JSFunction>() &&
+           shape->setterObject()->as<JSFunction>().isNative();
+}
+
+static bool
+IsCacheableSetPropCallPropertyOp(HandleObject obj, HandleObject holder, HandleShape shape)
+{
+    JS_ASSERT(obj->isNative());
+
+    if (!shape)
+        return false;
+
+    if (!IsCacheableProtoChain(obj, holder))
+        return false;
+
+    if (shape->hasSlot())
+        return false;
+
+    if (shape->hasDefaultSetter())
+        return false;
+
+    if (shape->hasSetterValue())
+        return false;
+
+    // Despite the vehement claims of Shape.h that writable() is only
+    // relevant for data descriptors, some PropertyOp setters care
+    // desperately about its value. The flag should be always true, apart
+    // from these rare instances.
+    if (!shape->writable())
+        return false;
+
+    return true;
+}
+
+static bool
+EmitCallProxySet(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &attacher,
+                 HandleId propId, RegisterSet liveRegs, Register object,
+                 ConstantOrRegister value, void *returnAddr, bool strict)
+{
+    // saveLive()
+    MacroAssembler::AfterICSaveLive aic = masm.icSaveLive(liveRegs);
+
+    // Remaining registers should be free, but we need to use |object| still
+    // so leave it alone.
+    RegisterSet regSet(RegisterSet::All());
+    regSet.take(AnyRegister(object));
+
+    // Proxy::set(JSContext *cx, HandleObject proxy, HandleObject receiver, HandleId id,
+    //            bool strict, MutableHandleValue vp)
+    Register argJSContextReg = regSet.takeGeneral();
+    Register argProxyReg     = regSet.takeGeneral();
+    Register argIdReg        = regSet.takeGeneral();
+    Register argVpReg        = regSet.takeGeneral();
+    Register argStrictReg    = regSet.takeGeneral();
+
+    Register scratch         = regSet.takeGeneral();
+
+    DebugOnly<uint32_t> initialStack = masm.framePushed();
+
+    // Push stubCode for marking.
+    attacher.pushStubCodePointer(masm);
+
+    // Push args on stack first so we can take pointers to make handles.
+    masm.Push(value);
+    masm.movePtr(StackPointer, argVpReg);
+
+    masm.Push(propId, scratch);
+    masm.movePtr(StackPointer, argIdReg);
+
+    // Pushing object and receiver.  Both are the same, so Handle to one is equivalent to
+    // handle to other.
+    masm.Push(object);
+    masm.Push(object);
+    masm.movePtr(StackPointer, argProxyReg);
+
+    masm.loadJSContext(argJSContextReg);
+    masm.move32(Imm32(strict? 1 : 0), argStrictReg);
+
+    if (!masm.icBuildOOLFakeExitFrame(returnAddr, aic))
+        return false;
+    masm.enterFakeExitFrame(ION_FRAME_OOL_PROXY);
+
+    // Make the call.
+    masm.setupUnalignedABICall(6, scratch);
+    masm.passABIArg(argJSContextReg);
+    masm.passABIArg(argProxyReg);
+    masm.passABIArg(argProxyReg);
+    masm.passABIArg(argIdReg);
+    masm.passABIArg(argStrictReg);
+    masm.passABIArg(argVpReg);
+    masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, Proxy::set));
+
+    // Test for failure.
+    masm.branchIfFalseBool(ReturnReg, masm.exceptionLabel());
+
+    // The next instruction is removing the footer of the exit frame, so there
+    // is no need for leaveFakeExitFrame.
+
+    // Move the StackPointer back to its original location, unwinding the exit frame.
+    masm.adjustStack(IonOOLProxyExitFrameLayout::Size());
+    JS_ASSERT(masm.framePushed() == initialStack);
+
+    // restoreLive()
+    masm.PopRegsInMask(liveRegs);
+
+    return true;
+}
+
+bool
+SetPropertyIC::attachGenericProxy(JSContext *cx, IonScript *ion, void *returnAddr)
+{
+    JS_ASSERT(!hasGenericProxyStub());
+
+    MacroAssembler masm(cx);
+    RepatchStubAppender attacher(*this);
+
+    masm.setFramePushed(ion->frameSize());
+
+    Label failures;
+    {
+        Label proxyFailures;
+        Label proxySuccess;
+
+        RegisterSet regSet(RegisterSet::All());
+        regSet.take(AnyRegister(object()));
+        if (!value().constant())
+            regSet.takeUnchecked(value().reg());
+
+        Register scratch = regSet.takeGeneral();
+        masm.push(scratch);
+
+        GenerateProxyClassGuards(masm, object(), scratch, &proxyFailures);
+
+        // Remove the DOM proxies. They'll take care of themselves so this stub doesn't
+        // catch too much. The failure case is actually Equal. Fall through to the failure code.
+        masm.branchTestProxyHandlerFamily(Assembler::NotEqual, object(), scratch,
+                                          GetDOMProxyHandlerFamily(), &proxySuccess);
+
+        masm.bind(&proxyFailures);
+        masm.pop(scratch);
+        // Unify the point of failure to allow for later DOM proxy handling.
+        masm.jump(&failures);
+
+        masm.bind(&proxySuccess);
+        masm.pop(scratch);
+    }
+
+    RootedId propId(cx, AtomToId(name()));
+    if (!EmitCallProxySet(cx, masm, attacher, propId, liveRegs_, object(), value(),
+                          returnAddr, strict()))
+    {
+        return false;
+    }
+
+    attacher.jumpRejoin(masm);
+
+    masm.bind(&failures);
+    attacher.jumpNextStub(masm);
+
+    JS_ASSERT(!hasGenericProxyStub_);
+    hasGenericProxyStub_ = true;
+
+    return linkAndAttachStub(cx, masm, attacher, ion, "generic proxy set");
+}
+
+bool
+SetPropertyIC::attachDOMProxyShadowed(JSContext *cx, IonScript *ion, HandleObject obj,
+                                        void *returnAddr)
+{
+    JS_ASSERT(IsCacheableDOMProxy(obj));
+
+    Label failures;
+    MacroAssembler masm(cx);
+    RepatchStubAppender attacher(*this);
+
+    masm.setFramePushed(ion->frameSize());
+
+    // Guard on the shape of the object.
+    masm.branchPtr(Assembler::NotEqual,
+                   Address(object(), JSObject::offsetOfShape()),
+                   ImmGCPtr(obj->lastProperty()), &failures);
+
+    // Make sure object is a DOMProxy
+    GenerateDOMProxyChecks(cx, masm, obj, name(), object(), &failures,
+                           /*skipExpandoCheck=*/true);
+
+    RootedId propId(cx, AtomToId(name()));
+    if (!EmitCallProxySet(cx, masm, attacher, propId, liveRegs_, object(),
+                          value(), returnAddr, strict()))
+    {
+        return false;
+    }
+
+    // Success.
+    attacher.jumpRejoin(masm);
+
+    // Failure.
+    masm.bind(&failures);
+    attacher.jumpNextStub(masm);
+
+    return linkAndAttachStub(cx, masm, attacher, ion, "DOM proxy shadowed set");
+}
+
+static bool
+GenerateCallSetter(JSContext *cx, IonScript *ion, MacroAssembler &masm,
+                   IonCache::StubAttacher &attacher, HandleObject obj,
+                   HandleObject holder, HandleShape shape, bool strict, Register object,
+                   ConstantOrRegister value, Label *failure, RegisterSet liveRegs,
+                   void *returnAddr)
+{
+    // Generate prototype guards if needed.
+    // Take a scratch register for use, save on stack.
+    {
+        RegisterSet regSet(RegisterSet::All());
+        regSet.take(AnyRegister(object));
+        if (!value.constant())
+            regSet.takeUnchecked(value.reg());
+        Register scratchReg = regSet.takeGeneral();
+        masm.push(scratchReg);
+
+        Label protoFailure;
+        Label protoSuccess;
+
+        // Generate prototype/shape guards.
+        if (obj != holder)
+            GeneratePrototypeGuards(cx, ion, masm, obj, holder, object, scratchReg, &protoFailure);
+
+        masm.moveNurseryPtr(ImmMaybeNurseryPtr(holder), scratchReg);
+        masm.branchPtr(Assembler::NotEqual,
+                       Address(scratchReg, JSObject::offsetOfShape()),
+                       ImmGCPtr(holder->lastProperty()),
+                       &protoFailure);
+
+        masm.jump(&protoSuccess);
+
+        masm.bind(&protoFailure);
+        masm.pop(scratchReg);
+        masm.jump(failure);
+
+        masm.bind(&protoSuccess);
+        masm.pop(scratchReg);
+    }
+
+    // Good to go for invoking setter.
+
+    // saveLive()
+    MacroAssembler::AfterICSaveLive aic = masm.icSaveLive(liveRegs);
+
+    // Remaining registers should basically be free, but we need to use |object| still
+    // so leave it alone.
+    RegisterSet regSet(RegisterSet::All());
+    regSet.take(AnyRegister(object));
+
+    // This is a slower stub path, and we're going to be doing a call anyway.  Don't need
+    // to try so hard to not use the stack.  Scratch regs are just taken from the register
+    // set not including the input, current value saved on the stack, and restored when
+    // we're done with it.
+    //
+    // Be very careful not to use any of these before value is pushed, since they
+    // might shadow.
+    Register scratchReg     = regSet.takeGeneral();
+    Register argJSContextReg = regSet.takeGeneral();
+    Register argVpReg        = regSet.takeGeneral();
+
+    bool callNative = IsCacheableSetPropCallNative(obj, holder, shape);
+    JS_ASSERT_IF(!callNative, IsCacheableSetPropCallPropertyOp(obj, holder, shape));
+
+    // Ensure stack is aligned.
+    DebugOnly<uint32_t> initialStack = masm.framePushed();
+
+    if (callNative) {
+        JS_ASSERT(shape->hasSetterValue() && shape->setterObject() &&
+                  shape->setterObject()->is<JSFunction>());
+        JSFunction *target = &shape->setterObject()->as<JSFunction>();
+
+        JS_ASSERT(target->isNative());
+
+        Register argUintNReg = regSet.takeGeneral();
+
+        // Set up the call:
+        //  bool (*)(JSContext *, unsigned, Value *vp)
+        // vp[0] is callee/outparam
+        // vp[1] is |this|
+        // vp[2] is the value
+
+        // Build vp and move the base into argVpReg.
+        masm.Push(value);
+        masm.Push(TypedOrValueRegister(MIRType_Object, AnyRegister(object)));
+        masm.Push(ObjectValue(*target));
+        masm.movePtr(StackPointer, argVpReg);
+
+        // Preload other regs
+        masm.loadJSContext(argJSContextReg);
+        masm.move32(Imm32(1), argUintNReg);
+
+        // Push data for GC marking
+        masm.Push(argUintNReg);
+        attacher.pushStubCodePointer(masm);
+
+        if (!masm.icBuildOOLFakeExitFrame(returnAddr, aic))
+            return false;
+        masm.enterFakeExitFrame(ION_FRAME_OOL_NATIVE);
+
+        // Make the call
+        masm.setupUnalignedABICall(3, scratchReg);
+        masm.passABIArg(argJSContextReg);
+        masm.passABIArg(argUintNReg);
+        masm.passABIArg(argVpReg);
+        masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, target->native()));
+    } else {
+        Register argObjReg       = regSet.takeGeneral();
+        Register argIdReg        = regSet.takeGeneral();
+        Register argStrictReg    = regSet.takeGeneral();
+
+        attacher.pushStubCodePointer(masm);
+
+        StrictPropertyOp target = shape->setterOp();
+        JS_ASSERT(target);
+        // JSStrictPropertyOp: bool fn(JSContext *cx, HandleObject obj,
+        //                               HandleId id, bool strict, MutableHandleValue vp);
+
+        // Push args on stack first so we can take pointers to make handles.
+        if (value.constant())
+            masm.Push(value.value());
+        else
+            masm.Push(value.reg());
+        masm.movePtr(StackPointer, argVpReg);
+
+        masm.move32(Imm32(strict ? 1 : 0), argStrictReg);
+
+        // push canonical jsid from shape instead of propertyname.
+        RootedId propId(cx);
+        if (!shape->getUserId(cx, &propId))
+            return false;
+        masm.Push(propId, argIdReg);
+        masm.movePtr(StackPointer, argIdReg);
+
+        masm.Push(object);
+        masm.movePtr(StackPointer, argObjReg);
+
+        masm.loadJSContext(argJSContextReg);
+
+        if (!masm.icBuildOOLFakeExitFrame(returnAddr, aic))
+            return false;
+        masm.enterFakeExitFrame(ION_FRAME_OOL_PROPERTY_OP);
+
+        // Make the call.
+        masm.setupUnalignedABICall(5, scratchReg);
+        masm.passABIArg(argJSContextReg);
+        masm.passABIArg(argObjReg);
+        masm.passABIArg(argIdReg);
+        masm.passABIArg(argStrictReg);
+        masm.passABIArg(argVpReg);
+        masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, target));
+    }
+
+    // Test for failure.
+    masm.branchIfFalseBool(ReturnReg, masm.exceptionLabel());
+
+    // The next instruction is removing the footer of the exit frame, so there
+    // is no need for leaveFakeExitFrame.
+
+    // Move the StackPointer back to its original location, unwinding the exit frame.
+    if (callNative)
+        masm.adjustStack(IonOOLNativeExitFrameLayout::Size(1));
+    else
+        masm.adjustStack(IonOOLPropertyOpExitFrameLayout::Size());
+    JS_ASSERT(masm.framePushed() == initialStack);
+
+    // restoreLive()
+    masm.PopRegsInMask(liveRegs);
+
+    return true;
+}
+
+static bool
+IsCacheableDOMProxyUnshadowedSetterCall(JSContext *cx, HandleObject obj, HandlePropertyName name,
+                                        MutableHandleObject holder, MutableHandleShape shape,
+                                        bool *isSetter)
+{
+    JS_ASSERT(IsCacheableDOMProxy(obj));
+
+    *isSetter = false;
+
+    RootedObject checkObj(cx, obj->getTaggedProto().toObjectOrNull());
+    if (!checkObj)
+        return true;
+
+    if (!JSObject::lookupProperty(cx, obj, name, holder, shape))
+        return false;
+
+    if (!holder)
+        return true;
+
+    if (!IsCacheableSetPropCallNative(checkObj, holder, shape) &&
+        !IsCacheableSetPropCallPropertyOp(checkObj, holder, shape))
+    {
+        return true;
+    }
+
+    *isSetter = true;
+    return true;
+}
+
+bool
+SetPropertyIC::attachDOMProxyUnshadowed(JSContext *cx, IonScript *ion, HandleObject obj,
+                                        void *returnAddr)
+{
+    JS_ASSERT(IsCacheableDOMProxy(obj));
+
+    Label failures;
+    MacroAssembler masm(cx);
+    RepatchStubAppender attacher(*this);
+
+    masm.setFramePushed(ion->frameSize());
+
+    // Guard on the shape of the object.
+    masm.branchPtr(Assembler::NotEqual,
+                   Address(object(), JSObject::offsetOfShape()),
+                   ImmGCPtr(obj->lastProperty()), &failures);
+
+    // Make sure object is a DOMProxy
+    GenerateDOMProxyChecks(cx, masm, obj, name(), object(), &failures);
+
+    RootedPropertyName propName(cx, name());
+    RootedObject holder(cx);
+    RootedShape shape(cx);
+    bool isSetter;
+    if (!IsCacheableDOMProxyUnshadowedSetterCall(cx, obj, propName, &holder,
+                                                 &shape, &isSetter))
+    {
+        return false;
+    }
+
+    if (isSetter) {
+        if (!GenerateCallSetter(cx, ion, masm, attacher, obj, holder, shape, strict(),
+                                object(), value(), &failures, liveRegs_, returnAddr))
+        {
+            return false;
+        }
+    } else {
+        // Either there was no proto, or the property wasn't appropriately found on it.
+        // Drop back to just a call to Proxy::set().
+        RootedId propId(cx, AtomToId(name()));
+        if (!EmitCallProxySet(cx, masm, attacher, propId, liveRegs_, object(),
+                            value(), returnAddr, strict()))
+        {
+            return false;
+        }
+    }
+
+    // Success.
+    attacher.jumpRejoin(masm);
+
+    // Failure.
+    masm.bind(&failures);
+    attacher.jumpNextStub(masm);
+
+    return linkAndAttachStub(cx, masm, attacher, ion, "DOM proxy unshadowed set");
+}
+
+bool
+SetPropertyIC::attachCallSetter(JSContext *cx, IonScript *ion,
                                 HandleObject obj, HandleObject holder, HandleShape shape,
                                 void *returnAddr)
 {
+    JS_ASSERT(obj->isNative());
+
     MacroAssembler masm(cx);
     RepatchStubAppender attacher(*this);
 
@@ -1817,127 +2545,11 @@ SetPropertyIC::attachSetterCall(JSContext *cx, IonScript *ion,
                    ImmGCPtr(obj->lastProperty()),
                    &failure);
 
-    // Generate prototype guards if needed.
-    // Take a scratch register for use, save on stack.
+    if (!GenerateCallSetter(cx, ion, masm, attacher, obj, holder, shape, strict(),
+                            object(), value(), &failure, liveRegs_, returnAddr))
     {
-        RegisterSet regSet(RegisterSet::All());
-        regSet.take(AnyRegister(object()));
-        if (!value().constant())
-            regSet.maybeTake(value().reg());
-        Register scratchReg = regSet.takeGeneral();
-        masm.push(scratchReg);
-
-        Label protoFailure;
-        Label protoSuccess;
-
-        // Generate prototype/shape guards.
-        if (obj != holder)
-            GeneratePrototypeGuards(cx, ion, masm, obj, holder, object(), scratchReg, &protoFailure);
-
-        masm.moveNurseryPtr(ImmMaybeNurseryPtr(holder), scratchReg);
-        masm.branchPtr(Assembler::NotEqual,
-                       Address(scratchReg, JSObject::offsetOfShape()),
-                       ImmGCPtr(holder->lastProperty()),
-                       &protoFailure);
-
-        masm.jump(&protoSuccess);
-
-        masm.bind(&protoFailure);
-        masm.pop(scratchReg);
-        masm.jump(&failure);
-
-        masm.bind(&protoSuccess);
-        masm.pop(scratchReg);
+        return false;
     }
-
-    // Good to go for invoking setter.
-
-    // saveLive()
-    masm.PushRegsInMask(liveRegs_);
-
-    // Remaining registers should basically be free, but we need to use |object| still
-    // so leave it alone.
-    RegisterSet regSet(RegisterSet::All());
-    regSet.take(AnyRegister(object()));
-
-    // This is a slower stub path, and we're going to be doing a call anyway.  Don't need
-    // to try so hard to not use the stack.  Scratch regs are just taken from the register
-    // set not including the input, current value saved on the stack, and restored when
-    // we're done with it.
-    Register scratchReg     = regSet.takeGeneral();
-    Register argJSContextReg = regSet.takeGeneral();
-    Register argObjReg       = regSet.takeGeneral();
-    Register argIdReg        = regSet.takeGeneral();
-    Register argStrictReg    = regSet.takeGeneral();
-    Register argVpReg        = regSet.takeGeneral();
-
-    // Ensure stack is aligned.
-    DebugOnly<uint32_t> initialStack = masm.framePushed();
-
-    Label success, exception;
-
-    attacher.pushStubCodePointer(masm);
-
-    StrictPropertyOp target = shape->setterOp();
-    JS_ASSERT(target);
-    // JSStrictPropertyOp: JSBool fn(JSContext *cx, HandleObject obj,
-    //                               HandleId id, JSBool strict, MutableHandleValue vp);
-
-    // Push args on stack first so we can take pointers to make handles.
-    if (value().constant())
-        masm.Push(value().value());
-    else
-        masm.Push(value().reg());
-    masm.movePtr(StackPointer, argVpReg);
-
-    masm.move32(Imm32(strict() ? 1 : 0), argStrictReg);
-
-    // push canonical jsid from shape instead of propertyname.
-    RootedId propId(cx);
-    if (!shape->getUserId(cx, &propId))
-        return false;
-    masm.Push(propId, argIdReg);
-    masm.movePtr(StackPointer, argIdReg);
-
-    masm.Push(object());
-    masm.movePtr(StackPointer, argObjReg);
-
-    masm.loadJSContext(argJSContextReg);
-
-    if (!masm.buildOOLFakeExitFrame(returnAddr))
-        return false;
-    masm.enterFakeExitFrame(ION_FRAME_OOL_PROPERTY_OP);
-
-    // Make the call.
-    masm.setupUnalignedABICall(5, scratchReg);
-    masm.passABIArg(argJSContextReg);
-    masm.passABIArg(argObjReg);
-    masm.passABIArg(argIdReg);
-    masm.passABIArg(argStrictReg);
-    masm.passABIArg(argVpReg);
-    masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, target));
-
-    // Test for failure.
-    masm.branchTest32(Assembler::Zero, ReturnReg, ReturnReg, &exception);
-
-    masm.jump(&success);
-
-    // Handle exception case.
-    masm.bind(&exception);
-    masm.handleException();
-
-    // Handle success case.
-    masm.bind(&success);
-
-    // The next instruction is removing the footer of the exit frame, so there
-    // is no need for leaveFakeExitFrame.
-
-    // Move the StackPointer back to its original location, unwinding the exit frame.
-    masm.adjustStack(IonOOLPropertyOpExitFrameLayout::Size());
-    JS_ASSERT(masm.framePushed() == initialStack);
-
-    // restoreLive()
-    masm.PopRegsInMask(liveRegs_);
 
     // Rejoin jump.
     attacher.jumpRejoin(masm);
@@ -1946,31 +2558,29 @@ SetPropertyIC::attachSetterCall(JSContext *cx, IonScript *ion,
     masm.bind(&failure);
     attacher.jumpNextStub(masm);
 
-    return linkAndAttachStub(cx, masm, attacher, ion, "calling");
+    return linkAndAttachStub(cx, masm, attacher, ion, "setter call");
 }
 
-bool
-SetPropertyIC::attachNativeAdding(JSContext *cx, IonScript *ion, JSObject *obj,
-                                  HandleShape oldShape, HandleShape newShape,
-                                  HandleShape propShape)
+static void
+GenerateAddSlot(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &attacher,
+                JSObject *obj, Shape *oldShape, Register object, ConstantOrRegister value)
 {
-    MacroAssembler masm(cx);
-    RepatchStubAppender attacher(*this);
+    JS_ASSERT(obj->isNative());
 
     Label failures;
 
-    /* Guard the type of the object */
-    masm.branchPtr(Assembler::NotEqual, Address(object(), JSObject::offsetOfType()),
+    // Guard the type of the object
+    masm.branchPtr(Assembler::NotEqual, Address(object, JSObject::offsetOfType()),
                    ImmGCPtr(obj->type()), &failures);
 
-    /* Guard shapes along prototype chain. */
-    masm.branchTestObjShape(Assembler::NotEqual, object(), oldShape, &failures);
+    // Guard shapes along prototype chain.
+    masm.branchTestObjShape(Assembler::NotEqual, object, oldShape, &failures);
 
     Label protoFailures;
-    masm.push(object());    // save object reg because we clobber it
+    masm.push(object);    // save object reg because we clobber it
 
     JSObject *proto = obj->getProto();
-    Register protoReg = object();
+    Register protoReg = object;
     while (proto) {
         Shape *protoShape = proto->lastProperty();
 
@@ -1984,112 +2594,121 @@ SetPropertyIC::attachNativeAdding(JSContext *cx, IonScript *ion, JSObject *obj,
         proto = proto->getProto();
     }
 
-    masm.pop(object());     // restore object reg
+    masm.pop(object);     // restore object reg
 
-    /* Changing object shape.  Write the object's new shape. */
-    Address shapeAddr(object(), JSObject::offsetOfShape());
+    // Changing object shape.  Write the object's new shape.
+    Shape *newShape = obj->lastProperty();
+    Address shapeAddr(object, JSObject::offsetOfShape());
     if (cx->zone()->needsBarrier())
         masm.callPreBarrier(shapeAddr, MIRType_Shape);
     masm.storePtr(ImmGCPtr(newShape), shapeAddr);
 
-    /* Set the value on the object. */
-    if (obj->isFixedSlot(propShape->slot())) {
-        Address addr(object(), JSObject::getFixedSlotOffset(propShape->slot()));
-        masm.storeConstantOrRegister(value(), addr);
+    // Set the value on the object. Since this is an add, obj->lastProperty()
+    // must be the shape of the property we are adding.
+    if (obj->isFixedSlot(newShape->slot())) {
+        Address addr(object, JSObject::getFixedSlotOffset(newShape->slot()));
+        masm.storeConstantOrRegister(value, addr);
     } else {
-        Register slotsReg = object();
+        Register slotsReg = object;
 
-        masm.loadPtr(Address(object(), JSObject::offsetOfSlots()), slotsReg);
+        masm.loadPtr(Address(object, JSObject::offsetOfSlots()), slotsReg);
 
-        Address addr(slotsReg, obj->dynamicSlotIndex(propShape->slot()) * sizeof(Value));
-        masm.storeConstantOrRegister(value(), addr);
+        Address addr(slotsReg, obj->dynamicSlotIndex(newShape->slot()) * sizeof(Value));
+        masm.storeConstantOrRegister(value, addr);
     }
 
-    /* Success. */
+    // Success.
     attacher.jumpRejoin(masm);
 
-    /* Failure. */
+    // Failure.
     masm.bind(&protoFailures);
-    masm.pop(object());
+    masm.pop(object);
     masm.bind(&failures);
 
     attacher.jumpNextStub(masm);
+}
 
+bool
+SetPropertyIC::attachAddSlot(JSContext *cx, IonScript *ion, JSObject *obj, HandleShape oldShape)
+{
+    MacroAssembler masm(cx);
+    RepatchStubAppender attacher(*this);
+    GenerateAddSlot(cx, masm, attacher, obj, oldShape, object(), value());
     return linkAndAttachStub(cx, masm, attacher, ion, "adding");
 }
 
 static bool
-IsPropertyInlineable(JSObject *obj)
+IsPropertySetInlineable(HandleObject obj, HandleId id, MutableHandleShape pshape,
+                        ConstantOrRegister val, bool needsTypeBarrier, bool *checkTypeset)
 {
-    if (!obj->isNative())
+    JS_ASSERT(obj->isNative());
+
+    // Do a pure non-proto chain climbing lookup. See note in
+    // CanAttachNativeGetProp.
+    pshape.set(obj->nativeLookupPure(id));
+
+    if (!pshape)
         return false;
 
-    if (obj->watched())
+    if (!pshape->hasSlot())
         return false;
+
+    if (!pshape->hasDefaultSetter())
+        return false;
+
+    if (!pshape->writable())
+        return false;
+
+    bool shouldCheck = false;
+    types::TypeObject *type = obj->type();
+    if (needsTypeBarrier && !type->unknownProperties()) {
+        types::HeapTypeSet *propTypes = type->maybeGetProperty(id);
+        if (!propTypes)
+            return false;
+        if (!propTypes->unknown()) {
+            shouldCheck = true;
+            if (val.constant()) {
+                // If the input is a constant, then don't bother if the barrier will always fail.
+                if (!propTypes->hasType(types::GetValueType(val.value())))
+                    return false;
+                shouldCheck = false;
+            } else {
+                TypedOrValueRegister reg = val.reg();
+                // We can do the same trick as above for primitive types of specialized registers.
+                // TIs handling of objects is complicated enough to warrant a runtime
+                // check, as we can't statically handle the case where the typeset
+                // contains the specific object, but doesn't have ANYOBJECT set.
+                if (reg.hasTyped() && reg.type() != MIRType_Object) {
+                    JSValueType valType = ValueTypeFromMIRType(reg.type());
+                    if (!propTypes->hasType(types::Type::PrimitiveType(valType)))
+                        return false;
+                    shouldCheck = false;
+                }
+            }
+        }
+    }
+
+    *checkTypeset = shouldCheck;
 
     return true;
 }
 
 static bool
-IsPropertySetInlineable(JSContext *cx, HandleObject obj, HandleId id, MutableHandleShape pshape)
+IsPropertyAddInlineable(HandleObject obj, HandleId id, uint32_t oldSlots, HandleShape oldShape)
 {
-    Shape *shape = obj->nativeLookup(cx, id);
+    JS_ASSERT(obj->isNative());
 
-    if (!shape)
+    // If the shape of the object did not change, then this was not an add.
+    if (obj->lastProperty() == oldShape)
         return false;
 
-    if (!shape->hasSlot())
-        return false;
-
-    if (!shape->hasDefaultSetter())
-        return false;
-
-    if (!shape->writable())
-        return false;
-
-    pshape.set(shape);
-
-    return true;
-}
-
-static bool
-IsPropertySetterCallInlineable(JSContext *cx, HandleObject obj, HandleObject holder,
-                               HandleShape shape)
-{
-    if (!shape)
-        return false;
-
-    if (!holder->isNative())
-        return false;
-
-    if (shape->hasSlot())
-        return false;
-
-    if (shape->hasDefaultSetter())
-        return false;
-
-    if (!shape->writable())
-        return false;
-
-    // We only handle propertyOps for now, so fail if we have SetterValue
-    // (which implies JSNative setter).
-    if (shape->hasSetterValue())
-        return false;
-
-    return true;
-}
-
-static bool
-IsPropertyAddInlineable(JSContext *cx, HandleObject obj, HandleId id, uint32_t oldSlots,
-                        MutableHandleShape pShape)
-{
-    // This is not a Add, the property exists.
-    if (pShape.get())
-        return false;
-
-    RootedShape shape(cx, obj->nativeLookup(cx, id));
+    Shape *shape = obj->nativeLookupPure(id);
     if (!shape || shape->inDictionary() || !shape->hasSlot() || !shape->hasDefaultSetter())
         return false;
+
+    // If we have a shape at this point and the object's shape changed, then
+    // the shape must be the one we just added.
+    JS_ASSERT(shape == obj->lastProperty());
 
     // If object has a non-default resolve hook, don't inline
     if (obj->getClass()->resolve != JS_ResolveStub)
@@ -2103,21 +2722,22 @@ IsPropertyAddInlineable(JSContext *cx, HandleObject obj, HandleId id, uint32_t o
     if (!obj->nonProxyIsExtensible() || !shape->writable())
         return false;
 
-    // walk up the object prototype chain and ensure that all prototypes
+    // Walk up the object prototype chain and ensure that all prototypes
     // are native, and that all prototypes have no getter or setter
     // defined on the property
     for (JSObject *proto = obj->getProto(); proto; proto = proto->getProto()) {
-        // if prototype is non-native, don't optimize
+        // If prototype is non-native, don't optimize
         if (!proto->isNative())
             return false;
 
-        // if prototype defines this property in a non-plain way, don't optimize
-        Shape *protoShape = proto->nativeLookup(cx, id);
+        // If prototype defines this property in a non-plain way, don't optimize
+        Shape *protoShape = proto->nativeLookupPure(id);
         if (protoShape && !protoShape->hasDefaultSetter())
             return false;
 
-        // Otherise, if there's no such property, watch out for a resolve hook that would need
-        // to be invoked and thus prevent inlining of property addition.
+        // Otherwise, if there's no such property, watch out for a resolve
+        // hook that would need to be invoked and thus prevent inlining of
+        // property addition.
         if (proto->getClass()->resolve != JS_ResolveStub)
              return false;
     }
@@ -2128,46 +2748,109 @@ IsPropertyAddInlineable(JSContext *cx, HandleObject obj, HandleId id, uint32_t o
     if (obj->numDynamicSlots() != oldSlots)
         return false;
 
-    pShape.set(shape);
     return true;
+}
+
+static SetPropertyIC::NativeSetPropCacheability
+CanAttachNativeSetProp(HandleObject obj, HandleId id, ConstantOrRegister val,
+                       bool needsTypeBarrier, MutableHandleObject holder,
+                       MutableHandleShape shape, bool *checkTypeset)
+{
+    if (!obj->isNative())
+        return SetPropertyIC::CanAttachNone;
+
+    // See if the property exists on the object.
+    if (IsPropertySetInlineable(obj, id, shape, val, needsTypeBarrier, checkTypeset))
+        return SetPropertyIC::CanAttachSetSlot;
+
+    // If we couldn't find the property on the object itself, do a full, but
+    // still pure lookup for setters.
+    if (!LookupPropertyPure(obj, id, holder.address(), shape.address()))
+        return SetPropertyIC::CanAttachNone;
+
+    // If the object doesn't have the property, we don't know if we can attach
+    // a stub to add the property until we do the VM call to add. If the
+    // property exists as a data property on the prototype, we should add
+    // a new, shadowing property.
+    if (!shape || (obj != holder && shape->hasDefaultSetter() && shape->hasSlot()))
+        return SetPropertyIC::MaybeCanAttachAddSlot;
+
+    if (IsCacheableSetPropCallPropertyOp(obj, holder, shape) ||
+        IsCacheableSetPropCallNative(obj, holder, shape))
+    {
+        return SetPropertyIC::CanAttachCallSetter;
+    }
+
+    return SetPropertyIC::CanAttachNone;
 }
 
 bool
 SetPropertyIC::update(JSContext *cx, size_t cacheIndex, HandleObject obj,
                       HandleValue value)
 {
-    AutoFlushCache afc ("SetPropertyCache");
+    AutoFlushCache afc ("SetPropertyCache", cx->runtime()->jitRuntime());
 
     void *returnAddr;
-    const SafepointIndex *safepointIndex;
-    RootedScript script(cx, GetTopIonJSScript(cx, &safepointIndex, &returnAddr));
+    RootedScript script(cx, GetTopIonJSScript(cx, &returnAddr));
     IonScript *ion = script->ionScript();
     SetPropertyIC &cache = ion->getCache(cacheIndex).toSetProperty();
     RootedPropertyName name(cx, cache.name());
     RootedId id(cx, AtomToId(name));
-    RootedShape shape(cx);
-    RootedObject holder(cx);
 
     // Stop generating new stubs once we hit the stub count limit, see
     // GetPropertyCache.
-    bool inlinable = cache.canAttachStub() && IsPropertyInlineable(obj);
+    bool inlinable = cache.canAttachStub() && !obj->watched();
+    NativeSetPropCacheability canCache = CanAttachNone;
     bool addedSetterStub = false;
     if (inlinable) {
-        RootedShape shape(cx);
-        if (IsPropertySetInlineable(cx, obj, id, &shape)) {
-            if (!cache.attachNativeExisting(cx, ion, obj, shape))
-                return false;
-            addedSetterStub = true;
-        } else {
-            RootedObject holder(cx);
-            if (!JSObject::lookupProperty(cx, obj, name, &holder, &shape))
-                return false;
+        if (!addedSetterStub && obj->is<ProxyObject>()) {
+            if (IsCacheableDOMProxy(obj)) {
+                DOMProxyShadowsResult shadows = GetDOMProxyShadowsCheck()(cx, obj, id);
+                if (shadows == ShadowCheckFailed)
+                    return false;
+                if (shadows == Shadows) {
+                    if (!cache.attachDOMProxyShadowed(cx, ion, obj, returnAddr))
+                        return false;
+                    addedSetterStub = true;
+                } else {
+                    JS_ASSERT(shadows == DoesntShadow || shadows == DoesntShadowUnique);
+                    if (shadows == DoesntShadowUnique)
+                        cache.reset();
+                    if (!cache.attachDOMProxyUnshadowed(cx, ion, obj, returnAddr))
+                        return false;
+                    addedSetterStub = true;
+                }
+            }
 
-            if (IsPropertySetterCallInlineable(cx, obj, holder, shape)) {
-                if (!cache.attachSetterCall(cx, ion, obj, holder, shape, returnAddr))
+            if (!addedSetterStub && !cache.hasGenericProxyStub()) {
+                if (!cache.attachGenericProxy(cx, ion, returnAddr))
                     return false;
                 addedSetterStub = true;
             }
+        }
+
+        // Make sure the object de-lazifies its type. We do this here so that
+        // the parallel IC can share code that assumes that native objects all
+        // have a type object.
+        if (obj->isNative() && !obj->getType(cx))
+            return false;
+
+        RootedShape shape(cx);
+        RootedObject holder(cx);
+        bool checkTypeset;
+        canCache = CanAttachNativeSetProp(obj, id, cache.value(), cache.needsTypeBarrier(),
+                                          &holder, &shape, &checkTypeset);
+
+        if (!addedSetterStub && canCache == CanAttachSetSlot) {
+            if (!cache.attachSetSlot(cx, ion, obj, shape, checkTypeset))
+                return false;
+            addedSetterStub = true;
+        }
+
+        if (!addedSetterStub && canCache == CanAttachCallSetter) {
+            if (!cache.attachCallSetter(cx, ion, obj, holder, shape, returnAddr))
+                return false;
+            addedSetterStub = true;
         }
     }
 
@@ -2175,19 +2858,120 @@ SetPropertyIC::update(JSContext *cx, size_t cacheIndex, HandleObject obj,
     RootedShape oldShape(cx, obj->lastProperty());
 
     // Set/Add the property on the object, the inlined cache are setup for the next execution.
-    if (!SetProperty(cx, obj, name, value, cache.strict(), cache.isSetName()))
+    if (!SetProperty(cx, obj, name, value, cache.strict(), cache.pc()))
         return false;
 
     // The property did not exist before, now we can try to inline the property add.
-    if (inlinable && !addedSetterStub && obj->lastProperty() != oldShape &&
-        IsPropertyAddInlineable(cx, obj, id, oldSlots, &shape))
+    if (!addedSetterStub && canCache == MaybeCanAttachAddSlot &&
+        !cache.needsTypeBarrier() &&
+        IsPropertyAddInlineable(obj, id, oldSlots, oldShape))
     {
-        RootedShape newShape(cx, obj->lastProperty());
-        if (!cache.attachNativeAdding(cx, ion, obj, oldShape, newShape, shape))
+        if (!cache.attachAddSlot(cx, ion, obj, oldShape))
             return false;
     }
 
     return true;
+}
+
+void
+SetPropertyIC::reset()
+{
+    RepatchIonCache::reset();
+    hasGenericProxyStub_ = false;
+}
+
+bool
+SetPropertyParIC::update(ForkJoinSlice *slice, size_t cacheIndex, HandleObject obj,
+                         HandleValue value)
+{
+    JS_ASSERT(slice->isThreadLocal(obj));
+
+    AutoFlushCache afc("SetPropertyParCache", slice->runtime()->jitRuntime());
+
+    IonScript *ion = GetTopIonJSScript(slice)->parallelIonScript();
+    SetPropertyParIC &cache = ion->getCache(cacheIndex).toSetPropertyPar();
+
+    RootedValue v(slice, value);
+    RootedId id(slice, AtomToId(cache.name()));
+
+    // Avoid unnecessary locking if cannot attach stubs.
+    if (!cache.canAttachStub()) {
+        return baseops::SetPropertyHelper<ParallelExecution>(slice, obj, obj, id, 0,
+                                                             &v, cache.strict());
+    }
+
+    SetPropertyIC::NativeSetPropCacheability canCache = SetPropertyIC::CanAttachNone;
+    bool attachedStub = false;
+
+    {
+        LockedJSContext cx(slice);
+
+        if (cache.canAttachStub()) {
+            bool alreadyStubbed;
+            if (!cache.hasOrAddStubbedShape(cx, obj->lastProperty(), &alreadyStubbed))
+                return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
+            if (alreadyStubbed) {
+                return baseops::SetPropertyHelper<ParallelExecution>(slice, obj, obj, id, 0,
+                                                                     &v, cache.strict());
+            }
+
+            // If the object has a lazy type, we need to de-lazify it, but
+            // this is not safe in parallel.
+            if (obj->hasLazyType())
+                return false;
+
+            {
+                RootedShape shape(slice);
+                RootedObject holder(slice);
+                bool checkTypeset;
+                canCache = CanAttachNativeSetProp(obj, id, cache.value(), cache.needsTypeBarrier(),
+                                                  &holder, &shape, &checkTypeset);
+
+                if (canCache == SetPropertyIC::CanAttachSetSlot) {
+                    if (!cache.attachSetSlot(cx, ion, obj, shape, checkTypeset))
+                        return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
+                    attachedStub = true;
+                }
+            }
+        }
+    }
+
+    uint32_t oldSlots = obj->numDynamicSlots();
+    RootedShape oldShape(slice, obj->lastProperty());
+
+    if (!baseops::SetPropertyHelper<ParallelExecution>(slice, obj, obj, id, 0, &v, cache.strict()))
+        return false;
+
+    if (!attachedStub && canCache == SetPropertyIC::MaybeCanAttachAddSlot &&
+        !cache.needsTypeBarrier() &&
+        IsPropertyAddInlineable(obj, id, oldSlots, oldShape))
+    {
+        LockedJSContext cx(slice);
+        if (cache.canAttachStub() && !cache.attachAddSlot(cx, ion, obj, oldShape))
+            return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
+    }
+
+    return true;
+}
+
+bool
+SetPropertyParIC::attachSetSlot(LockedJSContext &cx, IonScript *ion, JSObject *obj, Shape *shape,
+                                  bool checkTypeset)
+{
+    MacroAssembler masm(cx);
+    DispatchStubPrepender attacher(*this);
+    GenerateSetSlot(cx, masm, attacher, obj, shape, object(), value(), needsTypeBarrier(),
+                    checkTypeset);
+    return linkAndAttachStub(cx, masm, attacher, ion, "parallel setting");
+}
+
+bool
+SetPropertyParIC::attachAddSlot(LockedJSContext &cx, IonScript *ion, JSObject *obj, Shape *oldShape)
+{
+    MacroAssembler masm(cx);
+    DispatchStubPrepender attacher(*this);
+    GenerateAddSlot(cx, masm, attacher, obj, oldShape, object(), value());
+    return linkAndAttachStub(cx, masm, attacher, ion, "parallel adding");
 }
 
 const size_t GetElementIC::MAX_FAILED_UPDATES = 16;
@@ -2202,39 +2986,111 @@ GetElementIC::canAttachGetProp(JSObject *obj, const Value &idval, jsid id)
             !JSID_TO_ATOM(id)->isIndex(&dummy));
 }
 
+static bool
+EqualStringsHelper(JSString *str1, JSString *str2)
+{
+    JS_ASSERT(str1->isAtom());
+    JS_ASSERT(!str2->isAtom());
+    JS_ASSERT(str1->length() == str2->length());
+
+    const jschar *chars = str2->getChars(NULL);
+    if (!chars)
+        return false;
+    return mozilla::PodEqual(str1->asAtom().chars(), chars, str1->length());
+}
+
 bool
 GetElementIC::attachGetProp(JSContext *cx, IonScript *ion, HandleObject obj,
-                            const Value &idval, HandlePropertyName name)
+                            const Value &idval, HandlePropertyName name,
+                            void *returnAddr)
 {
     JS_ASSERT(index().reg().hasValue());
 
     RootedObject holder(cx);
     RootedShape shape(cx);
-    if (!JSObject::lookupProperty(cx, obj, name, &holder, &shape))
-        return false;
 
-    RootedScript script(cx);
-    jsbytecode *pc;
-    getScriptedLocation(&script, &pc);
+    GetPropertyIC::NativeGetPropCacheability canCache =
+        CanAttachNativeGetProp(cx, *this, obj, name, &holder, &shape,
+                               /* skipArrayLen =*/true);
 
-    if (!IsCacheableGetPropReadSlot(obj, holder, shape) &&
-        !IsCacheableNoProperty(obj, holder, shape, pc, output())) {
+    bool cacheable = canCache == GetPropertyIC::CanAttachReadSlot ||
+                     (canCache == GetPropertyIC::CanAttachCallGetter &&
+                      output().hasValue());
+
+    if (!cacheable) {
         IonSpew(IonSpew_InlineCaches, "GETELEM uncacheable property");
         return true;
     }
 
     JS_ASSERT(idval.isString());
+    JS_ASSERT(idval.toString()->length() == name->length());
 
     Label failures;
     MacroAssembler masm(cx);
+    SkipRoot skip(cx, &masm);
 
-    // Guard on the index value.
+    // Ensure the index is a string.
     ValueOperand val = index().reg().valueReg();
-    masm.branchTestValue(Assembler::NotEqual, val, idval, &failures);
+    masm.branchTestString(Assembler::NotEqual, val, &failures);
+
+    Register scratch = output().valueReg().scratchReg();
+    masm.unboxString(val, scratch);
+
+    Label equal;
+    masm.branchPtr(Assembler::Equal, scratch, ImmGCPtr(name), &equal);
+
+    // The pointers are not equal, so if the input string is also an atom it
+    // must be a different string.
+    masm.loadPtr(Address(scratch, JSString::offsetOfLengthAndFlags()), scratch);
+    masm.branchTest32(Assembler::NonZero, scratch, Imm32(JSString::ATOM_BIT), &failures);
+
+    // Check the length.
+    masm.rshiftPtr(Imm32(JSString::LENGTH_SHIFT), scratch);
+    masm.branch32(Assembler::NotEqual, scratch, Imm32(name->length()), &failures);
+
+    // We have a non-atomized string with the same length. For now call a helper
+    // function to do the comparison.
+    RegisterSet volatileRegs = RegisterSet::Volatile();
+    masm.PushRegsInMask(volatileRegs);
+
+    Register objReg = object();
+    JS_ASSERT(objReg != scratch);
+
+    if (!volatileRegs.has(objReg))
+        masm.push(objReg);
+
+    masm.setupUnalignedABICall(2, scratch);
+    masm.movePtr(ImmGCPtr(name), objReg);
+    masm.passABIArg(objReg);
+    masm.unboxString(val, scratch);
+    masm.passABIArg(scratch);
+    masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, EqualStringsHelper));
+    masm.mov(ReturnReg, scratch);
+
+    if (!volatileRegs.has(objReg))
+        masm.pop(objReg);
+
+    RegisterSet ignore = RegisterSet();
+    ignore.add(scratch);
+    masm.PopRegsInMaskIgnore(volatileRegs, ignore);
+
+    masm.branchIfFalseBool(scratch, &failures);
+    masm.bind(&equal);
 
     RepatchStubAppender attacher(*this);
-    GenerateReadSlot(cx, ion, masm, attacher, obj, name, holder, shape, object(), output(),
-                     &failures);
+    if (canCache == GetPropertyIC::CanAttachReadSlot) {
+        GenerateReadSlot(cx, ion, masm, attacher, obj, holder, shape, object(), output(),
+                         &failures);
+    } else {
+        JS_ASSERT(canCache == GetPropertyIC::CanAttachCallGetter);
+        // Set the frame for bailout safety of the OOL call.
+        masm.setFramePushed(ion->frameSize());
+        if (!GenerateCallGetter(cx, ion, masm, attacher, obj, name, holder, shape, liveRegs_,
+                                object(), output(), returnAddr, &failures))
+        {
+            return false;
+        }
+    }
 
     return linkAndAttachStub(cx, masm, attacher, ion, "property");
 }
@@ -2320,25 +3176,45 @@ GetElementIC::attachDenseElement(JSContext *cx, IonScript *ion, JSObject *obj, c
 GetElementIC::canAttachTypedArrayElement(JSObject *obj, const Value &idval,
                                          TypedOrValueRegister output)
 {
-    if (!obj->is<TypedArrayObject>() ||
-        (!(idval.isInt32()) &&
-         !(idval.isString() && GetIndexFromString(idval.toString()) != UINT32_MAX)))
-    {
+    if (!obj->is<TypedArrayObject>())
         return false;
+
+    if (!idval.isInt32() && !idval.isString())
+        return false;
+
+
+    // Don't emit a stub if the access is out of bounds. We make to make
+    // certain that we monitor the type coming out of the typed array when
+    // we generate the stub. Out of bounds accesses will hit the fallback
+    // path.
+    uint32_t index;
+    if (idval.isInt32()) {
+        index = idval.toInt32();
+    } else {
+        index = GetIndexFromString(idval.toString());
+        if (index == UINT32_MAX)
+            return false;
     }
+    if (index >= obj->as<TypedArrayObject>().length())
+        return false;
 
     // The output register is not yet specialized as a float register, the only
     // way to accept float typed arrays for now is to return a Value type.
-    int arrayType = obj->as<TypedArrayObject>().type();
-    bool floatOutput = arrayType == TypedArrayObject::TYPE_FLOAT32 ||
-                       arrayType == TypedArrayObject::TYPE_FLOAT64;
-    return !floatOutput || output.hasValue();
+    uint32_t arrayType = obj->as<TypedArrayObject>().type();
+    if (arrayType == ScalarTypeRepresentation::TYPE_FLOAT32 ||
+        arrayType == ScalarTypeRepresentation::TYPE_FLOAT64)
+    {
+        return output.hasValue();
+    }
+
+    return output.hasValue() || !output.typedReg().isFloat();
 }
 
 static void
-GenerateTypedArrayElement(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &attacher,
-                          TypedArrayObject *tarr, const Value &idval, Register object,
-                          ConstantOrRegister index, TypedOrValueRegister output)
+GenerateGetTypedArrayElement(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &attacher,
+                             TypedArrayObject *tarr, const Value &idval, Register object,
+                             ConstantOrRegister index, TypedOrValueRegister output,
+                             bool allowDoubleResult)
 {
     JS_ASSERT(GetElementIC::canAttachTypedArrayElement(tarr, idval, output));
 
@@ -2347,14 +3223,13 @@ GenerateTypedArrayElement(JSContext *cx, MacroAssembler &masm, IonCache::StubAtt
     // The array type is the object within the table of typed array classes.
     int arrayType = tarr->type();
 
-    Register tmpReg = output.scratchReg().gpr();
-    JS_ASSERT(tmpReg != InvalidReg);
-
-    // Check that the typed array is of the same type as the current object
-    // because load size differ in function of the typed array data width.
-    masm.branchTestObjClass(Assembler::NotEqual, object, tmpReg, tarr->getClass(), &failures);
+    // Guard on the shape.
+    Shape *shape = tarr->lastProperty();
+    masm.branchTestObjShape(Assembler::NotEqual, object, shape, &failures);
 
     // Decide to what type index the stub should be optimized
+    Register tmpReg = output.scratchReg().gpr();
+    JS_ASSERT(tmpReg != InvalidReg);
     Register indexReg = tmpReg;
     JS_ASSERT(!index.constant());
     if (idval.isString()) {
@@ -2375,7 +3250,7 @@ GenerateTypedArrayElement(JSContext *cx, MacroAssembler &masm, IonCache::StubAtt
         // Part 2: Call to translate the str into index
         RegisterSet regs = RegisterSet::Volatile();
         masm.PushRegsInMask(regs);
-        regs.maybeTake(str);
+        regs.takeUnchecked(str);
 
         Register temp = regs.takeGeneral();
 
@@ -2421,12 +3296,12 @@ GenerateTypedArrayElement(JSContext *cx, MacroAssembler &masm, IonCache::StubAtt
     // register is necessary a non double register.
     int width = TypedArrayObject::slotWidth(arrayType);
     BaseIndex source(elementReg, indexReg, ScaleFromElemWidth(width));
-    if (output.hasValue())
-        masm.loadFromTypedArray(arrayType, source, output.valueReg(), true,
+    if (output.hasValue()) {
+        masm.loadFromTypedArray(arrayType, source, output.valueReg(), allowDoubleResult,
                                 elementReg, &popAndFail);
-    else
-        masm.loadFromTypedArray(arrayType, source, output.typedReg(),
-                                elementReg, &popAndFail);
+    } else {
+        masm.loadFromTypedArray(arrayType, source, output.typedReg(), elementReg, &popAndFail);
+    }
 
     masm.pop(object);
     attacher.jumpRejoin(masm);
@@ -2445,7 +3320,8 @@ GetElementIC::attachTypedArrayElement(JSContext *cx, IonScript *ion, TypedArrayO
 {
     MacroAssembler masm(cx);
     RepatchStubAppender attacher(*this);
-    GenerateTypedArrayElement(cx, masm, attacher, tarr, idval, object(), index(), output());
+    GenerateGetTypedArrayElement(cx, masm, attacher, tarr, idval, object(), index(), output(),
+                                 allowDoubleResult());
     return linkAndAttachStub(cx, masm, attacher, ion, "typed array");
 }
 
@@ -2461,11 +3337,9 @@ GetElementIC::attachArgumentsElement(JSContext *cx, IonScript *ion, JSObject *ob
     Register tmpReg = output().scratchReg().gpr();
     JS_ASSERT(tmpReg != InvalidReg);
 
-    Class *clasp = obj->is<StrictArgumentsObject>() ? &StrictArgumentsObject::class_
-                                                    : &NormalArgumentsObject::class_;
+    const Class *clasp = obj->is<StrictArgumentsObject>() ? &StrictArgumentsObject::class_
+                                                          : &NormalArgumentsObject::class_;
 
-    Label fail;
-    Label pass;
     masm.branchTestObjClass(Assembler::NotEqual, object(), tmpReg, clasp, &failures);
 
     // Get initial ArgsObj length value, test if length has been overridden.
@@ -2501,11 +3375,13 @@ GetElementIC::attachArgumentsElement(JSContext *cx, IonScript *ion, JSObject *ob
     masm.loadPtr(Address(tmpReg, offsetof(ArgumentsData, deletedBits)), tmpReg);
 
     // In tempReg, calculate index of word containing bit: (idx >> logBitsPerWord)
-    masm.rshiftPtr(Imm32(JS_BITS_PER_WORD_LOG2), indexReg);
+    const uint32_t shift = FloorLog2<(sizeof(size_t) * JS_BITS_PER_BYTE)>::value;
+    JS_ASSERT(shift == 5 || shift == 6);
+    masm.rshiftPtr(Imm32(shift), indexReg);
     masm.loadPtr(BaseIndex(tmpReg, indexReg, ScaleFromElemWidth(sizeof(size_t))), tmpReg);
 
     // Don't bother testing specific bit, if any bit is set in the word, fail.
-    masm.branchPtr(Assembler::NotEqual, tmpReg, ImmWord((size_t)0), &failurePopIndex);
+    masm.branchPtr(Assembler::NotEqual, tmpReg, ImmPtr(nullptr), &failurePopIndex);
 
     // Get the address to load from into tmpReg
     masm.loadPrivate(Address(object(), ArgumentsObject::getDataSlotOffset()), tmpReg);
@@ -2562,12 +3438,16 @@ bool
 GetElementIC::update(JSContext *cx, size_t cacheIndex, HandleObject obj,
                      HandleValue idval, MutableHandleValue res)
 {
-    IonScript *ion = GetTopIonJSScript(cx)->ionScript();
+    void *returnAddr;
+    IonScript *ion = GetTopIonJSScript(cx, &returnAddr)->ionScript();
     GetElementIC &cache = ion->getCache(cacheIndex).toGetElement();
     RootedScript script(cx);
     jsbytecode *pc;
     cache.getScriptedLocation(&script, &pc);
     RootedValue lval(cx, ObjectValue(*obj));
+
+    // Override the return value when the script is invalidated (bug 728188).
+    AutoDetectInvalidation adi(cx, res.address(), ion);
 
     if (cache.isDisabled()) {
         if (!GetElementOperation(cx, JSOp(*pc), &lval, idval, res))
@@ -2576,9 +3456,7 @@ GetElementIC::update(JSContext *cx, size_t cacheIndex, HandleObject obj,
         return true;
     }
 
-    // Override the return value if we are invalidated (bug 728188).
-    AutoFlushCache afc ("GetElementCache");
-    AutoDetectInvalidation adi(cx, res.address(), ion);
+    AutoFlushCache afc("GetElementCache", cx->runtime()->jitRuntime());
 
     RootedId id(cx);
     if (!ValueToId<CanGC>(cx, idval, &id))
@@ -2599,7 +3477,7 @@ GetElementIC::update(JSContext *cx, size_t cacheIndex, HandleObject obj,
         }
         if (!attachedStub && cache.monitoredResult() && canAttachGetProp(obj, idval, id)) {
             RootedPropertyName name(cx, JSID_TO_ATOM(id)->asPropertyName());
-            if (!cache.attachGetProp(cx, ion, obj, idval, name))
+            if (!cache.attachGetProp(cx, ion, obj, idval, name, returnAddr))
                 return false;
             attachedStub = true;
         }
@@ -2644,7 +3522,7 @@ GetElementIC::reset()
 }
 
 static bool
-IsElementSetInlineable(HandleObject obj, HandleValue index)
+IsDenseElementSetInlineable(JSObject *obj, const Value &idval)
 {
     if (!obj->is<ArrayObject>())
         return false;
@@ -2652,7 +3530,7 @@ IsElementSetInlineable(HandleObject obj, HandleValue index)
     if (obj->watched())
         return false;
 
-    if (!index.isInt32())
+    if (!idval.isInt32())
         return false;
 
     // The object may have a setter definition,
@@ -2675,78 +3553,150 @@ IsElementSetInlineable(HandleObject obj, HandleValue index)
     return true;
 }
 
-bool
-SetElementIC::attachDenseElement(JSContext *cx, IonScript *ion, JSObject *obj, const Value &idval)
+static bool
+IsTypedArrayElementSetInlineable(JSObject *obj, const Value &idval, const Value &value)
+{
+    // Don't bother attaching stubs for assigning strings and objects.
+    return (obj->is<TypedArrayObject>() && idval.isInt32() &&
+            !value.isString() && !value.isObject());
+}
+
+static void
+StoreDenseElement(MacroAssembler &masm, ConstantOrRegister value, Register elements,
+                  BaseIndex target)
+{
+    // If the ObjectElements::CONVERT_DOUBLE_ELEMENTS flag is set, int32 values
+    // have to be converted to double first. If the value is not int32, it can
+    // always be stored directly.
+
+    Address elementsFlags(elements, ObjectElements::offsetOfFlags());
+    if (value.constant()) {
+        Value v = value.value();
+        Label done;
+        if (v.isInt32()) {
+            Label dontConvert;
+            masm.branchTest32(Assembler::Zero, elementsFlags,
+                              Imm32(ObjectElements::CONVERT_DOUBLE_ELEMENTS),
+                              &dontConvert);
+            masm.storeValue(DoubleValue(v.toInt32()), target);
+            masm.jump(&done);
+            masm.bind(&dontConvert);
+        }
+        masm.storeValue(v, target);
+        masm.bind(&done);
+        return;
+    }
+
+    TypedOrValueRegister reg = value.reg();
+    if (reg.hasTyped() && reg.type() != MIRType_Int32) {
+        masm.storeTypedOrValue(reg, target);
+        return;
+    }
+
+    Label convert, storeValue, done;
+    masm.branchTest32(Assembler::NonZero, elementsFlags,
+                      Imm32(ObjectElements::CONVERT_DOUBLE_ELEMENTS),
+                      &convert);
+    masm.bind(&storeValue);
+    masm.storeTypedOrValue(reg, target);
+    masm.jump(&done);
+
+    masm.bind(&convert);
+    if (reg.hasValue()) {
+        masm.branchTestInt32(Assembler::NotEqual, reg.valueReg(), &storeValue);
+        masm.int32ValueToDouble(reg.valueReg(), ScratchFloatReg);
+        masm.storeDouble(ScratchFloatReg, target);
+    } else {
+        JS_ASSERT(reg.type() == MIRType_Int32);
+        masm.convertInt32ToDouble(reg.typedReg().gpr(), ScratchFloatReg);
+        masm.storeDouble(ScratchFloatReg, target);
+    }
+
+    masm.bind(&done);
+}
+
+static bool
+GenerateSetDenseElement(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &attacher,
+                        JSObject *obj, const Value &idval, bool guardHoles, Register object,
+                        ValueOperand indexVal, ConstantOrRegister value, Register tempToUnboxIndex,
+                        Register temp)
 {
     JS_ASSERT(obj->isNative());
     JS_ASSERT(idval.isInt32());
 
     Label failures;
-    Label outOfBounds; // index >= capacity || index > initialized length
+    Label outOfBounds; // index represents a known hole, or an illegal append
 
-    MacroAssembler masm(cx);
-    RepatchStubAppender attacher(*this);
+    Label markElem, storeElement; // used if TI protects us from worrying about holes.
 
     // Guard object is a dense array.
-    RootedShape shape(cx, obj->lastProperty());
+    Shape *shape = obj->lastProperty();
     if (!shape)
         return false;
-    masm.branchTestObjShape(Assembler::NotEqual, object(), shape, &failures);
+    masm.branchTestObjShape(Assembler::NotEqual, object, shape, &failures);
 
     // Ensure the index is an int32 value.
-    ValueOperand indexVal = index();
     masm.branchTestInt32(Assembler::NotEqual, indexVal, &failures);
 
     // Unbox the index.
-    Register index = masm.extractInt32(indexVal, tempToUnboxIndex());
+    Register index = masm.extractInt32(indexVal, tempToUnboxIndex);
 
     {
         // Load obj->elements.
-        Register elements = temp();
-        masm.loadPtr(Address(object(), JSObject::offsetOfElements()), elements);
+        Register elements = temp;
+        masm.loadPtr(Address(object, JSObject::offsetOfElements()), elements);
 
         // Compute the location of the element.
         BaseIndex target(elements, index, TimesEight);
 
-        // Guard that we can increase the initialized length.
-        Address capacity(elements, ObjectElements::offsetOfCapacity());
-        masm.branch32(Assembler::BelowOrEqual, capacity, index, &outOfBounds);
+        // If TI cannot help us deal with HOLES by preventing indexed properties
+        // on the prototype chain, we have to be very careful to check for ourselves
+        // to avoid stomping on what should be a setter call. Start by only allowing things
+        // within the initialized length.
+        if (guardHoles) {
+            Address initLength(elements, ObjectElements::offsetOfInitializedLength());
+            masm.branch32(Assembler::BelowOrEqual, initLength, index, &outOfBounds);
+        } else {
+            // Guard that we can increase the initialized length.
+            Address capacity(elements, ObjectElements::offsetOfCapacity());
+            masm.branch32(Assembler::BelowOrEqual, capacity, index, &outOfBounds);
 
-        // Guard on the initialized length.
-        Address initLength(elements, ObjectElements::offsetOfInitializedLength());
-        masm.branch32(Assembler::Below, initLength, index, &outOfBounds);
+            // Guard on the initialized length.
+            Address initLength(elements, ObjectElements::offsetOfInitializedLength());
+            masm.branch32(Assembler::Below, initLength, index, &outOfBounds);
 
-        // if (initLength == index)
-        Label markElem, storeElem;
-        masm.branch32(Assembler::NotEqual, initLength, index, &markElem);
-        {
-            // Increase initialize length.
-            Int32Key newLength(index);
-            masm.bumpKey(&newLength, 1);
-            masm.storeKey(newLength, initLength);
+            // if (initLength == index)
+            masm.branch32(Assembler::NotEqual, initLength, index, &markElem);
+            {
+                // Increase initialize length.
+                Int32Key newLength(index);
+                masm.bumpKey(&newLength, 1);
+                masm.storeKey(newLength, initLength);
 
-            // Increase length if needed.
-            Label bumpedLength;
-            Address length(elements, ObjectElements::offsetOfLength());
-            masm.branch32(Assembler::AboveOrEqual, length, index, &bumpedLength);
-            masm.storeKey(newLength, length);
-            masm.bind(&bumpedLength);
+                // Increase length if needed.
+                Label bumpedLength;
+                Address length(elements, ObjectElements::offsetOfLength());
+                masm.branch32(Assembler::AboveOrEqual, length, index, &bumpedLength);
+                masm.storeKey(newLength, length);
+                masm.bind(&bumpedLength);
 
-            // Restore the index.
-            masm.bumpKey(&newLength, -1);
-            masm.jump(&storeElem);
-        }
-        // else
-        {
-            // Mark old element.
+                // Restore the index.
+                masm.bumpKey(&newLength, -1);
+                masm.jump(&storeElement);
+            }
+            // else
             masm.bind(&markElem);
-            if (cx->zone()->needsBarrier())
-                masm.callPreBarrier(target, MIRType_Value);
         }
+
+        if (cx->zone()->needsBarrier())
+            masm.callPreBarrier(target, MIRType_Value);
 
         // Store the value.
-        masm.bind(&storeElem);
-        masm.storeConstantOrRegister(value(), target);
+        if (guardHoles)
+            masm.branchTestMagic(Assembler::Equal, target, &failures);
+        else
+            masm.bind(&storeElement);
+        StoreDenseElement(masm, value, elements, target);
     }
     attacher.jumpRejoin(masm);
 
@@ -2755,8 +3705,125 @@ SetElementIC::attachDenseElement(JSContext *cx, IonScript *ion, JSObject *obj, c
     masm.bind(&failures);
     attacher.jumpNextStub(masm);
 
+    return true;
+}
+
+bool
+SetElementIC::attachDenseElement(JSContext *cx, IonScript *ion, JSObject *obj, const Value &idval)
+{
+    MacroAssembler masm(cx);
+    RepatchStubAppender attacher(*this);
+    if (!GenerateSetDenseElement(cx, masm, attacher, obj, idval,
+                                 guardHoles(), object(), index(),
+                                 value(), tempToUnboxIndex(),
+                                 temp()))
+    {
+        return false;
+    }
+
     setHasDenseStub();
-    return linkAndAttachStub(cx, masm, attacher, ion, "dense array");
+    const char *message = guardHoles()            ?
+                            "dense array (holes)" :
+                            "dense array";
+    return linkAndAttachStub(cx, masm, attacher, ion, message);
+}
+
+static bool
+GenerateSetTypedArrayElement(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &attacher,
+                             TypedArrayObject *tarr, Register object,
+                             ValueOperand indexVal, ConstantOrRegister value,
+                             Register tempUnbox, Register temp, FloatRegister tempFloat)
+{
+    Label failures, done, popObjectAndFail;
+
+    // Guard on the shape.
+    Shape *shape = tarr->lastProperty();
+    if (!shape)
+        return false;
+    masm.branchTestObjShape(Assembler::NotEqual, object, shape, &failures);
+
+    // Ensure the index is an int32.
+    masm.branchTestInt32(Assembler::NotEqual, indexVal, &failures);
+    Register index = masm.extractInt32(indexVal, tempUnbox);
+
+    // Guard on the length.
+    Address length(object, TypedArrayObject::lengthOffset());
+    masm.unboxInt32(length, temp);
+    masm.branch32(Assembler::BelowOrEqual, temp, index, &done);
+
+    // Load the elements vector.
+    Register elements = temp;
+    masm.loadPtr(Address(object, TypedArrayObject::dataOffset()), elements);
+
+    // Set the value.
+    int arrayType = tarr->type();
+    int width = TypedArrayObject::slotWidth(arrayType);
+    BaseIndex target(elements, index, ScaleFromElemWidth(width));
+
+    if (arrayType == ScalarTypeRepresentation::TYPE_FLOAT32) {
+        if (LIRGenerator::allowFloat32Optimizations()) {
+            if (!masm.convertConstantOrRegisterToFloat(cx, value, tempFloat, &failures))
+                return false;
+        } else {
+            if (!masm.convertConstantOrRegisterToDouble(cx, value, tempFloat, &failures))
+                return false;
+        }
+        masm.storeToTypedFloatArray(arrayType, tempFloat, target);
+    } else if (arrayType == ScalarTypeRepresentation::TYPE_FLOAT64) {
+        if (!masm.convertConstantOrRegisterToDouble(cx, value, tempFloat, &failures))
+            return false;
+        masm.storeToTypedFloatArray(arrayType, tempFloat, target);
+    } else {
+        // On x86 we only have 6 registers available to use, so reuse the object
+        // register to compute the intermediate value to store and restore it
+        // afterwards.
+        masm.push(object);
+
+        if (arrayType == ScalarTypeRepresentation::TYPE_UINT8_CLAMPED) {
+            if (!masm.clampConstantOrRegisterToUint8(cx, value, tempFloat, object,
+                                                     &popObjectAndFail))
+            {
+                return false;
+            }
+        } else {
+            if (!masm.truncateConstantOrRegisterToInt32(cx, value, tempFloat, object,
+                                                        &popObjectAndFail))
+            {
+                return false;
+            }
+        }
+        masm.storeToTypedIntArray(arrayType, object, target);
+
+        masm.pop(object);
+    }
+
+    // Out-of-bound writes jump here as they are no-ops.
+    masm.bind(&done);
+    attacher.jumpRejoin(masm);
+
+    if (popObjectAndFail.used()) {
+        masm.bind(&popObjectAndFail);
+        masm.pop(object);
+    }
+
+    masm.bind(&failures);
+    attacher.jumpNextStub(masm);
+    return true;
+}
+
+bool
+SetElementIC::attachTypedArrayElement(JSContext *cx, IonScript *ion, TypedArrayObject *tarr)
+{
+    MacroAssembler masm(cx);
+    RepatchStubAppender attacher(*this);
+    if (!GenerateSetTypedArrayElement(cx, masm, attacher, tarr,
+                                      object(), index(), value(),
+                                      tempToUnboxIndex(), temp(), tempFloat()))
+    {
+        return false;
+    }
+
+    return linkAndAttachStub(cx, masm, attacher, ion, "typed array");
 }
 
 bool
@@ -2766,9 +3833,18 @@ SetElementIC::update(JSContext *cx, size_t cacheIndex, HandleObject obj,
     IonScript *ion = GetTopIonJSScript(cx)->ionScript();
     SetElementIC &cache = ion->getCache(cacheIndex).toSetElement();
 
-    if (cache.canAttachStub() && !cache.hasDenseStub() && IsElementSetInlineable(obj, idval)) {
-        if (!cache.attachDenseElement(cx, ion, obj, idval))
-            return false;
+    bool attachedStub = false;
+    if (cache.canAttachStub()) {
+        if (!cache.hasDenseStub() && IsDenseElementSetInlineable(obj, idval)) {
+            if (!cache.attachDenseElement(cx, ion, obj, idval))
+                return false;
+            attachedStub = true;
+        }
+        if (!attachedStub && IsTypedArrayElementSetInlineable(obj, idval, value)) {
+            TypedArrayObject *tarr = &obj->as<TypedArrayObject>();
+            if (!cache.attachTypedArrayElement(cx, ion, tarr))
+                return false;
+        }
     }
 
     if (!SetObjectElement(cx, obj, idval, value, cache.strict()))
@@ -2784,6 +3860,81 @@ SetElementIC::reset()
 }
 
 bool
+SetElementParIC::attachDenseElement(LockedJSContext &cx, IonScript *ion, JSObject *obj,
+                                    const Value &idval)
+{
+    MacroAssembler masm(cx);
+    DispatchStubPrepender attacher(*this);
+    if (!GenerateSetDenseElement(cx, masm, attacher, obj, idval,
+                                 guardHoles(), object(), index(),
+                                 value(), tempToUnboxIndex(),
+                                 temp()))
+    {
+        return false;
+    }
+
+    const char *message = guardHoles()                     ?
+                            "parallel dense array (holes)" :
+                            "parallel dense array";
+
+    return linkAndAttachStub(cx, masm, attacher, ion, message);
+}
+
+bool
+SetElementParIC::attachTypedArrayElement(LockedJSContext &cx, IonScript *ion,
+                                         TypedArrayObject *tarr)
+{
+    MacroAssembler masm(cx);
+    DispatchStubPrepender attacher(*this);
+    if (!GenerateSetTypedArrayElement(cx, masm, attacher, tarr,
+                                      object(), index(), value(),
+                                      tempToUnboxIndex(), temp(), tempFloat()))
+    {
+        return false;
+    }
+
+    return linkAndAttachStub(cx, masm, attacher, ion, "parallel typed array");
+}
+
+bool
+SetElementParIC::update(ForkJoinSlice *slice, size_t cacheIndex, HandleObject obj,
+                        HandleValue idval, HandleValue value)
+{
+    IonScript *ion = GetTopIonJSScript(slice)->parallelIonScript();
+    SetElementParIC &cache = ion->getCache(cacheIndex).toSetElementPar();
+
+    // Avoid unnecessary locking if cannot attach stubs.
+    if (!cache.canAttachStub())
+        return SetElementPar(slice, obj, idval, value, cache.strict());
+
+    {
+        LockedJSContext cx(slice);
+
+        if (cache.canAttachStub()) {
+            bool alreadyStubbed;
+            if (!cache.hasOrAddStubbedShape(cx, obj->lastProperty(), &alreadyStubbed))
+                return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
+            if (alreadyStubbed)
+                return SetElementPar(slice, obj, idval, value, cache.strict());
+
+            bool attachedStub = false;
+            if (IsDenseElementSetInlineable(obj, idval)) {
+                if (!cache.attachDenseElement(cx, ion, obj, idval))
+                    return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
+                attachedStub = true;
+            }
+            if (!attachedStub && IsTypedArrayElementSetInlineable(obj, idval, value)) {
+                TypedArrayObject *tarr = &obj->as<TypedArrayObject>();
+                if (!cache.attachTypedArrayElement(cx, ion, tarr))
+                    return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
+            }
+        }
+    }
+
+    return SetElementPar(slice, obj, idval, value, cache.strict());
+}
+
+bool
 GetElementParIC::attachReadSlot(LockedJSContext &cx, IonScript *ion, JSObject *obj,
                                 const Value &idval, PropertyName *name, JSObject *holder,
                                 Shape *shape)
@@ -2796,7 +3947,7 @@ GetElementParIC::attachReadSlot(LockedJSContext &cx, IonScript *ion, JSObject *o
     ValueOperand val = index().reg().valueReg();
     masm.branchTestValue(Assembler::NotEqual, val, idval, &failures);
 
-    GenerateReadSlot(cx, ion, masm, attacher, obj, name, holder, shape, object(), output(),
+    GenerateReadSlot(cx, ion, masm, attacher, obj, holder, shape, object(), output(),
                      &failures);
 
     return linkAndAttachStub(cx, masm, attacher, ion, "parallel getelem reading");
@@ -2820,32 +3971,28 @@ GetElementParIC::attachTypedArrayElement(LockedJSContext &cx, IonScript *ion,
 {
     MacroAssembler masm(cx);
     DispatchStubPrepender attacher(*this);
-    GenerateTypedArrayElement(cx, masm, attacher, tarr, idval, object(), index(), output());
+    GenerateGetTypedArrayElement(cx, masm, attacher, tarr, idval, object(), index(), output(),
+                                 allowDoubleResult());
     return linkAndAttachStub(cx, masm, attacher, ion, "parallel typed array");
 }
 
-ParallelResult
+bool
 GetElementParIC::update(ForkJoinSlice *slice, size_t cacheIndex, HandleObject obj,
                         HandleValue idval, MutableHandleValue vp)
 {
-    AutoFlushCache afc("GetElementParCache");
-    PerThreadData *pt = slice->perThreadData;
+    AutoFlushCache afc("GetElementParCache", slice->runtime()->jitRuntime());
 
-    const SafepointIndex *safepointIndex;
-    void *returnAddr;
-    RootedScript topScript(pt, GetTopIonJSScript(pt, &safepointIndex, &returnAddr));
-    IonScript *ion = topScript->parallelIonScript();
-
+    IonScript *ion = GetTopIonJSScript(slice)->parallelIonScript();
     GetElementParIC &cache = ion->getCache(cacheIndex).toGetElementPar();
 
     // Try to get the element early, as the pure path doesn't need a lock. If
     // we can't do it purely, bail out of parallel execution.
     if (!GetObjectElementOperationPure(slice, obj, idval, vp.address()))
-        return TP_RETRY_SEQUENTIALLY;
+        return false;
 
     // Avoid unnecessary locking if cannot attach stubs.
     if (!cache.canAttachStub())
-        return TP_SUCCESS;
+        return true;
 
     {
         LockedJSContext cx(slice);
@@ -2853,27 +4000,29 @@ GetElementParIC::update(ForkJoinSlice *slice, size_t cacheIndex, HandleObject ob
         if (cache.canAttachStub()) {
             bool alreadyStubbed;
             if (!cache.hasOrAddStubbedShape(cx, obj->lastProperty(), &alreadyStubbed))
-                return TP_FATAL;
+                return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
             if (alreadyStubbed)
-                return TP_SUCCESS;
+                return true;
 
             jsid id;
             if (!ValueToIdPure(idval, &id))
-                return TP_FATAL;
+                return false;
 
             bool attachedStub = false;
-
             if (cache.monitoredResult() &&
                 GetElementIC::canAttachGetProp(obj, idval, id))
             {
                 RootedShape shape(cx);
                 RootedObject holder(cx);
-                PropertyName *name = JSID_TO_ATOM(id)->asPropertyName();
-                if (GetPropertyParIC::canAttachReadSlot(cx, cache, cache.output(), obj,
-                                                        name, &holder, &shape))
+                RootedPropertyName name(cx, JSID_TO_ATOM(id)->asPropertyName());
+
+                GetPropertyIC::NativeGetPropCacheability canCache =
+                    CanAttachNativeGetProp(cx, cache, obj, name, &holder, &shape);
+
+                if (canCache == GetPropertyIC::CanAttachReadSlot)
                 {
                     if (!cache.attachReadSlot(cx, ion, obj, idval, name, holder, shape))
-                        return TP_FATAL;
+                        return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
                     attachedStub = true;
                 }
             }
@@ -2881,20 +4030,20 @@ GetElementParIC::update(ForkJoinSlice *slice, size_t cacheIndex, HandleObject ob
                 GetElementIC::canAttachDenseElement(obj, idval))
             {
                 if (!cache.attachDenseElement(cx, ion, obj, idval))
-                    return TP_FATAL;
+                    return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
                 attachedStub = true;
             }
             if (!attachedStub &&
                 GetElementIC::canAttachTypedArrayElement(obj, idval, cache.output()))
             {
                 if (!cache.attachTypedArrayElement(cx, ion, &obj->as<TypedArrayObject>(), idval))
-                    return TP_FATAL;
+                    return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
                 attachedStub = true;
             }
         }
     }
 
-    return TP_SUCCESS;
+    return true;
 }
 
 bool
@@ -2944,7 +4093,7 @@ GenerateScopeChainGuard(MacroAssembler &masm, JSObject *scopeObj,
 
 static void
 GenerateScopeChainGuards(MacroAssembler &masm, JSObject *scopeChain, JSObject *holder,
-                         Register outputReg, Label *failures)
+                         Register outputReg, Label *failures, bool skipLastGuard = false)
 {
     JSObject *tobj = scopeChain;
 
@@ -2953,7 +4102,11 @@ GenerateScopeChainGuards(MacroAssembler &masm, JSObject *scopeChain, JSObject *h
     while (true) {
         JS_ASSERT(IsCacheableNonGlobalScope(tobj) || tobj->is<GlobalObject>());
 
-        GenerateScopeChainGuard(masm, tobj, outputReg, NULL, failures);
+        if (skipLastGuard && tobj == holder)
+            break;
+
+        GenerateScopeChainGuard(masm, tobj, outputReg, nullptr, failures);
+
         if (tobj == holder)
             break;
 
@@ -2976,7 +4129,7 @@ BindNameIC::attachNonGlobal(JSContext *cx, IonScript *ion, JSObject *scopeChain,
     attacher.branchNextStubOrLabel(masm, Assembler::NotEqual,
                                    Address(scopeChainReg(), JSObject::offsetOfShape()),
                                    ImmGCPtr(scopeChain->lastProperty()),
-                                   holder != scopeChain ? &failures : NULL);
+                                   holder != scopeChain ? &failures : nullptr);
 
     if (holder != scopeChain) {
         JSObject *parent = &scopeChain->as<ScopeObject>().enclosingScope();
@@ -3025,7 +4178,7 @@ IsCacheableScopeChain(JSObject *scopeChain, JSObject *holder)
 JSObject *
 BindNameIC::update(JSContext *cx, size_t cacheIndex, HandleObject scopeChain)
 {
-    AutoFlushCache afc ("BindNameCache");
+    AutoFlushCache afc ("BindNameCache", cx->runtime()->jitRuntime());
 
     IonScript *ion = GetTopIonJSScript(cx)->ionScript();
     BindNameIC &cache = ion->getCache(cacheIndex).toBindName();
@@ -3036,7 +4189,7 @@ BindNameIC::update(JSContext *cx, size_t cacheIndex, HandleObject scopeChain)
         holder = scopeChain;
     } else {
         if (!LookupNameWithGlobalDefault(cx, name, scopeChain, &holder))
-            return NULL;
+            return nullptr;
     }
 
     // Stop generating new stubs once we hit the stub count limit, see
@@ -3044,10 +4197,10 @@ BindNameIC::update(JSContext *cx, size_t cacheIndex, HandleObject scopeChain)
     if (cache.canAttachStub()) {
         if (scopeChain->is<GlobalObject>()) {
             if (!cache.attachGlobal(cx, ion, scopeChain))
-                return NULL;
+                return nullptr;
         } else if (IsCacheableScopeChain(scopeChain, holder)) {
             if (!cache.attachNonGlobal(cx, ion, scopeChain, holder))
-                return NULL;
+                return nullptr;
         } else {
             IonSpew(IonSpew_InlineCaches, "BINDNAME uncacheable scope chain");
         }
@@ -3057,7 +4210,8 @@ BindNameIC::update(JSContext *cx, size_t cacheIndex, HandleObject scopeChain)
 }
 
 bool
-NameIC::attachReadSlot(JSContext *cx, IonScript *ion, HandleObject scopeChain, HandleObject holder,
+NameIC::attachReadSlot(JSContext *cx, IonScript *ion, HandleObject scopeChain,
+                       HandleObject holderBase, HandleObject holder,
                        HandleShape shape)
 {
     MacroAssembler masm(cx);
@@ -3066,26 +4220,16 @@ NameIC::attachReadSlot(JSContext *cx, IonScript *ion, HandleObject scopeChain, H
 
     Register scratchReg = outputReg().valueReg().scratchReg();
 
+    // Don't guard the base of the proto chain the name was found on. It will be guarded
+    // by GenerateReadSlot().
     masm.mov(scopeChainReg(), scratchReg);
-    GenerateScopeChainGuards(masm, scopeChain, holder, scratchReg, &failures);
+    GenerateScopeChainGuards(masm, scopeChain, holderBase, scratchReg, &failures,
+                             /* skipLastGuard = */true);
 
-    unsigned slot = shape->slot();
-    if (holder->isFixedSlot(slot)) {
-        Address addr(scratchReg, JSObject::getFixedSlotOffset(slot));
-        masm.loadTypedOrValue(addr, outputReg());
-    } else {
-        masm.loadPtr(Address(scratchReg, JSObject::offsetOfSlots()), scratchReg);
-
-        Address addr(scratchReg, holder->dynamicSlotIndex(slot) * sizeof(Value));
-        masm.loadTypedOrValue(addr, outputReg());
-    }
-
-    attacher.jumpRejoin(masm);
-
-    if (failures.used()) {
-        masm.bind(&failures);
-        attacher.jumpNextStub(masm);
-    }
+    // GenerateScopeChain leaves the last scope chain in scrachReg, even though it
+    // doesn't generate the extra guard.
+    GenerateReadSlot(cx, ion, masm, attacher, holderBase, holder, shape, scratchReg,
+                     outputReg(), failures.used() ? &failures : nullptr);
 
     return linkAndAttachStub(cx, masm, attacher, ion, "generic");
 }
@@ -3099,8 +4243,6 @@ IsCacheableNameReadSlot(JSContext *cx, HandleObject scopeChain, HandleObject obj
         return false;
     if (!obj->isNative())
         return false;
-    if (obj != holder)
-        return false;
 
     if (obj->is<GlobalObject>()) {
         // Support only simple property lookups.
@@ -3108,6 +4250,7 @@ IsCacheableNameReadSlot(JSContext *cx, HandleObject scopeChain, HandleObject obj
             !IsCacheableNoProperty(obj, holder, shape, pc, output))
             return false;
     } else if (obj->is<CallObject>()) {
+        JS_ASSERT(obj == holder);
         if (!shape->hasDefaultGetter())
             return false;
     } else {
@@ -3132,7 +4275,7 @@ IsCacheableNameReadSlot(JSContext *cx, HandleObject scopeChain, HandleObject obj
 
 bool
 NameIC::attachCallGetter(JSContext *cx, IonScript *ion, JSObject *obj, JSObject *holder,
-                         HandleShape shape, const SafepointIndex *safepointIndex, void *returnAddr)
+                         HandleShape shape, void *returnAddr)
 {
     MacroAssembler masm(cx);
 
@@ -3142,7 +4285,7 @@ NameIC::attachCallGetter(JSContext *cx, IonScript *ion, JSObject *obj, JSObject 
 
     RepatchStubAppender attacher(*this);
     if (!GenerateCallGetter(cx, ion, masm, attacher, obj, name(), holder, shape, liveRegs_,
-                            scopeChainReg(), outputReg(), returnAddr, pc))
+                            scopeChainReg(), outputReg(), returnAddr))
     {
          return false;
     }
@@ -3168,11 +4311,10 @@ bool
 NameIC::update(JSContext *cx, size_t cacheIndex, HandleObject scopeChain,
                MutableHandleValue vp)
 {
-    AutoFlushCache afc ("GetNameCache");
+    AutoFlushCache afc ("GetNameCache", cx->runtime()->jitRuntime());
 
-    const SafepointIndex *safepointIndex;
     void *returnAddr;
-    IonScript *ion = GetTopIonJSScript(cx, &safepointIndex, &returnAddr)->ionScript();
+    IonScript *ion = GetTopIonJSScript(cx, &returnAddr)->ionScript();
 
     NameIC &cache = ion->getCache(cacheIndex).toName();
     RootedPropertyName name(cx, cache.name());
@@ -3189,10 +4331,10 @@ NameIC::update(JSContext *cx, size_t cacheIndex, HandleObject scopeChain,
 
     if (cache.canAttachStub()) {
         if (IsCacheableNameReadSlot(cx, scopeChain, obj, holder, shape, pc, cache.outputReg())) {
-            if (!cache.attachReadSlot(cx, ion, scopeChain, obj, shape))
+            if (!cache.attachReadSlot(cx, ion, scopeChain, obj, holder, shape))
                 return false;
         } else if (IsCacheableNameCallGetter(scopeChain, obj, holder, shape)) {
-            if (!cache.attachCallGetter(cx, ion, obj, holder, shape, safepointIndex, returnAddr))
+            if (!cache.attachCallGetter(cx, ion, obj, holder, shape, returnAddr))
                 return false;
         }
     }
@@ -3232,7 +4374,7 @@ CallsiteCloneIC::attach(JSContext *cx, IonScript *ion, HandleFunction original,
 JSObject *
 CallsiteCloneIC::update(JSContext *cx, size_t cacheIndex, HandleObject callee)
 {
-    AutoFlushCache afc ("CallsiteCloneCache");
+    AutoFlushCache afc ("CallsiteCloneCache", cx->runtime()->jitRuntime());
 
     // Act as the identity for functions that are not clone-at-callsite, as we
     // generate this cache as long as some callees are clone-at-callsite.
@@ -3245,11 +4387,11 @@ CallsiteCloneIC::update(JSContext *cx, size_t cacheIndex, HandleObject callee)
 
     RootedFunction clone(cx, CloneFunctionAtCallsite(cx, fun, cache.callScript(), cache.callPc()));
     if (!clone)
-        return NULL;
+        return nullptr;
 
     if (cache.canAttachStub()) {
         if (!cache.attach(cx, ion, fun, clone))
-            return NULL;
+            return nullptr;
     }
 
     return clone;

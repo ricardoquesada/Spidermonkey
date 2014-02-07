@@ -8,13 +8,16 @@
 
 #include "mozilla/PodOperations.h"
 
+#include "jsautooplen.h"
 #include "jscntxt.h"
 
 #include "gc/Marking.h"
 #ifdef JS_ION
 #include "jit/BaselineFrame.h"
-#include "jit/IonCompartment.h"
+#include "jit/JitCompartment.h"
 #endif
+
+#include "jit/IonFrameIterator-inl.h"
 #include "vm/Interpreter-inl.h"
 #include "vm/Probes-inl.h"
 
@@ -35,7 +38,7 @@ StackFrame::initExecuteFrame(JSContext *cx, JSScript *script, AbstractFramePtr e
      */
     flags_ = type | HAS_SCOPECHAIN | HAS_BLOCKCHAIN;
 
-    JSObject *callee = NULL;
+    JSObject *callee = nullptr;
     if (!(flags_ & (GLOBAL))) {
         if (evalInFramePrev) {
             JS_ASSERT(evalInFramePrev.isFunctionFrame() || evalInFramePrev.isGlobalFrame());
@@ -74,10 +77,10 @@ StackFrame::initExecuteFrame(JSContext *cx, JSScript *script, AbstractFramePtr e
     }
 
     scopeChain_ = &scopeChain;
-    prev_ = NULL;
-    prevpc_ = NULL;
-    prevsp_ = NULL;
-    blockChain_ = NULL;
+    prev_ = nullptr;
+    prevpc_ = nullptr;
+    prevsp_ = nullptr;
+    blockChain_ = nullptr;
 
     JS_ASSERT_IF(evalInFramePrev, isDebuggerFrame());
     evalInFramePrev_ = evalInFramePrev;
@@ -159,7 +162,7 @@ StackFrame::maybeSuspendedGenerator(JSRuntime *rt)
      * and is not currently running.
      */
     if (!isGeneratorFrame() || !isSuspended())
-        return NULL;
+        return nullptr;
 
     /*
      * Once we know we have a suspended generator frame, there is a static
@@ -189,9 +192,9 @@ StackFrame::createRestParameter(JSContext *cx)
     unsigned nformal = fun()->nargs - 1, nactual = numActualArgs();
     unsigned nrest = (nactual > nformal) ? nactual - nformal : 0;
     Value *restvp = argv() + nformal;
-    JSObject *obj = NewDenseCopiedArray(cx, nrest, restvp, NULL);
+    JSObject *obj = NewDenseCopiedArray(cx, nrest, restvp, nullptr);
     if (!obj)
-        return NULL;
+        return nullptr;
     types::FixRestArgumentsType(cx, obj);
     return obj;
 }
@@ -261,12 +264,12 @@ StackFrame::prologue(JSContext *cx)
             pushOnScopeChain(*callobj);
             flags_ |= HAS_CALL_OBJ;
         }
-        Probes::enterScript(cx, script, NULL, this);
+        probes::EnterScript(cx, script, nullptr, this);
         return true;
     }
 
     if (isGlobalFrame()) {
-        Probes::enterScript(cx, script, NULL, this);
+        probes::EnterScript(cx, script, nullptr, this);
         return true;
     }
 
@@ -278,13 +281,14 @@ StackFrame::prologue(JSContext *cx)
 
     if (isConstructing()) {
         RootedObject callee(cx, &this->callee());
-        JSObject *obj = CreateThisForFunction(cx, callee, useNewType());
+        JSObject *obj = CreateThisForFunction(cx, callee,
+                                              useNewType() ? SingletonObject : GenericObject);
         if (!obj)
             return false;
         functionThis() = ObjectValue(*obj);
     }
 
-    Probes::enterScript(cx, script, script->function(), this);
+    probes::EnterScript(cx, script, script->function(), this);
     return true;
 }
 
@@ -295,7 +299,7 @@ StackFrame::epilogue(JSContext *cx)
     JS_ASSERT(!hasBlockChain());
 
     RootedScript script(cx, this->script());
-    Probes::exitScript(cx, script, script->function(), this);
+    probes::ExitScript(cx, script, script->function(), hasPushedSPSFrame());
 
     if (isEvalFrame()) {
         if (isStrictEvalFrame()) {
@@ -424,6 +428,9 @@ StackFrame::markValues(JSTracer *trc, Value *sp)
         // Mark callee, |this| and arguments.
         unsigned argc = Max(numActualArgs(), numFormalArgs());
         gc::MarkValueRootRange(trc, argc + 2, argv_ - 2, "fp argv");
+    } else {
+        // Mark callee and |this|
+        gc::MarkValueRootRange(trc, 2, ((Value *)this) - 2, "stack callee and this");
     }
 }
 
@@ -450,6 +457,19 @@ js::MarkInterpreterActivations(JSRuntime *rt, JSTracer *trc)
 
 /*****************************************************************************/
 
+// Unlike the other methods of this calss, this method is defined here so that
+// we don't have to #include jsautooplen.h in vm/Stack.h.
+void
+FrameRegs::setToEndOfScript()
+{
+    JSScript *script = fp()->script();
+    sp = fp()->base();
+    pc = script->code + script->length - JSOP_STOP_LENGTH;
+    JS_ASSERT(*pc == JSOP_STOP);
+}
+
+/*****************************************************************************/
+
 StackFrame *
 InterpreterStack::pushInvokeFrame(JSContext *cx, const CallArgs &args, InitialFrameFlags initial,
                                   FrameGuard *fg)
@@ -463,10 +483,10 @@ InterpreterStack::pushInvokeFrame(JSContext *cx, const CallArgs &args, InitialFr
     Value *argv;
     StackFrame *fp = getCallFrame(cx, args, script, &flags, &argv);
     if (!fp)
-        return NULL;
+        return nullptr;
 
     fp->mark_ = mark;
-    fp->initCallFrame(cx, NULL, NULL, NULL, *fun, script, argv, args.length(), flags);
+    fp->initCallFrame(cx, nullptr, nullptr, nullptr, *fun, script, argv, args.length(), flags);
     fg->setPushed(*this, fp);
     return fp;
 }
@@ -481,7 +501,7 @@ InterpreterStack::pushExecuteFrame(JSContext *cx, HandleScript script, const Val
     unsigned nvars = 2 /* callee, this */ + script->nslots;
     uint8_t *buffer = allocateFrame(cx, sizeof(StackFrame) + nvars * sizeof(Value));
     if (!buffer)
-        return NULL;
+        return nullptr;
 
     StackFrame *fp = reinterpret_cast<StackFrame *>(buffer + 2 * sizeof(Value));
     fp->mark_ = mark;
@@ -545,6 +565,17 @@ ScriptFrameIter::settleOnActivation()
             continue;
         }
 
+        // If the caller supplied principals, only show activations which are subsumed (of the same
+        // origin or of an origin accessible) by these principals.
+        if (data_.principals_) {
+            if (JSSubsumesOp subsumes = data_.cx_->runtime()->securityCallbacks->subsumes) {
+                if (!subsumes(data_.principals_, activation->compartment()->principals)) {
+                    ++data_.activations_;
+                    continue;
+                }
+            }
+        }
+
 #ifdef JS_ION
         if (activation->isJit()) {
             data_.ionFrames_ = jit::IonFrameIterator(data_.activations_);
@@ -589,16 +620,17 @@ ScriptFrameIter::settleOnActivation()
 }
 
 ScriptFrameIter::Data::Data(JSContext *cx, PerThreadData *perThread, SavedOption savedOption,
-                            ContextOption contextOption)
+                            ContextOption contextOption, JSPrincipals *principals)
   : perThread_(perThread),
     cx_(cx),
     savedOption_(savedOption),
     contextOption_(contextOption),
-    pc_(NULL),
-    interpFrames_(NULL),
+    principals_(principals),
+    pc_(nullptr),
+    interpFrames_(nullptr),
     activations_(cx->runtime())
 #ifdef JS_ION
-  , ionFrames_((uint8_t *)NULL)
+  , ionFrames_((uint8_t *)nullptr, SequentialExecution)
 #endif
 {
 }
@@ -608,6 +640,7 @@ ScriptFrameIter::Data::Data(const ScriptFrameIter::Data &other)
     cx_(other.cx_),
     savedOption_(other.savedOption_),
     contextOption_(other.contextOption_),
+    principals_(other.principals_),
     state_(other.state_),
     pc_(other.pc_),
     interpFrames_(other.interpFrames_),
@@ -619,18 +652,19 @@ ScriptFrameIter::Data::Data(const ScriptFrameIter::Data &other)
 }
 
 ScriptFrameIter::ScriptFrameIter(JSContext *cx, SavedOption savedOption)
-  : data_(cx, &cx->runtime()->mainThread, savedOption, CURRENT_CONTEXT)
+  : data_(cx, &cx->runtime()->mainThread, savedOption, CURRENT_CONTEXT, nullptr)
 #ifdef JS_ION
-    , ionInlineFrames_(cx, (js::jit::IonFrameIterator*) NULL)
+    , ionInlineFrames_(cx, (js::jit::IonFrameIterator*) nullptr)
 #endif
 {
     settleOnActivation();
 }
 
-ScriptFrameIter::ScriptFrameIter(JSContext *cx, ContextOption contextOption, SavedOption savedOption)
-  : data_(cx, &cx->runtime()->mainThread, savedOption, contextOption)
+ScriptFrameIter::ScriptFrameIter(JSContext *cx, ContextOption contextOption,
+                                 SavedOption savedOption, JSPrincipals *principals)
+  : data_(cx, &cx->runtime()->mainThread, savedOption, contextOption, principals)
 #ifdef JS_ION
-    , ionInlineFrames_(cx, (js::jit::IonFrameIterator*) NULL)
+    , ionInlineFrames_(cx, (js::jit::IonFrameIterator*) nullptr)
 #endif
 {
     settleOnActivation();
@@ -640,7 +674,7 @@ ScriptFrameIter::ScriptFrameIter(const ScriptFrameIter &other)
   : data_(other.data_)
 #ifdef JS_ION
     , ionInlineFrames_(other.data_.cx_,
-                       data_.ionFrames_.isScripted() ? &other.ionInlineFrames_ : NULL)
+                       data_.ionFrames_.isScripted() ? &other.ionInlineFrames_ : nullptr)
 #endif
 {
 }
@@ -648,7 +682,7 @@ ScriptFrameIter::ScriptFrameIter(const ScriptFrameIter &other)
 ScriptFrameIter::ScriptFrameIter(const Data &data)
   : data_(data)
 #ifdef JS_ION
-    , ionInlineFrames_(data.cx_, data_.ionFrames_.isOptimizedJS() ? &data_.ionFrames_ : NULL)
+    , ionInlineFrames_(data.cx_, data_.ionFrames_.isOptimizedJS() ? &data_.ionFrames_ : nullptr)
 #endif
 {
     JS_ASSERT(data.cx_);
@@ -663,7 +697,7 @@ ScriptFrameIter::nextJitFrame()
         data_.pc_ = ionInlineFrames_.pc();
     } else {
         JS_ASSERT(data_.ionFrames_.isBaselineJS());
-        data_.ionFrames_.baselineScriptAndPc(NULL, &data_.pc_);
+        data_.ionFrames_.baselineScriptAndPc(nullptr, &data_.pc_);
     }
 }
 
@@ -937,7 +971,7 @@ ScriptFrameIter::updatePcQuadratic()
 
             // Update the pc.
             JS_ASSERT(data_.ionFrames_.baselineFrame() == frame);
-            data_.ionFrames_.baselineScriptAndPc(NULL, &data_.pc_);
+            data_.ionFrames_.baselineScriptAndPc(nullptr, &data_.pc_);
             return;
         }
 #endif
@@ -1288,8 +1322,8 @@ jit::JitActivation::JitActivation(JSContext *cx, bool firstFrameIsConstructing, 
         prevIonJSContext_ = cx->mainThread().ionJSContext;
         cx->mainThread().ionJSContext = cx;
     } else {
-        prevIonTop_ = NULL;
-        prevIonJSContext_ = NULL;
+        prevIonTop_ = nullptr;
+        prevIonJSContext_ = nullptr;
     }
 }
 
@@ -1329,9 +1363,9 @@ InterpreterFrameIterator::operator++()
         sp_ = fp_->prevsp();
         fp_ = fp_->prev();
     } else {
-        pc_ = NULL;
-        sp_ = NULL;
-        fp_ = NULL;
+        pc_ = nullptr;
+        sp_ = nullptr;
+        fp_ = nullptr;
     }
     return *this;
 }

@@ -4,25 +4,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "plhash.h"
-#include "jsapi.h"
 #include "mozilla/ModuleLoader.h"
-#include "nsIJSRuntimeService.h"
 #include "nsISupports.h"
-#include "nsIXPConnect.h"
-#include "nsIFile.h"
-#include "nsAutoPtr.h"
-#include "nsIObjectInputStream.h"
-#include "nsIObjectOutputStream.h"
-#include "nsITimer.h"
 #include "nsIObserver.h"
 #include "xpcIJSModuleLoader.h"
 #include "nsClassHashtable.h"
 #include "nsDataHashtable.h"
-#include "nsIPrincipal.h"
-#include "mozilla/scache/StartupCache.h"
+#include "jsapi.h"
 
 #include "xpcIJSGetFactory.h"
+
+class nsIFile;
+class nsIJSRuntimeService;
+class nsIPrincipal;
+class nsIXPConnectJSObjectHolder;
 
 /* 6bd13476-1dd2-11b2-bbef-f0ccb5fa64b6 (thanks, mozbot) */
 
@@ -92,12 +87,12 @@ class mozJSComponentLoader : public mozilla::ModuleLoader,
     public:
         ModuleEntry() : mozilla::Module() {
             mVersion = mozilla::Module::kVersion;
-            mCIDs = NULL;
-            mContractIDs = NULL;
-            mCategoryEntries = NULL;
+            mCIDs = nullptr;
+            mContractIDs = nullptr;
+            mCategoryEntries = nullptr;
             getFactoryProc = GetFactory;
-            loadProc = NULL;
-            unloadProc = NULL;
+            loadProc = nullptr;
+            unloadProc = nullptr;
 
             obj = nullptr;
             location = nullptr;
@@ -108,7 +103,7 @@ class mozJSComponentLoader : public mozilla::ModuleLoader,
         }
 
         void Clear() {
-            getfactoryobj = NULL;
+            getfactoryobj = nullptr;
 
             if (obj) {
                 JSAutoRequest ar(sSelf->mContext);
@@ -122,8 +117,8 @@ class mozJSComponentLoader : public mozilla::ModuleLoader,
             if (location)
                 NS_Free(location);
 
-            obj = NULL;
-            location = NULL;
+            obj = nullptr;
+            location = nullptr;
         }
 
         static already_AddRefed<nsIFactory> GetFactory(const mozilla::Module& module,

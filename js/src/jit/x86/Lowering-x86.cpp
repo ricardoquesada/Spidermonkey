@@ -14,6 +14,29 @@
 using namespace js;
 using namespace js::jit;
 
+LDefinition
+LIRGeneratorX86::tempForDispatchCache(MIRType outputType)
+{
+    // x86 doesn't have a scratch register and we need one for the
+    // indirect jump for dispatch-style ICs.
+    //
+    // Note that currently we only install dispatch-style ICs for parallel
+    // execution. If this assumption changes, please change it here.
+    if (gen->info().executionMode() != ParallelExecution)
+        return LDefinition::BogusTemp();
+
+    // If we don't have an output register, we need a temp.
+    if (outputType == MIRType_None)
+        return temp();
+
+    // If we have a double output register, we need a temp.
+    if (outputType == MIRType_Double)
+        return temp();
+
+    // Otherwise we have a non-double output register and we can reuse it.
+    return LDefinition::BogusTemp();
+}
+
 bool
 LIRGeneratorX86::useBox(LInstruction *lir, size_t n, MDefinition *mir,
                         LUse::Policy policy, bool useAtStart)
@@ -41,14 +64,27 @@ LIRGeneratorX86::useBoxFixed(LInstruction *lir, size_t n, MDefinition *mir, Regi
     return true;
 }
 
+LAllocation
+LIRGeneratorX86::useByteOpRegister(MDefinition *mir)
+{
+    return useFixed(mir, eax);
+}
+
+LAllocation
+LIRGeneratorX86::useByteOpRegisterOrNonDoubleConstant(MDefinition *mir)
+{
+    return useFixed(mir, eax);
+}
+
 bool
 LIRGeneratorX86::visitBox(MBox *box)
 {
     MDefinition *inner = box->getOperand(0);
 
     // If the box wrapped a double, it needs a new register.
-    if (inner->type() == MIRType_Double)
-        return defineBox(new LBoxDouble(useRegisterAtStart(inner), tempCopy(inner, 0)), box);
+    if (IsFloatingPointType(inner->type()))
+        return defineBox(new LBoxFloatingPoint(useRegisterAtStart(inner), tempCopy(inner, 0),
+                                               inner->type()), box);
 
     if (box->canEmitAtUses())
         return emitAtUses(box);
@@ -88,11 +124,11 @@ LIRGeneratorX86::visitUnbox(MUnbox *unbox)
     if (!ensureDefined(inner))
         return false;
 
-    if (unbox->type() == MIRType_Double) {
-        LUnboxDouble *lir = new LUnboxDouble;
+    if (IsFloatingPointType(unbox->type())) {
+        LUnboxFloatingPoint *lir = new LUnboxFloatingPoint(unbox->type());
         if (unbox->fallible() && !assignSnapshot(lir, unbox->bailoutKind()))
             return false;
-        if (!useBox(lir, LUnboxDouble::Input, inner))
+        if (!useBox(lir, LUnboxFloatingPoint::Input, inner))
             return false;
         return define(lir, unbox);
     }
@@ -161,82 +197,79 @@ LIRGeneratorX86::lowerUntypedPhiInput(MPhi *phi, uint32_t inputPosition, LBlock 
 }
 
 bool
-LIRGeneratorX86::visitStoreTypedArrayElement(MStoreTypedArrayElement *ins)
-{
-    JS_ASSERT(ins->elements()->type() == MIRType_Elements);
-    JS_ASSERT(ins->index()->type() == MIRType_Int32);
-
-    if (ins->isFloatArray())
-        JS_ASSERT(ins->value()->type() == MIRType_Double);
-    else
-        JS_ASSERT(ins->value()->type() == MIRType_Int32);
-
-    LUse elements = useRegister(ins->elements());
-    LAllocation index = useRegisterOrConstant(ins->index());
-    LAllocation value;
-
-    // For byte arrays, the value has to be in a byte register on x86.
-    if (ins->isByteArray())
-        value = useFixed(ins->value(), eax);
-    else
-        value = useRegisterOrNonDoubleConstant(ins->value());
-    return add(new LStoreTypedArrayElement(elements, index, value), ins);
-}
-
-bool
-LIRGeneratorX86::visitStoreTypedArrayElementHole(MStoreTypedArrayElementHole *ins)
-{
-    JS_ASSERT(ins->elements()->type() == MIRType_Elements);
-    JS_ASSERT(ins->index()->type() == MIRType_Int32);
-    JS_ASSERT(ins->length()->type() == MIRType_Int32);
-
-    if (ins->isFloatArray())
-        JS_ASSERT(ins->value()->type() == MIRType_Double);
-    else
-        JS_ASSERT(ins->value()->type() == MIRType_Int32);
-
-    LUse elements = useRegister(ins->elements());
-    LAllocation length = useAnyOrConstant(ins->length());
-    LAllocation index = useRegisterOrConstant(ins->index());
-    LAllocation value;
-
-    // For byte arrays, the value has to be in a byte register on x86.
-    if (ins->isByteArray())
-        value = useFixed(ins->value(), eax);
-    else
-        value = useRegisterOrNonDoubleConstant(ins->value());
-    return add(new LStoreTypedArrayElementHole(elements, length, index, value), ins);
-}
-
-bool
 LIRGeneratorX86::visitAsmJSUnsignedToDouble(MAsmJSUnsignedToDouble *ins)
 {
     JS_ASSERT(ins->input()->type() == MIRType_Int32);
-    LUInt32ToDouble *lir = new LUInt32ToDouble(useRegisterAtStart(ins->input()), temp());
+    LAsmJSUInt32ToDouble *lir = new LAsmJSUInt32ToDouble(useRegisterAtStart(ins->input()), temp());
+    return define(lir, ins);
+}
+
+bool
+LIRGeneratorX86::visitAsmJSUnsignedToFloat32(MAsmJSUnsignedToFloat32 *ins)
+{
+    JS_ASSERT(ins->input()->type() == MIRType_Int32);
+    LAsmJSUInt32ToFloat32 *lir = new LAsmJSUInt32ToFloat32(useRegisterAtStart(ins->input()), temp());
+    return define(lir, ins);
+}
+
+bool
+LIRGeneratorX86::visitAsmJSLoadHeap(MAsmJSLoadHeap *ins)
+{
+    MDefinition *ptr = ins->ptr();
+    LAllocation ptrAlloc;
+    JS_ASSERT(ptr->type() == MIRType_Int32);
+
+    // For the x86 it is best to keep the 'ptr' in a register if a bounds check is needed.
+    if (ptr->isConstant() && ins->skipBoundsCheck()) {
+        int32_t ptrValue = ptr->toConstant()->value().toInt32();
+        // A bounds check is only skipped for a positive index.
+        JS_ASSERT(ptrValue >= 0);
+        ptrAlloc = LAllocation(ptr->toConstant()->vp());
+    } else {
+        ptrAlloc = useRegisterAtStart(ptr);
+    }
+    LAsmJSLoadHeap *lir = new LAsmJSLoadHeap(ptrAlloc);
     return define(lir, ins);
 }
 
 bool
 LIRGeneratorX86::visitAsmJSStoreHeap(MAsmJSStoreHeap *ins)
 {
+    MDefinition *ptr = ins->ptr();
     LAsmJSStoreHeap *lir;
+    JS_ASSERT(ptr->type() == MIRType_Int32);
+
+    if (ptr->isConstant() && ins->skipBoundsCheck()) {
+        int32_t ptrValue = ptr->toConstant()->value().toInt32();
+        JS_ASSERT(ptrValue >= 0);
+        LAllocation ptrAlloc = LAllocation(ptr->toConstant()->vp());
+        switch (ins->viewType()) {
+          case ArrayBufferView::TYPE_INT8: case ArrayBufferView::TYPE_UINT8:
+            // See comment below.
+            lir = new LAsmJSStoreHeap(ptrAlloc, useFixed(ins->value(), eax));
+            break;
+          case ArrayBufferView::TYPE_INT16: case ArrayBufferView::TYPE_UINT16:
+          case ArrayBufferView::TYPE_INT32: case ArrayBufferView::TYPE_UINT32:
+          case ArrayBufferView::TYPE_FLOAT32: case ArrayBufferView::TYPE_FLOAT64:
+            // See comment below.
+            lir = new LAsmJSStoreHeap(ptrAlloc, useRegisterAtStart(ins->value()));
+            break;
+          default: MOZ_ASSUME_UNREACHABLE("unexpected array type");
+        }
+        return add(lir, ins);
+    }
+
     switch (ins->viewType()) {
       case ArrayBufferView::TYPE_INT8: case ArrayBufferView::TYPE_UINT8:
-        // It's a trap! On x86, the 1-byte store can only use one of
-        // {al,bl,cl,dl,ah,bh,ch,dh}. That means if the register allocator
-        // gives us one of {edi,esi,ebp,esp}, we're out of luck. (The formatter
-        // will assert on us.) Ideally, we'd just ask the register allocator to
-        // give us one of {al,bl,cl,dl}. For now, just useFixed(al).
-        lir = new LAsmJSStoreHeap(useRegister(ins->ptr()),
-                                  useFixed(ins->value(), eax));
+        // See comment for LIRGeneratorX86::useByteOpRegister.
+        lir = new LAsmJSStoreHeap(useRegister(ins->ptr()), useFixed(ins->value(), eax));
         break;
       case ArrayBufferView::TYPE_INT16: case ArrayBufferView::TYPE_UINT16:
       case ArrayBufferView::TYPE_INT32: case ArrayBufferView::TYPE_UINT32:
       case ArrayBufferView::TYPE_FLOAT32: case ArrayBufferView::TYPE_FLOAT64:
-        // For now, don't allow constants. The immediate operand affects
-        // instruction layout which affects patching.
-        lir = new LAsmJSStoreHeap(useRegisterAtStart(ins->ptr()),
-                                  useRegisterAtStart(ins->value()));
+        // For now, don't allow constant values. The immediate operand
+        // affects instruction layout which affects patching.
+        lir = new LAsmJSStoreHeap(useRegisterAtStart(ptr), useRegisterAtStart(ins->value()));
         break;
       default: MOZ_ASSUME_UNREACHABLE("unexpected array type");
     }
@@ -272,31 +305,4 @@ bool
 LIRGeneratorX86::visitAsmJSLoadFuncPtr(MAsmJSLoadFuncPtr *ins)
 {
     return define(new LAsmJSLoadFuncPtr(useRegisterAtStart(ins->index())), ins);
-}
-
-LGetPropertyCacheT *
-LIRGeneratorX86::newLGetPropertyCacheT(MGetPropertyCache *ins)
-{
-    // Since x86 doesn't have a scratch register and we need one for the
-    // indirect jump for dispatch-style ICs, we need a temporary in the case
-    // of a double output type as we can't get a scratch from the output.
-    LDefinition scratch;
-    if (ins->type() == MIRType_Double)
-        scratch = temp();
-    else
-        scratch = LDefinition::BogusTemp();
-    return new LGetPropertyCacheT(useRegister(ins->object()), scratch);
-}
-
-LGetElementCacheT *
-LIRGeneratorX86::newLGetElementCacheT(MGetElementCache *ins)
-{
-    LDefinition scratch;
-    if (ins->type() == MIRType_Double)
-        scratch = temp();
-    else
-        scratch = LDefinition::BogusTemp();
-    return new LGetElementCacheT(useRegister(ins->object()),
-                                 useRegister(ins->index()),
-                                 scratch);
 }

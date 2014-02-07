@@ -6,3 +6,9 @@
 
 LIBRARY_NAME = 'editline'
 
+SOURCES += [
+    'editline.c',
+    'sysunix.c',
+]
+
+FORCE_STATIC_LIB = True

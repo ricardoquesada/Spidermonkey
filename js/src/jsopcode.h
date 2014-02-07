@@ -11,11 +11,9 @@
  * JS bytecode definitions.
  */
 
-#include <stddef.h>
-
-#include "jsprvtd.h"
-#include "jspubtd.h"
-#include "jsutil.h"
+#include "jsbytecode.h"
+#include "jstypes.h"
+#include "NamespaceImports.h"
 
 #include "frontend/SourceNotes.h"
 
@@ -171,7 +169,7 @@ SET_UINT32_INDEX(jsbytecode *pc, uint32_t index)
 #define UINT24_HI(i)            ((jsbytecode)((i) >> 16))
 #define UINT24_MID(i)           ((jsbytecode)((i) >> 8))
 #define UINT24_LO(i)            ((jsbytecode)(i))
-#define GET_UINT24(pc)          ((jsatomid)(((pc)[1] << 16) |                 \
+#define GET_UINT24(pc)          ((unsigned)(((pc)[1] << 16) |                 \
                                             ((pc)[2] << 8) |                  \
                                             (pc)[3]))
 #define SET_UINT24(pc,i)        ((pc)[1] = UINT24_HI(i),                      \
@@ -236,7 +234,7 @@ extern const char       js_EscapeMap[];
  * with the quote character at the beginning and end of the result string.
  */
 extern JSString *
-js_QuoteString(JSContext *cx, JSString *str, jschar quote);
+js_QuoteString(js::ExclusiveContext *cx, JSString *str, jschar quote);
 
 namespace js {
 
@@ -425,7 +423,7 @@ class Sprinter
         }
     };
 
-    JSContext               *context;       /* context executing the decompiler */
+    ExclusiveContext        *context;       /* context executing the decompiler */
 
   private:
     static const size_t     DefaultSize;
@@ -440,7 +438,7 @@ class Sprinter
     bool realloc_(size_t newSize);
 
   public:
-    explicit Sprinter(JSContext *cx);
+    explicit Sprinter(ExclusiveContext *cx);
     ~Sprinter();
 
     /* Initialize this sprinter, returns false on error */
@@ -454,17 +452,13 @@ class Sprinter
     char *stringAt(ptrdiff_t off) const;
     /* Returns the char at offset |off| */
     char &operator[](size_t off);
-    /* Test if this Sprinter is empty */
-    bool empty() const;
 
     /*
-     * Attempt to reserve len + 1 space (for a trailing NULL byte). If the
+     * Attempt to reserve len + 1 space (for a trailing nullptr byte). If the
      * attempt succeeds, return a pointer to the start of that space and adjust the
      * internal content. The caller *must* completely fill this space on success.
      */
     char *reserve(size_t len);
-    /* Like reserve, but memory is initialized to 0 */
-    char *reserveAndClear(size_t len);
 
     /*
      * Puts |len| characters from |s| at the current position and return an offset to
@@ -477,13 +471,7 @@ class Sprinter
     /* Prints a formatted string into the buffer */
     int printf(const char *fmt, ...);
 
-    /* Change the offset */
-    void setOffset(const char *end);
-    void setOffset(ptrdiff_t off);
-
-    /* Get the offset */
     ptrdiff_t getOffset() const;
-    ptrdiff_t getOffsetOf(const char *string) const;
 
     /*
      * Report that a string operation failed to get the memory it requested. The
@@ -604,17 +592,31 @@ IsEqualityOp(JSOp op)
 }
 
 inline bool
-IsGetterPC(jsbytecode *pc)
+IsGetPropPC(jsbytecode *pc)
 {
     JSOp op = JSOp(*pc);
     return op == JSOP_LENGTH  || op == JSOP_GETPROP || op == JSOP_CALLPROP;
 }
 
 inline bool
-IsSetterPC(jsbytecode *pc)
+IsSetPropPC(jsbytecode *pc)
 {
     JSOp op = JSOp(*pc);
     return op == JSOP_SETPROP || op == JSOP_SETNAME || op == JSOP_SETGNAME;
+}
+
+inline bool
+IsGetElemPC(jsbytecode *pc)
+{
+    JSOp op = JSOp(*pc);
+    return op == JSOP_GETELEM || op == JSOP_CALLELEM;
+}
+
+inline bool
+IsSetElemPC(jsbytecode *pc)
+{
+    JSOp op = JSOp(*pc);
+    return op == JSOP_SETELEM;
 }
 
 inline bool
@@ -657,11 +659,6 @@ class PCCounts
 
     enum BaseCounts {
         BASE_INTERP = 0,
-        BASE_METHODJIT,
-
-        BASE_METHODJIT_STUBS,
-        BASE_METHODJIT_CODE,
-        BASE_METHODJIT_PICS,
 
         BASE_LIMIT
     };
@@ -784,12 +781,12 @@ GetNextPc(jsbytecode *pc)
 /*
  * Disassemblers, for debugging only.
  */
-JSBool
-js_Disassemble(JSContext *cx, JS::Handle<JSScript*> script, JSBool lines, js::Sprinter *sp);
+bool
+js_Disassemble(JSContext *cx, JS::Handle<JSScript*> script, bool lines, js::Sprinter *sp);
 
 unsigned
 js_Disassemble1(JSContext *cx, JS::Handle<JSScript*> script, jsbytecode *pc, unsigned loc,
-                JSBool lines, js::Sprinter *sp);
+                bool lines, js::Sprinter *sp);
 
 #endif
 

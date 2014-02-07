@@ -6,9 +6,11 @@
 # itself and by the JS engine, which, when built standalone, must install
 # mfbt's exported headers itself.
 
-EXPORTS_NAMESPACES += mozilla
-
-EXPORTS_mozilla += \
+EXPORTS_mozilla_DEST := $(DIST)/include/mozilla
+EXPORTS_mozilla_TARGET := export
+INSTALL_TARGETS += EXPORTS_mozilla
+EXPORTS_mozilla_FILES += \
+  Alignment.h \
   AllocPolicy.h \
   Array.h \
   Assertions.h \
@@ -19,6 +21,7 @@ EXPORTS_mozilla += \
   Char16.h \
   CheckedInt.h \
   Compiler.h \
+  Compression.h \
   Constants.h \
   DebugOnly.h \
   decimal/Decimal.h \
@@ -27,13 +30,17 @@ EXPORTS_mozilla += \
   FloatingPoint.h \
   GuardObjects.h \
   HashFunctions.h \
+  IntegerPrintfMacros.h \
   Likely.h \
   LinkedList.h \
   MathAlgorithms.h \
+  Maybe.h \
   MemoryChecking.h \
   MemoryReporting.h \
+  MSIntTypes.h \
   Move.h \
   NullPtr.h \
+  NumericLimits.h \
   PodOperations.h \
   Poison.h \
   Range.h \

@@ -6,11 +6,6 @@
 
 #include "jit/EdgeCaseAnalysis.h"
 
-#include <stdio.h>
-
-#include "jit/Ion.h"
-#include "jit/IonBuilder.h"
-#include "jit/IonSpewer.h"
 #include "jit/MIR.h"
 #include "jit/MIRGraph.h"
 
@@ -35,6 +30,7 @@ EdgeCaseAnalysis::analyzeLate()
             iter->setId(nextId++);
             iter->analyzeEdgeCasesForward();
         }
+        block->lastIns()->setId(nextId++);
     }
 
     for (PostorderIterator block(graph.poBegin()); block != graph.poEnd(); block++) {

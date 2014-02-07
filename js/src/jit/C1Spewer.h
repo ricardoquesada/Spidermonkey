@@ -9,7 +9,7 @@
 
 #ifdef DEBUG
 
-#include "jsscript.h"
+#include "NamespaceImports.h"
 
 #include "js/RootingAPI.h"
 
@@ -31,7 +31,7 @@ class C1Spewer
 
   public:
     C1Spewer()
-      : graph(NULL), script(NullPtr()), spewout_(NULL)
+      : graph(nullptr), script(NullPtr()), spewout_(nullptr)
     { }
 
     bool init(const char *path);

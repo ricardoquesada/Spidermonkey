@@ -2,23 +2,22 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+import mozinfo
+import moznetwork
 import optparse
 import os
-import sys
 import tempfile
 
-from automation import Automation
 from automationutils import addCommonOptions, isURL
 from mozprofile import DEFAULT_PORTS
-import moznetwork
+
+here = os.path.abspath(os.path.dirname(__file__))
 
 try:
     from mozbuild.base import MozbuildObject
-    build_obj = MozbuildObject.from_environment()
+    build_obj = MozbuildObject.from_environment(cwd=here)
 except ImportError:
     build_obj = None
-
-here = os.path.abspath(os.path.dirname(sys.argv[0]))
 
 __all__ = ["MochitestOptions", "B2GOptions"]
 
@@ -321,28 +320,20 @@ class MochitestOptions(optparse.OptionParser):
           "metavar": "PREF=VALUE",
           "help": "defines an extra user preference",
         }],
-        [["--build-info-json"],
-        { "action": "store",
-          "type": "string",
-          "default": None,
-          "dest": "mozInfo",
-          "help": "path to mozinfo.json to determine build time options",
+        [["--jsdebugger"],
+        { "action": "store_true",
+          "default": False,
+          "dest": "jsdebugger",
+          "help": "open the browser debugger",
         }],
     ]
 
-    def __init__(self, automation=None, **kwargs):
-        self._automation = automation or Automation()
+    def __init__(self, **kwargs):
+
         optparse.OptionParser.__init__(self, **kwargs)
-        defaults = {}
-
-        # we want to pass down everything from self._automation.__all__
-        addCommonOptions(self, defaults=dict(zip(self._automation.__all__,
-                 [getattr(self._automation, x) for x in self._automation.__all__])))
-
-        for option in self.mochitest_options:
-            self.add_option(*option[0], **option[1])
-
-        self.set_defaults(**defaults)
+        for option, value in self.mochitest_options:
+            self.add_option(*option, **value)
+        addCommonOptions(self)
         self.set_usage(self.__doc__)
 
     def verifyOptions(self, options, mochitest):
@@ -393,13 +384,18 @@ class MochitestOptions(optparse.OptionParser):
         if options.symbolsPath and not isURL(options.symbolsPath):
             options.symbolsPath = mochitest.getFullPath(options.symbolsPath)
 
-        options.webServer = self._automation.DEFAULT_WEB_SERVER
-        options.httpPort = self._automation.DEFAULT_HTTP_PORT
-        options.sslPort = self._automation.DEFAULT_SSL_PORT
-        options.webSocketPort = self._automation.DEFAULT_WEBSOCKET_PORT
+        # Set server information on the options object
+        options.webServer = '127.0.0.1'
+        options.httpPort = DEFAULT_PORTS['http']
+        options.sslPort = DEFAULT_PORTS['https']
+        #        options.webSocketPort = DEFAULT_PORTS['ws']
+        options.webSocketPort = str(9988) # <- http://hg.mozilla.org/mozilla-central/file/b871dfb2186f/build/automation.py.in#l30
+        # The default websocket port is incorrect in mozprofile; it is
+        # set to the SSL proxy setting. See:
+        # see https://bugzilla.mozilla.org/show_bug.cgi?id=916517
 
         if options.vmwareRecording:
-            if not self._automation.IS_WIN32:
+            if not mozinfo.isWin:
                 self.error("use-vmware-recording is only supported on Windows.")
             mochitest.vmwareHelperPath = os.path.join(
                 options.utilityPath, VMWARE_RECORDING_HELPER_BASENAME + ".dll")
@@ -422,6 +418,15 @@ class MochitestOptions(optparse.OptionParser):
 
         if options.webapprtContent and options.webapprtChrome:
             self.error("Only one of --webapprt-content and --webapprt-chrome may be given.")
+
+        if options.jsdebugger:
+            options.extraPrefs += [
+                "devtools.debugger.remote-enabled=true",
+                "devtools.debugger.chrome-enabled=true",
+                "devtools.chrome.enabled=true",
+                "devtools.debugger.prompt-connection=false"
+            ]
+            options.autorun = False
 
         # Try to guess the testing modules directory.
         # This somewhat grotesque hack allows the buildbot machines to find the
@@ -452,7 +457,7 @@ class MochitestOptions(optparse.OptionParser):
                 options.testingModulesDir += '/'
 
         if options.immersiveMode:
-            if not self._automation.IS_WIN32:
+            if not mozinfo.isWin:
                 self.error("immersive is only supported on Windows 8 and up.")
             mochitest.immersiveHelperPath = os.path.join(
                 options.utilityPath, "metrotestharness.exe")
@@ -465,15 +470,6 @@ class MochitestOptions(optparse.OptionParser):
                 self.error("--run-until-failure can only be used together with --test-path specifying a single test.")
             if not options.repeat:
                 options.repeat = 29
-
-        if not options.mozInfo:
-            if build_obj:
-                options.mozInfo = os.path.join(build_obj.topobjdir, 'mozinfo.json')
-            else:
-                options.mozInfo = os.path.abspath('mozinfo.json')
-
-        if not os.path.isfile(options.mozInfo):
-            self.error("Unable to file build information file (mozinfo.json) at this location: %s" % options.mozInfo)
 
         return options
 
@@ -668,7 +664,7 @@ class B2GOptions(MochitestOptions):
     def verifyOptions(self, options, mochitest):
         # since we are reusing verifyOptions, it will exit if App is not found
         temp = options.app
-        options.app = sys.argv[0]
+        options.app = __file__
         tempPort = options.httpPort
         tempSSL = options.sslPort
         tempIP = options.webServer

@@ -18,27 +18,35 @@
  * well as providing refcounting support.
  */
 
-#include "xpcprivate.h"
+#include "nscore.h"
+#include "nsString.h"
 #include "nsStringBuffer.h"
+#include "jsapi.h"
+#include "xpcpublic.h"
 
-// One-slot cache, because it turns out it's common for web pages to
-// get the same string a few times in a row.  We get about a 40% cache
-// hit rate on this cache last it was measured.  We'd get about 70%
-// hit rate with a hashtable with removal on finalization, but that
-// would take a lot more machinery.
-nsStringBuffer* XPCStringConvert::sCachedBuffer = nullptr;
-JSString* XPCStringConvert::sCachedString = nullptr;
 
-// Called from GC finalize callback to make sure we don't hand out a pointer to
-// a JSString that's about to be finalized by incremental sweeping.
 // static
 void
-XPCStringConvert::ClearCache()
+XPCStringConvert::FreeZoneCache(JS::Zone *zone)
 {
-    sCachedBuffer = nullptr;
-    sCachedString = nullptr;
+    // Put the zone user data into an AutoPtr (which will do the cleanup for us),
+    // and null out the user data (which may already be null).
+    nsAutoPtr<ZoneStringCache> cache(static_cast<ZoneStringCache*>(JS_GetZoneUserData(zone)));
+    JS_SetZoneUserData(zone, nullptr);
 }
 
+// static
+void
+XPCStringConvert::ClearZoneCache(JS::Zone *zone)
+{
+    ZoneStringCache *cache = static_cast<ZoneStringCache*>(JS_GetZoneUserData(zone));
+    if (cache) {
+        cache->mBuffer = nullptr;
+        cache->mString = nullptr;
+    }
+}
+
+// static
 void
 XPCStringConvert::FinalizeDOMString(const JSStringFinalizer *fin, jschar *chars)
 {
@@ -68,7 +76,7 @@ XPCStringConvert::ReadableToJSVal(JSContext *cx,
     if (buf) {
         JS::RootedValue val(cx);
         bool shared;
-        bool ok = StringBufferToJSVal(cx, buf, length, val.address(), &shared);
+        bool ok = StringBufferToJSVal(cx, buf, length, &val, &shared);
         if (!ok) {
             return JS::NullValue();
         }

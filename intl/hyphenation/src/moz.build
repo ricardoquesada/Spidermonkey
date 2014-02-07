@@ -6,11 +6,19 @@
 
 MODULE = 'hyphenation'
 
-CPP_SOURCES += [
+SOURCES += [
     'hnjstdio.cpp',
     'nsHyphenationManager.cpp',
     'nsHyphenator.cpp',
 ]
 
 LIBRARY_NAME = 'hyphenation_s'
+
+LIBXUL_LIBRARY = True
+
+SOURCES += [
+    'hyphen.c',
+]
+
+MSVC_ENABLE_PGO = True
 

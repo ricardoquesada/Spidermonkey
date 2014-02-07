@@ -6,7 +6,7 @@
 
 MODULE = 'locale'
 
-CPP_SOURCES += [
+SOURCES += [
     'nsCollationWin.cpp',
     'nsDateTimeFormatWin.cpp',
     'nsWin32Locale.cpp',
@@ -14,4 +14,6 @@ CPP_SOURCES += [
 ]
 
 LIBRARY_NAME = 'platlocale_s'
+
+LIBXUL_LIBRARY = True
 

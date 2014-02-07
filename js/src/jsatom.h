@@ -9,16 +9,14 @@
 
 #include "mozilla/HashFunctions.h"
 
-#include <stddef.h>
-
 #include "jsalloc.h"
-#include "jsapi.h"
-#include "jsprvtd.h"
-#include "jspubtd.h"
 
 #include "gc/Barrier.h"
-#include "js/HashTable.h"
+#include "gc/Rooting.h"
 #include "vm/CommonPropertyNames.h"
+
+class JSAtom;
+class JSAutoByteString;
 
 struct JSIdArray {
     int length;
@@ -91,12 +89,13 @@ struct AtomHasher
         size_t          length;
         const JSAtom    *atom; /* Optional. */
 
-        Lookup(const jschar *chars, size_t length) : chars(chars), length(length), atom(NULL) {}
+        Lookup(const jschar *chars, size_t length) : chars(chars), length(length), atom(nullptr) {}
         inline Lookup(const JSAtom *atom);
     };
 
     static HashNumber hash(const Lookup &l) { return mozilla::HashString(l.chars, l.length); }
     static inline bool match(const AtomStateEntry &entry, const Lookup &lookup);
+    static void rekey(AtomStateEntry &k, const AtomStateEntry& newKey) { k = newKey; }
 };
 
 typedef HashSet<AtomStateEntry, AtomHasher, SystemAllocPolicy> AtomSet;
@@ -158,7 +157,6 @@ extern const char js_typeof_str[];
 extern const char js_void_str[];
 extern const char js_while_str[];
 extern const char js_with_str[];
-extern const char js_yield_str[];
 
 namespace js {
 
@@ -169,7 +167,7 @@ extern const char * const TypeStrings[];
  * memory. The caller must zero rt->atomState before calling this function and
  * only call it after js_InitGC successfully returns.
  */
-extern JSBool
+extern bool
 InitAtoms(JSRuntime *rt);
 
 /*
@@ -201,6 +199,11 @@ enum InternBehavior
     InternAtom = true
 };
 
+template <AllowGC allowGC>
+extern JSAtom *
+AtomizeMaybeGC(ExclusiveContext *cx, const char *bytes, size_t length,
+               js::InternBehavior ib = js::DoNotInternAtom);
+
 extern JSAtom *
 Atomize(ExclusiveContext *cx, const char *bytes, size_t length,
         js::InternBehavior ib = js::DoNotInternAtom);
@@ -217,6 +220,14 @@ AtomizeString(ExclusiveContext *cx, JSString *str, js::InternBehavior ib = js::D
 template <AllowGC allowGC>
 extern JSAtom *
 ToAtom(ExclusiveContext *cx, typename MaybeRooted<Value, allowGC>::HandleType v);
+
+enum XDRMode {
+    XDR_ENCODE,
+    XDR_DECODE
+};
+
+template <XDRMode mode>
+class XDRState;
 
 template<XDRMode mode>
 bool

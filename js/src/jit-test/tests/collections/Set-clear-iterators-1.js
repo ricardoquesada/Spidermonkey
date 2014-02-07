@@ -1,17 +1,17 @@
 // A Set iterator does not visit entries removed by clear().
 
-load(libdir + "asserts.js");
+load(libdir + "iteration.js");
 
 var s = Set();
-var it = s.iterator();
+var it = s[std_iterator]();
 s.clear();
-assertThrowsValue(it.next.bind(it), StopIteration);
+assertIteratorDone(it, undefined);
 
 s = Set(["a", "b", "c", "d"]);
-it = s.iterator();
-assertEq(it.next()[0], "a");
+it = s[std_iterator]();
+assertIteratorNext(it, "a");
 s.clear();
-assertThrowsValue(it.next.bind(it), StopIteration);
+assertIteratorDone(it, undefined);
 
 var log = "";
 s = Set(["a", "b", "c", "d"]);

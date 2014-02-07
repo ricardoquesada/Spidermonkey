@@ -32,7 +32,7 @@ class LDivI : public LBinaryMath<1>
         }
         if (mir()->canBeNegativeZero())
             return mir()->canBeNegativeOverflow() ? "NegativeZero_NegativeOverflow" : "NegativeZero";
-        return mir()->canBeNegativeOverflow() ? "NegativeOverflow" : NULL;
+        return mir()->canBeNegativeOverflow() ? "NegativeOverflow" : nullptr;
     }
 
     const LDefinition *remainder() {
@@ -72,6 +72,25 @@ class LDivPowTwoI : public LBinaryMath<0>
     }
 };
 
+// Division of a number by itself. Returns 1 unless the number is zero.
+class LDivSelfI : public LInstructionHelper<1, 1, 0>
+{
+  public:
+    LIR_HEADER(DivSelfI)
+
+    LDivSelfI(const LAllocation &op) {
+        setOperand(0, op);
+    }
+
+    const LAllocation *op() {
+        return getOperand(0);
+    }
+
+    MDiv *mir() const {
+        return mir_->toDiv();
+    }
+};
+
 class LModI : public LBinaryMath<1>
 {
   public:
@@ -84,7 +103,7 @@ class LModI : public LBinaryMath<1>
     }
 
     const char *extraName() const {
-        return mir()->isTruncated() ? "Truncated" : NULL;
+        return mir()->isTruncated() ? "Truncated" : nullptr;
     }
 
     const LDefinition *remainder() {
@@ -138,20 +157,16 @@ class LModPowTwoI : public LInstructionHelper<1,1,0>
 };
 
 // Double raised to a half power.
-class LPowHalfD : public LInstructionHelper<1, 1, 1>
+class LPowHalfD : public LInstructionHelper<1, 1, 0>
 {
   public:
     LIR_HEADER(PowHalfD)
-    LPowHalfD(const LAllocation &input, const LDefinition &temp) {
+    LPowHalfD(const LAllocation &input) {
         setOperand(0, input);
-        setTemp(0, temp);
     }
 
     const LAllocation *input() {
         return getOperand(0);
-    }
-    const LDefinition *temp() {
-        return getTemp(0);
     }
     const LDefinition *output() {
         return getDef(0);
@@ -180,11 +195,11 @@ class LTableSwitch : public LInstructionHelper<0, 1, 2>
     const LAllocation *index() {
         return getOperand(0);
     }
-    const LAllocation *tempInt() {
-        return getTemp(0)->output();
+    const LDefinition *tempInt() {
+        return getTemp(0);
     }
-    const LAllocation *tempPointer() {
-        return getTemp(1)->output();
+    const LDefinition *tempPointer() {
+        return getTemp(1);
     }
 };
 
@@ -209,14 +224,14 @@ class LTableSwitchV : public LInstructionHelper<0, BOX_PIECES, 3>
 
     static const size_t InputValue = 0;
 
-    const LAllocation *tempInt() {
-        return getTemp(0)->output();
+    const LDefinition *tempInt() {
+        return getTemp(0);
     }
-    const LAllocation *tempFloat() {
-        return getTemp(1)->output();
+    const LDefinition *tempFloat() {
+        return getTemp(1);
     }
-    const LAllocation *tempPointer() {
-        return getTemp(2)->output();
+    const LDefinition *tempPointer() {
+        return getTemp(2);
     }
 };
 
@@ -266,7 +281,7 @@ class LMulI : public LBinaryMath<0, 1>
     const char *extraName() const {
         return (mir()->mode() == MMul::Integer)
                ? "Integer"
-               : (mir()->canBeNegativeZero() ? "CanBeNegativeZero" : NULL);
+               : (mir()->canBeNegativeZero() ? "CanBeNegativeZero" : nullptr);
     }
 
     MMul *mir() const {

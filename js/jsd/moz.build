@@ -15,7 +15,7 @@ EXPORTS += [
 
 XPCSHELL_TESTS_MANIFESTS += ['test/xpcshell.ini']
 
-CPP_SOURCES += [
+SOURCES += [
     'jsd_atom.cpp',
     'jsd_high.cpp',
     'jsd_hook.cpp',
@@ -31,5 +31,14 @@ CPP_SOURCES += [
     'jshash.cpp',
 ]
 
+DEFINES['EXPORT_JSD_API'] = True
+
+if CONFIG['JS_THREADSAFE']:
+    DEFINES['JS_THREADSAFE'] = True
+
 LIBRARY_NAME = 'jsd'
+
+LIBXUL_LIBRARY = True
+
+EXPORT_LIBRARY = True
 

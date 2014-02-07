@@ -30,7 +30,7 @@ ICCompare_Int32::Compiler::generateStubCode(MacroAssembler &masm)
     Assembler::Condition cond = JSOpToCondition(op, /* signed = */true);
     masm.cmpl(R0.payloadReg(), R1.payloadReg());
     masm.setCC(cond, R0.payloadReg());
-    masm.movzxbl(R0.payloadReg(), R0.payloadReg());
+    masm.movzbl(R0.payloadReg(), R0.payloadReg());
 
     // Box the result and return
     masm.tagValue(JSVAL_TYPE_BOOLEAN, R0.payloadReg(), R0);
@@ -200,7 +200,7 @@ ICBinaryArith_Int32::Compiler::generateStubCode(MacroAssembler &masm)
         masm.j(Assembler::Signed, &failure);
 
         // Result is +0.
-        masm.xorl(R0.payloadReg(), R0.payloadReg());
+        masm.mov(ImmWord(0), R0.payloadReg());
         EmitReturnFromIC(masm);
         break;
       case JSOP_DIV:

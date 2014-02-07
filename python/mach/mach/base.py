@@ -7,9 +7,8 @@ from __future__ import unicode_literals
 
 class CommandContext(object):
     """Holds run-time state so it can easily be passed to command providers."""
-    def __init__(self, topdir=None, cwd=None, settings=None, log_manager=None,
+    def __init__(self, cwd=None, settings=None, log_manager=None,
         commands=None):
-        self.topdir = topdir
         self.cwd = cwd
         self.settings = settings
         self.log_manager = log_manager
@@ -77,13 +76,18 @@ class MethodHandler(object):
         # Whether to allow all arguments from the parser.
         'allow_all_arguments',
 
+        # Functions used to 'skip' commands if they don't meet the conditions
+        # in a given context.
+        'conditions',
+
         # Arguments added to this command's parser. This is a 2-tuple of
         # positional and named arguments, respectively.
         'arguments',
     )
 
     def __init__(self, cls, method, name, category=None, description=None,
-        allow_all_arguments=False, arguments=None, pass_context=False):
+        allow_all_arguments=False, conditions=None, arguments=None,
+        pass_context=False):
 
         self.cls = cls
         self.method = method
@@ -91,6 +95,7 @@ class MethodHandler(object):
         self.category = category
         self.description = description
         self.allow_all_arguments = allow_all_arguments
+        self.conditions = conditions or []
         self.arguments = arguments or []
         self.pass_context = pass_context
 

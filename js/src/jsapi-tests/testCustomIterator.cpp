@@ -2,13 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "jsclass.h"
-
+#include "js/Class.h"
 #include "jsapi-tests/tests.h"
 
 int count = 0;
 
-static JSBool
+static bool
 IterNext(JSContext *cx, unsigned argc, jsval *vp)
 {
     if (count++ == 100)
@@ -18,17 +17,17 @@ IterNext(JSContext *cx, unsigned argc, jsval *vp)
 }
 
 static JSObject *
-IterHook(JSContext *cx, JS::HandleObject obj, JSBool keysonly)
+IterHook(JSContext *cx, JS::HandleObject obj, bool keysonly)
 {
-    JS::RootedObject iterObj(cx, JS_NewObject(cx, NULL, NULL, NULL));
+    JS::RootedObject iterObj(cx, JS_NewObject(cx, nullptr, nullptr, nullptr));
     if (!iterObj)
-        return NULL;
+        return nullptr;
     if (!JS_DefineFunction(cx, iterObj, "next", IterNext, 0, 0))
-        return NULL;
+        return nullptr;
     return iterObj;
 }
 
-js::Class HasCustomIterClass = {
+const js::Class HasCustomIterClass = {
     "HasCustomIter",
     0,
     JS_PropertyStub,
@@ -38,21 +37,21 @@ js::Class HasCustomIterClass = {
     JS_EnumerateStub,
     JS_ResolveStub,
     JS_ConvertStub,
-    NULL,
-    NULL, /* checkAccess */
-    NULL, /* call */
-    NULL, /* hasInstance */
-    NULL, /* construct */
-    NULL, /* mark */
+    nullptr,
+    nullptr, /* checkAccess */
+    nullptr, /* call */
+    nullptr, /* hasInstance */
+    nullptr, /* construct */
+    nullptr, /* mark */
     {
-        NULL,       /* outerObject */
-        NULL,       /* innerObject */
+        nullptr,     /* outerObject */
+        nullptr,     /* innerObject */
         IterHook,
         false        /* isWrappedNative */
     }
 };
 
-JSBool
+bool
 IterClassConstructor(JSContext *cx, unsigned argc, jsval *vp)
 {
     JSObject *obj = JS_NewObjectForConstructor(cx, Jsvalify(&HasCustomIterClass), vp);
@@ -64,8 +63,8 @@ IterClassConstructor(JSContext *cx, unsigned argc, jsval *vp)
 
 BEGIN_TEST(testCustomIterator_bug612523)
 {
-    CHECK(JS_InitClass(cx, global, NULL, Jsvalify(&HasCustomIterClass),
-                       IterClassConstructor, 0, NULL, NULL, NULL, NULL));
+    CHECK(JS_InitClass(cx, global, nullptr, Jsvalify(&HasCustomIterClass),
+                       IterClassConstructor, 0, nullptr, nullptr, nullptr, nullptr));
 
     JS::RootedValue result(cx);
     EVAL("var o = new HasCustomIter(); \n"

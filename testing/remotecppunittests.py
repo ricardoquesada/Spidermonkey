@@ -132,7 +132,7 @@ class RemoteCPPUnitTests(cppunittests.CPPUnitTests):
         returncode = self.device.shell([remote_bin], buf, env=env, cwd=self.remote_home_dir,
                                        timeout=cppunittests.CPPUnitTests.TEST_PROC_TIMEOUT)
         print >> sys.stdout, buf.getvalue()
-        with cppunittests.TemporaryDirectory() as tempdir:
+        with mozfile.TemporaryDirectory() as tempdir:
             self.device.getDirectory(self.remote_home_dir, tempdir)
             if mozcrash.check_for_crashes(tempdir, symbols_path,
                                           test_name=basename):
@@ -227,7 +227,7 @@ def main():
             print "Error: you must provide a device IP to connect to via the --deviceIP option"
             sys.exit(1)
     options.xre_path = os.path.abspath(options.xre_path)
-    progs = cppunittests.extract_unittests_from_args(args)
+    progs = cppunittests.extract_unittests_from_args(args, options.manifest_file)
     tester = RemoteCPPUnitTests(dm, options, progs)
     try:
         result = tester.run_tests(progs, options.xre_path, options.symbols_path)

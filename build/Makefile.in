@@ -3,12 +3,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DEPTH		= @DEPTH@
-topsrcdir	= @top_srcdir@
-srcdir		= @srcdir@
-VPATH		= @srcdir@
-
-include $(DEPTH)/config/autoconf.mk
 USE_RCS_MK := 1
 include $(topsrcdir)/config/makefiles/makeutils.mk
 
@@ -53,12 +47,16 @@ DEFINES += \
   -DACCEPTED_MAR_CHANNEL_IDS="$(ACCEPTED_MAR_CHANNEL_IDS)" \
   $(NULL)
 
+ifeq ($(MOZ_BUILD_APP),browser)
+DEFINES += -DMOZ_BUILD_APP_IS_BROWSER
+endif
+
 ifdef MOZ_APP_PROFILE
 DEFINES += -DMOZ_APP_PROFILE="$(MOZ_APP_PROFILE)"
 endif
 
-ifdef MOZILLA_OFFICIAL
-DEFINES += -DMOZILLA_OFFICIAL
+ifdef MOZ_CRASHREPORTER
+DEFINES += -DMOZ_CRASHREPORTER
 endif
 
 ifdef MOZ_PROFILE_MIGRATOR

@@ -7,15 +7,17 @@
 #ifndef jit_shared_CodeGenerator_shared_h
 #define jit_shared_CodeGenerator_shared_h
 
-#include "jit/IonCaches.h"
+#include "mozilla/Alignment.h"
+
 #include "jit/IonFrames.h"
 #include "jit/IonMacroAssembler.h"
 #include "jit/LIR.h"
-#include "jit/MIR.h"
+#include "jit/MIRGenerator.h"
 #include "jit/MIRGraph.h"
 #include "jit/Safepoints.h"
 #include "jit/SnapshotWriter.h"
 #include "jit/VMFunctions.h"
+#include "vm/ForkJoin.h"
 
 namespace js {
 namespace jit {
@@ -31,6 +33,17 @@ template <class ArgSeq, class StoreOutputTo>
 class OutOfLineCallVM;
 
 class OutOfLineTruncateSlow;
+
+struct PatchableBackedgeInfo
+{
+    CodeOffsetJump backedge;
+    Label *loopHeader;
+    Label *interruptCheck;
+
+    PatchableBackedgeInfo(CodeOffsetJump backedge, Label *loopHeader, Label *interruptCheck)
+      : backedge(backedge), loopHeader(loopHeader), interruptCheck(interruptCheck)
+    {}
+};
 
 class CodeGeneratorShared : public LInstructionVisitor
 {
@@ -71,6 +84,9 @@ class CodeGeneratorShared : public LInstructionVisitor
 
     // List of stack slots that have been pushed as arguments to an MCall.
     js::Vector<uint32_t, 0, SystemAllocPolicy> pushedArgumentSlots_;
+
+    // Patchable backedges generated for loops.
+    Vector<PatchableBackedgeInfo, 0, SystemAllocPolicy> patchableBackedges_;
 
     // When profiling is enabled, this is the instrumentation manager which
     // maintains state of what script is currently being generated (for inline
@@ -175,20 +191,46 @@ class CodeGeneratorShared : public LInstructionVisitor
 
   protected:
     // Ensure the cache is an IonCache while expecting the size of the derived
-    // class.
+    // class. We only need the cache list at GC time. Everyone else can just take
+    // runtimeData offsets.
     size_t allocateCache(const IonCache &, size_t size) {
         size_t dataOffset = allocateData(size);
-        size_t index = cacheList_.length();
         masm.propagateOOM(cacheList_.append(dataOffset));
-        return index;
+        return dataOffset;
     }
 
+#ifdef CHECK_OSIPOINT_REGISTERS
+    void resetOsiPointRegs(LSafepoint *safepoint);
+    bool shouldVerifyOsiPointRegs(LSafepoint *safepoint);
+    void verifyOsiPointRegs(LSafepoint *safepoint);
+#endif
+
   public:
-    // This is needed by addCache to update the cache with the jump
-    // informations provided by the out-of-line path.
-    IonCache *getCache(size_t index) {
-        return reinterpret_cast<IonCache *>(&runtimeData_[cacheList_[index]]);
-    }
+
+    // When appending to runtimeData_, the vector might realloc, leaving pointers
+    // int the origianl vector stale and unusable. DataPtr acts like a pointer,
+    // but allows safety in the face of potentially realloc'ing vector appends.
+    friend class DataPtr;
+    template <typename T>
+    class DataPtr
+    {
+        CodeGeneratorShared *cg_;
+        size_t index_;
+
+        T *lookup() {
+            return reinterpret_cast<T *>(&cg_->runtimeData_[index_]);
+        }
+      public:
+        DataPtr(CodeGeneratorShared *cg, size_t index)
+          : cg_(cg), index_(index) { }
+
+        T * operator ->() {
+            return lookup();
+        }
+        T * operator *() {
+            return lookup();
+        }
+    };
 
   protected:
 
@@ -203,7 +245,8 @@ class CodeGeneratorShared : public LInstructionVisitor
     inline size_t allocateCache(const T &cache) {
         size_t index = allocateCache(cache, sizeof(mozilla::AlignedStorage2<T>));
         // Use the copy constructor on the allocated space.
-        new (&runtimeData_[cacheList_.back()]) T(cache);
+        JS_ASSERT(index == cacheList_.back());
+        new (&runtimeData_[index]) T(cache);
         return index;
     }
 
@@ -240,7 +283,9 @@ class CodeGeneratorShared : public LInstructionVisitor
     //      an invalidation marker.
     void ensureOsiSpace();
 
+    OutOfLineCode *oolTruncateDouble(const FloatRegister &src, const Register &dest);
     bool emitTruncateDouble(const FloatRegister &src, const Register &dest);
+    bool emitTruncateFloat32(const FloatRegister &src, const Register &dest);
 
     void emitPreBarrier(Register base, const LAllocation *index, MIRType type);
     void emitPreBarrier(Address address, MIRType type);
@@ -261,22 +306,22 @@ class CodeGeneratorShared : public LInstructionVisitor
     // be saved and restored in case future LIR instructions need those values.)
     void saveVolatile(Register output) {
         RegisterSet regs = RegisterSet::Volatile();
-        regs.maybeTake(output);
+        regs.takeUnchecked(output);
         masm.PushRegsInMask(regs);
     }
     void restoreVolatile(Register output) {
         RegisterSet regs = RegisterSet::Volatile();
-        regs.maybeTake(output);
+        regs.takeUnchecked(output);
         masm.PopRegsInMask(regs);
     }
     void saveVolatile(FloatRegister output) {
         RegisterSet regs = RegisterSet::Volatile();
-        regs.maybeTake(output);
+        regs.takeUnchecked(output);
         masm.PushRegsInMask(regs);
     }
     void restoreVolatile(FloatRegister output) {
         RegisterSet regs = RegisterSet::Volatile();
-        regs.maybeTake(output);
+        regs.takeUnchecked(output);
         masm.PopRegsInMask(regs);
     }
     void saveVolatile(RegisterSet temps) {
@@ -321,13 +366,13 @@ class CodeGeneratorShared : public LInstructionVisitor
         masm.storeCallResultValue(t);
     }
 
-    bool callVM(const VMFunction &f, LInstruction *ins, const Register *dynStack = NULL);
+    bool callVM(const VMFunction &f, LInstruction *ins, const Register *dynStack = nullptr);
 
     template <class ArgSeq, class StoreOutputTo>
     inline OutOfLineCode *oolCallVM(const VMFunction &fun, LInstruction *ins, const ArgSeq &args,
                                     const StoreOutputTo &out);
 
-    bool callVM(const VMFunctionsModal &f, LInstruction *ins, const Register *dynStack = NULL) {
+    bool callVM(const VMFunctionsModal &f, LInstruction *ins, const Register *dynStack = nullptr) {
         return callVM(f[gen->info().executionMode()], ins, dynStack);
     }
 
@@ -339,11 +384,21 @@ class CodeGeneratorShared : public LInstructionVisitor
     }
 
     bool addCache(LInstruction *lir, size_t cacheIndex);
+    size_t addCacheLocations(const CacheLocationList &locs, size_t *numLocs);
 
   protected:
     bool addOutOfLineCode(OutOfLineCode *code);
     bool hasOutOfLineCode() { return !outOfLineCode_.empty(); }
     bool generateOutOfLineCode();
+
+    Label *labelForBackedgeWithImplicitCheck(MBasicBlock *mir);
+
+    // Generate a jump to the start of the specified block, adding information
+    // if this is a loop backedge. Use this in place of jumping directly to
+    // mir->lir()->label(), or use getJumpLabelForBranch() if a label to use
+    // directly is needed.
+    void jumpToBlock(MBasicBlock *mir);
+    void jumpToBlock(MBasicBlock *mir, Assembler::Condition cond);
 
   private:
     void generateInvalidateEpilogue();
@@ -358,7 +413,7 @@ class CodeGeneratorShared : public LInstructionVisitor
     bool visitOutOfLineTruncateSlow(OutOfLineTruncateSlow *ool);
 
   public:
-    bool callTraceLIR(uint32_t blockIndex, LInstruction *lir, const char *bailoutName = NULL);
+    bool callTraceLIR(uint32_t blockIndex, LInstruction *lir, const char *bailoutName = nullptr);
 
     // Parallel aborts:
     //
@@ -392,8 +447,8 @@ class OutOfLineCode : public TempObject
   public:
     OutOfLineCode()
       : framePushed_(0),
-        pc_(NULL),
-        script_(NULL)
+        pc_(nullptr),
+        script_(nullptr)
     { }
 
     virtual bool generate(CodeGeneratorShared *codegen) = 0;
@@ -619,7 +674,7 @@ CodeGeneratorShared::oolCallVM(const VMFunction &fun, LInstruction *lir, const A
 {
     OutOfLineCode *ool = new OutOfLineCallVM<ArgSeq, StoreOutputTo>(lir, fun, args, out);
     if (!addOutOfLineCode(ool))
-        return NULL;
+        return nullptr;
     return ool;
 }
 
@@ -685,6 +740,8 @@ class OutOfLinePropagateAbortPar : public OutOfLineCode
 
     bool generate(CodeGeneratorShared *codegen);
 };
+
+extern const VMFunction InterruptCheckInfo;
 
 } // namespace jit
 } // namespace js

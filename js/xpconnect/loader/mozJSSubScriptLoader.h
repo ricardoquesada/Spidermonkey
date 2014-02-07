@@ -4,10 +4,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "jsapi.h"
 #include "nsCOMPtr.h"
 #include "mozIJSSubScriptLoader.h"
-#include "nsIScriptSecurityManager.h"
+
+class nsIPrincipal;
+class nsIURI;
 
 #define MOZ_JSSUBSCRIPTLOADER_CID                                             \
 { /* 829814d6-1dd2-11b2-8e08-82fa0a339b00 */                                  \

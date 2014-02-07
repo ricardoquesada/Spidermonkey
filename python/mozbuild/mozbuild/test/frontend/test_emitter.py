@@ -14,13 +14,19 @@ from mozbuild.frontend.data import (
     DirectoryTraversal,
     ReaderSummary,
     VariablePassthru,
+    Defines,
     Exports,
+    GeneratedInclude,
     Program,
-    XpcshellManifests,
     IPDLFile,
+    LocalInclude,
+    TestManifest,
 )
 from mozbuild.frontend.emitter import TreeMetadataEmitter
-from mozbuild.frontend.reader import BuildReader
+from mozbuild.frontend.reader import (
+    BuildReader,
+    SandboxValidationError,
+)
 
 from mozbuild.test.common import MockConfig
 
@@ -31,9 +37,10 @@ data_path = os.path.join(data_path, 'data')
 
 class TestEmitterBasic(unittest.TestCase):
     def reader(self, name):
-        config = MockConfig(os.path.join(data_path, name))
-        config.substs['ENABLE_TESTS'] = '1'
-        config.substs['BIN_SUFFIX'] = '.prog'
+        config = MockConfig(os.path.join(data_path, name), extra_substs=dict(
+            ENABLE_TESTS='1',
+            BIN_SUFFIX='.prog',
+        ))
 
         return BuildReader(config)
 
@@ -130,36 +137,39 @@ class TestEmitterBasic(unittest.TestCase):
             CMMSRCS=['fans.mm', 'tans.mm'],
             CSRCS=['fans.c', 'tans.c'],
             CPP_UNIT_TESTS=['foo.cpp'],
-            DEFINES=['-Dfans', '-Dtans'],
+            EXPORT_LIBRARY=True,
             EXTRA_COMPONENTS=['fans.js', 'tans.js'],
             EXTRA_PP_COMPONENTS=['fans.pp.js', 'tans.pp.js'],
             EXTRA_JS_MODULES=['bar.jsm', 'foo.jsm'],
             EXTRA_PP_JS_MODULES=['bar.pp.jsm', 'foo.pp.jsm'],
+            FAIL_ON_WARNINGS=True,
+            FORCE_SHARED_LIB=True,
+            FORCE_STATIC_LIB=True,
             GTEST_CSRCS=['test1.c', 'test2.c'],
             GTEST_CMMSRCS=['test1.mm', 'test2.mm'],
             GTEST_CPPSRCS=['test1.cpp', 'test2.cpp'],
             HOST_CPPSRCS=['fans.cpp', 'tans.cpp'],
             HOST_CSRCS=['fans.c', 'tans.c'],
             HOST_LIBRARY_NAME='host_fans',
+            IS_COMPONENT=True,
             LIBRARY_NAME='lib_name',
             LIBS=['fans.lib', 'tans.lib'],
-            NO_DIST_INSTALL='1',
+            LIBXUL_LIBRARY=True,
+            MSVC_ENABLE_PGO=True,
+            NO_DIST_INSTALL=True,
+            MODULE='module_name',
+            OS_LIBS=['foo.so', '-l123', 'aaa.a'],
             SDK_LIBRARY=['fans.sdk', 'tans.sdk'],
             SHARED_LIBRARY_LIBS=['fans.sll', 'tans.sll'],
             SIMPLE_PROGRAMS=['fans.x', 'tans.x'],
-            SSRCS=['fans.S', 'tans.S'],
-            XPIDLSRCS=['bar.idl', 'biz.idl', 'foo.idl'],
-            XPIDL_MODULE='module_name',
-            XPIDL_FLAGS=['-Idir1', '-Idir2', '-Idir3'],
-            )
+            SSRCS=['bans.S', 'fans.S'],
+        )
 
         variables = objs[1].variables
-        self.assertEqual(len(variables), len(wanted))
-
-        for var, val in wanted.items():
-            # print("test_variable_passthru[%s]" % var)
-            self.assertIn(var, variables)
-            self.assertEqual(variables[var], val)
+        maxDiff = self.maxDiff
+        self.maxDiff = None
+        self.assertEqual(wanted, variables)
+        self.maxDiff = maxDiff
 
     def test_exports(self):
         reader = self.reader('exports')
@@ -209,23 +219,129 @@ class TestEmitterBasic(unittest.TestCase):
         program = objs[1].program
         self.assertEqual(program, 'test_program.prog')
 
-    def test_xpcshell_manifests(self):
-        reader = self.reader('xpcshell_manifests')
-        objs = self.read_topsrcdir(reader)
+    def test_test_manifest_missing_manifest(self):
+        """A missing manifest file should result in an error."""
+        reader = self.reader('test-manifest-missing-manifest')
 
-        inis = []
+        with self.assertRaisesRegexp(SandboxValidationError, 'IOError: Missing files'):
+            self.read_topsrcdir(reader)
+
+    def test_empty_test_manifest_rejected(self):
+        """A test manifest without any entries is rejected."""
+        reader = self.reader('test-manifest-empty')
+
+        with self.assertRaisesRegexp(SandboxValidationError, 'Empty test manifest'):
+            self.read_topsrcdir(reader)
+
+    def test_test_manifest_keys_extracted(self):
+        """Ensure all metadata from test manifests is extracted."""
+        reader = self.reader('test-manifest-keys-extracted')
+
+        objs = [o for o in self.read_topsrcdir(reader)
+                if isinstance(o, TestManifest)]
+
+        self.assertEqual(len(objs), 6)
+
+        metadata = {
+            'a11y.ini': {
+                'flavor': 'a11y',
+                'installs': {
+                    'a11y.ini',
+                    'test_a11y.js',
+                    # From ** wildcard.
+                    'a11y-support/foo',
+                    'a11y-support/dir1/bar',
+                },
+            },
+            'browser.ini': {
+                'flavor': 'browser-chrome',
+                'installs': {
+                    'browser.ini',
+                    'test_browser.js',
+                    'support1',
+                    'support2',
+                },
+            },
+            'metro.ini': {
+                'flavor': 'metro-chrome',
+                'installs': {
+                    'metro.ini',
+                    'test_metro.js',
+                },
+            },
+            'mochitest.ini': {
+                'flavor': 'mochitest',
+                'installs': {
+                    'mochitest.ini',
+                    'test_mochitest.js',
+                },
+                'external': {
+                    'external1',
+                    'external2',
+                },
+            },
+            'chrome.ini': {
+                'flavor': 'chrome',
+                'installs': {
+                    'chrome.ini',
+                    'test_chrome.js',
+                },
+            },
+            'xpcshell.ini': {
+                'flavor': 'xpcshell',
+                'dupe': True,
+                'installs': {
+                    'xpcshell.ini',
+                    'test_xpcshell.js',
+                    'head1',
+                    'head2',
+                    'tail1',
+                    'tail2',
+                },
+            },
+        }
+
         for o in objs:
-            if isinstance(o, XpcshellManifests):
-                inis.append(o.xpcshell_manifests)
+            m = metadata[os.path.basename(o.manifest_relpath)]
 
-        iniByDir = [
-            'bar/xpcshell.ini',
-            'enabled_var/xpcshell.ini',
-            'foo/xpcshell.ini',
-            'tans/xpcshell.ini',
-            ]
+            self.assertTrue(o.path.startswith(o.directory))
+            self.assertEqual(o.flavor, m['flavor'])
+            self.assertEqual(o.dupe_manifest, m.get('dupe', False))
 
-        self.assertEqual(sorted(inis), iniByDir)
+            external_normalized = set(os.path.basename(p) for p in
+                    o.external_installs)
+            self.assertEqual(external_normalized, m.get('external', set()))
+
+            self.assertEqual(len(o.installs), len(m['installs']))
+            for path in o.installs.keys():
+                self.assertTrue(path.startswith(o.directory))
+                path = path[len(o.directory)+1:]
+
+                self.assertIn(path, m['installs'])
+
+    def test_test_manifest_unmatched_generated(self):
+        reader = self.reader('test-manifest-unmatched-generated')
+
+        with self.assertRaisesRegexp(SandboxValidationError,
+            'entry in generated-files not present elsewhere'):
+            self.read_topsrcdir(reader),
+
+    # This test is only needed until all harnesses support filtering from
+    # manifests.
+    def test_test_manifest_inactive_ignored(self):
+        """Inactive tests should not be installed."""
+        reader = self.reader('test-manifest-inactive-ignored')
+
+        objs = [o for o in self.read_topsrcdir(reader)
+               if isinstance(o, TestManifest)]
+
+        self.assertEqual(len(objs), 1)
+
+        o = objs[0]
+
+        self.assertEqual(o.flavor, 'mochitest')
+        basenames = set(os.path.basename(k) for k in o.installs.keys())
+        self.assertEqual(basenames, {'mochitest.ini', 'test_active.html'})
 
     def test_ipdl_sources(self):
         reader = self.reader('ipdl_sources')
@@ -244,6 +360,50 @@ class TestEmitterBasic(unittest.TestCase):
         ]
 
         self.assertEqual(ipdls, expected)
+
+    def test_local_includes(self):
+        """Test that LOCAL_INCLUDES is emitted correctly."""
+        reader = self.reader('local_includes')
+        objs = self.read_topsrcdir(reader)
+
+        local_includes = [o.path for o in objs if isinstance(o, LocalInclude)]
+        expected = [
+            '/bar/baz',
+            'foo',
+        ]
+
+        self.assertEqual(local_includes, expected)
+
+    def test_generated_includes(self):
+        """Test that GENERATED_INCLUDES is emitted correctly."""
+        reader = self.reader('generated_includes')
+        objs = self.read_topsrcdir(reader)
+
+        generated_includes = [o.path for o in objs if isinstance(o, GeneratedInclude)]
+        expected = [
+            '/bar/baz',
+            'foo',
+        ]
+
+        self.assertEqual(generated_includes, expected)
+
+    def test_defines(self):
+        reader = self.reader('defines')
+        objs = self.read_topsrcdir(reader)
+
+        defines = {}
+        for o in objs:
+            if isinstance(o, Defines):
+                defines = o.defines
+
+        expected = {
+            'BAR': 7,
+            'BAZ': '"abcd"',
+            'FOO': True,
+            'VALUE': 'xyz',
+        }
+
+        self.assertEqual(defines, expected)
 
 if __name__ == '__main__':
     main()

@@ -60,8 +60,7 @@
     defined(__sparc__) || defined(__sparc) || defined(__s390__) || \
     defined(__SH4__) || defined(__alpha__) || \
     defined(_MIPS_ARCH_MIPS32R2) || \
-    defined(_AARCH64EL_) || \
-    defined(__arm64__)
+    defined(_AARCH64EL_)
 #define DOUBLE_CONVERSION_CORRECT_DOUBLE_OPERATIONS 1
 #elif defined(_M_IX86) || defined(__i386__) || defined(__i386)
 #if defined(_WIN32)
@@ -281,9 +280,8 @@ class StringBuilder {
 // another thus avoiding the warning.
 template <class Dest, class Source>
 inline Dest BitCast(const Source& source) {
-  // Compile time assertion: sizeof(Dest) == sizeof(Source)
-  // A compile error here means your Dest and Source have different sizes.
-  typedef char VerifySizesAreEqual[sizeof(Dest) == sizeof(Source) ? 1 : -1];
+  static_assert(sizeof(Dest) == sizeof(Source),
+                "BitCast's source and destination types must be the same size");
 
   Dest dest;
   memmove(&dest, &source, sizeof(dest));

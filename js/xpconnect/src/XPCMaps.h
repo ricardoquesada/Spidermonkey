@@ -11,8 +11,6 @@
 
 #include "mozilla/MemoryReporting.h"
 
-#include "js/HashTable.h"
-#include "jsfriendapi.h"
 
 // Maps...
 
@@ -72,7 +70,7 @@ public:
 
     void FindDyingJSObjects(nsTArray<nsXPCWrappedJS*>* dying);
 
-    void ShutdownMarker(JSRuntime* rt);
+    void ShutdownMarker();
 
     size_t SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) {
         size_t n = mallocSizeOf(this);
@@ -92,7 +90,7 @@ private:
         JSObject2WrappedJSMap* self = static_cast<JSObject2WrappedJSMap*>(d);
         JSObject *prior = key;
         JS_CallObjectTracer(trc, &key, "XPCJSRuntime::mWrappedJSMap key");
-        self->mTable.rekey(prior, key);
+        self->mTable.rekeyIfMoved(prior, key);
     }
 
     Map mTable;
@@ -142,10 +140,10 @@ public:
         NS_PRECONDITION(wrapper,"bad param");
 #ifdef DEBUG
         XPCWrappedNative* wrapperInMap = Find(wrapper->GetIdentityObject());
-        NS_ASSERTION(!wrapperInMap || wrapperInMap == wrapper,
-                     "About to remove a different wrapper with the same "
-                     "nsISupports identity! This will most likely cause serious "
-                     "problems!");
+        MOZ_ASSERT(!wrapperInMap || wrapperInMap == wrapper,
+                   "About to remove a different wrapper with the same "
+                   "nsISupports identity! This will most likely cause serious "
+                   "problems!");
 #endif
         PL_DHashTableOperate(mTable, wrapper->GetIdentityObject(), PL_DHASH_REMOVE);
     }
@@ -177,7 +175,7 @@ public:
         const nsIID*         key;
         nsXPCWrappedJSClass* value;
 
-        static struct PLDHashTableOps sOps;
+        static const struct PLDHashTableOps sOps;
     };
 
     static IID2WrappedJSClassMap* newMap(int size);
@@ -234,7 +232,7 @@ public:
         const nsIID*        key;
         XPCNativeInterface* value;
 
-        static struct PLDHashTableOps sOps;
+        static const struct PLDHashTableOps sOps;
     };
 
     static IID2NativeInterfaceMap* newMap(int size);
@@ -419,7 +417,7 @@ public:
               const PLDHashEntryHdr *entry,
               const void *key);
 
-        static struct PLDHashTableOps sOps;
+        static const struct PLDHashTableOps sOps;
     };
 
     static NativeSetMap* newMap(int size);
@@ -496,7 +494,7 @@ public:
         static void
         Clear(PLDHashTable *table, PLDHashEntryHdr *entry);
 
-        static struct PLDHashTableOps sOps;
+        static const struct PLDHashTableOps sOps;
     };
 
     static IID2ThisTranslatorMap* newMap(int size);
@@ -559,13 +557,13 @@ public:
               const PLDHashEntryHdr *entry,
               const void *key);
 
-        static struct PLDHashTableOps sOps;
+        static const struct PLDHashTableOps sOps;
     };
 
     static XPCNativeScriptableSharedMap* newMap(int size);
 
-    JSBool GetNewOrUsed(uint32_t flags, char* name, uint32_t interfacesBitmap,
-                        XPCNativeScriptableInfo* si);
+    bool GetNewOrUsed(uint32_t flags, char* name, uint32_t interfacesBitmap,
+                      XPCNativeScriptableInfo* si);
 
     inline uint32_t Count() {return mTable->entryCount;}
     inline uint32_t Enumerate(PLDHashEnumerator f, void *arg)
@@ -701,7 +699,7 @@ private:
         JSObject2JSObjectMap *self = static_cast<JSObject2JSObjectMap *>(d);
         JSObject *prior = key;
         JS_CallObjectTracer(trc, &key, "XPCWrappedNativeScope::mWaiverWrapperMap key");
-        self->mTable.rekey(prior, key);
+        self->mTable.rekeyIfMoved(prior, key);
     }
 
     Map mTable;

@@ -5,8 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "jsdbgapi.h"
-
+#include "js/OldDebugAPI.h"
 #include "jsapi-tests/tests.h"
 
 static int emptyTrapCallCount = 0;
@@ -45,7 +44,7 @@ BEGIN_TEST(testTrap_gc)
     CHECK_EQUAL(emptyTrapCallCount, 0);
 
     // Enable debug mode
-    CHECK(JS_SetDebugMode(cx, JS_TRUE));
+    CHECK(JS_SetDebugMode(cx, true));
 
     static const char trapClosureText[] = "some trap closure";
 

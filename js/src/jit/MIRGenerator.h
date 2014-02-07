@@ -17,8 +17,8 @@
 
 #include "jit/CompileInfo.h"
 #include "jit/IonAllocPolicy.h"
-#include "jit/IonCompartment.h"
-#if defined(JS_ION_PERF)
+#include "jit/JitCompartment.h"
+#ifdef JS_ION_PERF
 # include "jit/PerfSpewer.h"
 #endif
 #include "jit/RegisterSets.h"
@@ -29,18 +29,6 @@ namespace jit {
 class MBasicBlock;
 class MIRGraph;
 class MStart;
-
-struct AsmJSGlobalAccess
-{
-    unsigned offset;
-    unsigned globalDataOffset;
-
-    AsmJSGlobalAccess(unsigned offset, unsigned globalDataOffset)
-      : offset(offset), globalDataOffset(globalDataOffset)
-    {}
-};
-
-typedef Vector<AsmJSGlobalAccess, 0, IonAllocPolicy> AsmJSGlobalAccessVector;
 
 class MIRGenerator
 {
@@ -56,11 +44,11 @@ class MIRGenerator
     bool ensureBallast() {
         return temp().ensureBallast();
     }
-    IonCompartment *ionCompartment() const {
-        return compartment->ionCompartment();
+    JitCompartment *jitCompartment() const {
+        return compartment->jitCompartment();
     }
-    IonRuntime *ionRuntime() const {
-        return compartment->rt->ionRuntime();
+    JitRuntime *jitRuntime() const {
+        return GetIonContext()->runtime->jitRuntime();
     }
     CompileInfo &info() {
         return *info_;
@@ -68,6 +56,8 @@ class MIRGenerator
 
     template <typename T>
     T * allocate(size_t count = 1) {
+        if (count & mozilla::tl::MulOverflowMask<sizeof(T)>::value)
+            return nullptr;
         return reinterpret_cast<T *>(temp().allocate(sizeof(T) * count));
     }
 
@@ -81,7 +71,7 @@ class MIRGenerator
     }
 
     bool instrumentedProfiling() {
-        return compartment->rt->spsProfiler.enabled();
+        return GetIonContext()->runtime->spsProfiler.enabled();
     }
 
     // Whether the main thread is trying to cancel this build.
@@ -93,7 +83,7 @@ class MIRGenerator
     }
 
     bool compilingAsmJS() const {
-        return info_->script() == NULL;
+        return info_->script() == nullptr;
     }
 
     uint32_t maxAsmJSStackArgBytes() const {
@@ -124,11 +114,21 @@ class MIRGenerator
     const Vector<AsmJSHeapAccess, 0, IonAllocPolicy> &heapAccesses() const {
         return asmJSHeapAccesses_;
     }
+    void noteMinAsmJSHeapLength(uint32_t len) {
+        minAsmJSHeapLength_ = len;
+    }
+    uint32_t minAsmJSHeapLength() const {
+        return minAsmJSHeapLength_;
+    }
     bool noteGlobalAccess(unsigned offset, unsigned globalDataOffset) {
         return asmJSGlobalAccesses_.append(AsmJSGlobalAccess(offset, globalDataOffset));
     }
     const Vector<AsmJSGlobalAccess, 0, IonAllocPolicy> &globalAccesses() const {
         return asmJSGlobalAccesses_;
+    }
+
+    bool modifiesFrameArguments() const {
+        return modifiesFrameArguments_;
     }
 
   public:
@@ -147,6 +147,12 @@ class MIRGenerator
     bool performsAsmJSCall_;
     AsmJSHeapAccessVector asmJSHeapAccesses_;
     AsmJSGlobalAccessVector asmJSGlobalAccesses_;
+    uint32_t minAsmJSHeapLength_;
+
+    // Keep track of whether frame arguments are modified during execution.
+    // RegAlloc needs to know this as spilling values back to their register
+    // slots is not compatible with that.
+    bool modifiesFrameArguments_;
 
 #if defined(JS_ION_PERF)
     AsmJSPerfSpewer asmJSPerfSpewer_;

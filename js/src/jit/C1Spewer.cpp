@@ -8,11 +8,8 @@
 
 #include "jit/C1Spewer.h"
 
-#include <stdarg.h>
 #include <time.h>
 
-#include "jit/Ion.h"
-#include "jit/IonBuilder.h"
 #include "jit/LinearScan.h"
 #include "jit/LIR.h"
 #include "jit/MIRGraph.h"
@@ -24,7 +21,7 @@ bool
 C1Spewer::init(const char *path)
 {
     spewout_ = fopen(path, "w");
-    return (spewout_ != NULL);
+    return (spewout_ != nullptr);
 }
 
 void
@@ -34,7 +31,7 @@ C1Spewer::beginFunction(MIRGraph *graph, HandleScript script)
         return;
 
     this->graph  = graph;
-    this->script = script;
+    this->script.repoint(script);
 
     fprintf(spewout_, "begin_compilation\n");
     if (script) {
@@ -44,7 +41,7 @@ C1Spewer::beginFunction(MIRGraph *graph, HandleScript script)
         fprintf(spewout_, "  name \"asm.js compilation\"\n");
         fprintf(spewout_, "  method \"asm.js compilation\"\n");
     }
-    fprintf(spewout_, "  date %d\n", (int)time(NULL));
+    fprintf(spewout_, "  date %d\n", (int)time(nullptr));
     fprintf(spewout_, "end_compilation\n");
 }
 
@@ -117,14 +114,15 @@ void
 C1Spewer::spewIntervals(FILE *fp, LinearScanAllocator *regalloc, LInstruction *ins, size_t &nextId)
 {
     for (size_t k = 0; k < ins->numDefs(); k++) {
-        VirtualRegister *vreg = &regalloc->vregs[ins->getDef(k)->virtualRegister()];
+        uint32_t id = ins->getDef(k)->virtualRegister();
+        VirtualRegister *vreg = &regalloc->vregs[id];
 
         for (size_t i = 0; i < vreg->numIntervals(); i++) {
             LiveInterval *live = vreg->getInterval(i);
             if (live->numRanges()) {
-                fprintf(fp, "%d object \"", (i == 0) ? vreg->id() : int32_t(nextId++));
+                fprintf(fp, "%d object \"", (i == 0) ? id : int32_t(nextId++));
                 fprintf(fp, "%s", live->getAllocation()->toString());
-                fprintf(fp, "\" %d -1", vreg->id());
+                fprintf(fp, "\" %d -1", id);
                 for (size_t j = 0; j < live->numRanges(); j++) {
                     fprintf(fp, " [%d, %d[", live->getRange(j)->from.pos(),
                             live->getRange(j)->to.pos());

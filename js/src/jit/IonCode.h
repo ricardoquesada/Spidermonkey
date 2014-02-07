@@ -11,6 +11,7 @@
 #include "mozilla/PodOperations.h"
 
 #include "jsinfer.h"
+#include "jstypes.h"
 
 #include "gc/Heap.h"
 #include "jit/IonTypes.h"
@@ -18,8 +19,6 @@
 namespace JSC {
     class ExecutablePool;
 }
-
-class JSScript;
 
 namespace js {
 
@@ -37,8 +36,9 @@ static const uint32_t SNAPSHOT_MAX_NARGS = 127;
 
 class MacroAssembler;
 class CodeOffsetLabel;
+class PatchableBackedge;
 
-class IonCode : public gc::Cell
+class IonCode : public gc::BarrieredCell<IonCode>
 {
   protected:
     uint8_t *code_;
@@ -58,8 +58,8 @@ class IonCode : public gc::Cell
 #endif
 
     IonCode()
-      : code_(NULL),
-        pool_(NULL)
+      : code_(nullptr),
+        pool_(nullptr)
     { }
     IonCode(uint8_t *code, uint32_t bufferSize, JSC::ExecutablePool *pool)
       : code_(code),
@@ -129,15 +129,11 @@ class IonCode : public gc::Cell
     }
 
     // Allocates a new IonCode object which will be managed by the GC. If no
-    // object can be allocated, NULL is returned. On failure, |pool| is
+    // object can be allocated, nullptr is returned. On failure, |pool| is
     // automatically released, so the code may be freed.
     static IonCode *New(JSContext *cx, uint8_t *code, uint32_t bufferSize, JSC::ExecutablePool *pool);
 
   public:
-    JS::Zone *zone() const { return tenuredZone(); }
-    static void readBarrier(IonCode *code);
-    static void writeBarrierPre(IonCode *code);
-    static void writeBarrierPost(IonCode *code, void *addr) {}
     static inline ThingRootKind rootKind() { return THING_ROOT_ION_CODE; }
 };
 
@@ -146,6 +142,8 @@ class SafepointWriter;
 class SafepointIndex;
 class OsiIndex;
 class IonCache;
+struct PatchableBackedgeInfo;
+struct CacheLocation;
 
 // Describes a single AsmJSModule which jumps (via an FFI exit with the given
 // index) directly into an IonScript.
@@ -170,7 +168,7 @@ struct IonScript
     // Deoptimization table used by this method.
     EncapsulatedPtr<IonCode> deoptTable_;
 
-    // Entrypoint for OSR, or NULL.
+    // Entrypoint for OSR, or nullptr.
     jsbytecode *osrPc_;
 
     // Offset to OSR entrypoint from method_->raw(), or 0.
@@ -191,6 +189,10 @@ struct IonScript
 
     // Number of times this script bailed out without invalidation.
     uint32_t numBailouts_;
+
+    // Number of times this scripted bailed out to enter a catch or
+    // finally block.
+    uint32_t numExceptionBailouts_;
 
     // Flag set when it is likely that one of our (transitive) call
     // targets is not compiled.  Used in ForkJoin.cpp to decide when
@@ -243,15 +245,15 @@ struct IonScript
     uint32_t constantTable_;
     uint32_t constantEntries_;
 
-    // List of compiled/inlined JSScript's.
-    uint32_t scriptList_;
-    uint32_t scriptEntries_;
-
     // List of scripts that we call.
     //
-    // Currently this is only non-NULL for parallel IonScripts.
+    // Currently this is only non-nullptr for parallel IonScripts.
     uint32_t callTargetList_;
     uint32_t callTargetEntries_;
+
+    // List of patchable backedges which are threaded into the runtime's list.
+    uint32_t backedgeList_;
+    uint32_t backedgeEntries_;
 
     // Number of references from invalidation records.
     size_t refcount_;
@@ -300,11 +302,11 @@ struct IonScript
     uint8_t *runtimeData() {
         return  &bottomBuffer()[runtimeData_];
     }
-    JSScript **scriptList() const {
-        return (JSScript **) &bottomBuffer()[scriptList_];
-    }
     JSScript **callTargetList() {
         return (JSScript **) &bottomBuffer()[callTargetList_];
+    }
+    PatchableBackedge *backedgeList() {
+        return (PatchableBackedge *) &bottomBuffer()[backedgeList_];
     }
     bool addDependentAsmJSModule(JSContext *cx, DependentAsmJSModuleExit exit);
     void removeDependentAsmJSModule(DependentAsmJSModuleExit exit) {
@@ -327,12 +329,12 @@ struct IonScript
     // Do not call directly, use IonScript::New. This is public for cx->new_.
     IonScript();
 
-    static IonScript *New(JSContext *cx, uint32_t frameLocals, uint32_t frameSize,
+    static IonScript *New(JSContext *cx, types::RecompileInfo recompileInfo,
+                          uint32_t frameLocals, uint32_t frameSize,
                           size_t snapshotsSize, size_t snapshotEntries,
                           size_t constants, size_t safepointIndexEntries, size_t osiIndexEntries,
-                          size_t cacheEntries, size_t runtimeSize,
-                          size_t safepointsSize, size_t scriptEntries,
-                          size_t callTargetEntries);
+                          size_t cacheEntries, size_t runtimeSize, size_t safepointsSize,
+                          size_t callTargetEntries, size_t backedgeEntries);
     static void Trace(JSTracer *trc, IonScript *script);
     static void Destroy(FreeOp *fop, IonScript *script);
 
@@ -410,6 +412,12 @@ struct IonScript
     bool bailoutExpected() const {
         return numBailouts_ > 0;
     }
+    void incNumExceptionBailouts() {
+        numExceptionBailouts_++;
+    }
+    uint32_t numExceptionBailouts() const {
+        return numExceptionBailouts_;
+    }
     void setHasUncompiledCallTarget() {
         hasUncompiledCallTarget_ = true;
     }
@@ -439,13 +447,6 @@ struct IonScript
     }
     size_t safepointsSize() const {
         return safepointsSize_;
-    }
-    JSScript *getScript(size_t i) const {
-        JS_ASSERT(i < scriptEntries_);
-        return scriptList()[i];
-    }
-    size_t scriptEntries() const {
-        return scriptEntries_;
     }
     size_t callTargetEntries() const {
         return callTargetEntries_;
@@ -477,9 +478,12 @@ struct IonScript
     }
     const OsiIndex *getOsiIndex(uint32_t disp) const;
     const OsiIndex *getOsiIndex(uint8_t *retAddr) const;
-    inline IonCache &getCache(uint32_t index) {
+    inline IonCache &getCacheFromIndex(uint32_t index) {
         JS_ASSERT(index < cacheEntries_);
         uint32_t offset = cacheIndex()[index];
+        return getCache(offset);
+    }
+    inline IonCache &getCache(uint32_t offset) {
         JS_ASSERT(offset < runtimeSize_);
         return *(IonCache *) &runtimeData()[offset];
     }
@@ -489,9 +493,14 @@ struct IonScript
     size_t runtimeSize() const {
         return runtimeSize_;
     }
+    CacheLocation *getCacheLocs(uint32_t locIndex) {
+        JS_ASSERT(locIndex < runtimeSize_);
+        return (CacheLocation *) &runtimeData()[locIndex];
+    }
     void toggleBarriers(bool enabled);
     void purgeCaches(JS::Zone *zone);
     void destroyCaches();
+    void destroyBackedges(JSRuntime *rt);
     void copySnapshots(const SnapshotWriter *writer);
     void copyBailoutTable(const SnapshotOffset *table);
     void copyConstants(const Value *vp);
@@ -500,8 +509,9 @@ struct IonScript
     void copyRuntimeData(const uint8_t *data);
     void copyCacheEntries(const uint32_t *caches, MacroAssembler &masm);
     void copySafepoints(const SafepointWriter *writer);
-    void copyScriptEntries(JSScript **scripts);
     void copyCallTargetEntries(JSScript **callTargets);
+    void copyPatchableBackedges(JSContext *cx, IonCode *code,
+                                PatchableBackedgeInfo *backedges);
 
     bool invalidated() const {
         return refcount_ != 0;
@@ -527,6 +537,8 @@ struct IonScript
     void resetOsrPcMismatchCounter() {
         osrPcMismatchCounter_ = 0;
     }
+
+    static void writeBarrierPre(Zone *zone, IonScript *ionScript);
 };
 
 // Execution information for a basic block which may persist after the
@@ -570,10 +582,8 @@ struct IonBlockCounts
     }
 
     void destroy() {
-        if (successors_)
-            js_free(successors_);
-        if (code_)
-            js_free(code_);
+        js_free(successors_);
+        js_free(code_);
     }
 
     uint32_t id() const {
@@ -657,14 +667,13 @@ struct IonScriptCounts
         for (size_t i = 0; i < numBlocks_; i++)
             blocks_[i].destroy();
         js_free(blocks_);
-        if (previous_)
-            js_delete(previous_);
+        js_delete(previous_);
     }
 
     bool init(size_t numBlocks) {
         numBlocks_ = numBlocks;
         blocks_ = js_pod_calloc<IonBlockCounts>(numBlocks);
-        return blocks_ != NULL;
+        return blocks_ != nullptr;
     }
 
     size_t numBlocks() const {
@@ -687,8 +696,8 @@ struct IonScriptCounts
 
 struct VMFunction;
 
-class IonCompartment;
-class IonRuntime;
+class JitCompartment;
+class JitRuntime;
 
 struct AutoFlushCache
 {
@@ -696,14 +705,14 @@ struct AutoFlushCache
     uintptr_t start_;
     uintptr_t stop_;
     const char *name_;
-    IonRuntime *runtime_;
+    JitRuntime *runtime_;
     bool used_;
 
   public:
     void update(uintptr_t p, size_t len);
     static void updateTop(uintptr_t p, size_t len);
     ~AutoFlushCache();
-    AutoFlushCache(const char *nonce, IonRuntime *rt = NULL);
+    AutoFlushCache(const char *nonce, JitRuntime *rt);
     void flushAnyway();
 };
 
@@ -715,12 +724,13 @@ struct AutoFlushCache
 //   2) the called function can re-enter a compilation/modification path which
 //       will use your AFC, and thus not flush when his compilation is done
 
-struct AutoFlushInhibitor {
+struct AutoFlushInhibitor
+{
   private:
-    IonCompartment *ic_;
+    JitRuntime *runtime_;
     AutoFlushCache *afc;
   public:
-    AutoFlushInhibitor(IonCompartment *ic);
+    AutoFlushInhibitor(JitRuntime *rt);
     ~AutoFlushInhibitor();
 };
 } // namespace jit

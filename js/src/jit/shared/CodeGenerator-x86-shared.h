@@ -79,15 +79,19 @@ class CodeGeneratorX86Shared : public CodeGeneratorShared
   public:
     // Instruction visitors.
     virtual bool visitDouble(LDouble *ins);
+    virtual bool visitFloat32(LFloat32 *ins);
     virtual bool visitMinMaxD(LMinMaxD *ins);
     virtual bool visitAbsD(LAbsD *ins);
+    virtual bool visitAbsF(LAbsF *ins);
     virtual bool visitSqrtD(LSqrtD *ins);
+    virtual bool visitSqrtF(LSqrtF *ins);
     virtual bool visitPowHalfD(LPowHalfD *ins);
     virtual bool visitAddI(LAddI *ins);
     virtual bool visitSubI(LSubI *ins);
     virtual bool visitMulI(LMulI *ins);
     virtual bool visitDivI(LDivI *ins);
     virtual bool visitDivPowTwoI(LDivPowTwoI *ins);
+    virtual bool visitDivSelfI(LDivSelfI *ins);
     virtual bool visitModI(LModI *ins);
     virtual bool visitModPowTwoI(LModPowTwoI *ins);
     virtual bool visitBitNotI(LBitNotI *ins);
@@ -96,14 +100,19 @@ class CodeGeneratorX86Shared : public CodeGeneratorShared
     virtual bool visitUrshD(LUrshD *ins);
     virtual bool visitTestIAndBranch(LTestIAndBranch *test);
     virtual bool visitTestDAndBranch(LTestDAndBranch *test);
+    virtual bool visitTestFAndBranch(LTestFAndBranch *test);
     virtual bool visitCompare(LCompare *comp);
     virtual bool visitCompareAndBranch(LCompareAndBranch *comp);
     virtual bool visitCompareD(LCompareD *comp);
     virtual bool visitCompareDAndBranch(LCompareDAndBranch *comp);
+    virtual bool visitCompareF(LCompareF *comp);
+    virtual bool visitCompareFAndBranch(LCompareFAndBranch *comp);
     virtual bool visitBitAndAndBranch(LBitAndAndBranch *baab);
     virtual bool visitNotI(LNotI *comp);
     virtual bool visitNotD(LNotD *comp);
+    virtual bool visitNotF(LNotF *comp);
     virtual bool visitMathD(LMathD *math);
+    virtual bool visitMathF(LMathF *math);
     virtual bool visitFloor(LFloor *lir);
     virtual bool visitRound(LRound *lir);
     virtual bool visitGuardShape(LGuardShape *guard);
@@ -115,6 +124,7 @@ class CodeGeneratorX86Shared : public CodeGeneratorShared
 
     bool visitNegI(LNegI *lir);
     bool visitNegD(LNegD *lir);
+    bool visitNegF(LNegF *lir);
 
     // Out of line visitors.
     bool visitOutOfLineBailout(OutOfLineBailout *ool);

@@ -1,15 +1,12 @@
 // A Map iterator continues to visit entries added after a clear().
 
 load(libdir + "asserts.js");
+load(libdir + "iteration.js");
 
 var m = Map([["a", 1]]);
-var it = m.iterator();
-assertEq(it.next()[0], "a");
+var it = m[std_iterator]();
+assertIteratorNext(it, ["a", 1]);
 m.clear();
 m.set("b", 2);
-var pair = it.next()
-assertEq(pair[0], "b");
-assertEq(pair[1], 2);
-assertThrowsValue(it.next.bind(it), StopIteration);
-
-
+assertIteratorNext(it, ["b", 2]);
+assertIteratorDone(it, undefined);

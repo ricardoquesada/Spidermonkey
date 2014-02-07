@@ -7,15 +7,16 @@
 /* nsIVariant implementation for xpconnect. */
 
 #include "xpcprivate.h"
-#include "XPCWrapper.h"
 #include "nsCxPusher.h"
 
 #include "jsfriendapi.h"
+#include "jsprf.h"
+#include "jswrapper.h"
 
 using namespace JS;
 using namespace mozilla;
 
-NS_IMPL_CLASSINFO(XPCVariant, NULL, 0, XPCVARIANT_CID)
+NS_IMPL_CLASSINFO(XPCVariant, nullptr, 0, XPCVARIANT_CID)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(XPCVariant)
   NS_INTERFACE_MAP_ENTRY(XPCVariant)
   NS_INTERFACE_MAP_ENTRY(nsIVariant)
@@ -54,7 +55,7 @@ XPCTraceableVariant::~XPCTraceableVariant()
 {
     jsval val = GetJSValPreserveColor();
 
-    NS_ASSERTION(JSVAL_IS_GCTHING(val), "Must be traceable or unlinked");
+    MOZ_ASSERT(JSVAL_IS_GCTHING(val), "Must be traceable or unlinked");
 
     // If val is JSVAL_STRING, we don't need to clean anything up; simply
     // removing the string from the root set is good.
@@ -153,9 +154,9 @@ private:
     static const Type StateTable[tTypeCount][tTypeCount-1];
 
 public:
-    static JSBool GetTypeForArray(JSContext* cx, HandleObject array,
-                                  uint32_t length,
-                                  nsXPTType* resultType, nsID* resultID);
+    static bool GetTypeForArray(JSContext* cx, HandleObject array,
+                                uint32_t length,
+                                nsXPTType* resultType, nsID* resultID);
 };
 
 
@@ -177,7 +178,7 @@ XPCArrayHomogenizer::StateTable[tTypeCount][tTypeCount-1] = {
 /* tUnk  */{tNull,tInt ,tDbl ,tBool,tStr ,tID  ,tVar ,tISup }};
 
 // static
-JSBool
+bool
 XPCArrayHomogenizer::GetTypeForArray(JSContext* cx, HandleObject array,
                                      uint32_t length,
                                      nsXPTType* resultType, nsID* resultID)
@@ -188,7 +189,7 @@ XPCArrayHomogenizer::GetTypeForArray(JSContext* cx, HandleObject array,
     RootedValue val(cx);
     RootedObject jsobj(cx);
     for (uint32_t i = 0; i < length; i++) {
-        if (!JS_GetElement(cx, array, i, val.address()))
+        if (!JS_GetElement(cx, array, i, &val))
             return false;
 
         if (val.isInt32()) {
@@ -205,7 +206,7 @@ XPCArrayHomogenizer::GetTypeForArray(JSContext* cx, HandleObject array,
         } else if (val.isString()) {
             type = tStr;
         } else {
-            NS_ASSERTION(val.isObject(), "invalid type of jsval!");
+            MOZ_ASSERT(val.isObject(), "invalid type of jsval!");
             jsobj = &val.toObject();
             if (JS_IsArrayObject(cx, jsobj))
                 type = tArr;
@@ -215,15 +216,15 @@ XPCArrayHomogenizer::GetTypeForArray(JSContext* cx, HandleObject array,
                 type = tISup;
         }
 
-        NS_ASSERTION(state != tErr, "bad state table!");
-        NS_ASSERTION(type  != tErr, "bad type!");
-        NS_ASSERTION(type  != tVar, "bad type!");
-        NS_ASSERTION(type  != tUnk, "bad type!");
+        MOZ_ASSERT(state != tErr, "bad state table!");
+        MOZ_ASSERT(type  != tErr, "bad type!");
+        MOZ_ASSERT(type  != tVar, "bad type!");
+        MOZ_ASSERT(type  != tUnk, "bad type!");
 
         state = StateTable[state][type];
 
-        NS_ASSERTION(state != tErr, "bad state table!");
-        NS_ASSERTION(state != tUnk, "bad state table!");
+        MOZ_ASSERT(state != tErr, "bad state table!");
+        MOZ_ASSERT(state != tUnk, "bad state table!");
 
         if (state == tVar)
             break;
@@ -268,7 +269,7 @@ XPCArrayHomogenizer::GetTypeForArray(JSContext* cx, HandleObject array,
     return true;
 }
 
-JSBool XPCVariant::InitializeData(JSContext* cx)
+bool XPCVariant::InitializeData(JSContext* cx)
 {
     JS_CHECK_RECURSION(cx, return false);
 
@@ -292,8 +293,8 @@ JSBool XPCVariant::InitializeData(JSContext* cx)
         // Don't use nsVariant::SetFromWStringWithSize, because that will copy
         // the data.  Just handle this ourselves.  Note that it's ok to not
         // copy because we added mJSVal as a GC root.
-        NS_ASSERTION(mData.mType == nsIDataType::VTYPE_EMPTY,
-                     "Why do we already have data?");
+        MOZ_ASSERT(mData.mType == nsIDataType::VTYPE_EMPTY,
+                   "Why do we already have data?");
 
         // Despite the fact that the variant holds the length, there are
         // implicit assumptions that mWStringValue[mWStringLength] == 0
@@ -312,7 +313,7 @@ JSBool XPCVariant::InitializeData(JSContext* cx)
     }
 
     // leaving only JSObject...
-    NS_ASSERTION(val.isObject(), "invalid type of jsval!");
+    MOZ_ASSERT(val.isObject(), "invalid type of jsval!");
 
     RootedObject jsobj(cx, &val.toObject());
 
@@ -372,9 +373,9 @@ XPCVariant::GetAsJSVal(jsval* result)
 }
 
 // static
-JSBool
+bool
 XPCVariant::VariantDataToJS(nsIVariant* variant,
-                            nsresult* pErr, jsval* pJSVal)
+                            nsresult* pErr, MutableHandleValue pJSVal)
 {
     // Get the type early because we might need to spoof it below.
     uint16_t type;
@@ -390,21 +391,21 @@ XPCVariant::VariantDataToJS(nsIVariant* variant,
          type == nsIDataType::VTYPE_ARRAY ||
          type == nsIDataType::VTYPE_EMPTY_ARRAY ||
          type == nsIDataType::VTYPE_ID)) {
-        if (!JS_WrapValue(cx, realVal.address()))
+        if (!JS_WrapValue(cx, &realVal))
             return false;
-        *pJSVal = realVal;
+        pJSVal.set(realVal);
         return true;
     }
 
     nsCOMPtr<XPCVariant> xpcvariant = do_QueryInterface(variant);
     if (xpcvariant && xpcvariant->mReturnRawObject) {
-        NS_ASSERTION(type == nsIDataType::VTYPE_INTERFACE ||
-                     type == nsIDataType::VTYPE_INTERFACE_IS,
-                     "Weird variant");
+        MOZ_ASSERT(type == nsIDataType::VTYPE_INTERFACE ||
+                   type == nsIDataType::VTYPE_INTERFACE_IS,
+                   "Weird variant");
 
-        if (!JS_WrapValue(cx, realVal.address()))
+        if (!JS_WrapValue(cx, &realVal))
             return false;
-        *pJSVal = realVal;
+        pJSVal.set(realVal);
         return true;
     }
 
@@ -435,7 +436,7 @@ XPCVariant::VariantDataToJS(nsIVariant* variant,
             double d;
             if (NS_FAILED(variant->GetAsDouble(&d)))
                 return false;
-            *pJSVal = JS_NumberValue(d);
+            pJSVal.setNumber(d);
             return true;
         }
         case nsIDataType::VTYPE_BOOL:
@@ -443,7 +444,7 @@ XPCVariant::VariantDataToJS(nsIVariant* variant,
             bool b;
             if (NS_FAILED(variant->GetAsBool(&b)))
                 return false;
-            *pJSVal = BOOLEAN_TO_JSVAL(b);
+            pJSVal.setBoolean(b);
             return true;
         }
         case nsIDataType::VTYPE_CHAR:
@@ -646,14 +647,14 @@ VARIANT_DONE:
             JSObject* array = JS_NewArrayObject(cx, 0, nullptr);
             if (!array)
                 return false;
-            *pJSVal = OBJECT_TO_JSVAL(array);
+            pJSVal.setObject(*array);
             return true;
         }
         case nsIDataType::VTYPE_VOID:
-            *pJSVal = JSVAL_VOID;
+            pJSVal.setUndefined();
             return true;
         case nsIDataType::VTYPE_EMPTY:
-            *pJSVal = JSVAL_NULL;
+            pJSVal.setNull();
             return true;
         default:
             NS_ERROR("bad type in variant!");

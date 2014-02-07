@@ -20,7 +20,7 @@ static char*
 _indentSpaces(int i)
 {
 #define MAX_INDENT 63
-    static char* p = NULL;
+    static char* p = nullptr;
     if(!p)
     {
         p = calloc(1, MAX_INDENT+1);
@@ -33,12 +33,12 @@ _indentSpaces(int i)
 
 static void
 _interpreterTrace(JSDContext* jsdc, JSContext *cx, JSAbstractFramePtr frame,
-                  bool isConstructing, JSBool before)
+                  bool isConstructing, bool before)
 {
-    JSDScript* jsdscript = NULL;
+    JSDScript* jsdscript = nullptr;
     JSScript * script;
     static indent = 0;
-    JSString* funName = NULL;
+    JSString* funName = nullptr;
 
     script = frame.script();
     if(script)
@@ -76,16 +76,16 @@ _interpreterTrace(JSDContext* jsdc, JSContext *cx, JSAbstractFramePtr frame,
 }
 #endif
 
-JSBool
+bool
 _callHook(JSDContext *jsdc, JSContext *cx, JSAbstractFramePtr frame, bool isConstructing,
-          JSBool before, unsigned type, JSD_CallHookProc hook, void *hookData)
+          bool before, unsigned type, JSD_CallHookProc hook, void *hookData)
 {
     JSDScript*        jsdscript;
     JSScript*         jsscript;
-    JSBool            hookresult = JS_TRUE;
+    bool              hookresult = true;
     
     if (!jsdc || !jsdc->inited)
-        return JS_FALSE;
+        return false;
 
     if (!hook && !(jsdc->flags & JSD_COLLECT_PROFILE_DATA))
     {
@@ -98,7 +98,7 @@ _callHook(JSDContext *jsdc, JSContext *cx, JSAbstractFramePtr frame, bool isCons
     if (before && isConstructing) {
         JS::RootedValue newObj(cx);
         if (!frame.getThisValue(cx, &newObj))
-            return JS_FALSE;
+            return false;
         jsd_Constructing(jsdc, cx, JSVAL_TO_OBJECT(newObj), frame);
     }
 
@@ -153,7 +153,7 @@ _callHook(JSDContext *jsdc, JSContext *cx, JSAbstractFramePtr frame, bool isCons
                                 pdata->maxRecurseDepth = pdata->recurseDepth;
                         }
                         /* make sure we're called for the return too. */
-                        hookresult = JS_TRUE;
+                        hookresult = true;
                     } else if (!pdata->recurseDepth && pdata->lastCallStart) {
                         int64_t now, ll_delta;
                         double delta;
@@ -200,7 +200,7 @@ _callHook(JSDContext *jsdc, JSContext *cx, JSAbstractFramePtr frame, bool isCons
                         /* Current function is now our caller. */
                         jsdc->callingFunctionPData = pdata->caller;
                         /* No hanging pointers, please. */
-                        pdata->caller = NULL;
+                        pdata->caller = nullptr;
                         /* Mark the time we returned, and indicate this
                          * function is no longer running. */
                         jsdc->lastReturnTime = now;
@@ -218,14 +218,14 @@ _callHook(JSDContext *jsdc, JSContext *cx, JSAbstractFramePtr frame, bool isCons
                     hookresult = 
                         jsd_CallCallHook (jsdc, cx, type, hook, hookData);
                 else
-                    hookresult = JS_TRUE;
+                    hookresult = true;
             }
         }
     }
 
 #ifdef JSD_TRACE
     _interpreterTrace(jsdc, cx, frame, isConstructing, before);
-    return JS_TRUE;
+    return true;
 #else
     return hookresult;
 #endif
@@ -234,7 +234,7 @@ _callHook(JSDContext *jsdc, JSContext *cx, JSAbstractFramePtr frame, bool isCons
 
 void *
 jsd_FunctionCallHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing,
-                     JSBool before, JSBool *ok, void *closure)
+                     bool before, bool *ok, void *closure)
 {
     JSDContext*       jsdc;
     JSD_CallHookProc  hook;
@@ -255,12 +255,12 @@ jsd_FunctionCallHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructin
         return closure;
     }
     
-    return NULL;
+    return nullptr;
 }
 
 void *
 jsd_TopLevelCallHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructing,
-                     JSBool before, JSBool *ok, void *closure)
+                     bool before, bool *ok, void *closure)
 {
     JSDContext*       jsdc;
     JSD_CallHookProc  hook;
@@ -281,6 +281,6 @@ jsd_TopLevelCallHook(JSContext *cx, JSAbstractFramePtr frame, bool isConstructin
         return closure;
     }
     
-    return NULL;
+    return nullptr;
     
 }

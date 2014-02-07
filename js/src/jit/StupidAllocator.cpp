@@ -6,6 +6,8 @@
 
 #include "jit/StupidAllocator.h"
 
+#include "jstypes.h"
+
 using namespace js;
 using namespace js::jit;
 
@@ -45,7 +47,7 @@ StupidAllocator::init()
     if (!RegisterAllocator::init())
         return false;
 
-    if (!virtualRegisters.appendN((LDefinition *)NULL, graph.numVirtualRegisters()))
+    if (!virtualRegisters.appendN((LDefinition *)nullptr, graph.numVirtualRegisters()))
         return false;
 
     for (size_t i = 0; i < graph.numBlocks(); i++) {
@@ -278,7 +280,7 @@ StupidAllocator::syncForBlockEnd(LBlock *block, LInstruction *ins)
     for (size_t i = 0; i < registerCount; i++)
         syncRegister(ins, i);
 
-    LMoveGroup *group = NULL;
+    LMoveGroup *group = nullptr;
 
     MBasicBlock *successor = block->mir()->successorWithPhis();
     if (successor) {

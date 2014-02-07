@@ -7,7 +7,6 @@
 #ifndef jit_ParallelSafetyAnalysis_h
 #define jit_ParallelSafetyAnalysis_h
 
-#include "jit/CompileInfo.h"
 #include "jit/MIR.h"
 
 namespace js {
@@ -47,7 +46,7 @@ class ParallelSafetyAnalysis
 // This code may clone scripts and thus may invoke the GC.  Hence only
 // run from the link phase, which executes on the main thread.
 typedef Vector<JSScript *, 4, IonAllocPolicy> CallTargetVector;
-bool AddPossibleCallees(MIRGraph &graph, CallTargetVector &targets);
+bool AddPossibleCallees(JSContext *cx, MIRGraph &graph, CallTargetVector &targets);
 
 } // namespace jit
 } // namespace js

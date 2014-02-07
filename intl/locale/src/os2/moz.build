@@ -6,7 +6,7 @@
 
 MODULE = 'locale'
 
-CPP_SOURCES += [
+SOURCES += [
     'nsCollationOS2.cpp',
     'nsDateTimeFormatOS2.cpp',
     'nsOS2Charset.cpp',
@@ -14,4 +14,8 @@ CPP_SOURCES += [
 ]
 
 LIBRARY_NAME = 'platlocale_s'
+
+LIBXUL_LIBRARY = True
+
+EXPORT_LIBRARY = True
 

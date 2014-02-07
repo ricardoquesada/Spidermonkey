@@ -14,10 +14,7 @@
 
 #include "jscntxt.h"
 #include "jsnum.h"
-#include "jsobj.h"
-#include "jsstr.h"
 
-#include "gc/Barrier.h"
 #include "vm/String.h"
 
 inline JSAtom *
@@ -157,7 +154,7 @@ IdToString(JSContext *cx, jsid id)
     RootedValue idv(cx, IdToValue(id));
     JSString *str = ToStringSlow<CanGC>(cx, idv);
     if (!str)
-        return NULL;
+        return nullptr;
 
     return str->ensureFlat(cx);
 }
@@ -190,20 +187,26 @@ TypeName(JSType type, JSRuntime *rt)
 }
 
 inline Handle<PropertyName*>
-TypeName(JSType type, JSContext *cx)
-{
-    return TypeName(type, cx->runtime());
-}
-
-inline Handle<PropertyName*>
-ClassName(JSProtoKey key, ExclusiveContext *cx)
+ClassName(JSProtoKey key, JSAtomState &atomState)
 {
     JS_ASSERT(key < JSProto_LIMIT);
     JS_STATIC_ASSERT(offsetof(JSAtomState, Null) +
                      JSProto_LIMIT * sizeof(FixedHeapPtr<PropertyName>) <=
                      sizeof(JSAtomState));
     JS_STATIC_ASSERT(JSProto_Null == 0);
-    return (&cx->names().Null)[key];
+    return (&atomState.Null)[key];
+}
+
+inline Handle<PropertyName*>
+ClassName(JSProtoKey key, JSRuntime *rt)
+{
+    return ClassName(key, rt->atomState);
+}
+
+inline Handle<PropertyName*>
+ClassName(JSProtoKey key, ExclusiveContext *cx)
+{
+    return ClassName(key, cx->names());
 }
 
 } // namespace js

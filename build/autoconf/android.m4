@@ -38,11 +38,6 @@ if test $android_version -lt MIN_ANDROID_VERSION ; then
     AC_MSG_ERROR([--with-android-version must be at least MIN_ANDROID_VERSION.])
 fi
 
-MOZ_ARG_WITH_STRING(android-platform,
-[  --with-android-platform=DIR
-                           location of platform dir],
-    android_platform=$withval)
-
 case "$target" in
 arm-linux*-android*|*-linuxandroid*)
     android_tool_prefix="arm-linux-androideabi"
@@ -116,29 +111,26 @@ case "$target" in
 
     NSPR_CONFIGURE_ARGS="$NSPR_CONFIGURE_ARGS --with-android-version=$android_version"
 
-    if test -z "$android_platform" ; then
-        AC_MSG_CHECKING([for android platform directory])
+    AC_MSG_CHECKING([for android platform directory])
 
-        case "$target_cpu" in
-        arm)
-            target_name=arm
-            ;;
-        i?86)
-            target_name=x86
-            ;;
-        mipsel)
-            target_name=mips
-            ;;
-        esac
+    case "$target_cpu" in
+    arm)
+        target_name=arm
+        ;;
+    i?86)
+        target_name=x86
+        ;;
+    mipsel)
+        target_name=mips
+        ;;
+    esac
 
-        android_platform="$android_ndk"/platforms/android-"$android_version"/arch-"$target_name"
+    android_platform="$android_ndk"/platforms/android-"$android_version"/arch-"$target_name"
 
-        if test -d "$android_platform" ; then
-            AC_MSG_RESULT([$android_platform])
-        else
-            AC_MSG_ERROR([not found. You have to specify --with-android-platform=/path/to/ndk/platform.])
-        fi
-        NSPR_CONFIGURE_ARGS="$NSPR_CONFIGURE_ARGS --with-android-platform=$android_platform"
+    if test -d "$android_platform" ; then
+        AC_MSG_RESULT([$android_platform])
+    else
+        AC_MSG_ERROR([not found. Please check your NDK. With the current configuration, it should be in $android_platform])
     fi
 
     dnl Old NDK support. If minimum requirement is changed to NDK r8b,
@@ -228,19 +220,16 @@ if test "$OS_TARGET" = "Android" -a -z "$gonkdir"; then
         if test -n "$MOZ_ANDROID_LIBSTDCXX" ; then
             if test -e "$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/libs/$ANDROID_CPU_ARCH/libgnustl_static.a"; then
                 # android-ndk-r8b
-                STLPORT_LDFLAGS="-L$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/libs/$ANDROID_CPU_ARCH/"
-                STLPORT_CPPFLAGS="-I$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/include -I$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/libs/$ANDROID_CPU_ARCH/include"
-                STLPORT_LIBS="-lgnustl_static"
+                STLPORT_LIBS="-L$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/libs/$ANDROID_CPU_ARCH/ -lgnustl_static"
+                STLPORT_CPPFLAGS="-I$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/include -I$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/libs/$ANDROID_CPU_ARCH/include -I$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/include/backward"
             elif test -e "$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/libgnustl_static.a"; then
                 # android-ndk-r7, android-ndk-r7b, android-ndk-r8
-                STLPORT_LDFLAGS="-L$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/"
+                STLPORT_LIBS="-L$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/ -lgnustl_static"
                 STLPORT_CPPFLAGS="-I$android_ndk/sources/cxx-stl/gnu-libstdc++/include -I$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/include"
-                STLPORT_LIBS="-lgnustl_static"
             elif test -e "$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/libstdc++.a"; then
                 # android-ndk-r5c, android-ndk-r6, android-ndk-r6b
                 STLPORT_CPPFLAGS="-I$android_ndk/sources/cxx-stl/gnu-libstdc++/include -I$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/include"
-                STLPORT_LDFLAGS="-L$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/"
-                STLPORT_LIBS="-lstdc++"
+                STLPORT_LIBS="-L$android_ndk/sources/cxx-stl/gnu-libstdc++/libs/$ANDROID_CPU_ARCH/ -lstdc++"
             else
                 AC_MSG_ERROR([Couldn't find path to gnu-libstdc++ in the android ndk])
             fi
@@ -297,7 +286,7 @@ case "$target" in
     # The build tools got moved around to different directories in
     # SDK Tools r22.  Try to locate them.
     android_build_tools=""
-    for suffix in 18.0.1 18.0.0 17.0.0 android-4.2.2; do
+    for suffix in android-4.3 18.1.0 18.0.1 18.0.0 17.0.0 android-4.2.2; do
         tools_directory="$android_sdk/../../build-tools/$suffix"
         if test -d "$tools_directory" ; then
             android_build_tools="$tools_directory"
