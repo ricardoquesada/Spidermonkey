@@ -7,4 +7,4 @@
              --disable-threadsafe
 
 # make
-make -j4
+../../../build/pymake/make.py -j4
