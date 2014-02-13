@@ -34,6 +34,10 @@
  - JIT is enabled
  - compiled in RELEASE mode
 
+### Linux
+
+ - JIT is enabled
+ - compiled in RELEASE mode
 
 ## About the patches
  
