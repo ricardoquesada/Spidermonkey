@@ -4,10 +4,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "vm/SelfHosting.h"
+
 #include "jscntxt.h"
 #include "jscompartment.h"
 #include "jsfriendapi.h"
+#include "jshashutil.h"
 #include "jsobj.h"
+#include "jswrapper.h"
 #include "selfhosted.out.h"
 
 #include "builtin/Intl.h"
@@ -83,7 +87,7 @@ js::intrinsic_ThrowError(JSContext *cx, unsigned argc, Value *vp)
 
 #ifdef DEBUG
     const JSErrorFormatString *efs =
-        js_GetLocalizedErrorMessage(cx, NULL, NULL, errorNumber);
+        js_GetLocalizedErrorMessage(cx, nullptr, nullptr, errorNumber);
     JS_ASSERT(efs->argCount == args.length() - 1);
 #endif
 
@@ -411,7 +415,7 @@ js::intrinsic_UnsafePutElements(JSContext *cx, unsigned argc, Value *vp)
 
         if (arrobj->isNative()) {
             JS_ASSERT(idx < arrobj->getDenseInitializedLength());
-            JSObject::setDenseElementWithType(cx, arrobj, idx, args[elemi]);
+            arrobj->setDenseElementWithType(cx, idx, args[elemi]);
         } else {
             JS_ASSERT(idx < arrobj->as<TypedArrayObject>().length());
             RootedValue tmp(cx, args[elemi]);
@@ -459,6 +463,22 @@ js::intrinsic_HaveSameClass(JSContext *cx, unsigned argc, Value *vp)
     JS_ASSERT(args[1].isObject());
 
     args.rval().setBoolean(args[0].toObject().getClass() == args[1].toObject().getClass());
+    return true;
+}
+
+bool
+js::intrinsic_IsPackedArray(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    JS_ASSERT(args.length() == 1);
+    JS_ASSERT(args[0].isObject());
+
+    JSObject *obj = &args[0].toObject();
+    bool isPacked = obj->is<ArrayObject>() && !obj->hasLazyType() &&
+                    !obj->type()->hasAllFlags(types::OBJECT_FLAG_NON_PACKED) &&
+                    obj->getDenseInitializedLength() == obj->as<ArrayObject>().length();
+
+    args.rval().setBoolean(isPacked);
     return true;
 }
 
@@ -611,6 +631,7 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_FN("UnsafeSetReservedSlot",   intrinsic_UnsafeSetReservedSlot,   3,0),
     JS_FN("UnsafeGetReservedSlot",   intrinsic_UnsafeGetReservedSlot,   2,0),
     JS_FN("HaveSameClass",           intrinsic_HaveSameClass,           2,0),
+    JS_FN("IsPackedArray",           intrinsic_IsPackedArray,           1,0),
 
     JS_FN("GetIteratorPrototype",    intrinsic_GetIteratorPrototype,    0,0),
 
@@ -658,15 +679,25 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_FNINFO("Memcpy",
               JSNativeThreadSafeWrapper<js::Memcpy>,
               &js::MemcpyJitInfo, 5, 0),
+    JS_FN("GetTypedObjectModule", js::GetTypedObjectModule, 0, 0),
 
-#define LOAD_AND_STORE_FN_DECLS(_constant, _type, _name)                      \
+#define LOAD_AND_STORE_SCALAR_FN_DECLS(_constant, _type, _name)               \
     JS_FNINFO("Store_" #_name,                                                \
               JSNativeThreadSafeWrapper<js::StoreScalar##_type::Func>,        \
               &js::StoreScalar##_type::JitInfo, 3, 0),                        \
     JS_FNINFO("Load_" #_name,                                                 \
               JSNativeThreadSafeWrapper<js::LoadScalar##_type::Func>,         \
               &js::LoadScalar##_type::JitInfo, 3, 0),
-    JS_FOR_EACH_UNIQUE_SCALAR_TYPE_REPR_CTYPE(LOAD_AND_STORE_FN_DECLS)
+    JS_FOR_EACH_UNIQUE_SCALAR_TYPE_REPR_CTYPE(LOAD_AND_STORE_SCALAR_FN_DECLS)
+
+#define LOAD_AND_STORE_REFERENCE_FN_DECLS(_constant, _type, _name)              \
+    JS_FNINFO("Store_" #_name,                                                  \
+              JSNativeThreadSafeWrapper<js::StoreReference##_type::Func>,       \
+              &js::StoreReference##_type::JitInfo, 3, 0),                       \
+    JS_FNINFO("Load_" #_name,                                                   \
+              JSNativeThreadSafeWrapper<js::LoadReference##_type::Func>,        \
+              &js::LoadReference##_type::JitInfo, 3, 0),
+    JS_FOR_EACH_REFERENCE_TYPE_REPR(LOAD_AND_STORE_REFERENCE_FN_DECLS)
 
     // See builtin/Intl.h for descriptions of the intl_* functions.
     JS_FN("intl_availableCalendars", intl_availableCalendars, 1,0),
@@ -749,6 +780,12 @@ JSRuntime::initSelfHosting(JSContext *cx)
     options.setCanLazilyParse(false);
     options.setSourcePolicy(CompileOptions::NO_SOURCE);
     options.setVersion(JSVERSION_LATEST);
+    options.werrorOption = true;
+
+#ifdef DEBUG
+    options.strictOption = true;
+    options.extraWarningsOption = true;
+#endif
 
     /*
      * Set a temporary error reporter printing to stderr because it is too
@@ -853,9 +890,9 @@ GetObjectAllocKindForClone(JSRuntime *rt, JSObject *obj)
 static JSObject *
 CloneObject(JSContext *cx, HandleObject srcObj, CloneMemory &clonedObjects)
 {
-    CloneMemory::AddPtr p = clonedObjects.lookupForAdd(srcObj.get());
+    DependentAddPtr<CloneMemory> p(cx, clonedObjects, srcObj.get());
     if (p)
-        return p->value;
+        return p->value();
     RootedObject clone(cx);
     if (srcObj->is<JSFunction>()) {
         if (srcObj->as<JSFunction>().isWrappable()) {
@@ -892,9 +929,12 @@ CloneObject(JSContext *cx, HandleObject srcObj, CloneMemory &clonedObjects)
                                         GetObjectAllocKindForClone(cx->runtime(), srcObj),
                                         SingletonObject);
     }
-    if (!clone || !clonedObjects.relookupOrAdd(p, srcObj.get(), clone.get()) ||
-        !CloneProperties(cx, srcObj, clone, clonedObjects))
-    {
+    if (!clone)
+        return nullptr;
+    if (!p.add(clonedObjects, srcObj, clone))
+        return nullptr;
+    if (!CloneProperties(cx, srcObj, clone, clonedObjects)) {
+        clonedObjects.remove(srcObj);
         return nullptr;
     }
     return clone;
@@ -974,6 +1014,63 @@ JSRuntime::cloneSelfHostedValue(JSContext *cx, Handle<PropertyName*> name, Mutab
     return true;
 }
 
+class OpaqueWrapper : public CrossCompartmentSecurityWrapper
+{
+  public:
+    OpaqueWrapper() : CrossCompartmentSecurityWrapper(0) {}
+    virtual bool enter(JSContext *cx, HandleObject wrapper, HandleId id,
+                       Wrapper::Action act, bool *bp) MOZ_OVERRIDE
+    {
+        *bp = false;
+        return false;
+    }
+    static OpaqueWrapper singleton;
+};
+
+OpaqueWrapper OpaqueWrapper::singleton;
+
+class OpaqueWrapperWithCall : public OpaqueWrapper
+{
+  public:
+    OpaqueWrapperWithCall() : OpaqueWrapper() {}
+    virtual bool enter(JSContext *cx, HandleObject wrapper, HandleId id,
+                       Wrapper::Action act, bool *bp) MOZ_OVERRIDE
+    {
+        if (act != Wrapper::CALL) {
+            *bp = false;
+            return false;
+        }
+        return true;
+    }
+    static OpaqueWrapperWithCall singleton;
+};
+
+OpaqueWrapperWithCall OpaqueWrapperWithCall::singleton;
+
+static JSObject *
+SelfHostingWrapObjectCallback(JSContext *cx, HandleObject existing, HandleObject obj,
+                              HandleObject proto, HandleObject parent, unsigned flags)
+{
+    RootedObject objGlobal(cx, &obj->global());
+    bool wrappingSelfHostedFunction = cx->runtime()->isSelfHostingGlobal(objGlobal);
+    JS_ASSERT_IF(!wrappingSelfHostedFunction, cx->runtime()->isSelfHostingGlobal(cx->global()));
+
+    OpaqueWrapper *handler = wrappingSelfHostedFunction
+                             ? &OpaqueWrapperWithCall::singleton
+                             : &OpaqueWrapper::singleton;
+    if (existing)
+        return Wrapper::Renew(cx, existing, obj, handler);
+    else
+        return Wrapper::New(cx, obj, proto, parent, handler);
+}
+
+const JSWrapObjectCallbacks
+js::SelfHostingWrapObjectCallbacks = {
+    SelfHostingWrapObjectCallback,
+    nullptr,
+    nullptr
+};
+
 bool
 JSRuntime::maybeWrappedSelfHostedFunction(JSContext *cx, HandleId id, MutableHandleValue funVal)
 {
@@ -997,7 +1094,7 @@ js::SelfHostedFunction(JSContext *cx, HandlePropertyName propName)
 {
     RootedValue func(cx);
     if (!cx->global()->getIntrinsicValue(cx, propName, &func))
-        return NULL;
+        return nullptr;
 
     JS_ASSERT(func.isObject());
     JS_ASSERT(func.toObject().is<JSFunction>());

@@ -128,14 +128,36 @@ CheckOverRecursed(JSContext *cx)
     return true;
 }
 
+// This function can get called in two contexts.  In the usual context, it's
+// called with ealyCheck=false, after the scope chain has been initialized on
+// a baseline frame.  In this case, it's ok to throw an exception, so a failed
+// stack check returns false, and a successful stack check promps a check for
+// an interrupt from the runtime, which may also cause a false return.
+//
+// In the second case, it's called with earlyCheck=true, prior to frame
+// initialization.  An exception cannot be thrown in this instance, so instead
+// an error flag is set on the frame and true returned.
 bool
-CheckOverRecursedWithExtra(JSContext *cx, uint32_t extra)
+CheckOverRecursedWithExtra(JSContext *cx, BaselineFrame *frame,
+                           uint32_t extra, uint32_t earlyCheck)
 {
+    JS_ASSERT_IF(earlyCheck, !frame->overRecursed());
+
     // See |CheckOverRecursed| above.  This is a variant of that function which
     // accepts an argument holding the extra stack space needed for the Baseline
     // frame that's about to be pushed.
     uint8_t spDummy;
     uint8_t *checkSp = (&spDummy) - extra;
+    if (earlyCheck) {
+        JS_CHECK_RECURSION_WITH_SP(cx, checkSp, frame->setOverRecursed());
+        return true;
+    }
+
+    // The OVERRECURSED flag may have already been set on the frame by an
+    // early over-recursed check.  If so, throw immediately.
+    if (frame->overRecursed())
+        return false;
+
     JS_CHECK_RECURSION_WITH_SP(cx, checkSp, return false);
 
     if (cx->runtime()->interrupt)
@@ -275,7 +297,7 @@ NewInitArray(JSContext *cx, uint32_t count, types::TypeObject *typeArg)
 {
     RootedTypeObject type(cx, typeArg);
     NewObjectKind newKind = !type ? SingletonObject : GenericObject;
-    if (type && type->isLongLivedForJITAlloc())
+    if (type && type->shouldPreTenure())
         newKind = TenuredObject;
     RootedObject obj(cx, NewDenseAllocatedArray(cx, count, nullptr, newKind));
     if (!obj)
@@ -293,7 +315,7 @@ JSObject*
 NewInitObject(JSContext *cx, HandleObject templateObject)
 {
     NewObjectKind newKind = templateObject->hasSingletonType() ? SingletonObject : GenericObject;
-    if (!templateObject->hasLazyType() && templateObject->type()->isLongLivedForJITAlloc())
+    if (!templateObject->hasLazyType() && templateObject->type()->shouldPreTenure())
         newKind = TenuredObject;
     RootedObject obj(cx, CopyInitializerObject(cx, templateObject, newKind));
 
@@ -314,7 +336,7 @@ NewInitObjectWithClassPrototype(JSContext *cx, HandleObject templateObject)
     JS_ASSERT(!templateObject->hasSingletonType());
     JS_ASSERT(!templateObject->hasLazyType());
 
-    NewObjectKind newKind = templateObject->type()->isLongLivedForJITAlloc()
+    NewObjectKind newKind = templateObject->type()->shouldPreTenure()
                             ? TenuredObject
                             : GenericObject;
     JSObject *obj = NewObjectWithGivenProto(cx,
@@ -440,7 +462,7 @@ SetProperty(JSContext *cx, HandleObject obj, HandlePropertyName name, HandleValu
         // required for initializing 'const' closure variables.
         Shape *shape = obj->nativeLookup(cx, name);
         JS_ASSERT(shape && shape->hasSlot());
-        JSObject::nativeSetSlotWithType(cx, obj, shape, value);
+        obj->nativeSetSlotWithType(cx, shape, value);
         return true;
     }
 
@@ -595,7 +617,7 @@ GetDynamicName(JSContext *cx, JSObject *scopeChain, JSString *str, Value *vp)
     if (str->isAtom()) {
         atom = &str->asAtom();
     } else {
-        atom = AtomizeString<NoGC>(cx, str);
+        atom = AtomizeString(cx, str);
         if (!atom) {
             vp->setUndefined();
             return;
@@ -782,7 +804,7 @@ InitRestParameter(JSContext *cx, uint32_t length, Value *rest, HandleObject temp
         return arrRes;
     }
 
-    NewObjectKind newKind = templateObj->type()->isLongLivedForJITAlloc()
+    NewObjectKind newKind = templateObj->type()->shouldPreTenure()
                             ? TenuredObject
                             : GenericObject;
     ArrayObject *arrRes = NewDenseCopiedArray(cx, length, rest, nullptr, newKind);
@@ -900,6 +922,28 @@ JSObject *CreateDerivedTypedObj(JSContext *cx, HandleObject type,
     return TypedObject::createDerived(cx, type, owner, offset);
 }
 
+bool
+Recompile(JSContext *cx)
+{
+    JS_ASSERT(cx->currentlyRunningInJit());
+    JitActivationIterator activations(cx->runtime());
+    IonFrameIterator iter(activations);
+
+    JS_ASSERT(iter.type() == IonFrame_Exit);
+    ++iter;
+
+    bool isConstructing = iter.isConstructing();
+    RootedScript script(cx, iter.script());
+    JS_ASSERT(script->hasIonScript());
+
+    MethodStatus status = Recompile(cx, script, nullptr, nullptr, isConstructing);
+    if (status == Method_Error)
+        return false;
+
+    JS_ASSERT(script->hasIonScript());
+
+    return true;
+}
 
 } // namespace jit
 } // namespace js

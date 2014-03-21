@@ -3,14 +3,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-# For sanity's sake, we compile nsinstall without the wrapped system
-# headers, so that we can use it to set up the wrapped system headers.
-VISIBILITY_FLAGS =
-
-ifneq (WINNT,$(HOST_OS_ARCH))
-HOST_PROGRAM	= nsinstall_real$(HOST_BIN_SUFFIX)
-endif
-
 # IMPORTANT: Disable NSBUILDROOT for this directory only, otherwise we have
 # a recursive rule for finding nsinstall and the Perl scripts.
 ifdef NSBUILDROOT
@@ -22,11 +14,6 @@ MODULE_OPTIMIZE_FLAGS = -O3
 endif
 
 include $(topsrcdir)/config/config.mk
-
-# Force wrap zlib system header if building js as a shared library.
-ifneq (,$(JS_SHARED_LIBRARY)$(MOZ_NATIVE_ZLIB))
-DEFINES += -DMOZ_NATIVE_ZLIB=1
-endif
 
 ifneq (WINNT,$(HOST_OS_ARCH))
 # Ensure nsinstall is atomically created
@@ -48,7 +35,7 @@ ifdef WRAP_SYSTEM_INCLUDES
 export:: \
   $(call mkdir_deps,system_wrappers_js) \
   $(NULL)
-	$(PYTHON) $(srcdir)/Preprocessor.py $(DEFINES) $(ACDEFINES) \
+	$(PYTHON) -m mozbuild.action.preprocessor $(DEFINES) $(ACDEFINES) \
 		-DMOZ_NATIVE_ICU=$(MOZ_NATIVE_ICU) \
 		$(srcdir)/system-headers | $(PERL) $(srcdir)/make-system-wrappers.pl system_wrappers_js
 	$(INSTALL) system_wrappers_js $(DIST)

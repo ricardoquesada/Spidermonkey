@@ -23,17 +23,20 @@ simple_events = [
     'StyleRuleChangeEvent',
     'StyleSheetChangeEvent',
     'StyleSheetApplicableStateChangeEvent',
+#ifdef MOZ_WIDGET_GONK
+    'MozWifiStatusChangeEvent',
+    'MozWifiConnectionInfoEvent',
+#endif
 #ifdef MOZ_B2G_BT
     'BluetoothDeviceEvent',
     'BluetoothStatusChangedEvent',
+    'BluetoothDiscoveryStateChangedEvent',
 #endif
 #ifdef MOZ_B2G_RIL
     'CFStateChangeEvent',
     'DataErrorEvent',
     'MozEmergencyCbModeEvent',
     'MozOtaStatusEvent',
-    'MozWifiStatusChangeEvent',
-    'MozWifiConnectionInfoEvent',
     'MozCellBroadcastEvent',
     'MozVoicemailEvent',
     'USSDReceivedEvent',

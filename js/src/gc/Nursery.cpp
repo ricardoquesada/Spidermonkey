@@ -60,7 +60,7 @@ js::Nursery::init()
     JS_POISON(heap, FreshNursery, NurserySize);
 #endif
     for (int i = 0; i < NumNurseryChunks; ++i)
-        chunk(i).runtime = rt;
+        chunk(i).trailer.runtime = rt;
 
     JS_ASSERT(isEnabled());
     return true;
@@ -80,6 +80,10 @@ js::Nursery::enable()
     JS_ASSERT_IF(runtime()->gcZeal_ != ZealGenerationalGCValue, position_ == start());
     numActiveChunks_ = 1;
     setCurrentChunk(0);
+#ifdef JS_GC_ZEAL
+    if (runtime()->gcZeal_ == ZealGenerationalGCValue)
+        enterZealMode();
+#endif
 }
 
 void
@@ -95,6 +99,7 @@ js::Nursery::disable()
 void *
 js::Nursery::allocate(size_t size)
 {
+    JS_ASSERT(isEnabled());
     JS_ASSERT(!runtime()->isHeapBusy());
 
     /* Ensure there's enough space to replace the contents with a RelocationOverlay. */
@@ -291,9 +296,9 @@ GetObjectAllocKindForCopy(JSRuntime *rt, JSObject *obj)
         return obj->as<JSFunction>().getAllocKind();
 
     AllocKind kind = GetGCObjectFixedSlotsKind(obj->numFixedSlots());
-    if (CanBeFinalizedInBackground(kind, obj->getClass()))
-        kind = GetBackgroundAllocKind(kind);
-    return kind;
+    JS_ASSERT(!IsBackgroundFinalized(kind));
+    JS_ASSERT(CanBeFinalizedInBackground(kind, obj->getClass()));
+    return GetBackgroundAllocKind(kind);
 }
 
 void *
@@ -350,37 +355,45 @@ js::Nursery::forwardBufferPointer(HeapSlot **pSlotsElems)
     JS_ASSERT(!isInside(*pSlotsElems));
 }
 
-static void
-MaybeInvalidateScriptUsedWithNew(JSRuntime *rt, types::TypeObject *type)
-{
-    types::TypeNewScript *newScript = type->newScript();
-    if (!newScript)
-        return;
+namespace {
 
-    JSScript *script = newScript->fun->nonLazyScript();
-    if (script && script->hasIonScript()) {
-        for (ContextIter cx(rt); !cx.done(); cx.next())
-            jit::Invalidate(cx, script);
+// Structure for counting how many times objects of a particular type have been
+// tenured during a minor collection.
+struct TenureCount
+{
+    types::TypeObject *type;
+    int count;
+};
+
+} // anonymous namespace
+
+// Keep rough track of how many times we tenure objects of particular types
+// during minor collections, using a fixed size hash for efficiency at the cost
+// of potential collisions.
+struct Nursery::TenureCountCache
+{
+    TenureCount entries[16];
+
+    TenureCountCache() { PodZero(this); }
+
+    TenureCount &findEntry(types::TypeObject *type) {
+        return entries[PointerHasher<types::TypeObject *, 3>::hash(type) % ArrayLength(entries)];
     }
-}
+};
 
 void
-js::Nursery::collectToFixedPoint(MinorCollectionTracer *trc)
+js::Nursery::collectToFixedPoint(MinorCollectionTracer *trc, TenureCountCache &tenureCounts)
 {
     for (RelocationOverlay *p = trc->head; p; p = p->next()) {
         JSObject *obj = static_cast<JSObject*>(p->forwardingAddress());
         traceObject(trc, obj);
 
-        /*
-         * Increment tenure count and recompile the script for pre-tenuring if
-         * long-lived. Attempt to distinguish between tenuring because the
-         * object is long lived and tenuring while the nursery is still
-         * smaller than the working set size.
-         */
-        if (isFullyGrown() && !obj->hasLazyType() && obj->type()->hasNewScript() &&
-            obj->type()->incrementTenureCount())
-        {
-            MaybeInvalidateScriptUsedWithNew(trc->runtime, obj->type());
+        TenureCount &entry = tenureCounts.findEntry(obj->type());
+        if (entry.type == obj->type()) {
+            entry.count++;
+        } else if (!entry.type) {
+            entry.type = obj->type();
+            entry.count = 1;
         }
     }
 }
@@ -575,7 +588,7 @@ js::Nursery::MinorGCCallback(JSTracer *jstrc, void **thingp, JSGCTraceKind kind)
 }
 
 void
-js::Nursery::collect(JSRuntime *rt, JS::gcreason::Reason reason)
+js::Nursery::collect(JSRuntime *rt, JS::gcreason::Reason reason, TypeObjectList *pretenureTypes)
 {
     JS_AbortIfWrongThread(rt);
 
@@ -594,13 +607,13 @@ js::Nursery::collect(JSRuntime *rt, JS::gcreason::Reason reason)
 
     /* Move objects pointed to by roots from the nursery to the major heap. */
     MinorCollectionTracer trc(rt, this);
+    rt->gcStoreBuffer.mark(&trc); // This must happen first.
     MarkRuntime(&trc);
     Debugger::markAll(&trc);
-    for (CompartmentsIter comp(rt); !comp.done(); comp.next()) {
+    for (CompartmentsIter comp(rt, SkipAtoms); !comp.done(); comp.next()) {
         comp->markAllCrossCompartmentWrappers(&trc);
         comp->markAllInitialShapeTableEntries(&trc);
     }
-    rt->gcStoreBuffer.mark(&trc);
     rt->newObjectCache.clearNurseryObjects(rt);
 
     /*
@@ -609,7 +622,8 @@ js::Nursery::collect(JSRuntime *rt, JS::gcreason::Reason reason)
      * to the nursery, then those nursery objects get moved as well, until no
      * objects are left to move. That is, we iterate to a fixed point.
      */
-    collectToFixedPoint(&trc);
+    TenureCountCache tenureCounts;
+    collectToFixedPoint(&trc, tenureCounts);
 
     /* Resize the nursery. */
     double promotionRate = trc.tenuredSize / double(allocationEnd() - start());
@@ -617,6 +631,18 @@ js::Nursery::collect(JSRuntime *rt, JS::gcreason::Reason reason)
         growAllocableSpace();
     else if (promotionRate < 0.01)
         shrinkAllocableSpace();
+
+    // If we are promoting the nursery, or exhausted the store buffer with
+    // pointers to nursery things, which will force a collection well before
+    // the nursery is full, look for object types that are getting promoted
+    // excessively and try to pretenure them.
+    if (pretenureTypes && (promotionRate > 0.8 || reason == JS::gcreason::FULL_STORE_BUFFER)) {
+        for (size_t i = 0; i < ArrayLength(tenureCounts.entries); i++) {
+            const TenureCount &entry = tenureCounts.entries[i];
+            if (entry.count >= 3000)
+                pretenureTypes->append(entry.type); // ignore alloc failure
+        }
+    }
 
     /* Sweep. */
     sweep(rt);
@@ -643,7 +669,7 @@ js::Nursery::sweep(JSRuntime *rt)
     /* Poison the nursery contents so touching a freed object will crash. */
     JS_POISON((void *)start(), SweptNursery, NurserySize - sizeof(JSRuntime *));
     for (int i = 0; i < NumNurseryChunks; ++i)
-        chunk(i).runtime = runtime();
+        chunk(i).trailer.runtime = runtime();
 
     if (rt->gcZeal_ == ZealGenerationalGCValue) {
         /* Undo any grow or shrink the collection may have done. */

@@ -1105,7 +1105,7 @@ vpx/vpx_encoder.h
 vpx/vp8cx.h
 vpx/vp8dx.h
 #endif
-#ifdef XP_WIN
+#ifdef GKMEDIAS_SHARED_LIBRARY
 vpx/vpx_codec.h
 vpx/vpx_decoder.h
 vpx/vpx_encoder.h
@@ -1131,7 +1131,7 @@ kvm.h
 spawn.h
 err.h
 xlocale.h
-#if MOZ_NATIVE_ICU==1
+#ifdef MOZ_SHARED_ICU
 unicode/locid.h
 unicode/numsys.h
 unicode/ucal.h
@@ -1144,3 +1144,4 @@ unicode/unum.h
 unicode/ustring.h
 unicode/utypes.h
 #endif
+libutil.h

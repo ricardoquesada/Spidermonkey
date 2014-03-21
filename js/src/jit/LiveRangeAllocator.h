@@ -51,7 +51,9 @@ class Requirement
     Requirement(LAllocation fixed)
       : kind_(FIXED),
         allocation_(fixed)
-    { }
+    {
+        JS_ASSERT(fixed == LAllocation() || !fixed.isUse());
+    }
 
     // Only useful as a hint, encodes where the fixed requirement is used to
     // avoid allocating a fixed register too early.
@@ -59,7 +61,9 @@ class Requirement
       : kind_(FIXED),
         allocation_(fixed),
         position_(at)
-    { }
+    {
+        JS_ASSERT(fixed == LAllocation() || !fixed.isUse());
+    }
 
     Requirement(uint32_t vreg, CodePosition at)
       : kind_(SAME_AS_OTHER),
@@ -78,6 +82,7 @@ class Requirement
 
     uint32_t virtualRegister() const {
         JS_ASSERT(allocation_.isUse());
+        JS_ASSERT(kind() == SAME_AS_OTHER);
         return allocation_.toUse()->virtualRegister();
     }
 
@@ -227,21 +232,29 @@ class LiveInterval
     InlineForwardList<UsePosition> uses_;
     size_t lastProcessedRange_;
 
-  public:
-
-    LiveInterval(uint32_t vreg, uint32_t index)
-      : spillInterval_(nullptr),
+    LiveInterval(TempAllocator &alloc, uint32_t vreg, uint32_t index)
+      : ranges_(alloc),
+        spillInterval_(nullptr),
         vreg_(vreg),
         index_(index),
         lastProcessedRange_(size_t(-1))
     { }
 
-    LiveInterval(uint32_t index)
-      : spillInterval_(nullptr),
+    LiveInterval(TempAllocator &alloc, uint32_t index)
+      : ranges_(alloc),
+        spillInterval_(nullptr),
         vreg_(UINT32_MAX),
         index_(index),
         lastProcessedRange_(size_t(-1))
     { }
+
+  public:
+    static LiveInterval *New(TempAllocator &alloc, uint32_t vreg, uint32_t index) {
+        return new(alloc) LiveInterval(alloc, vreg, index);
+    }
+    static LiveInterval *New(TempAllocator &alloc, uint32_t index) {
+        return new(alloc) LiveInterval(alloc, index);
+    }
 
     bool addRange(CodePosition from, CodePosition to);
     bool addRangeAtHead(CodePosition from, CodePosition to);
@@ -343,6 +356,7 @@ class LiveInterval
     bool splitFrom(CodePosition pos, LiveInterval *after);
 
     void addUse(UsePosition *use);
+    void addUseAtEnd(UsePosition *use);
     UsePosition *nextUseAfter(CodePosition pos);
     CodePosition nextUsePosAfter(CodePosition pos);
     CodePosition firstIncompatibleUse(LAllocation alloc);
@@ -355,6 +369,10 @@ class LiveInterval
         return uses_.end();
     }
 
+    bool usesEmpty() const {
+        return uses_.empty();
+    }
+
     UsePosition *usesBack() {
         return uses_.back();
     }
@@ -362,6 +380,12 @@ class LiveInterval
 #ifdef DEBUG
     void validateRanges();
 #endif
+
+    // Return a string describing the ranges in this LiveInterval. This is
+    // not re-entrant!
+    const char *rangesToString() const;
+
+    void dump();
 };
 
 /*
@@ -382,14 +406,21 @@ class VirtualRegister
     void operator=(const VirtualRegister &) MOZ_DELETE;
     VirtualRegister(const VirtualRegister &) MOZ_DELETE;
 
+  protected:
+    explicit VirtualRegister(TempAllocator &alloc)
+      : intervals_(alloc)
+    {}
+
   public:
-    bool init(LBlock *block, LInstruction *ins, LDefinition *def, bool isTemp) {
+    bool init(TempAllocator &alloc, LBlock *block, LInstruction *ins, LDefinition *def,
+              bool isTemp)
+    {
         JS_ASSERT(block && !block_);
         block_ = block;
         ins_ = ins;
         def_ = def;
         isTemp_ = isTemp;
-        LiveInterval *initial = new LiveInterval(def->virtualRegister(), 0);
+        LiveInterval *initial = LiveInterval::New(alloc, def->virtualRegister(), 0);
         if (!initial)
             return false;
         return intervals_.append(initial);
@@ -473,6 +504,9 @@ class VirtualRegisterMap
         if (!vregs_)
             return false;
         memset(vregs_, 0, sizeof(VREG) * numVregs);
+        TempAllocator &alloc = gen->alloc();
+        for (uint32_t i = 0; i < numVregs; i++)
+            new(&vregs_[i]) VREG(alloc);
         return true;
     }
     VREG &operator[](unsigned int index) {
@@ -525,8 +559,13 @@ IsTraceable(VirtualRegister *reg)
 typedef InlineList<LiveInterval>::iterator IntervalIterator;
 typedef InlineList<LiveInterval>::reverse_iterator IntervalReverseIterator;
 
-template <typename VREG>
-class LiveRangeAllocator : public RegisterAllocator
+// The forLSRA parameter indicates whether the underlying allocator is LSRA.
+// This changes the generated live ranges in various ways: inserting additional
+// fixed uses of registers, and shifting the boundaries of live ranges by small
+// amounts. This exists because different allocators handle live ranges
+// differently; ideally, they would all treat live ranges in the same way.
+template <typename VREG, bool forLSRA>
+class LiveRangeAllocator : protected RegisterAllocator
 {
   protected:
     // Computed inforamtion
@@ -538,21 +577,13 @@ class LiveRangeAllocator : public RegisterAllocator
     // whether an interval intersects with a fixed register.
     LiveInterval *fixedIntervalsUnion;
 
-    // Whether the underlying allocator is LSRA. This changes the generated
-    // live ranges in various ways: inserting additional fixed uses of
-    // registers, and shifting the boundaries of live ranges by small amounts.
-    // This exists because different allocators handle live ranges differently;
-    // ideally, they would all treat live ranges in the same way.
-    bool forLSRA;
-
     // Allocation state
     StackSlotAllocator stackSlotAllocator;
 
-    LiveRangeAllocator(MIRGenerator *mir, LIRGenerator *lir, LIRGraph &graph, bool forLSRA)
+    LiveRangeAllocator(MIRGenerator *mir, LIRGenerator *lir, LIRGraph &graph)
       : RegisterAllocator(mir, lir, graph),
         liveIn(nullptr),
-        fixedIntervalsUnion(nullptr),
-        forLSRA(forLSRA)
+        fixedIntervalsUnion(nullptr)
     {
     }
 
@@ -569,7 +600,7 @@ class LiveRangeAllocator : public RegisterAllocator
     void validateVirtualRegisters()
     {
 #ifdef DEBUG
-        if (!js_IonOptions.assertGraphConsistency)
+        if (!js_IonOptions.checkGraphConsistency)
             return;
 
         for (size_t i = 1; i < graph.numVirtualRegisters(); i++) {
@@ -603,19 +634,47 @@ class LiveRangeAllocator : public RegisterAllocator
 #endif
 
     bool addMove(LMoveGroup *moves, LiveInterval *from, LiveInterval *to) {
-        if (*from->getAllocation() == *to->getAllocation())
-            return true;
+        JS_ASSERT(*from->getAllocation() != *to->getAllocation());
         return moves->add(from->getAllocation(), to->getAllocation());
     }
 
     bool moveInput(CodePosition pos, LiveInterval *from, LiveInterval *to) {
+        if (*from->getAllocation() == *to->getAllocation())
+            return true;
         LMoveGroup *moves = getInputMoveGroup(pos);
         return addMove(moves, from, to);
     }
 
     bool moveAfter(CodePosition pos, LiveInterval *from, LiveInterval *to) {
+        if (*from->getAllocation() == *to->getAllocation())
+            return true;
         LMoveGroup *moves = getMoveGroupAfter(pos);
         return addMove(moves, from, to);
+    }
+
+    bool moveAtExit(LBlock *block, LiveInterval *from, LiveInterval *to) {
+        if (*from->getAllocation() == *to->getAllocation())
+            return true;
+        LMoveGroup *moves = block->getExitMoveGroup(alloc());
+        return addMove(moves, from, to);
+    }
+
+    bool moveAtEntry(LBlock *block, LiveInterval *from, LiveInterval *to) {
+        if (*from->getAllocation() == *to->getAllocation())
+            return true;
+        LMoveGroup *moves = block->getEntryMoveGroup(alloc());
+        return addMove(moves, from, to);
+    }
+
+    size_t findFirstNonCallSafepoint(CodePosition from) const
+    {
+        size_t i = 0;
+        for (; i < graph.numNonCallSafepoints(); i++) {
+            const LInstruction *ins = graph.getNonCallSafepoint(i);
+            if (from <= inputOf(ins))
+                break;
+        }
+        return i;
     }
 
     void addLiveRegistersForInterval(VirtualRegister *reg, LiveInterval *interval)
@@ -637,7 +696,7 @@ class LiveRangeAllocator : public RegisterAllocator
 
             // Safepoints are sorted, so we can shortcut out of this loop
             // if we go out of range.
-            if (interval->end() < pos)
+            if (interval->end() <= pos)
                 break;
 
             if (!interval->covers(pos))

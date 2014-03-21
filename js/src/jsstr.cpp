@@ -382,9 +382,9 @@ str_enumerate(JSContext *cx, HandleObject obj)
     return true;
 }
 
-static bool
-str_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
-            MutableHandleObject objp)
+bool
+js::str_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
+                MutableHandleObject objp)
 {
     if (!JSID_IS_INT(id))
         return true;
@@ -1704,7 +1704,7 @@ class MOZ_STACK_CLASS StringRegExpGuard
             if (!arg)
                 return false;
 
-            fm.patstr = AtomizeString<CanGC>(cx, arg);
+            fm.patstr = AtomizeString(cx, arg);
             if (!fm.patstr)
                 return false;
         }
@@ -2645,7 +2645,8 @@ AppendSubstrings(JSContext *cx, Handle<JSStableString*> stableStr,
             return nullptr;
 
         /* Appending to the rope permanently roots the substring. */
-        rope.append(part);
+        if (!rope.append(part))
+            return nullptr;
     }
 
     return rope.result();
@@ -2859,7 +2860,7 @@ LambdaIsGetElem(JSContext *cx, JSObject &lambda, MutableHandleObject pobj)
     if (!script)
         return false;
 
-    jsbytecode *pc = script->code;
+    jsbytecode *pc = script->code();
 
     /*
      * JSOP_GETALIASEDVAR tells us exactly where to find the base object 'b'.
@@ -3005,7 +3006,7 @@ class SplitMatchResult {
 } /* anonymous namespace */
 
 template<class Matcher>
-static JSObject *
+static ArrayObject *
 SplitHelper(JSContext *cx, Handle<JSLinearString*> str, uint32_t limit, const Matcher &splitMatch,
             Handle<TypeObject*> type)
 {
@@ -3129,6 +3130,31 @@ SplitHelper(JSContext *cx, Handle<JSLinearString*> str, uint32_t limit, const Ma
         return nullptr;
 
     /* Step 16. */
+    return NewDenseCopiedArray(cx, splits.length(), splits.begin());
+}
+
+// Fast-path for splitting a string into a character array via split("").
+static ArrayObject *
+CharSplitHelper(JSContext *cx, Handle<JSLinearString*> str, uint32_t limit)
+{
+    size_t strLength = str->length();
+    if (strLength == 0)
+        return NewDenseEmptyArray(cx);
+
+    js::StaticStrings &staticStrings = cx->runtime()->staticStrings;
+    uint32_t resultlen = (limit < strLength ? limit : strLength);
+
+    AutoValueVector splits(cx);
+    if (!splits.reserve(resultlen))
+        return nullptr;
+
+    for (size_t i = 0; i < resultlen; ++i) {
+        JSString *sub = staticStrings.getUnitStringForElement(cx, str, i);
+        if (!sub)
+            return nullptr;
+        splits.infallibleAppend(StringValue(sub));
+    }
+
     return NewDenseCopiedArray(cx, splits.length(), splits.begin());
 }
 
@@ -3274,8 +3300,12 @@ js::str_split(JSContext *cx, unsigned argc, Value *vp)
     /* Steps 11-15. */
     RootedObject aobj(cx);
     if (!re.initialized()) {
-        SplitStringMatcher matcher(cx, sepstr);
-        aobj = SplitHelper(cx, linearStr, limit, matcher, type);
+        if (sepstr->length() == 0) {
+            aobj = CharSplitHelper(cx, linearStr, limit);
+        } else {
+            SplitStringMatcher matcher(cx, sepstr);
+            aobj = SplitHelper(cx, linearStr, limit, matcher, type);
+        }
     } else {
         SplitRegExpMatcher matcher(*re, cx->global()->getRegExpStatics());
         aobj = SplitHelper(cx, linearStr, limit, matcher, type);
@@ -3287,6 +3317,34 @@ js::str_split(JSContext *cx, unsigned argc, Value *vp)
     aobj->setType(type);
     args.rval().setObject(*aobj);
     return true;
+}
+
+JSObject *
+js::str_split_string(JSContext *cx, HandleTypeObject type, HandleString str, HandleString sep)
+{
+    Rooted<JSLinearString*> linearStr(cx, str->ensureLinear(cx));
+    if (!linearStr)
+        return nullptr;
+
+    Rooted<JSLinearString*> linearSep(cx, sep->ensureLinear(cx));
+    if (!linearSep)
+        return nullptr;
+
+    uint32_t limit = UINT32_MAX;
+
+    RootedObject aobj(cx);
+    if (linearSep->length() == 0) {
+        aobj = CharSplitHelper(cx, linearStr, limit);
+    } else {
+        SplitStringMatcher matcher(cx, linearSep);
+        aobj = SplitHelper(cx, linearStr, limit, matcher, type);
+    }
+
+    if (!aobj)
+        return nullptr;
+
+    aobj->setType(type);
+    return aobj;
 }
 
 static bool
@@ -3743,13 +3801,13 @@ static const JSFunctionSpec string_static_methods[] = {
     JS_FS_END
 };
 
-Shape *
-StringObject::assignInitialShape(JSContext *cx)
+/* static */ Shape *
+StringObject::assignInitialShape(ExclusiveContext *cx, Handle<StringObject*> obj)
 {
-    JS_ASSERT(nativeEmpty());
+    JS_ASSERT(obj->nativeEmpty());
 
-    return addDataProperty(cx, cx->names().length, LENGTH_SLOT,
-                           JSPROP_PERMANENT | JSPROP_READONLY);
+    return obj->addDataProperty(cx, cx->names().length, LENGTH_SLOT,
+                                JSPROP_PERMANENT | JSPROP_READONLY);
 }
 
 JSObject *
@@ -3967,6 +4025,12 @@ js::ToStringSlow<CanGC>(ExclusiveContext *cx, HandleValue arg);
 template JSString *
 js::ToStringSlow<NoGC>(ExclusiveContext *cx, Value arg);
 
+JS_PUBLIC_API(JSString *)
+js::ToStringSlow(JSContext *cx, HandleValue v)
+{
+    return ToStringSlow<CanGC>(cx, v);
+}
+
 JSString *
 js::ValueToSource(JSContext *cx, HandleValue v)
 {
@@ -4065,13 +4129,20 @@ CompareStringsImpl(JSContext *cx, JSString *str1, JSString *str2, int32_t *resul
     if (!s2)
         return false;
 
-    return CompareChars(s1, str1->length(), s2, str2->length(), result);
+    *result = CompareChars(s1, str1->length(), s2, str2->length());
+    return true;
 }
 
 bool
 js::CompareStrings(JSContext *cx, JSString *str1, JSString *str2, int32_t *result)
 {
     return CompareStringsImpl(cx, str1, str2, result);
+}
+
+int32_t
+js::CompareAtoms(JSAtom *atom1, JSAtom *atom2)
+{
+    return CompareChars(atom1->chars(), atom1->length(), atom2->chars(), atom2->length());
 }
 
 bool

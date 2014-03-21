@@ -33,21 +33,18 @@ class MStart;
 class MIRGenerator
 {
   public:
-    MIRGenerator(JSCompartment *compartment, TempAllocator *temp, MIRGraph *graph, CompileInfo *info);
+    MIRGenerator(CompileCompartment *compartment, TempAllocator *alloc, MIRGraph *graph, CompileInfo *info);
 
-    TempAllocator &temp() {
-        return *temp_;
+    TempAllocator &alloc() {
+        return *alloc_;
     }
     MIRGraph &graph() {
         return *graph_;
     }
     bool ensureBallast() {
-        return temp().ensureBallast();
+        return alloc().ensureBallast();
     }
-    JitCompartment *jitCompartment() const {
-        return compartment->jitCompartment();
-    }
-    JitRuntime *jitRuntime() const {
+    const JitRuntime *jitRuntime() const {
         return GetIonContext()->runtime->jitRuntime();
     }
     CompileInfo &info() {
@@ -58,7 +55,7 @@ class MIRGenerator
     T * allocate(size_t count = 1) {
         if (count & mozilla::tl::MulOverflowMask<sizeof(T)>::value)
             return nullptr;
-        return reinterpret_cast<T *>(temp().allocate(sizeof(T) * count));
+        return reinterpret_cast<T *>(alloc().allocate(sizeof(T) * count));
     }
 
     // Set an error state and prints a message. Returns false so errors can be
@@ -71,7 +68,7 @@ class MIRGenerator
     }
 
     bool instrumentedProfiling() {
-        return GetIonContext()->runtime->spsProfiler.enabled();
+        return GetIonContext()->runtime->spsProfiler().enabled();
     }
 
     // Whether the main thread is trying to cancel this build.
@@ -132,11 +129,11 @@ class MIRGenerator
     }
 
   public:
-    JSCompartment *compartment;
+    CompileCompartment *compartment;
 
   protected:
     CompileInfo *info_;
-    TempAllocator *temp_;
+    TempAllocator *alloc_;
     JSFunction *fun_;
     uint32_t nslots_;
     MIRGraph *graph_;

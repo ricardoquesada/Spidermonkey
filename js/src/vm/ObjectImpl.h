@@ -8,6 +8,7 @@
 #define vm_ObjectImpl_h
 
 #include "mozilla/Assertions.h"
+#include "mozilla/Attributes.h"
 
 #include <stdint.h>
 
@@ -833,7 +834,7 @@ class ObjectElements
     }
 
   public:
-    ObjectElements(uint32_t capacity, uint32_t length)
+    MOZ_CONSTEXPR ObjectElements(uint32_t capacity, uint32_t length)
       : flags(0), initializedLength(0), capacity(capacity), length(length)
     {}
 
@@ -1024,11 +1025,11 @@ class ObjectImpl : public gc::BarrieredCell<ObjectImpl>
         return idx < getDenseInitializedLength() && !elements[idx].isMagic(JS_ELEMENTS_HOLE);
     }
     uint32_t getDenseInitializedLength() {
-        JS_ASSERT(isNative());
+        JS_ASSERT(getClass()->isNative());
         return getElementsHeader()->initializedLength;
     }
     uint32_t getDenseCapacity() {
-        JS_ASSERT(isNative());
+        JS_ASSERT(getClass()->isNative());
         return getElementsHeader()->capacity;
     }
 
@@ -1201,6 +1202,8 @@ class ObjectImpl : public gc::BarrieredCell<ObjectImpl>
         return reinterpret_cast<const shadow::Object *>(this)->numFixedSlots();
     }
 
+    uint32_t numFixedSlotsForCompilation() const;
+
     /*
      * Whether this is the only object which has its specified type. This
      * object will have its type constructed lazily as needed by analysis.
@@ -1242,10 +1245,7 @@ class ObjectImpl : public gc::BarrieredCell<ObjectImpl>
         return nativeLookup(cx, shape->propid()) == shape;
     }
 
-    /*
-     * Contextless; can be called from parallel code. Returns false if the
-     * operation would have been effectful.
-     */
+    /* Contextless; can be called from parallel code. */
     Shape *nativeLookupPure(jsid id);
     Shape *nativeLookupPure(PropertyId pid) {
         return nativeLookupPure(pid.asId());
@@ -1304,11 +1304,16 @@ class ObjectImpl : public gc::BarrieredCell<ObjectImpl>
         return slots[slot - fixed];
     }
 
-    HeapSlot *getSlotAddressUnchecked(uint32_t slot) {
+    const HeapSlot *getSlotAddressUnchecked(uint32_t slot) const {
         uint32_t fixed = numFixedSlots();
         if (slot < fixed)
             return fixedSlots() + slot;
         return slots + (slot - fixed);
+    }
+
+    HeapSlot *getSlotAddressUnchecked(uint32_t slot) {
+        const ObjectImpl *obj = static_cast<const ObjectImpl*>(this);
+        return const_cast<HeapSlot*>(obj->getSlotAddressUnchecked(slot));
     }
 
     HeapSlot *getSlotAddress(uint32_t slot) {
@@ -1321,7 +1326,22 @@ class ObjectImpl : public gc::BarrieredCell<ObjectImpl>
         return getSlotAddressUnchecked(slot);
     }
 
+    const HeapSlot *getSlotAddress(uint32_t slot) const {
+        /*
+         * This can be used to get the address of the end of the slots for the
+         * object, which may be necessary when fetching zero-length arrays of
+         * slots (e.g. for callObjVarArray).
+         */
+        MOZ_ASSERT(slotInRange(slot, SENTINEL_ALLOWED));
+        return getSlotAddressUnchecked(slot);
+    }
+
     HeapSlot &getSlotRef(uint32_t slot) {
+        MOZ_ASSERT(slotInRange(slot));
+        return *getSlotAddress(slot);
+    }
+
+    const HeapSlot &getSlotRef(uint32_t slot) const {
         MOZ_ASSERT(slotInRange(slot));
         return *getSlotAddress(slot);
     }
@@ -1371,7 +1391,7 @@ class ObjectImpl : public gc::BarrieredCell<ObjectImpl>
     }
 
     const Value &getFixedSlot(uint32_t slot) const {
-        MOZ_ASSERT(slot < numFixedSlots());
+        MOZ_ASSERT(slot < numFixedSlotsForCompilation());
         return fixedSlots()[slot];
     }
 
@@ -1468,7 +1488,7 @@ class ObjectImpl : public gc::BarrieredCell<ObjectImpl>
          * Private pointers are stored immediately after the last fixed slot of
          * the object.
          */
-        MOZ_ASSERT(nfixed == numFixedSlots());
+        MOZ_ASSERT(nfixed == numFixedSlotsForCompilation());
         MOZ_ASSERT(hasPrivate());
         HeapSlot *end = &fixedSlots()[nfixed];
         return *reinterpret_cast<void**>(end);

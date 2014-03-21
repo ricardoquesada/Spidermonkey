@@ -15,13 +15,17 @@
 #include "mozJSComponentLoader.h"
 #include "nsContentUtils.h"
 #include "jsfriendapi.h"
+#include "js/StructuredClone.h"
 #include "mozilla/Attributes.h"
 #include "nsJSEnvironment.h"
 #include "mozilla/XPTInterfaceInfoManager.h"
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/DOMExceptionBinding.h"
 #include "mozilla/dom/BindingUtils.h"
+#include "mozilla/dom/StructuredCloneTags.h"
 #include "nsZipArchive.h"
+#include "nsIDOMFile.h"
+#include "nsIDOMFileList.h"
 
 using namespace mozilla;
 using namespace JS;
@@ -1576,7 +1580,7 @@ nsXPCComponents_ID::CallOrConstruct(nsIXPConnectWrappedNative *wrapper,
     JSAutoByteString bytes;
     nsID id;
 
-    if (!(jsstr = JS_ValueToString(cx, args[0])) ||
+    if (!(jsstr = ToString(cx, args[0])) ||
         !bytes.encodeLatin1(cx, jsstr) ||
         !id.Parse(bytes.ptr())) {
         return ThrowAndFail(NS_ERROR_XPC_BAD_ID_STRING, cx, _retval);
@@ -1837,7 +1841,7 @@ struct MOZ_STACK_CLASS ExceptionArgParser
      */
 
     bool parseMessage(HandleValue v) {
-        JSString *str = JS_ValueToString(cx, v);
+        JSString *str = ToString(cx, v);
         if (!str)
            return false;
         eMsg = messageBytes.encodeLatin1(cx, str);
@@ -1845,7 +1849,7 @@ struct MOZ_STACK_CLASS ExceptionArgParser
     }
 
     bool parseResult(HandleValue v) {
-        return JS_ValueToECMAUint32(cx, v, (uint32_t*) &eResult);
+        return JS::ToUint32(cx, v, (uint32_t*) &eResult);
     }
 
     bool parseStack(HandleValue v) {
@@ -1970,7 +1974,7 @@ nsXPCComponents_Exception::HasInstance(nsIXPConnectWrappedNative *wrapper,
     RootedValue v(cx, val);
     if (bp) {
         Exception* e;
-        *bp = NS_SUCCEEDED(UNWRAP_OBJECT(Exception, cx, v.toObjectOrNull(), e)) ||
+        *bp = NS_SUCCEEDED(UNWRAP_OBJECT(Exception, v.toObjectOrNull(), e)) ||
               JSValIsInterfaceOfType(cx, v, NS_GET_IID(nsIException));
     }
     return NS_OK;
@@ -2450,7 +2454,7 @@ nsXPCComponents_Constructor::CallOrConstruct(nsIXPConnectWrappedNative *wrapper,
 
     if (args.length() >= 3) {
         // args[2] is an initializer function or property name
-        RootedString str(cx, JS_ValueToString(cx, args[2]));
+        RootedString str(cx, ToString(cx, args[2]));
         if (!str || !(cInitializer = cInitializerBytes.encodeLatin1(cx, str)))
             return ThrowAndFail(NS_ERROR_XPC_BAD_CONVERT_JS, cx, _retval);
     }
@@ -2476,7 +2480,7 @@ nsXPCComponents_Constructor::CallOrConstruct(nsIXPConnectWrappedNative *wrapper,
             return ThrowAndFail(NS_ERROR_XPC_UNEXPECTED, cx, _retval);
         }
 
-        RootedString str(cx, JS_ValueToString(cx, args[1]));
+        RootedString str(cx, ToString(cx, args[1]));
         RootedId id(cx);
         if (!str || !JS_ValueToId(cx, StringValue(str), id.address()))
             return ThrowAndFail(NS_ERROR_XPC_BAD_CONVERT_JS, cx, _retval);
@@ -2525,7 +2529,7 @@ nsXPCComponents_Constructor::CallOrConstruct(nsIXPConnectWrappedNative *wrapper,
             return ThrowAndFail(NS_ERROR_XPC_UNEXPECTED, cx, _retval);
         }
 
-        RootedString str(cx, JS_ValueToString(cx, args[0]));
+        RootedString str(cx, ToString(cx, args[0]));
         RootedId id(cx);
         if (!str || !JS_ValueToId(cx, StringValue(str), id.address()))
             return ThrowAndFail(NS_ERROR_XPC_BAD_CONVERT_JS, cx, _retval);
@@ -2665,7 +2669,7 @@ nsXPCComponents_Utils::ReportError(const Value &errorArg, JSContext *cx)
     }
 
     // It's not a JS Error object, so we synthesize as best we're able.
-    RootedString msgstr(cx, JS_ValueToString(cx, error));
+    RootedString msgstr(cx, ToString(cx, error));
     if (!msgstr)
         return NS_OK;
 
@@ -2698,7 +2702,7 @@ nsXPCComponents_Utils::ReportError(const Value &errorArg, JSContext *cx)
 NS_IMETHODIMP
 nsXPCComponents_Utils::EvalInSandbox(const nsAString& source,
                                      const Value& sandboxValArg,
-                                     const Value& version,
+                                     const Value& versionArg,
                                      const Value& filenameVal,
                                      int32_t lineNumber,
                                      JSContext *cx,
@@ -2706,6 +2710,7 @@ nsXPCComponents_Utils::EvalInSandbox(const nsAString& source,
                                      Value *retval)
 {
     RootedValue sandboxVal(cx, sandboxValArg);
+    RootedValue version(cx, versionArg);
     RootedObject sandbox(cx);
     if (!JS_ValueToObject(cx, sandboxVal, &sandbox) || !sandbox)
         return NS_ERROR_INVALID_ARG;
@@ -2713,7 +2718,7 @@ nsXPCComponents_Utils::EvalInSandbox(const nsAString& source,
     // Optional third argument: JS version, as a string.
     JSVersion jsVersion = JSVERSION_DEFAULT;
     if (optionalArgc >= 1) {
-        JSString *jsVersionStr = JS_ValueToString(cx, version);
+        JSString *jsVersionStr = ToString(cx, version);
         if (!jsVersionStr)
             return NS_ERROR_INVALID_ARG;
 
@@ -2737,7 +2742,8 @@ nsXPCComponents_Utils::EvalInSandbox(const nsAString& source,
     nsXPIDLCString filename;
     int32_t lineNo = (optionalArgc >= 3) ? lineNumber : 1;
     if (optionalArgc >= 2) {
-        JSString *filenameStr = JS_ValueToString(cx, filenameVal);
+        RootedValue value(cx, filenameVal);
+        JSString *filenameStr = ToString(cx, value);
         if (!filenameStr)
             return NS_ERROR_INVALID_ARG;
 
@@ -3025,6 +3031,14 @@ xpc::CreateObjectIn(JSContext *cx, HandleValue vobj, CreateObjectInOptions &opti
         JS_ReportError(cx, "Permission denied to create object in the target scope");
         return false;
     }
+
+    bool define = !JSID_IS_VOID(options.defineAs);
+
+    if (define && js::IsScriptedProxy(scope)) {
+        JS_ReportError(cx, "Defining property on proxy object is not allowed");
+        return false;
+    }
+
     RootedObject obj(cx);
     {
         JSAutoCompartment ac(cx, scope);
@@ -3032,25 +3046,84 @@ xpc::CreateObjectIn(JSContext *cx, HandleValue vobj, CreateObjectInOptions &opti
         if (!obj)
             return false;
 
-        if (!JSID_IS_VOID(options.defineAs) &&
-            !JS_DefinePropertyById(cx, scope, options.defineAs, ObjectValue(*obj),
+        if (define) {
+            if (!JS_DefinePropertyById(cx, scope, options.defineAs, ObjectValue(*obj),
                                        JS_PropertyStub, JS_StrictPropertyStub,
                                        JSPROP_ENUMERATE))
-            return false;
+                return false;
+        }
     }
 
-    if (!JS_WrapObject(cx, &obj))
+    rval.setObject(*obj);
+    if (!WrapperFactory::WaiveXrayAndWrap(cx, rval))
         return false;
 
-    rval.setObject(*obj);
     return true;
 }
 
-/* jsval createObjectIn(in jsval vobj); */
+/* boolean isProxy(in value vobj); */
 NS_IMETHODIMP
-nsXPCComponents_Utils::CreateObjectIn(const Value &vobj, JSContext *cx, Value *rval)
+nsXPCComponents_Utils::IsProxy(const Value &vobj, JSContext *cx, bool *rval)
 {
-    CreateObjectInOptions options;
+    if (!vobj.isObject()) {
+        *rval = false;
+        return NS_OK;
+    }
+
+    RootedObject obj(cx, &vobj.toObject());
+    obj = js::CheckedUnwrap(obj, /* stopAtOuter = */ false);
+    NS_ENSURE_TRUE(obj, NS_ERROR_FAILURE);
+
+    *rval = js::IsScriptedProxy(obj);
+    return NS_OK;
+}
+
+/* jsval evalInWindow(in string source, in jsval window); */
+NS_IMETHODIMP
+nsXPCComponents_Utils::EvalInWindow(const nsAString &source, const Value &window,
+                                    JSContext *cx, Value *rval)
+{
+    if (!window.isObject())
+        return NS_ERROR_INVALID_ARG;
+
+    RootedObject rwindow(cx, &window.toObject());
+    RootedValue res(cx);
+    if (!xpc::EvalInWindow(cx, source, rwindow, &res))
+        return NS_ERROR_FAILURE;
+
+    *rval = res;
+    return NS_OK;
+}
+
+/* jsval exportFunction(in jsval vfunction, in jsval vscope, in jsval vname); */
+NS_IMETHODIMP
+nsXPCComponents_Utils::ExportFunction(const Value &vfunction, const Value &vscope,
+                                      const Value &vname, JSContext *cx, Value *rval)
+{
+    RootedValue rfunction(cx, vfunction);
+    RootedValue rscope(cx, vscope);
+    RootedValue rname(cx, vname);
+    RootedValue res(cx);
+    if (!xpc::ExportFunction(cx, rfunction, rscope, rname, &res))
+        return NS_ERROR_FAILURE;
+    *rval = res;
+    return NS_OK;
+}
+
+/* jsval createObjectIn(in jsval vobj, [optional] in jsval voptions); */
+NS_IMETHODIMP
+nsXPCComponents_Utils::CreateObjectIn(const Value &vobj, const Value &voptions,
+                                      JSContext *cx, Value *rval)
+{
+    RootedObject optionsObject(cx, voptions.isObject() ? &voptions.toObject()
+                                                       : nullptr);
+    CreateObjectInOptions options(cx, optionsObject);
+    if (voptions.isObject() &&
+        !options.Parse())
+    {
+        return NS_ERROR_FAILURE;
+    }
+
     RootedValue rvobj(cx, vobj);
     RootedValue res(cx);
     if (!xpc::CreateObjectIn(cx, rvobj, options, &res))
@@ -3333,6 +3406,38 @@ nsXPCComponents_Utils::NukeSandbox(const Value &obj, JSContext *cx)
 }
 
 NS_IMETHODIMP
+nsXPCComponents_Utils::BlockScriptForGlobal(const JS::Value &globalArg,
+                                            JSContext *cx)
+{
+    NS_ENSURE_TRUE(globalArg.isObject(), NS_ERROR_INVALID_ARG);
+    RootedObject global(cx, UncheckedUnwrap(&globalArg.toObject(),
+                                            /* stopAtOuter = */ false));
+    NS_ENSURE_TRUE(JS_IsGlobalObject(global), NS_ERROR_INVALID_ARG);
+    if (nsContentUtils::IsSystemPrincipal(GetObjectPrincipal(global))) {
+        JS_ReportError(cx, "Script may not be disabled for system globals");
+        return NS_ERROR_FAILURE;
+    }
+    Scriptability::Get(global).Block();
+    return NS_OK;
+}
+
+NS_IMETHODIMP
+nsXPCComponents_Utils::UnblockScriptForGlobal(const JS::Value &globalArg,
+                                              JSContext *cx)
+{
+    NS_ENSURE_TRUE(globalArg.isObject(), NS_ERROR_INVALID_ARG);
+    RootedObject global(cx, UncheckedUnwrap(&globalArg.toObject(),
+                                            /* stopAtOuter = */ false));
+    NS_ENSURE_TRUE(JS_IsGlobalObject(global), NS_ERROR_INVALID_ARG);
+    if (nsContentUtils::IsSystemPrincipal(GetObjectPrincipal(global))) {
+        JS_ReportError(cx, "Script may not be disabled for system globals");
+        return NS_ERROR_FAILURE;
+    }
+    Scriptability::Get(global).Unblock();
+    return NS_OK;
+}
+
+NS_IMETHODIMP
 nsXPCComponents_Utils::IsXrayWrapper(const Value &obj, bool* aRetval)
 {
     *aRetval =
@@ -3386,6 +3491,46 @@ nsXPCComponents_Utils::GetDOMClassInfo(const nsAString& aClassName,
     return NS_ERROR_NOT_AVAILABLE;
 }
 
+/*
+ * Below is a bunch of awkward junk to allow JS test code to trigger the
+ * creation of an XPCWrappedJS, such that it ends up in the map. We need to
+ * hand the caller some sort of reference to hold onto (to prevent the
+ * refcount from dropping to zero as soon as the function returns), but trying
+ * to return a bonafide XPCWrappedJS to script causes all sorts of trouble. So
+ * we create a benign holder class instead, which acts as an opaque reference
+ * that script can use to keep the XPCWrappedJS alive and in the map.
+ */
+
+class WrappedJSHolder : public nsISupports
+{
+    NS_DECL_ISUPPORTS
+    WrappedJSHolder() {}
+    virtual ~WrappedJSHolder() {}
+
+    nsRefPtr<nsXPCWrappedJS> mWrappedJS;
+};
+NS_IMPL_ISUPPORTS0(WrappedJSHolder);
+
+NS_IMETHODIMP
+nsXPCComponents_Utils::GenerateXPCWrappedJS(const Value &aObj, const Value &aScope,
+                                            JSContext *aCx, nsISupports **aOut)
+{
+    if (!aObj.isObject())
+        return NS_ERROR_INVALID_ARG;
+    RootedObject obj(aCx, &aObj.toObject());
+    RootedObject scope(aCx, aScope.isObject() ? js::UncheckedUnwrap(&aScope.toObject())
+                                              : CurrentGlobalOrNull(aCx));
+    JSAutoCompartment ac(aCx, scope);
+    if (!JS_WrapObject(aCx, &obj))
+        return NS_ERROR_FAILURE;
+
+    nsRefPtr<WrappedJSHolder> holder = new WrappedJSHolder();
+    nsresult rv = nsXPCWrappedJS::GetNewOrUsed(obj, NS_GET_IID(nsISupports),
+                                               getter_AddRefs(holder->mWrappedJS));
+    holder.forget(aOut);
+    return rv;
+}
+
 NS_IMETHODIMP
 nsXPCComponents_Utils::GetWatchdogTimestamp(const nsAString& aCategory, PRTime *aOut)
 {
@@ -3401,6 +3546,166 @@ nsXPCComponents_Utils::GetWatchdogTimestamp(const nsAString& aCategory, PRTime *
     else
         return NS_ERROR_INVALID_ARG;
     *aOut = XPCJSRuntime::Get()->GetWatchdogTimestamp(category);
+    return NS_OK;
+}
+
+class MOZ_STACK_CLASS CloneIntoOptions : public OptionsBase
+{
+public:
+    CloneIntoOptions(JSContext *cx = xpc_GetSafeJSContext(),
+                     JSObject *options = nullptr)
+        : OptionsBase(cx, options)
+        , cloneFunctions(false)
+    {}
+
+    virtual bool Parse()
+    {
+        return ParseBoolean("cloneFunctions", &cloneFunctions);
+    }
+
+    bool cloneFunctions;
+};
+
+class MOZ_STACK_CLASS CloneIntoCallbacksData
+{
+public:
+    CloneIntoCallbacksData(JSContext *aCx, CloneIntoOptions *aOptions)
+        : mOptions(aOptions)
+        , mFunctions(aCx)
+    {}
+
+    CloneIntoOptions *mOptions;
+    AutoObjectVector mFunctions;
+};
+
+static JSObject*
+CloneIntoReadStructuredClone(JSContext *cx,
+                             JSStructuredCloneReader *reader,
+                             uint32_t tag,
+                             uint32_t value,
+                             void* closure)
+{
+    CloneIntoCallbacksData* data = static_cast<CloneIntoCallbacksData*>(closure);
+    MOZ_ASSERT(data);
+
+    if (tag == mozilla::dom::SCTAG_DOM_BLOB || tag == mozilla::dom::SCTAG_DOM_FILELIST) {
+        MOZ_ASSERT(!value, "Data should be empty");
+
+        nsISupports *supports;
+        if (JS_ReadBytes(reader, &supports, sizeof(supports))) {
+            RootedObject global(cx, CurrentGlobalOrNull(cx));
+            if (global) {
+                RootedValue val(cx);
+                if (NS_SUCCEEDED(nsContentUtils::WrapNative(cx, global, supports, &val)))
+                    return val.toObjectOrNull();
+            }
+        }
+    }
+
+    if (tag == mozilla::dom::SCTAG_DOM_FUNCTION) {
+      MOZ_ASSERT(value < data->mFunctions.length());
+
+      RootedValue functionValue(cx);
+      RootedObject obj(cx, data->mFunctions[value]);
+
+      if (!JS_WrapObject(cx, &obj))
+          return nullptr;
+
+      if (!xpc::NewFunctionForwarder(cx, obj, false, &functionValue))
+          return nullptr;
+
+      return &functionValue.toObject();
+    }
+
+    return nullptr;
+}
+
+static bool
+CloneIntoWriteStructuredClone(JSContext *cx,
+                              JSStructuredCloneWriter *writer,
+                              HandleObject obj,
+                              void *closure)
+{
+    CloneIntoCallbacksData* data = static_cast<CloneIntoCallbacksData*>(closure);
+    MOZ_ASSERT(data);
+
+    nsCOMPtr<nsIXPConnectWrappedNative> wrappedNative;
+    nsContentUtils::XPConnect()->GetWrappedNativeOfJSObject(cx, obj, getter_AddRefs(wrappedNative));
+    if (wrappedNative) {
+        uint32_t scTag = 0;
+        nsISupports *supports = wrappedNative->Native();
+
+        nsCOMPtr<nsIDOMBlob> blob = do_QueryInterface(supports);
+        if (blob)
+            scTag = mozilla::dom::SCTAG_DOM_BLOB;
+        else {
+            nsCOMPtr<nsIDOMFileList> list = do_QueryInterface(supports);
+            if (list)
+                scTag = mozilla::dom::SCTAG_DOM_FILELIST;
+        }
+
+        if (scTag) {
+            return JS_WriteUint32Pair(writer, scTag, 0) &&
+                   JS_WriteBytes(writer, &supports, sizeof(supports));
+        }
+    }
+
+    if (data->mOptions->cloneFunctions && JS_ObjectIsCallable(cx, obj)) {
+        data->mFunctions.append(obj);
+        return JS_WriteUint32Pair(writer, mozilla::dom::SCTAG_DOM_FUNCTION,
+                                  data->mFunctions.length() - 1);
+    }
+
+    return false;
+}
+
+// These functions serialize raw XPCOM pointers in the data stream, and thus
+// should only be used when the read and write are done together
+// synchronously.
+static JSStructuredCloneCallbacks CloneIntoCallbacks = {
+    CloneIntoReadStructuredClone,
+    CloneIntoWriteStructuredClone,
+    nullptr
+};
+
+NS_IMETHODIMP
+nsXPCComponents_Utils::CloneInto(const JS::Value& aValue,
+                                 const JS::Value& aScope,
+                                 const JS::Value& aOptions,
+                                 JSContext *aCx,
+                                 JS::Value *aCloned)
+{
+    if (!aScope.isObject())
+        return NS_ERROR_INVALID_ARG;
+
+    RootedObject scope(aCx, &aScope.toObject());
+    scope = js::CheckedUnwrap(scope);
+    NS_ENSURE_TRUE(scope, NS_ERROR_FAILURE);
+
+    if (!aOptions.isUndefined() && !aOptions.isObject()) {
+        JS_ReportError(aCx, "Invalid argument");
+        return NS_ERROR_FAILURE;
+    }
+
+    RootedObject optionsObject(aCx, aOptions.isObject() ? &aOptions.toObject()
+                                                        : nullptr);
+    CloneIntoOptions options(aCx, optionsObject);
+    if (aOptions.isObject() && !options.Parse())
+        return NS_ERROR_FAILURE;
+
+    RootedValue cloned(aCx);
+    {
+        CloneIntoCallbacksData data(aCx, &options);
+        JSAutoCompartment ac(aCx, scope);
+        RootedValue value(aCx, aValue);
+        if (!JS_StructuredClone(aCx, value, &cloned, &CloneIntoCallbacks, &data))
+            return NS_ERROR_FAILURE;
+    }
+
+    if (!JS_WrapValue(aCx, &cloned))
+        return NS_ERROR_FAILURE;
+
+    *aCloned = cloned;
     return NS_OK;
 }
 
@@ -3687,8 +3992,9 @@ nsXPCComponents::SetProperty(nsIXPConnectWrappedNative *wrapper,
         return NS_ERROR_FAILURE;
 
     if (id == rt->GetStringID(XPCJSRuntime::IDX_RETURN_CODE)) {
+        RootedValue v(cx, *vp);
         nsresult rv;
-        if (JS_ValueToECMAUint32(cx, *vp, (uint32_t*)&rv)) {
+        if (ToUint32(cx, v, (uint32_t*)&rv)) {
             xpcc->SetPendingResult(rv);
             xpcc->SetLastResult(rv);
             return NS_SUCCESS_I_DID_SOMETHING;

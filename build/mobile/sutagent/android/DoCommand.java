@@ -107,7 +107,9 @@ public class DoCommand {
     String ffxProvider = "org.mozilla.ffxcp";
     String fenProvider = "org.mozilla.fencp";
 
-    private final String prgVersion = "SUTAgentAndroid Version 1.19";
+    private static final int DEFAULT_STARTPRG_TIMEOUT_SECONDS = 300;
+
+    public final String prgVersion = "SUTAgentAndroid Version 1.20";
 
     public enum Command
         {
@@ -116,6 +118,7 @@ public class DoCommand {
         EXECSU ("execsu"),
         EXECCWD ("execcwd"),
         EXECCWDSU ("execcwdsu"),
+        EXECEXT ("execext"),
         ENVRUN ("envrun"),
         KILL ("kill"),
         PS ("ps"),
@@ -723,7 +726,7 @@ public class DoCommand {
                         theArgs[lcv - 1] = Argv[lcv];
                         }
 
-                    strReturn = StartPrg2(theArgs, cmdOut, null, false);
+                    strReturn = StartPrg2(theArgs, cmdOut, null, false, DEFAULT_STARTPRG_TIMEOUT_SECONDS);
                     }
                 else
                     {
@@ -741,7 +744,7 @@ public class DoCommand {
                         theArgs[lcv - 1] = Argv[lcv];
                         }
 
-                    strReturn = StartPrg2(theArgs, cmdOut, null, true);
+                    strReturn = StartPrg2(theArgs, cmdOut, null, true, DEFAULT_STARTPRG_TIMEOUT_SECONDS);
                     }
                 else
                     {
@@ -759,7 +762,7 @@ public class DoCommand {
                         theArgs[lcv - 2] = Argv[lcv];
                         }
 
-                    strReturn = StartPrg2(theArgs, cmdOut, Argv[1], false);
+                    strReturn = StartPrg2(theArgs, cmdOut, Argv[1], false, DEFAULT_STARTPRG_TIMEOUT_SECONDS);
                     }
                 else
                     {
@@ -777,7 +780,7 @@ public class DoCommand {
                         theArgs[lcv - 2] = Argv[lcv];
                         }
 
-                    strReturn = StartPrg2(theArgs, cmdOut, Argv[1], true);
+                    strReturn = StartPrg2(theArgs, cmdOut, Argv[1], true, DEFAULT_STARTPRG_TIMEOUT_SECONDS);
                     }
                 else
                     {
@@ -796,9 +799,65 @@ public class DoCommand {
                         }
 
                     if (Argv[1].contains("/") || Argv[1].contains("\\") || !Argv[1].contains("."))
-                        strReturn = StartPrg(theArgs, cmdOut, false);
+                        strReturn = StartPrg(theArgs, cmdOut, false, DEFAULT_STARTPRG_TIMEOUT_SECONDS);
                     else
                         strReturn = StartJavaPrg(theArgs, null);
+                    }
+                else
+                    {
+                    strReturn = sErrorPrefix + "Wrong number of arguments for " + Argv[0] + " command!";
+                    }
+                break;
+
+            case EXECEXT:
+                // An "extended" exec command with format:
+                //    execext [su] [cwd=<path>] [t=<timeout in seconds>] arg1 ...
+                if (Argc >= 2)
+                    {
+                    boolean su = false;
+                    String cwd = null;
+                    int timeout = DEFAULT_STARTPRG_TIMEOUT_SECONDS;
+                    int extra;
+                    for (extra = 1; extra < Argc; extra++)
+                        {
+                        if (Argv[extra].equals("su"))
+                            {
+                            su = true;
+                            }
+                        else if (Argv[extra].startsWith("cwd="))
+                            {
+                            cwd = Argv[extra].substring(4);
+                            }
+                        else if (Argv[extra].startsWith("t="))
+                            {
+                            timeout = Integer.parseInt(Argv[extra].substring(2));
+                            if (timeout < 1 || timeout > 4*60*60)
+                                {
+                                Log.e("SUTAgentAndroid", 
+                                  "invalid execext timeout "+Argv[extra].substring(2)+"; using default instead");
+                                timeout = DEFAULT_STARTPRG_TIMEOUT_SECONDS;
+                                }
+                            }
+                        else
+                            {
+                            break;
+                            }
+                        }
+
+                    if (extra < Argc)
+                        {
+                        String [] theArgs = new String [Argc - extra];
+                        for (int lcv = extra; lcv < Argc; lcv++)
+                            {
+                            theArgs[lcv - extra] = Argv[lcv];
+                            }
+
+                        strReturn = StartPrg2(theArgs, cmdOut, cwd, su, timeout);
+                        }
+                    else
+                        {
+                        strReturn = sErrorPrefix + "No regular arguments for " + Argv[0] + " command!";
+                        }
                     }
                 else
                     {
@@ -1374,29 +1433,48 @@ private void CancelNotification()
         Log.i("SUTAgentAndroid", "Changed permissions on /data/local/tmp to make it writable: " + chmodResult);
         }
 
+    private Boolean _SetTestRoot(String testroot)
+        {
+        String isWritable = IsDirWritable(testroot);
+        if (isWritable.contains(sErrorPrefix) || isWritable.contains("is not writable")) {
+            Log.w("SUTAgentAndroid", isWritable);
+            Log.w("SUTAgentAndroid", "Unable to set device root to " + testroot);
+            return false;
+        }
+
+        Log.i("SUTAgentAndroid", "Set device root to " + testroot);
+        SUTAgentAndroid.sTestRoot = testroot;
+        return true;
+        }
+
+    public void SetTestRoot(String testroot)
+        {
+        Boolean success = false;
+        if (!testroot.equals("")) {
+            // Device specified the required testroot.
+            success = _SetTestRoot(testroot);
+            if (!success) {
+                Log.e("SUTAgentAndroid", "Unable to set device root to " + testroot);
+            }
+        } else {
+            // Detect the testroot.
+            // Attempt external storage.
+            success = _SetTestRoot(Environment.getExternalStorageDirectory().getAbsolutePath());
+            if (!success) {
+                Log.e("SUTAgentAndroid", "Cannot access world writeable test root");
+            }
+        }
+        if (!success) {
+            SUTAgentAndroid.sTestRoot = sErrorPrefix + " unable to determine test root";
+        }
+        }
+
     public String GetTestRoot()
         {
-        String state = Environment.getExternalStorageState();
-        // Ensure sdcard is mounted and NOT read only
-        if (state.equalsIgnoreCase(Environment.MEDIA_MOUNTED) &&
-            (Environment.MEDIA_MOUNTED_READ_ONLY.compareTo(state) != 0))
-            {
-            return(Environment.getExternalStorageDirectory().getAbsolutePath());
-            }
-        File tmpFile = new java.io.File("/data/local/tmp/tests");
-        try{
-            tmpFile.createNewFile();
-        } catch (IOException e){
-            Log.i("SUTAgentAndroid", "Caught exception creating file in /data/local/tmp: " + e.getMessage());
+        if (SUTAgentAndroid.sTestRoot.equals("")) {
+            SetTestRoot("");
         }
-        if (tmpFile.exists())
-            {
-            tmpFile.delete();
-            return("/data/local");
-            }
-        Log.e("SUTAgentAndroid", "ERROR: Cannot access world writeable test root");
-
-        return sErrorPrefix + " unable to determine test root";
+        return SUTAgentAndroid.sTestRoot;
         }
 
     public String GetAppRoot(String AppName)
@@ -3382,11 +3460,16 @@ private void CancelNotification()
             try {
                 outThrd3.joinAndStopRedirect(60000);
                 int nRet3 = pProc.exitValue();
-                sRet = "\ninstallation complete [" + nRet3 + "]";
+                if (nRet3 == 0) {
+                    sRet = "\ninstallation complete [0]\n";
+                }
+                else {
+                    sRet = "\nFailure pm install [" + nRet3 + "]\n";
+                }
                 }
             catch (IllegalThreadStateException itse) {
                 itse.printStackTrace();
-                sRet = "\npm install command timed out";
+                sRet = "\nFailure pm install command timed out\n";
             }
             try {
                 out.write(sRet.getBytes());
@@ -3511,23 +3594,14 @@ private void CancelNotification()
         prgIntent.setPackage(sArgs[0]);
         prgIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
+        // Get the main activity for this package
         try {
-            PackageInfo pi = pm.getPackageInfo(sArgs[0], PackageManager.GET_ACTIVITIES | PackageManager.GET_INTENT_FILTERS);
-            ActivityInfo [] ai = pi.activities;
-            for (int i = 0; i < ai.length; i++)
-                {
-                ActivityInfo a = ai[i];
-                if (a.name.length() > 0)
-                    {
-                    prgIntent.setClassName(a.packageName, a.name);
-                    break;
-                    }
-                }
-            }
-        catch (NameNotFoundException e)
-            {
+            final ComponentName c = pm.getLaunchIntentForPackage(sArgs[0]).getComponent();
+            prgIntent.setClassName(c.getPackageName(), c.getClassName());
+        } catch (Exception e) {
             e.printStackTrace();
-            }
+            return "Unable to find main activity for package: " + sArgs[0];
+        }
 
         if (sArgs.length > 1)
             {
@@ -3603,7 +3677,7 @@ private void CancelNotification()
         return (sRet);
         }
 
-    public String StartPrg(String [] progArray, OutputStream out, boolean startAsRoot)
+    public String StartPrg(String [] progArray, OutputStream out, boolean startAsRoot, int timeoutSeconds)
         {
         String sRet = "";
         int    lcv = 0;
@@ -3634,16 +3708,12 @@ private void CancelNotification()
                 }
             RedirOutputThread outThrd = new RedirOutputThread(pProc, out);
             outThrd.start();
-            while (lcv < 30) {
-                try {
-                    outThrd.join(10000);
-                    int nRetCode = pProc.exitValue();
-                    sRet = "return code [" + nRetCode + "]";
-                    break;
-                    }
-                catch (IllegalThreadStateException itse) {
-                    lcv++;
-                    }
+            try {
+                outThrd.join(timeoutSeconds * 1000);
+                int nRetCode = pProc.exitValue();
+                sRet = "return code [" + nRetCode + "]";
+                }
+            catch (IllegalThreadStateException itse) {
                 }
             outThrd.stopRedirect();
             }
@@ -3660,7 +3730,7 @@ private void CancelNotification()
         return (sRet);
         }
 
-    public String StartPrg2(String [] progArray, OutputStream out, String cwd, boolean startAsRoot)
+    public String StartPrg2(String [] progArray, OutputStream out, String cwd, boolean startAsRoot, int timeoutSeconds)
         {
         String sRet = "";
 
@@ -3674,7 +3744,7 @@ private void CancelNotification()
         if (!sEnvString.contains("=") && (sEnvString.length() > 0))
             {
             if (sEnvString.contains("/") || sEnvString.contains("\\") || !sEnvString.contains("."))
-                sRet = StartPrg(progArray, out, startAsRoot);
+                sRet = StartPrg(progArray, out, startAsRoot, timeoutSeconds);
             else
                 sRet = StartJavaPrg(progArray, null);
             return(sRet);
@@ -3763,18 +3833,12 @@ private void CancelNotification()
                 RedirOutputThread outThrd = new RedirOutputThread(pProc, out);
                 outThrd.start();
 
-                lcv = 0;
-
-                while (lcv < 30) {
-                    try {
-                        outThrd.join(10000);
-                        int nRetCode = pProc.exitValue();
-                        sRet = "return code [" + nRetCode + "]";
-                        lcv = 30;
-                        }
-                    catch (IllegalThreadStateException itse) {
-                        lcv++;
-                        }
+                try {
+                    outThrd.join(timeoutSeconds * 1000);
+                    int nRetCode = pProc.exitValue();
+                    sRet = "return code [" + nRetCode + "]";
+                    }
+                catch (IllegalThreadStateException itse) {
                     }
                 outThrd.stopRedirect();
                 }
@@ -3907,9 +3971,10 @@ private void CancelNotification()
             "run [cmdline]                   - start program no wait\n" +
             "exec [env pairs] [cmdline]      - start program no wait optionally pass env\n" +
             "                                  key=value pairs (comma separated)\n" +
-            "execcwd [env pairs] [cmdline]   - start program from specified directory\n" +
+            "execcwd <dir> [env pairs] [cmdline] - start program from specified directory\n" +
             "execsu [env pairs] [cmdline]    - start program as privileged user\n" +
-            "execcwdsu [env pairs] [cmdline] - start program from specified directory as privileged user\n" +
+            "execcwdsu <dir> [env pairs] [cmdline] - start program from specified directory as privileged user\n" +
+            "execext [su] [cwd=<dir>] [t=<timeout>] [env pairs] [cmdline] - start program with extended options\n" +
             "kill [program name]             - kill program no path\n" +
             "killall                         - kill all processes started\n" +
             "ps                              - list of running processes\n" +
@@ -3924,7 +3989,6 @@ private void CancelNotification()
             "        [memory]                - physical, free, available, storage memory\n" +
             "                                  for device\n" +
             "        [processes]             - list of running processes see 'ps'\n" +
-            "deadman timeout                 - set the duration for the deadman timer\n" +
             "alrt [on/off]                   - start or stop sysalert behavior\n" +
             "disk [arg]                      - prints disk space info\n" +
             "cp file1 file2                  - copy file1 to file2\n" +

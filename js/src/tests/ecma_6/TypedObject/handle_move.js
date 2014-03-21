@@ -10,9 +10,9 @@ var summary = 'Handle Move';
 
 var T = TypedObject;
 
-var Point = new T.ArrayType(T.float32, 3);
+var Point = T.float32.array(3);
 var Line = new T.StructType({from: Point, to: Point});
-var Lines = new T.ArrayType(Line, 3);
+var Lines = Line.array(3);
 
 function runTests() {
   function testHandleToPoint() {
@@ -90,7 +90,7 @@ function runTests() {
   testHandleToFloat();
 
   function testHandleToEquivalentType() {
-    var Point2 = new T.ArrayType(T.float32, 3);
+    var Point2 = T.float32.array(3);
 
     assertEq(Point.equivalent(Point2), true);
 
@@ -145,6 +145,11 @@ function runTests() {
       var h = Point.handle();
       T.Handle.move(h, lines, 22, "to");
     }, TypeError, "No such property: 22");
+
+    assertThrowsInstanceOf(function() {
+      var h = Point.handle();
+      T.Handle.move(h, lines, -100, "to");
+    }, TypeError, "No such property: -100");
   }
   testHandleMoveToIllegalProperty();
 

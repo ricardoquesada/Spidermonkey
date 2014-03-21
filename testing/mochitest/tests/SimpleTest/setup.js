@@ -107,6 +107,11 @@ if (params.failureFile) {
   TestRunner.setFailureFile(params.failureFile);
 }
 
+// Breaks execution and enters the JS debugger on a test failure
+if (params.debugOnFailure) {
+  TestRunner.debugOnFailure = true;
+}
+
 // logFile to write our results
 if (params.logFile) {
   var spl = new SpecialPowersLogger(params.logFile);
@@ -126,6 +131,18 @@ if (params.runSlower) {
   TestRunner.runSlower = true;
 }
 
+if (params.dumpOutputDirectory) {
+  TestRunner.dumpOutputDirectory = params.dumpOutputDirectory;
+}
+
+if (params.dumpAboutMemoryAfterTest) {
+  TestRunner.dumpAboutMemoryAfterTest = true;
+}
+
+if (params.dumpDMDAfterTest) {
+  TestRunner.dumpDMDAfterTest = true;
+}
+
 var gTestList = [];
 var RunSet = {}
 RunSet.runall = function(e) {
@@ -141,6 +158,10 @@ RunSet.runall = function(e) {
 RunSet.runtests = function(e) {
   // Which tests we're going to run
   var my_tests = gTestList;
+
+  if (params.startAt || params.endAt) {
+    my_tests = skipTests(my_tests, params.startAt, params.endAt);
+  }
 
   if (params.totalChunks && params.thisChunk) {
     my_tests = chunkifyTests(my_tests, params.totalChunks, params.thisChunk, params.chunkByDir, TestRunner.logger);

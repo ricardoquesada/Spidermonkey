@@ -147,19 +147,25 @@ case "$target" in
     dnl set up compilers
     TOOLCHAIN_PREFIX="$android_toolchain/bin/$android_tool_prefix-"
     AS="$android_toolchain"/bin/"$android_tool_prefix"-as
-    CC="$android_toolchain"/bin/"$android_tool_prefix"-gcc
-    CXX="$android_toolchain"/bin/"$android_tool_prefix"-g++
-    CPP="$android_toolchain"/bin/"$android_tool_prefix"-cpp
+    if test -z "$CC"; then
+        CC="$android_toolchain"/bin/"$android_tool_prefix"-gcc
+    fi
+    if test -z "$CXX"; then
+        CXX="$android_toolchain"/bin/"$android_tool_prefix"-g++
+    fi
+    if test -z "$CPP"; then
+        CPP="$android_toolchain"/bin/"$android_tool_prefix"-cpp
+    fi
     LD="$android_toolchain"/bin/"$android_tool_prefix"-ld
     AR="$android_toolchain"/bin/"$android_tool_prefix"-ar
     RANLIB="$android_toolchain"/bin/"$android_tool_prefix"-ranlib
     STRIP="$android_toolchain"/bin/"$android_tool_prefix"-strip
     OBJCOPY="$android_toolchain"/bin/"$android_tool_prefix"-objcopy
 
-    CPPFLAGS="-isystem $android_platform/usr/include $CPPFLAGS"
+    CPPFLAGS="-idirafter $android_platform/usr/include $CPPFLAGS"
     CFLAGS="-mandroid -fno-short-enums -fno-exceptions $CFLAGS"
     CXXFLAGS="-mandroid -fno-short-enums -fno-exceptions -Wno-psabi $CXXFLAGS"
-    ASFLAGS="-isystem $android_platform/usr/include -DANDROID $ASFLAGS"
+    ASFLAGS="-idirafter $android_platform/usr/include -DANDROID $ASFLAGS"
 
     dnl Add -llog by default, since we use it all over the place.
     dnl Add --allow-shlib-undefined, because libGLESv2 links to an
@@ -234,7 +240,7 @@ if test "$OS_TARGET" = "Android" -a -z "$gonkdir"; then
                 AC_MSG_ERROR([Couldn't find path to gnu-libstdc++ in the android ndk])
             fi
         else
-            STLPORT_CPPFLAGS="-I$_topsrcdir/build/stlport/stlport -I$android_ndk/sources/cxx-stl/system/include"
+            STLPORT_CPPFLAGS="-isystem $_topsrcdir/build/stlport/stlport -isystem $android_ndk/sources/cxx-stl/system/include"
             STLPORT_LIBS="$_objdir/build/stlport/libstlport_static.a -static-libstdc++"
         fi
     fi
@@ -252,6 +258,8 @@ MOZ_ARG_WITH_STRING(android-sdk,
 [  --with-android-sdk=DIR
                           location where the Android SDK can be found (base directory, e.g. .../android/platforms/android-6)],
     android_sdk=$withval)
+
+android_sdk_root=$withval/../../
 
 case "$target" in
 *-android*|*-linuxandroid*)
@@ -278,16 +286,16 @@ case "$target" in
         fi
     fi
 
-    android_tools="$android_sdk"/../../tools
-    android_platform_tools="$android_sdk"/../../platform-tools
+    android_tools="$android_sdk_root"/tools
+    android_platform_tools="$android_sdk_root"/platform-tools
     if test ! -d "$android_platform_tools" ; then
         android_platform_tools="$android_sdk"/tools # SDK Tools < r8
     fi
     # The build tools got moved around to different directories in
     # SDK Tools r22.  Try to locate them.
     android_build_tools=""
-    for suffix in android-4.3 18.1.0 18.0.1 18.0.0 17.0.0 android-4.2.2; do
-        tools_directory="$android_sdk/../../build-tools/$suffix"
+    for suffix in android-4.3 19.0.0 18.1.0 18.0.1 18.0.0 17.0.0 android-4.2.2; do
+        tools_directory="$android_sdk_root/build-tools/$suffix"
         if test -d "$tools_directory" ; then
             android_build_tools="$tools_directory"
             break
@@ -297,14 +305,16 @@ case "$target" in
         android_build_tools="$android_platform_tools" # SDK Tools < r22
     fi
     ANDROID_SDK="${android_sdk}"
-    if test -e "${android_sdk}/../../extras/android/compatibility/v4/android-support-v4.jar" ; then
-        ANDROID_COMPAT_LIB="${android_sdk}/../../extras/android/compatibility/v4/android-support-v4.jar"
+    ANDROID_SDK_ROOT="${android_sdk_root}"
+    if test -e "${ANDROID_SDK_ROOT}/extras/android/compatibility/v4/android-support-v4.jar" ; then
+        ANDROID_COMPAT_LIB="${ANDROID_SDK_ROOT}/extras/android/compatibility/v4/android-support-v4.jar"
     else
-        ANDROID_COMPAT_LIB="${android_sdk}/../../extras/android/support/v4/android-support-v4.jar";
+        ANDROID_COMPAT_LIB="${ANDROID_SDK_ROOT}/extras/android/support/v4/android-support-v4.jar";
     fi
     ANDROID_TOOLS="${android_tools}"
     ANDROID_PLATFORM_TOOLS="${android_platform_tools}"
     ANDROID_BUILD_TOOLS="${android_build_tools}"
+    AC_SUBST(ANDROID_SDK_ROOT)
     AC_SUBST(ANDROID_SDK)
     AC_SUBST(ANDROID_COMPAT_LIB)
     if ! test -e $ANDROID_COMPAT_LIB ; then

@@ -4,23 +4,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-# For sanity's sake, we compile nsinstall without the wrapped system
-# headers, so that we can use it to set up the wrapped system headers.
-VISIBILITY_FLAGS =
-
 # STDCXX_COMPAT is not needed here, and will actually fail because
 # libstdc++-compat is not built yet.
 MOZ_LIBSTDCXX_HOST_VERSION =
-
-ifneq (WINNT,$(HOST_OS_ARCH))
-HOST_PROGRAM	= nsinstall_real$(HOST_BIN_SUFFIX)
-endif
-
-ifndef CROSS_COMPILE
-ifdef USE_ELF_DYNSTR_GC
-export:: elf-dynstr-gc
-endif
-endif
 
 # IMPORTANT: Disable NSBUILDROOT for this directory only, otherwise we have
 # a recursive rule for finding nsinstall and the Perl scripts.
@@ -35,6 +21,7 @@ endif
 include $(topsrcdir)/config/config.mk
 
 ifneq (WINNT,$(HOST_OS_ARCH))
+ifdef COMPILE_ENVIRONMENT
 # Ensure nsinstall is atomically created
 nsinstall$(HOST_BIN_SUFFIX): $(HOST_PROGRAM)
 	cp $^ $@.tmp
@@ -44,6 +31,7 @@ NSINSTALL_FILES := nsinstall$(HOST_BIN_SUFFIX)
 NSINSTALL_DEST := $(DIST)/bin
 NSINSTALL_TARGET := export
 INSTALL_TARGETS += NSINSTALL
+endif
 endif
 
 HEADERS_FILES = \
@@ -59,15 +47,11 @@ include $(topsrcdir)/config/rules.mk
 
 HOST_CFLAGS += -DUNICODE -D_UNICODE
 
-ifeq ($(OS_CONFIG),SunOS4.1)
-NSPR_CFLAGS	+= -I$(srcdir)/../nsprpub/pr/include/md
-endif
-
 # Generate a new buildid every time we "export" in config... that's only
 # supposed to be once per-build!
 export::
 ifdef MOZ_BUILD_DATE
-	printf "%s" $(MOZ_BUILD_DATE) > buildid
+	printf '%s' $(MOZ_BUILD_DATE) > buildid
 else
 	$(PYTHON) $(topsrcdir)/toolkit/xre/make-platformini.py --print-buildid > buildid
 endif
@@ -78,7 +62,7 @@ export-preqs = \
   $(NULL)
 
 export:: $(export-preqs)
-	$(PYTHON) $(topsrcdir)/config/Preprocessor.py $(DEFINES) $(ACDEFINES) \
+	$(PYTHON) -m mozbuild.action.preprocessor $(DEFINES) $(ACDEFINES) \
 		-DMOZ_TREE_CAIRO=$(MOZ_TREE_CAIRO) \
 		-DMOZ_TREE_PIXMAN=$(MOZ_TREE_PIXMAN) \
 		-DMOZ_NATIVE_HUNSPELL=$(MOZ_NATIVE_HUNSPELL) \
@@ -119,18 +103,8 @@ GARBAGE += $(STL_WRAPPERS_SENTINEL)
 GARBAGE_DIRS += stl_wrappers
 endif
 
-install::
-	$(SYSINSTALL) $(IFLAGS1) $(DEPTH)/mozilla-config.h $(DESTDIR)$(includedir)
-
 GARBAGE += \
   $(FINAL_LINK_COMPS) $(FINAL_LINK_LIBS) $(FINAL_LINK_COMP_NAMES) buildid $(srcdir)/*.pyc *.pyc
-
-ifndef CROSS_COMPILE
-ifdef USE_ELF_DYNSTR_GC
-elf-dynstr-gc: elf-dynstr-gc.c $(GLOBAL_DEPS) $(call mkdir_deps,$(MDDEPDIR))
-	$(CC) $(COMPILE_CFLAGS) $(GLIB_CFLAGS) -DELFDYNSTRGC_BUILD -o $@ $< $(LDFLAGS) $(GLIB_LIBS)
-endif
-endif
 
 FORCE:
 

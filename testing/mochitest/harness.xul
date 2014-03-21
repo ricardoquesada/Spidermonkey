@@ -10,11 +10,15 @@
   <script type="text/javascript"
           src="chrome://mochikit/content/tests/SimpleTest/LogController.js"/>
   <script type="text/javascript"
+          src="chrome://mochikit/content/tests/SimpleTest/MemoryStats.js"/>
+  <script type="text/javascript"
           src="chrome://mochikit/content/tests/SimpleTest/TestRunner.js"/>
   <script type="text/javascript"
           src="chrome://mochikit/content/tests/SimpleTest/MozillaLogger.js"/>
   <script type="application/javascript"
           src="chrome://mochikit/content/chrome-harness.js" />
+  <script type="application/javascript"
+          src="chrome://mochikit/content/chunkifyTests.js" />
   <script type="application/javascript"
           src="chrome://mochikit/content/manifestLibrary.js" />
   <script type="text/javascript"

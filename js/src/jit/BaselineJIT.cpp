@@ -226,7 +226,7 @@ jit::BaselineCompile(JSContext *cx, HandleScript script)
 
     IonContext ictx(cx, temp);
 
-    BaselineCompiler compiler(cx, script);
+    BaselineCompiler compiler(cx, *temp, script);
     if (!compiler.init())
         return Method_Error;
 
@@ -255,7 +255,7 @@ CanEnterBaselineJIT(JSContext *cx, HandleScript script, bool osr)
     if (!script->canBaselineCompile())
         return Method_Skipped;
 
-    if (script->length > BaselineScript::MAX_JSSCRIPT_LENGTH)
+    if (script->length() > BaselineScript::MAX_JSSCRIPT_LENGTH)
         return Method_CantCompile;
 
     if (!cx->compartment()->ensureJitCompartmentExists(cx))
@@ -356,15 +356,14 @@ jit::CanEnterBaselineMethod(JSContext *cx, RunState &state)
     return CanEnterBaselineJIT(cx, script, /* osr = */false);
 };
 
-// Be safe, align IC entry list to 8 in all cases.
-static const unsigned DataAlignment = sizeof(uintptr_t);
-
 BaselineScript *
 BaselineScript::New(JSContext *cx, uint32_t prologueOffset,
                     uint32_t spsPushToggleOffset, size_t icEntries,
                     size_t pcMappingIndexEntries, size_t pcMappingSize,
                     size_t bytecodeTypeMapEntries)
 {
+    static const unsigned DataAlignment = sizeof(uintptr_t);
+
     size_t paddedBaselineScriptSize = AlignBytes(sizeof(BaselineScript), DataAlignment);
 
     size_t icEntriesSize = icEntries * sizeof(ICEntry);
@@ -642,10 +641,8 @@ uint8_t *
 BaselineScript::nativeCodeForPC(JSScript *script, jsbytecode *pc, PCMappingSlotInfo *slotInfo)
 {
     JS_ASSERT(script->baselineScript() == this);
-    JS_ASSERT(pc >= script->code);
-    JS_ASSERT(pc < script->code + script->length);
 
-    uint32_t pcOffset = pc - script->code;
+    uint32_t pcOffset = script->pcToOffset(pc);
 
     // Look for the first PCMappingIndexEntry with pc > the pc we are
     // interested in.
@@ -663,10 +660,10 @@ BaselineScript::nativeCodeForPC(JSScript *script, jsbytecode *pc, PCMappingSlotI
     JS_ASSERT(pcOffset >= entry.pcOffset);
 
     CompactBufferReader reader(pcMappingReader(i));
-    jsbytecode *curPC = script->code + entry.pcOffset;
+    jsbytecode *curPC = script->offsetToPC(entry.pcOffset);
     uint32_t nativeOffset = entry.nativeOffset;
 
-    JS_ASSERT(curPC >= script->code);
+    JS_ASSERT(script->containsPC(curPC));
     JS_ASSERT(curPC <= pc);
 
     while (true) {
@@ -710,10 +707,10 @@ BaselineScript::pcForReturnOffset(JSScript *script, uint32_t nativeOffset)
     JS_ASSERT(nativeOffset >= entry.nativeOffset);
 
     CompactBufferReader reader(pcMappingReader(i));
-    jsbytecode *curPC = script->code + entry.pcOffset;
+    jsbytecode *curPC = script->offsetToPC(entry.pcOffset);
     uint32_t curNativeOffset = entry.nativeOffset;
 
-    JS_ASSERT(curPC >= script->code);
+    JS_ASSERT(script->containsPC(curPC));
     JS_ASSERT(curNativeOffset <= nativeOffset);
 
     while (true) {
@@ -753,25 +750,26 @@ BaselineScript::toggleDebugTraps(JSScript *script, jsbytecode *pc)
     SrcNoteLineScanner scanner(script->notes(), script->lineno);
 
     JSRuntime *rt = script->runtimeFromMainThread();
-    IonContext ictx(rt, script->compartment(), nullptr);
+    IonContext ictx(CompileRuntime::get(rt),
+                    CompileCompartment::get(script->compartment()),
+                    nullptr);
     AutoFlushCache afc("DebugTraps", rt->jitRuntime());
 
     for (uint32_t i = 0; i < numPCMappingIndexEntries(); i++) {
         PCMappingIndexEntry &entry = pcMappingIndexEntry(i);
 
         CompactBufferReader reader(pcMappingReader(i));
-        jsbytecode *curPC = script->code + entry.pcOffset;
+        jsbytecode *curPC = script->offsetToPC(entry.pcOffset);
         uint32_t nativeOffset = entry.nativeOffset;
 
-        JS_ASSERT(curPC >= script->code);
-        JS_ASSERT(curPC < script->code + script->length);
+        JS_ASSERT(script->containsPC(curPC));
 
         while (reader.more()) {
             uint8_t b = reader.readByte();
             if (b & 0x80)
                 nativeOffset += reader.readUnsigned();
 
-            scanner.advanceTo(curPC - script->code);
+            scanner.advanceTo(script->pcToOffset(curPC));
 
             if (!pc || pc == curPC) {
                 bool enabled = (script->stepModeEnabled() && scanner.isLineHeader()) ||
@@ -892,7 +890,7 @@ void
 jit::JitCompartment::toggleBaselineStubBarriers(bool enabled)
 {
     for (ICStubCodeMap::Enum e(*stubCodes_); !e.empty(); e.popFront()) {
-        IonCode *code = *e.front().value.unsafeGet();
+        IonCode *code = *e.front().value().unsafeGet();
         code->togglePreBarriers(enabled);
     }
 }
@@ -908,7 +906,7 @@ jit::AddSizeOfBaselineData(JSScript *script, mozilla::MallocSizeOf mallocSizeOf,
 void
 jit::ToggleBaselineSPS(JSRuntime *runtime, bool enable)
 {
-    for (ZonesIter zone(runtime); !zone.done(); zone.next()) {
+    for (ZonesIter zone(runtime, SkipAtoms); !zone.done(); zone.next()) {
         for (gc::CellIter i(zone, gc::FINALIZE_SCRIPT); !i.done(); i.next()) {
             JSScript *script = i.get<JSScript>();
             if (!script->hasBaselineScript())

@@ -7,7 +7,6 @@
 DIRS += [
     'idl',
     'public',
-    'util',
     'ucvja',
     'ucvcn',
     'ucvlatin',
@@ -19,6 +18,4 @@ DIRS += [
 ]
 
 TEST_TOOL_DIRS += ['tests']
-
-MODULE = 'uconv'
 

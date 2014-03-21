@@ -5,7 +5,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jit/BacktrackingAllocator.h"
-#include "jsprf.h"
 #include "jit/BitSet.h"
 
 using namespace js;
@@ -26,10 +25,10 @@ BacktrackingAllocator::init()
         registers[reg.code()].allocatable = true;
     }
 
-    LifoAlloc *alloc = mir->temp().lifoAlloc();
+    LifoAlloc *lifoAlloc = mir->alloc().lifoAlloc();
     for (size_t i = 0; i < AnyRegister::Total; i++) {
         registers[i].reg = AnyRegister::FromCode(i);
-        registers[i].allocations.setAllocator(alloc);
+        registers[i].allocations.setAllocator(lifoAlloc);
 
         LiveInterval *fixed = fixedIntervals[i];
         for (size_t j = 0; j < fixed->numRanges(); j++) {
@@ -39,14 +38,14 @@ BacktrackingAllocator::init()
         }
     }
 
-    hotcode.setAllocator(alloc);
+    hotcode.setAllocator(lifoAlloc);
 
     // Partition the graph into hot and cold sections, for helping to make
     // splitting decisions. Since we don't have any profiling data this is a
     // crapshoot, so just mark the bodies of inner loops as hot and everything
     // else as cold.
 
-    LiveInterval *hotcodeInterval = new LiveInterval(0);
+    LiveInterval *hotcodeInterval = LiveInterval::New(alloc(), 0);
 
     LBlock *backedge = nullptr;
     for (size_t i = 0; i < graph.numBlocks(); i++) {
@@ -76,33 +75,6 @@ BacktrackingAllocator::init()
     return true;
 }
 
-static inline const char *
-IntervalString(const LiveInterval *interval)
-{
-#ifdef DEBUG
-    if (!interval->numRanges())
-        return " empty";
-
-    // Not reentrant!
-    static char buf[1000];
-
-    char *cursor = buf;
-    char *end = cursor + sizeof(buf);
-
-    for (size_t i = 0; i < interval->numRanges(); i++) {
-        const LiveInterval::Range *range = interval->getRange(i);
-        int n = JS_snprintf(cursor, end - cursor, " [%u,%u>", range->from.pos(), range->to.pos());
-        if (n < 0)
-            return " ???";
-        cursor += n;
-    }
-
-    return buf;
-#else
-    return " ???";
-#endif
-}
-
 bool
 BacktrackingAllocator::go()
 {
@@ -113,11 +85,11 @@ BacktrackingAllocator::go()
         return false;
     IonSpew(IonSpew_RegAlloc, "Liveness analysis complete");
 
-    if (IonSpewEnabled(IonSpew_RegAlloc))
-        dumpLiveness();
-
     if (!init())
         return false;
+
+    if (IonSpewEnabled(IonSpew_RegAlloc))
+        dumpLiveness();
 
     if (!allocationQueue.reserve(graph.numVirtualRegisters() * 3 / 2))
         return false;
@@ -227,7 +199,7 @@ BacktrackingAllocator::tryGroupRegisters(uint32_t vreg0, uint32_t vreg1)
     if (LifetimesOverlap(reg0, reg1))
         return true;
 
-    VirtualRegisterGroup *group = new VirtualRegisterGroup();
+    VirtualRegisterGroup *group = new(alloc()) VirtualRegisterGroup(alloc());
     if (!group->registers.append(vreg0) || !group->registers.append(vreg1))
         return false;
 
@@ -299,7 +271,7 @@ BacktrackingAllocator::tryGroupReusedRegister(uint32_t def, uint32_t use)
         }
     }
 
-    LiveInterval *preInterval = new LiveInterval(interval->vreg(), 0);
+    LiveInterval *preInterval = LiveInterval::New(alloc(), interval->vreg(), 0);
     for (size_t i = 0; i < interval->numRanges(); i++) {
         const LiveInterval::Range *range = interval->getRange(i);
         JS_ASSERT(range->from <= inputOf(reg.ins()));
@@ -309,7 +281,7 @@ BacktrackingAllocator::tryGroupReusedRegister(uint32_t def, uint32_t use)
             return false;
     }
 
-    LiveInterval *postInterval = new LiveInterval(interval->vreg(), 0);
+    LiveInterval *postInterval = LiveInterval::New(alloc(), interval->vreg(), 0);
     if (!postInterval->addRange(inputOf(reg.ins()), interval->end()))
         return false;
 
@@ -317,7 +289,9 @@ BacktrackingAllocator::tryGroupReusedRegister(uint32_t def, uint32_t use)
     if (!newIntervals.append(preInterval) || !newIntervals.append(postInterval))
         return false;
 
-    if (!distributeUses(interval, newIntervals) || !split(interval, newIntervals))
+    distributeUses(interval, newIntervals);
+
+    if (!split(interval, newIntervals))
         return false;
 
     JS_ASSERT(usedReg.numIntervals() == 2);
@@ -331,7 +305,9 @@ bool
 BacktrackingAllocator::groupAndQueueRegisters()
 {
     // Try to group registers with their reused inputs.
-    for (size_t i = 0; i < graph.numVirtualRegisters(); i++) {
+    // Virtual register number 0 is unused.
+    JS_ASSERT(vregs[0u].numIntervals() == 0);
+    for (size_t i = 1; i < graph.numVirtualRegisters(); i++) {
         BacktrackingVirtualRegister &reg = vregs[i];
         if (!reg.numIntervals())
             continue;
@@ -357,7 +333,9 @@ BacktrackingAllocator::groupAndQueueRegisters()
         }
     }
 
-    for (size_t i = 0; i < graph.numVirtualRegisters(); i++) {
+    // Virtual register number 0 is unused.
+    JS_ASSERT(vregs[0u].numIntervals() == 0);
+    for (size_t i = 1; i < graph.numVirtualRegisters(); i++) {
         if (mir->shouldCancel("Backtracking Enqueue Registers"))
             return false;
 
@@ -368,6 +346,8 @@ BacktrackingAllocator::groupAndQueueRegisters()
         if (!reg.numIntervals())
             continue;
 
+        // Disable this for now; see bugs 906858, 931487, and 932465.
+#if 0
         // Eagerly set the canonical spill slot for registers which are preset
         // for that slot, and reuse it for other registers in the group.
         LDefinition *def = reg.def();
@@ -376,6 +356,7 @@ BacktrackingAllocator::groupAndQueueRegisters()
             if (reg.group() && reg.group()->spill.isUse())
                 reg.group()->spill = *def->output();
         }
+#endif
 
         // Place all intervals for this register on the allocation queue.
         // During initial queueing use single queue items for groups of
@@ -409,12 +390,68 @@ BacktrackingAllocator::groupAndQueueRegisters()
 static const size_t MAX_ATTEMPTS = 2;
 
 bool
+BacktrackingAllocator::tryAllocateFixed(LiveInterval *interval, bool *success,
+                                        bool *pfixed, LiveInterval **pconflicting)
+{
+    // Spill intervals which are required to be in a certain stack slot.
+    if (!interval->requirement()->allocation().isRegister()) {
+        IonSpew(IonSpew_RegAlloc, "stack allocation requirement");
+        interval->setAllocation(interval->requirement()->allocation());
+        *success = true;
+        return true;
+    }
+
+    AnyRegister reg = interval->requirement()->allocation().toRegister();
+    return tryAllocateRegister(registers[reg.code()], interval, success, pfixed, pconflicting);
+}
+
+bool
+BacktrackingAllocator::tryAllocateNonFixed(LiveInterval *interval, bool *success,
+                                           bool *pfixed, LiveInterval **pconflicting)
+{
+    // If we want, but do not require an interval to be in a specific
+    // register, only look at that register for allocating and evict
+    // or spill if it is not available. Picking a separate register may
+    // be even worse than spilling, as it will still necessitate moves
+    // and will tie up more registers than if we spilled.
+    if (interval->hint()->kind() == Requirement::FIXED) {
+        AnyRegister reg = interval->hint()->allocation().toRegister();
+        if (!tryAllocateRegister(registers[reg.code()], interval, success, pfixed, pconflicting))
+            return false;
+        if (*success)
+            return true;
+    }
+
+    // Spill intervals which have no hint or register requirement.
+    if (interval->requirement()->kind() == Requirement::NONE) {
+        spill(interval);
+        *success = true;
+        return true;
+    }
+
+    if (!*pconflicting || minimalInterval(interval)) {
+        // Search for any available register which the interval can be
+        // allocated to.
+        for (size_t i = 0; i < AnyRegister::Total; i++) {
+            if (!tryAllocateRegister(registers[i], interval, success, pfixed, pconflicting))
+                return false;
+            if (*success)
+                return true;
+        }
+    }
+
+    // We failed to allocate this interval.
+    JS_ASSERT(!*success);
+    return true;
+}
+
+bool
 BacktrackingAllocator::processInterval(LiveInterval *interval)
 {
     if (IonSpewEnabled(IonSpew_RegAlloc)) {
         IonSpew(IonSpew_RegAlloc, "Allocating v%u [priority %lu] [weight %lu]: %s",
                 interval->vreg(), computePriority(interval), computeSpillWeight(interval),
-                IntervalString(interval));
+                interval->rangesToString());
     }
 
     // An interval can be processed by doing any of the following:
@@ -445,62 +482,34 @@ BacktrackingAllocator::processInterval(LiveInterval *interval)
     LiveInterval *conflict;
     for (size_t attempt = 0;; attempt++) {
         if (canAllocate) {
-            // Spill intervals which are required to be in a certain stack slot.
-            if (interval->requirement()->kind() == Requirement::FIXED &&
-                !interval->requirement()->allocation().isRegister())
-            {
-                IonSpew(IonSpew_RegAlloc, "stack allocation requirement");
-                interval->setAllocation(interval->requirement()->allocation());
-                return true;
-            }
-
+            bool success = false;
             fixed = false;
             conflict = nullptr;
 
-            // If we want, but do not require an interval to be in a specific
-            // register, only look at that register for allocating and evict
-            // or spill if it is not available. Picking a separate register may
-            // be even worse than spilling, as it will still necessitate moves
-            // and will tie up more registers than if we spilled.
-            if (interval->hint()->kind() == Requirement::FIXED) {
-                AnyRegister reg = interval->hint()->allocation().toRegister();
-                bool success;
-                if (!tryAllocateRegister(registers[reg.code()], interval, &success, &fixed, &conflict))
+            // Ok, let's try allocating for this interval.
+            if (interval->requirement()->kind() == Requirement::FIXED) {
+                if (!tryAllocateFixed(interval, &success, &fixed, &conflict))
                     return false;
-                if (success)
-                    return true;
+            } else {
+                if (!tryAllocateNonFixed(interval, &success, &fixed, &conflict))
+                    return false;
             }
 
-            // Spill intervals which have no hint or register requirement.
-            if (interval->requirement()->kind() == Requirement::NONE) {
-                spill(interval);
+            // If that worked, we're done!
+            if (success)
                 return true;
+
+            // If that didn't work, but we have a non-fixed LiveInterval known
+            // to be conflicting, maybe we can evict it and try again.
+            if (attempt < MAX_ATTEMPTS &&
+                !fixed &&
+                conflict &&
+                computeSpillWeight(conflict) < computeSpillWeight(interval))
+            {
+                if (!evictInterval(conflict))
+                    return false;
+                continue;
             }
-
-            if (!conflict || minimalInterval(interval)) {
-                // Search for any available register which the interval can be
-                // allocated to.
-                for (size_t i = 0; i < AnyRegister::Total; i++) {
-                    bool success;
-                    if (!tryAllocateRegister(registers[i], interval, &success, &fixed, &conflict))
-                        return false;
-                    if (success)
-                        return true;
-                }
-            }
-        }
-
-        // Failed to allocate a register for this interval.
-
-        if (attempt < MAX_ATTEMPTS &&
-            canAllocate &&
-            !fixed &&
-            conflict &&
-            computeSpillWeight(conflict) < computeSpillWeight(interval))
-        {
-            if (!evictInterval(conflict))
-                return false;
-            continue;
         }
 
         // A minimal interval cannot be split any further. If we try to split
@@ -680,12 +689,8 @@ BacktrackingAllocator::tryAllocateRegister(PhysicalRegister &r, LiveInterval *in
     if (reg->isDouble() != r.reg.isFloat())
         return true;
 
-    if (interval->requirement()->kind() == Requirement::FIXED) {
-        if (interval->requirement()->allocation() != LAllocation(r.reg)) {
-            IonSpew(IonSpew_RegAlloc, "%s does not match fixed requirement", r.reg.name());
-            return true;
-        }
-    }
+    JS_ASSERT_IF(interval->requirement()->kind() == Requirement::FIXED,
+                 interval->requirement()->allocation() == LAllocation(r.reg));
 
     for (size_t i = 0; i < interval->numRanges(); i++) {
         AllocatedRange range(interval, interval->getRange(i)), existing;
@@ -734,7 +739,7 @@ BacktrackingAllocator::evictInterval(LiveInterval *interval)
 {
     if (IonSpewEnabled(IonSpew_RegAlloc)) {
         IonSpew(IonSpew_RegAlloc, "Evicting interval v%u: %s",
-                interval->vreg(), IntervalString(interval));
+                interval->vreg(), interval->rangesToString());
     }
 
     JS_ASSERT(interval->getAllocation()->isRegister());
@@ -754,7 +759,7 @@ BacktrackingAllocator::evictInterval(LiveInterval *interval)
     return allocationQueue.insert(QueueItem(interval, priority));
 }
 
-bool
+void
 BacktrackingAllocator::distributeUses(LiveInterval *interval,
                                       const LiveIntervalVector &newIntervals)
 {
@@ -777,10 +782,8 @@ BacktrackingAllocator::distributeUses(LiveInterval *interval,
                     addInterval = newInterval;
             }
         }
-        addInterval->addUse(new UsePosition(iter->use, iter->pos));
+        addInterval->addUseAtEnd(new(alloc()) UsePosition(iter->use, iter->pos));
     }
-
-    return true;
 }
 
 bool
@@ -788,10 +791,10 @@ BacktrackingAllocator::split(LiveInterval *interval,
                              const LiveIntervalVector &newIntervals)
 {
     if (IonSpewEnabled(IonSpew_RegAlloc)) {
-        IonSpew(IonSpew_RegAlloc, "splitting interval v%u %s:",
-                interval->vreg(), IntervalString(interval));
+        IonSpew(IonSpew_RegAlloc, "splitting interval v%u %s into:",
+                interval->vreg(), interval->rangesToString());
         for (size_t i = 0; i < newIntervals.length(); i++)
-            IonSpew(IonSpew_RegAlloc, "    %s", IntervalString(newIntervals[i]));
+            IonSpew(IonSpew_RegAlloc, "    %s", newIntervals[i]->rangesToString());
     }
 
     JS_ASSERT(newIntervals.length() >= 2);
@@ -882,7 +885,9 @@ BacktrackingAllocator::spill(LiveInterval *interval)
 bool
 BacktrackingAllocator::resolveControlFlow()
 {
-    for (size_t i = 0; i < graph.numVirtualRegisters(); i++) {
+    // Virtual register number 0 is unused.
+    JS_ASSERT(vregs[0u].numIntervals() == 0);
+    for (size_t i = 1; i < graph.numVirtualRegisters(); i++) {
         BacktrackingVirtualRegister *reg = &vregs[i];
 
         if (mir->shouldCancel("Backtracking Resolve Control Flow (vreg loop)"))
@@ -947,8 +952,7 @@ BacktrackingAllocator::resolveControlFlow()
                 LiveInterval *from = vregs[input].intervalFor(outputOf(predecessor->lastId()));
                 JS_ASSERT(from);
 
-                LMoveGroup *moves = predecessor->getExitMoveGroup();
-                if (!addMove(moves, from, to))
+                if (!moveAtExit(predecessor, from, to))
                     return false;
             }
         }
@@ -973,12 +977,10 @@ BacktrackingAllocator::resolveControlFlow()
 
                     if (mSuccessor->numPredecessors() > 1) {
                         JS_ASSERT(predecessor->mir()->numSuccessors() == 1);
-                        LMoveGroup *moves = predecessor->getExitMoveGroup();
-                        if (!addMove(moves, from, to))
+                        if (!moveAtExit(predecessor, from, to))
                             return false;
                     } else {
-                        LMoveGroup *moves = successor->getEntryMoveGroup();
-                        if (!addMove(moves, from, to))
+                        if (!moveAtEntry(successor, from, to))
                             return false;
                     }
                 }
@@ -998,11 +1000,11 @@ BacktrackingAllocator::isReusedInput(LUse *use, LInstruction *ins, bool consider
 }
 
 bool
-BacktrackingAllocator::isRegisterUse(LUse *use, LInstruction *ins)
+BacktrackingAllocator::isRegisterUse(LUse *use, LInstruction *ins, bool considerCopy)
 {
     switch (use->policy()) {
       case LUse::ANY:
-        return isReusedInput(use, ins);
+        return isReusedInput(use, ins, considerCopy);
 
       case LUse::REGISTER:
       case LUse::FIXED:
@@ -1032,7 +1034,9 @@ BacktrackingAllocator::isRegisterDefinition(LiveInterval *interval)
 bool
 BacktrackingAllocator::reifyAllocations()
 {
-    for (size_t i = 0; i < graph.numVirtualRegisters(); i++) {
+    // Virtual register number 0 is unused.
+    JS_ASSERT(vregs[0u].numIntervals() == 0);
+    for (size_t i = 1; i < graph.numVirtualRegisters(); i++) {
         VirtualRegister *reg = &vregs[i];
 
         if (mir->shouldCancel("Backtracking Reify Allocations (main loop)"))
@@ -1092,7 +1096,9 @@ BacktrackingAllocator::populateSafepoints()
 {
     size_t firstSafepoint = 0;
 
-    for (uint32_t i = 0; i < vregs.numVirtualRegisters(); i++) {
+    // Virtual register number 0 is unused.
+    JS_ASSERT(!vregs[0u].def());
+    for (uint32_t i = 1; i < vregs.numVirtualRegisters(); i++) {
         BacktrackingVirtualRegister *reg = &vregs[i];
 
         if (!reg->def() || (!IsTraceable(reg) && !IsSlotsOrElements(reg) && !IsNunbox(reg)))
@@ -1112,7 +1118,7 @@ BacktrackingAllocator::populateSafepoints()
 
             // Stop processing safepoints if we know we're out of this virtual
             // register's range.
-            if (end < inputOf(ins))
+            if (end < outputOf(ins))
                 break;
 
             // Include temps but not instruction outputs. Also make sure MUST_REUSE_INPUT
@@ -1169,7 +1175,10 @@ void
 BacktrackingAllocator::dumpRegisterGroups()
 {
     fprintf(stderr, "Register groups:\n");
-    for (size_t i = 0; i < graph.numVirtualRegisters(); i++) {
+
+    // Virtual register number 0 is unused.
+    JS_ASSERT(!vregs[0u].group());
+    for (size_t i = 1; i < graph.numVirtualRegisters(); i++) {
         VirtualRegisterGroup *group = vregs[i].group();
         if (group && i == group->canonicalReg()) {
             for (size_t j = 0; j < group->registers.length(); j++)
@@ -1197,11 +1206,12 @@ BacktrackingAllocator::dumpLiveness()
         for (size_t i = 0; i < block->numPhis(); i++) {
             LPhi *phi = block->getPhi(i);
 
-            fprintf(stderr, "[%u,%u Phi v%u <-",
-                    inputOf(phi).pos(), outputOf(phi).pos(),
+            // Don't print the inputOf for phi nodes, since it's never used.
+            fprintf(stderr, "[,%u Phi [def v%u] <-",
+                    outputOf(phi).pos(),
                     phi->getDef(0)->virtualRegister());
             for (size_t j = 0; j < phi->numOperands(); j++)
-                fprintf(stderr, " v%u", phi->getOperand(j)->toUse()->virtualRegister());
+                fprintf(stderr, " %s", phi->getOperand(j)->toString());
             fprintf(stderr, "]\n");
         }
 
@@ -1221,10 +1231,8 @@ BacktrackingAllocator::dumpLiveness()
                 fprintf(stderr, " [def v%u]", def->virtualRegister());
             }
 
-            for (LInstruction::InputIterator alloc(*ins); alloc.more(); alloc.next()) {
-                if (alloc->isUse())
-                    fprintf(stderr, " [use v%u]", alloc->toUse()->virtualRegister());
-            }
+            for (LInstruction::InputIterator alloc(*ins); alloc.more(); alloc.next())
+                fprintf(stderr, " [use %s]", alloc->toString());
 
             fprintf(stderr, "\n");
         }
@@ -1233,15 +1241,18 @@ BacktrackingAllocator::dumpLiveness()
     fprintf(stderr, "\nLive Ranges:\n\n");
 
     for (size_t i = 0; i < AnyRegister::Total; i++)
-        fprintf(stderr, "reg %s: %s\n", AnyRegister::FromCode(i).name(), IntervalString(fixedIntervals[i]));
+        if (registers[i].allocatable)
+            fprintf(stderr, "reg %s: %s\n", AnyRegister::FromCode(i).name(), fixedIntervals[i]->rangesToString());
 
-    for (size_t i = 0; i < graph.numVirtualRegisters(); i++) {
+    // Virtual register number 0 is unused.
+    JS_ASSERT(vregs[0u].numIntervals() == 0);
+    for (size_t i = 1; i < graph.numVirtualRegisters(); i++) {
         fprintf(stderr, "v%lu:", static_cast<unsigned long>(i));
         VirtualRegister &vreg = vregs[i];
         for (size_t j = 0; j < vreg.numIntervals(); j++) {
             if (j)
                 fprintf(stderr, " *");
-            fprintf(stderr, "%s", IntervalString(vreg.getInterval(j)));
+            fprintf(stderr, "%s", vreg.getInterval(j)->rangesToString());
         }
         fprintf(stderr, "\n");
     }
@@ -1256,9 +1267,13 @@ struct BacktrackingAllocator::PrintLiveIntervalRange
     void operator()(const AllocatedRange &item)
     {
         if (item.range == item.interval->getRange(0)) {
-            fprintf(stderr, "  v%u: %s\n",
-                   item.interval->hasVreg() ? item.interval->vreg() : 0,
-                   IntervalString(item.interval));
+            if (item.interval->hasVreg())
+                fprintf(stderr, "  v%u: %s\n",
+                       item.interval->vreg(),
+                       item.interval->rangesToString());
+            else
+                fprintf(stderr, "  fixed: %s\n",
+                       item.interval->rangesToString());
         }
     }
 };
@@ -1270,14 +1285,16 @@ BacktrackingAllocator::dumpAllocations()
 #ifdef DEBUG
     fprintf(stderr, "Allocations:\n");
 
-    for (size_t i = 0; i < graph.numVirtualRegisters(); i++) {
+    // Virtual register number 0 is unused.
+    JS_ASSERT(vregs[0u].numIntervals() == 0);
+    for (size_t i = 1; i < graph.numVirtualRegisters(); i++) {
         fprintf(stderr, "v%lu:", static_cast<unsigned long>(i));
         VirtualRegister &vreg = vregs[i];
         for (size_t j = 0; j < vreg.numIntervals(); j++) {
             if (j)
                 fprintf(stderr, " *");
             LiveInterval *interval = vreg.getInterval(j);
-            fprintf(stderr, "%s :: %s", IntervalString(interval), interval->getAllocation()->toString());
+            fprintf(stderr, "%s :: %s", interval->rangesToString(), interval->getAllocation()->toString());
         }
         fprintf(stderr, "\n");
     }
@@ -1285,8 +1302,10 @@ BacktrackingAllocator::dumpAllocations()
     fprintf(stderr, "\n");
 
     for (size_t i = 0; i < AnyRegister::Total; i++) {
-        fprintf(stderr, "reg %s:\n", AnyRegister::FromCode(i).name());
-        registers[i].allocations.forEach(PrintLiveIntervalRange());
+        if (registers[i].allocatable) {
+            fprintf(stderr, "reg %s:\n", AnyRegister::FromCode(i).name());
+            registers[i].allocations.forEach(PrintLiveIntervalRange());
+        }
     }
 
     fprintf(stderr, "\n");
@@ -1298,7 +1317,7 @@ BacktrackingAllocator::addLiveInterval(LiveIntervalVector &intervals, uint32_t v
                                        LiveInterval *spillInterval,
                                        CodePosition from, CodePosition to)
 {
-    LiveInterval *interval = new LiveInterval(vreg, 0);
+    LiveInterval *interval = LiveInterval::New(alloc(), vreg, 0);
     interval->setSpillInterval(spillInterval);
     return interval->addRange(from, to) && intervals.append(interval);
 }
@@ -1339,7 +1358,7 @@ BacktrackingAllocator::minimalDef(const LiveInterval *interval, LInstruction *in
 {
     // Whether interval is a minimal interval capturing a definition at ins.
     return (interval->end() <= minimalDefEnd(ins).next()) &&
-        (interval->start() == inputOf(ins) || interval->start() == outputOf(ins));
+        ((!ins->isPhi() && interval->start() == inputOf(ins)) || interval->start() == outputOf(ins));
 }
 
 bool
@@ -1487,50 +1506,11 @@ BacktrackingAllocator::trySplitAcrossHotcode(LiveInterval *interval, bool *succe
     if (!coldCode)
         return true;
 
-    LiveInterval *hotInterval = new LiveInterval(interval->vreg(), 0);
-    LiveInterval *preInterval = nullptr, *postInterval = nullptr;
-
-    // Accumulate the ranges of hot and cold code in the interval. Note that
-    // we are only comparing with the single hot range found, so the cold code
-    // may contain separate hot ranges.
-    Vector<LiveInterval::Range, 1, SystemAllocPolicy> hotList, coldList;
-    for (size_t i = 0; i < interval->numRanges(); i++) {
-        LiveInterval::Range hot, coldPre, coldPost;
-        interval->getRange(i)->intersect(hotRange, &coldPre, &hot, &coldPost);
-
-        if (!hot.empty() && !hotInterval->addRange(hot.from, hot.to))
-            return false;
-
-        if (!coldPre.empty()) {
-            if (!preInterval)
-                preInterval = new LiveInterval(interval->vreg(), 0);
-            if (!preInterval->addRange(coldPre.from, coldPre.to))
-                return false;
-        }
-
-        if (!coldPost.empty()) {
-            if (!postInterval)
-                postInterval = new LiveInterval(interval->vreg(), 0);
-            if (!postInterval->addRange(coldPost.from, coldPost.to))
-                return false;
-        }
-    }
-
-    JS_ASSERT(preInterval || postInterval);
-    JS_ASSERT(hotInterval->numRanges());
-
-    LiveIntervalVector newIntervals;
-    if (!newIntervals.append(hotInterval))
+    SplitPositionVector splitPositions;
+    if (!splitPositions.append(hotRange->from) || !splitPositions.append(hotRange->to))
         return false;
-    if (preInterval && !newIntervals.append(preInterval))
-        return false;
-    if (postInterval && !newIntervals.append(postInterval))
-        return false;
-
     *success = true;
-    return distributeUses(interval, newIntervals) &&
-        split(interval, newIntervals) &&
-        requeueIntervals(newIntervals);
+    return splitAt(interval, splitPositions);
 }
 
 bool
@@ -1552,22 +1532,9 @@ BacktrackingAllocator::trySplitAfterLastRegisterUse(LiveInterval *interval, bool
         JS_ASSERT(iter->pos >= lastUse);
         lastUse = inputOf(ins);
 
-        switch (use->policy()) {
-          case LUse::ANY:
-            if (isReusedInput(iter->use, ins, /* considerCopy = */ true)) {
-                lastRegisterFrom = inputOf(ins);
-                lastRegisterTo = iter->pos.next();
-            }
-            break;
-
-          case LUse::REGISTER:
-          case LUse::FIXED:
+        if (isRegisterUse(use, ins, /* considerCopy = */ true)) {
             lastRegisterFrom = inputOf(ins);
             lastRegisterTo = iter->pos.next();
-            break;
-
-          default:
-            break;
         }
     }
 
@@ -1576,33 +1543,11 @@ BacktrackingAllocator::trySplitAfterLastRegisterUse(LiveInterval *interval, bool
         return true;
     }
 
-    LiveInterval *preInterval = new LiveInterval(interval->vreg(), 0);
-    LiveInterval *postInterval = new LiveInterval(interval->vreg(), 0);
-
-    for (size_t i = 0; i < interval->numRanges(); i++) {
-        const LiveInterval::Range *range = interval->getRange(i);
-
-        if (range->from < lastRegisterTo) {
-            CodePosition to = (range->to <= lastRegisterTo) ? range->to : lastRegisterTo;
-            if (!preInterval->addRange(range->from, to))
-                return false;
-        }
-
-        if (lastRegisterFrom < range->to) {
-            CodePosition from = (lastRegisterFrom <= range->from) ? range->from : lastRegisterFrom;
-            if (!postInterval->addRange(from, range->to))
-                return false;
-        }
-    }
-
-    LiveIntervalVector newIntervals;
-    if (!newIntervals.append(preInterval) || !newIntervals.append(postInterval))
+    SplitPositionVector splitPositions;
+    if (!splitPositions.append(lastRegisterTo))
         return false;
-
     *success = true;
-    return distributeUses(interval, newIntervals) &&
-        split(interval, newIntervals) &&
-        requeueIntervals(newIntervals);
+    return splitAt(interval, splitPositions);
 }
 
 bool
@@ -1620,7 +1565,7 @@ BacktrackingAllocator::splitAtAllRegisterUses(LiveInterval *interval)
     bool spillIntervalIsNew = false;
     LiveInterval *spillInterval = interval->spillInterval();
     if (!spillInterval) {
-        spillInterval = new LiveInterval(vreg, 0);
+        spillInterval = LiveInterval::New(alloc(), vreg, 0);
         spillIntervalIsNew = true;
     }
 
@@ -1650,7 +1595,7 @@ BacktrackingAllocator::splitAtAllRegisterUses(LiveInterval *interval)
     {
         LInstruction *ins = insData[iter->pos].ins();
         if (iter->pos < spillStart) {
-            newIntervals.back()->addUse(new UsePosition(iter->use, iter->pos));
+            newIntervals.back()->addUseAtEnd(new(alloc()) UsePosition(iter->use, iter->pos));
         } else if (isRegisterUse(iter->use, ins)) {
             // For register uses which are not useRegisterAtStart, pick an
             // interval that covers both the instruction's input and output, so
@@ -1665,10 +1610,10 @@ BacktrackingAllocator::splitAtAllRegisterUses(LiveInterval *interval)
                     return false;
             }
 
-            newIntervals.back()->addUse(new UsePosition(iter->use, iter->pos));
+            newIntervals.back()->addUseAtEnd(new(alloc()) UsePosition(iter->use, iter->pos));
         } else {
             JS_ASSERT(spillIntervalIsNew);
-            spillInterval->addUse(new UsePosition(iter->use, iter->pos));
+            spillInterval->addUseAtEnd(new(alloc()) UsePosition(iter->use, iter->pos));
         }
     }
 
@@ -1678,31 +1623,45 @@ BacktrackingAllocator::splitAtAllRegisterUses(LiveInterval *interval)
     return split(interval, newIntervals) && requeueIntervals(newIntervals);
 }
 
-bool
-BacktrackingAllocator::splitAcrossCalls(LiveInterval *interval)
+// Find the next split position after the current position.
+static size_t NextSplitPosition(size_t activeSplitPosition,
+                                const SplitPositionVector &splitPositions,
+                                CodePosition currentPos)
 {
-    // Split the interval to separate register uses and non-register uses and
-    // allow the vreg to be spilled across its range. Unlike splitAtAllRegisterUses,
-    // consolidate any register uses which have no intervening calls into the
+    while (activeSplitPosition < splitPositions.length() &&
+           splitPositions[activeSplitPosition] <= currentPos)
+    {
+        ++activeSplitPosition;
+    }
+    return activeSplitPosition;
+}
+
+// Test whether the current position has just crossed a split point.
+static bool SplitHere(size_t activeSplitPosition,
+                      const SplitPositionVector &splitPositions,
+                      CodePosition currentPos)
+{
+    return activeSplitPosition < splitPositions.length() &&
+           currentPos >= splitPositions[activeSplitPosition];
+}
+
+bool
+BacktrackingAllocator::splitAt(LiveInterval *interval,
+                               const SplitPositionVector &splitPositions)
+{
+    // Split the interval at the given split points. Unlike splitAtAllRegisterUses,
+    // consolidate any register uses which have no intervening split points into the
     // same resulting interval.
+
+    // splitPositions should be non-empty and sorted.
+    JS_ASSERT(!splitPositions.empty());
+    for (size_t i = 1; i < splitPositions.length(); ++i)
+        JS_ASSERT(splitPositions[i-1] < splitPositions[i]);
 
     // Don't spill the interval until after the end of its definition.
     CodePosition spillStart = interval->start();
     if (isRegisterDefinition(interval))
         spillStart = minimalDefEnd(insData[interval->start()].ins()).next();
-
-    // Find the locations of all calls in the interval's range. Fixed intervals
-    // are introduced by buildLivenessInfo only for calls when allocating for
-    // the backtracking allocator.
-    Vector<CodePosition, 4, SystemAllocPolicy> callPositions;
-    for (size_t i = 0; i < fixedIntervalsUnion->numRanges(); i++) {
-        const LiveInterval::Range *range = fixedIntervalsUnion->getRange(i);
-        if (interval->covers(range->from) && spillStart < range->from) {
-            if (!callPositions.append(range->from))
-                return false;
-        }
-    }
-    JS_ASSERT(callPositions.length());
 
     uint32_t vreg = interval->vreg();
 
@@ -1712,7 +1671,7 @@ BacktrackingAllocator::splitAcrossCalls(LiveInterval *interval)
     bool spillIntervalIsNew = false;
     LiveInterval *spillInterval = interval->spillInterval();
     if (!spillInterval) {
-        spillInterval = new LiveInterval(vreg, 0);
+        spillInterval = LiveInterval::New(alloc(), vreg, 0);
         spillIntervalIsNew = true;
 
         for (size_t i = 0; i < interval->numRanges(); i++) {
@@ -1727,80 +1686,97 @@ BacktrackingAllocator::splitAcrossCalls(LiveInterval *interval)
 
     CodePosition lastRegisterUse;
     if (spillStart != interval->start()) {
-        LiveInterval *newInterval = new LiveInterval(vreg, 0);
+        LiveInterval *newInterval = LiveInterval::New(alloc(), vreg, 0);
         newInterval->setSpillInterval(spillInterval);
         if (!newIntervals.append(newInterval))
             return false;
         lastRegisterUse = interval->start();
     }
 
-    int activeCallPosition = callPositions.length() - 1;
+    size_t activeSplitPosition = NextSplitPosition(0, splitPositions, interval->start());
     for (UsePositionIterator iter(interval->usesBegin()); iter != interval->usesEnd(); iter++) {
         LInstruction *ins = insData[iter->pos].ins();
         if (iter->pos < spillStart) {
-            newIntervals.back()->addUse(new UsePosition(iter->use, iter->pos));
+            newIntervals.back()->addUseAtEnd(new(alloc()) UsePosition(iter->use, iter->pos));
+            activeSplitPosition = NextSplitPosition(activeSplitPosition, splitPositions, iter->pos);
         } else if (isRegisterUse(iter->use, ins)) {
-            bool useNewInterval = false;
-            if (lastRegisterUse.pos() == 0) {
-                useNewInterval = true;
-            } else {
+            if (lastRegisterUse.pos() == 0 ||
+                SplitHere(activeSplitPosition, splitPositions, iter->pos))
+            {
                 // Place this register use into a different interval from the
-                // last one if there are any calls between the two uses or if
-                // the register uses are in different subranges of the original
-                // interval.
-                for (; activeCallPosition >= 0; activeCallPosition--) {
-                    CodePosition pos = callPositions[activeCallPosition];
-                    if (iter->pos < pos)
-                        break;
-                    if (lastRegisterUse < pos) {
-                        useNewInterval = true;
-                        break;
-                    }
-                }
-                if (!useNewInterval) {
-                    for (size_t i = 0; i < interval->numRanges(); i++) {
-                        const LiveInterval::Range *range = interval->getRange(i);
-                        if (range->from <= lastRegisterUse && range->to <= iter->pos) {
-                            useNewInterval = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if (useNewInterval) {
-                LiveInterval *newInterval = new LiveInterval(vreg, 0);
+                // last one if there are any split points between the two uses.
+                LiveInterval *newInterval = LiveInterval::New(alloc(), vreg, 0);
                 newInterval->setSpillInterval(spillInterval);
                 if (!newIntervals.append(newInterval))
                     return false;
+                activeSplitPosition = NextSplitPosition(activeSplitPosition,
+                                                        splitPositions,
+                                                        iter->pos);
             }
-            newIntervals.back()->addUse(new UsePosition(iter->use, iter->pos));
+            newIntervals.back()->addUseAtEnd(new(alloc()) UsePosition(iter->use, iter->pos));
             lastRegisterUse = iter->pos;
         } else {
             JS_ASSERT(spillIntervalIsNew);
-            spillInterval->addUse(new UsePosition(iter->use, iter->pos));
+            spillInterval->addUseAtEnd(new(alloc()) UsePosition(iter->use, iter->pos));
         }
     }
 
     // Compute ranges for each new interval that cover all its uses.
+    size_t activeRange = interval->numRanges();
     for (size_t i = 0; i < newIntervals.length(); i++) {
         LiveInterval *newInterval = newIntervals[i];
         CodePosition start, end;
         if (i == 0 && spillStart != interval->start()) {
             start = interval->start();
-            end = spillStart;
+            if (newInterval->usesEmpty())
+                end = spillStart;
+            else
+                end = newInterval->usesBack()->pos.next();
         } else {
             start = inputOf(insData[newInterval->usesBegin()->pos].ins());
-        }
-        if (newInterval->usesBegin() != newInterval->usesEnd())
             end = newInterval->usesBack()->pos.next();
-        if (!newInterval->addRange(start, end))
-            return false;
+        }
+        for (; activeRange > 0; --activeRange) {
+            const LiveInterval::Range *range = interval->getRange(activeRange - 1);
+            if (range->to <= start)
+                continue;
+            if (range->from >= end)
+                break;
+            if (!newInterval->addRange(Max(range->from, start),
+                                       Min(range->to, end)))
+                return false;
+            if (range->to >= end)
+                break;
+        }
     }
 
     if (spillIntervalIsNew && !newIntervals.append(spillInterval))
         return false;
 
     return split(interval, newIntervals) && requeueIntervals(newIntervals);
+}
+
+bool
+BacktrackingAllocator::splitAcrossCalls(LiveInterval *interval)
+{
+    // Split the interval to separate register uses and non-register uses and
+    // allow the vreg to be spilled across its range.
+
+    // Find the locations of all calls in the interval's range. Fixed intervals
+    // are introduced by buildLivenessInfo only for calls when allocating for
+    // the backtracking allocator. fixedIntervalsUnion is sorted backwards, so
+    // iterate through it backwards.
+    SplitPositionVector callPositions;
+    for (size_t i = fixedIntervalsUnion->numRanges(); i > 0; i--) {
+        const LiveInterval::Range *range = fixedIntervalsUnion->getRange(i - 1);
+        if (interval->covers(range->from) && interval->covers(range->from.previous())) {
+            if (!callPositions.append(range->from))
+                return false;
+        }
+    }
+    JS_ASSERT(callPositions.length());
+
+    return splitAt(interval, callPositions);
 }
 
 bool

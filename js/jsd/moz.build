@@ -7,15 +7,13 @@
 DIRS += ['idl']
 TEST_TOOL_DIRS += ['test']
 
-MODULE = 'jsdebug'
-
 EXPORTS += [
     'jsdebug.h',
 ]
 
 XPCSHELL_TESTS_MANIFESTS += ['test/xpcshell.ini']
 
-SOURCES += [
+UNIFIED_SOURCES += [
     'jsd_atom.cpp',
     'jsd_high.cpp',
     'jsd_hook.cpp',
@@ -36,9 +34,4 @@ DEFINES['EXPORT_JSD_API'] = True
 if CONFIG['JS_THREADSAFE']:
     DEFINES['JS_THREADSAFE'] = True
 
-LIBRARY_NAME = 'jsd'
-
-LIBXUL_LIBRARY = True
-
-EXPORT_LIBRARY = True
-
+FINAL_LIBRARY = 'xul'

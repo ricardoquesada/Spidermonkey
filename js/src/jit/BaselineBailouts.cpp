@@ -661,7 +661,7 @@ InitFromBailout(JSContext *cx, HandleScript caller, jsbytecode *callerPC,
 
     // Get the pc. If we are handling an exception, resume at the pc of the
     // catch or finally block.
-    jsbytecode *pc = excInfo ? excInfo->resumePC : script->code + iter.pcOffset();
+    jsbytecode *pc = excInfo ? excInfo->resumePC : script->offsetToPC(iter.pcOffset());
     bool resumeAfter = excInfo ? false : iter.resumeAfter();
 
     JSOp op = JSOp(*pc);
@@ -790,35 +790,40 @@ InitFromBailout(JSContext *cx, HandleScript caller, jsbytecode *callerPC,
         }
     }
 
-    uint32_t pcOff = pc - script->code;
+    uint32_t pcOff = script->pcToOffset(pc);
     bool isCall = IsCallPC(pc);
     BaselineScript *baselineScript = script->baselineScript();
 
 #ifdef DEBUG
-    uint32_t expectedDepth = js_ReconstructStackDepth(cx, script,
-                                                      resumeAfter ? GetNextPc(pc) : pc);
-    if (op != JSOP_FUNAPPLY || !iter.moreFrames() || resumeAfter) {
-        if (op == JSOP_FUNCALL) {
-            // For fun.call(this, ...); the reconstructStackDepth will
-            // include the this. When inlining that is not included.
-            // So the exprStackSlots will be one less.
-            JS_ASSERT(expectedDepth - exprStackSlots <= 1);
-        } else if (iter.moreFrames() && (IsGetPropPC(pc) || IsSetPropPC(pc))) {
-            // Accessors coming out of ion are inlined via a complete
-            // lie perpetrated by the compiler internally. Ion just rearranges
-            // the stack, and pretends that it looked like a call all along.
-            // This means that the depth is actually one *more* than expected
-            // by the interpreter, as there is now a JSFunction, |this| and [arg],
-            // rather than the expected |this| and [arg]
-            // Note that none of that was pushed, but it's still reflected
-            // in exprStackSlots.
-            JS_ASSERT(exprStackSlots - expectedDepth == 1);
-        } else {
-            // For fun.apply({}, arguments) the reconstructStackDepth will
-            // have stackdepth 4, but it could be that we inlined the
-            // funapply. In that case exprStackSlots, will have the real
-            // arguments in the slots and not be 4.
-            JS_ASSERT(exprStackSlots == expectedDepth);
+    uint32_t expectedDepth;
+    bool reachablePC;
+    if (!ReconstructStackDepth(cx, script, resumeAfter ? GetNextPc(pc) : pc, &expectedDepth, &reachablePC))
+        return false;
+
+    if (reachablePC) {
+        if (op != JSOP_FUNAPPLY || !iter.moreFrames() || resumeAfter) {
+            if (op == JSOP_FUNCALL) {
+                // For fun.call(this, ...); the reconstructStackDepth will
+                // include the this. When inlining that is not included.
+                // So the exprStackSlots will be one less.
+                JS_ASSERT(expectedDepth - exprStackSlots <= 1);
+            } else if (iter.moreFrames() && (IsGetPropPC(pc) || IsSetPropPC(pc))) {
+                // Accessors coming out of ion are inlined via a complete
+                // lie perpetrated by the compiler internally. Ion just rearranges
+                // the stack, and pretends that it looked like a call all along.
+                // This means that the depth is actually one *more* than expected
+                // by the interpreter, as there is now a JSFunction, |this| and [arg],
+                // rather than the expected |this| and [arg]
+                // Note that none of that was pushed, but it's still reflected
+                // in exprStackSlots.
+                JS_ASSERT(exprStackSlots - expectedDepth == 1);
+            } else {
+                // For fun.apply({}, arguments) the reconstructStackDepth will
+                // have stackdepth 4, but it could be that we inlined the
+                // funapply. In that case exprStackSlots, will have the real
+                // arguments in the slots and not be 4.
+                JS_ASSERT(exprStackSlots == expectedDepth);
+            }
         }
     }
 
@@ -958,7 +963,7 @@ InitFromBailout(JSContext *cx, HandleScript caller, jsbytecode *callerPC,
                     if (caller && bailoutKind == Bailout_ArgumentCheck) {
                         IonSpew(IonSpew_BaselineBailouts, "      Setting PCidx on innermost "
                                 "inlined frame's parent's SPS entry (%s:%d) (pcIdx=%d)!",
-                                caller->filename(), caller->lineno, callerPC - caller->code);
+                                caller->filename(), caller->lineno, caller->pcToOffset(callerPC));
                         cx->runtime()->spsProfiler.updatePC(caller, callerPC);
                     } else if (bailoutKind != Bailout_ArgumentCheck) {
                         IonSpew(IonSpew_BaselineBailouts,
@@ -1244,9 +1249,7 @@ jit::BailoutIonToBaseline(JSContext *cx, JitActivation *activation, IonBailoutIt
     IonSpew(IonSpew_BaselineBailouts, "  Reading from snapshot offset %u size %u",
             iter.snapshotOffset(), iter.ionScript()->snapshotsSize());
 
-    if (excInfo)
-        iter.ionScript()->incNumExceptionBailouts();
-    else
+    if (!excInfo)
         iter.ionScript()->incNumBailouts();
     iter.script()->updateBaselineOrIonRaw();
 

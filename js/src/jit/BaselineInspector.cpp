@@ -226,8 +226,20 @@ BaselineInspector::expectedCompareType(jsbytecode *pc)
     if (!first && !dimorphicStub(pc, &first, &second))
         return MCompare::Compare_Unknown;
 
-    if (CanUseInt32Compare(first->kind()) && (!second || CanUseInt32Compare(second->kind())))
+    if (CanUseInt32Compare(first->kind()) && (!second || CanUseInt32Compare(second->kind()))) {
+        ICCompare_Int32WithBoolean *coerce =
+            first->isCompare_Int32WithBoolean()
+            ? first->toCompare_Int32WithBoolean()
+            : ((second && second->isCompare_Int32WithBoolean())
+               ? second->toCompare_Int32WithBoolean()
+               : nullptr);
+        if (coerce) {
+            return coerce->lhsIsInt32()
+                   ? MCompare::Compare_Int32MaybeCoerceRHS
+                   : MCompare::Compare_Int32MaybeCoerceLHS;
+        }
         return MCompare::Compare_Int32;
+    }
 
     if (CanUseDoubleCompare(first->kind()) && (!second || CanUseDoubleCompare(second->kind()))) {
         ICCompare_NumberWithUndefined *coerce =
@@ -405,6 +417,8 @@ BaselineInspector::getTemplateObject(jsbytecode *pc)
             return stub->toNewArray_Fallback()->templateObject();
           case ICStub::NewObject_Fallback:
             return stub->toNewObject_Fallback()->templateObject();
+          case ICStub::Rest_Fallback:
+            return stub->toRest_Fallback()->templateObject();
           case ICStub::Call_Scripted:
             if (JSObject *obj = stub->toCall_Scripted()->templateObject())
                 return obj;
@@ -448,4 +462,34 @@ BaselineInspector::templateCallObject()
     JS_ASSERT(res);
 
     return &res->as<CallObject>();
+}
+
+JSObject *
+BaselineInspector::commonGetPropFunction(jsbytecode *pc, Shape **lastProperty, JSFunction **commonGetter)
+{
+    const ICEntry &entry = icEntryFromPC(pc);
+    for (ICStub *stub = entry.firstStub(); stub; stub = stub->next()) {
+        if (stub->isGetProp_CallScripted() || stub->isGetProp_CallNative()) {
+            ICGetPropCallGetter *nstub = static_cast<ICGetPropCallGetter *>(stub);
+            *lastProperty = nstub->holderShape();
+            *commonGetter = nstub->getter();
+            return nstub->holder();
+        }
+    }
+    return nullptr;
+}
+
+JSObject *
+BaselineInspector::commonSetPropFunction(jsbytecode *pc, Shape **lastProperty, JSFunction **commonSetter)
+{
+    const ICEntry &entry = icEntryFromPC(pc);
+    for (ICStub *stub = entry.firstStub(); stub; stub = stub->next()) {
+        if (stub->isSetProp_CallScripted() || stub->isSetProp_CallNative()) {
+            ICSetPropCallSetter *nstub = static_cast<ICSetPropCallSetter *>(stub);
+            *lastProperty = nstub->holderShape();
+            *commonSetter = nstub->setter();
+            return nstub->holder();
+        }
+    }
+    return nullptr;
 }

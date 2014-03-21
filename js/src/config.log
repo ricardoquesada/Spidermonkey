@@ -1,0 +1,297 @@
+This file contains any messages produced by compilers while
+running configure, to aid debugging if configure makes a mistake.
+
+configure:949: checking host system type
+configure:970: checking target system type
+configure:988: checking build system type
+configure:1049: checking for gawk
+configure:1315: checking for perl5
+configure:1808: checking for host c compiler
+configure:1814: checking for cc
+configure:1849: checking for host c++ compiler
+configure:1855: checking for c++
+configure:1907: checking for ranlib
+configure:1942: checking for ar
+configure:1977: checking whether the host c compiler (cc  ) works
+configure:1986: cc -c   conftest.c 1>&5
+configure:2000: checking whether the host c++ compiler (c++  ) works
+configure:2009: c++ -c   conftest.c 1>&5
+clang: warning: treating 'c' input as 'c++' when in C++ mode, this behavior is deprecated
+configure:2029: checking for x86_64-apple-darwin10.0.0-gcc
+configure:2063: checking for gcc
+configure:2176: checking whether the C compiler (/usr/bin/clang  ) works
+configure:2192: /usr/bin/clang -o conftest    conftest.c  1>&5
+configure:2189:1: warning: type specifier missing, defaults to 'int' [-Wimplicit-int]
+main(){return(0);}
+^~~~
+1 warning generated.
+configure:2218: checking whether the C compiler (/usr/bin/clang  ) is a cross-compiler
+configure:2223: checking whether we are using GNU C
+configure:2251: checking whether /usr/bin/clang accepts -g
+configure:2287: checking for x86_64-apple-darwin10.0.0-g++
+configure:2323: checking for c++
+configure:2355: checking whether the C++ compiler (/usr/bin/clang++  ) works
+configure:2371: /usr/bin/clang++ -o conftest    conftest.C  1>&5
+configure:2397: checking whether the C++ compiler (/usr/bin/clang++  ) is a cross-compiler
+configure:2402: checking whether we are using GNU C++
+configure:2430: checking whether /usr/bin/clang++ accepts -g
+configure:2479: /usr/bin/clang -c   conftest.c 1>&5
+configure:2496: /usr/bin/clang -c   conftest.c 1>&5
+configure:2492:1: warning: implicitly declaring library function 'exit' with type 'void (int) __attribute__((noreturn))'
+exit (42);
+^
+configure:2492:1: note: please include the header <stdlib.h> or explicitly provide a declaration for 'exit'
+1 warning generated.
+configure:2518: checking for x86_64-apple-darwin10.0.0-ranlib
+configure:2553: checking for x86_64-apple-darwin10.0.0-ar
+configure:2588: checking for x86_64-apple-darwin10.0.0-as
+configure:2642: checking for x86_64-apple-darwin10.0.0-ld
+configure:2677: checking for x86_64-apple-darwin10.0.0-strip
+configure:2712: checking for x86_64-apple-darwin10.0.0-windres
+configure:2712: checking for x86_64-apple-darwin10.0.0-windres
+configure:3872: checking how to run the C preprocessor
+configure:3952: checking how to run the C++ preprocessor
+configure:4036: checking for sb-conf
+configure:4036: checking for ve
+configure:4098: checking for a BSD compatible install
+configure:4151: checking whether ln -s works
+configure:4173: checking for tar archiver
+configure:4179: checking for gnutar
+configure:4217: checking for minimum required perl version >= 5.006
+configure:4228: checking for full perl installation
+configure:4246: checking for python2.7
+configure:4356: checking Python environment is Mozilla virtualenv
+configure:4379: checking for doxygen
+configure:4428: checking for autoconf
+configure:4477: checking for xargs
+configure:4692: checking for gmake
+configure:4759: checking for X
+configure:5944: /usr/bin/clang -c   conftest.c 1>&5
+configure:5940:15: error: use of undeclared identifier '__thumb2__'
+return sizeof(__thumb2__);
+              ^
+1 error generated.
+configure: failed program was:
+#line 5937 "configure"
+#include "confdefs.h"
+
+int main() {
+return sizeof(__thumb2__);
+; return 0; }
+configure:6197: checking that static assertion macros used in autoconf tests work
+configure:6423: checking for --noexecstack option to as
+configure:6434: /usr/bin/clang -c  -std=gnu99 -Wa,--noexecstack -Qunused-arguments  conftest.c 1>&5
+configure:6447: checking for -z noexecstack option to ld
+configure:6458: /usr/bin/clang -o conftest  -std=gnu99 -Qunused-arguments   -Wl,-z,noexecstack conftest.c  1>&5
+ld: unknown option: -z
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+configure: failed program was:
+#line 6451 "configure"
+#include "confdefs.h"
+
+int main() {
+
+; return 0; }
+configure:6471: checking for -z text option to ld
+configure:6482: /usr/bin/clang -o conftest  -std=gnu99 -Qunused-arguments   -Wl,-z,text conftest.c  1>&5
+ld: unknown option: -z
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+configure: failed program was:
+#line 6475 "configure"
+#include "confdefs.h"
+
+int main() {
+
+; return 0; }
+configure:6496: checking for --build-id option to ld
+configure:6507: /usr/bin/clang -o conftest  -std=gnu99 -Qunused-arguments   -Wl,--build-id conftest.c  1>&5
+ld: unknown option: --build-id
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+configure: failed program was:
+#line 6500 "configure"
+#include "confdefs.h"
+
+int main() {
+
+; return 0; }
+configure:6531: checking whether the C compiler supports -Werror=return-type
+configure:6554: /usr/bin/clang -c  -std=gnu99 -Werror -Werror=return-type -Qunused-arguments  conftest.c 1>&5
+configure:6582: checking whether the C compiler supports -Wempty-body
+configure:6605: /usr/bin/clang -c  -std=gnu99 -Werror -Wempty-body -Qunused-arguments  conftest.c 1>&5
+configure:6633: checking whether the C compiler supports -Wsign-compare
+configure:6656: /usr/bin/clang -c  -std=gnu99 -Werror -Wsign-compare -Qunused-arguments  conftest.c 1>&5
+configure:6741: checking whether the C++ compiler supports -Werror=return-type
+configure:6764: /usr/bin/clang++ -c  -Werror -Werror=return-type -Qunused-arguments  conftest.C 1>&5
+configure:6792: checking whether the C++ compiler supports -Wtype-limits
+configure:6815: /usr/bin/clang++ -c  -Werror -Wtype-limits -Qunused-arguments  conftest.C 1>&5
+configure:6843: checking whether the C++ compiler supports -Wempty-body
+configure:6866: /usr/bin/clang++ -c  -Werror -Wempty-body -Qunused-arguments  conftest.C 1>&5
+configure:6894: checking whether the C++ compiler supports -Werror=conversion-null
+configure:6917: /usr/bin/clang++ -c  -Werror -Werror=conversion-null -Qunused-arguments  conftest.C 1>&5
+configure:6945: checking whether the C++ compiler supports -Wsign-compare
+configure:6968: /usr/bin/clang++ -c  -Werror -Wsign-compare -Qunused-arguments  conftest.C 1>&5
+configure:7000: checking whether the C++ compiler supports -Wno-invalid-offsetof
+configure:7023: /usr/bin/clang++ -c  -Werror -Winvalid-offsetof -Qunused-arguments  conftest.C 1>&5
+configure:7075: checking whether the C++ compiler supports -Wno-extended-offsetof
+configure:7098: /usr/bin/clang++ -c  -Werror -Wextended-offsetof -Qunused-arguments  conftest.C 1>&5
+configure:7136: checking whether ld has archive extraction flags
+configure:7195: checking for 64-bit OS
+configure:7204: /usr/bin/clang -c  -std=gnu99 -Qunused-arguments  conftest.c 1>&5
+configure:7325: checking for custom <inttypes.h> implementation
+configure:7511: checking for -framework ExceptionHandling
+configure:7521: /usr/bin/clang -o conftest  -std=gnu99 -fno-common -Qunused-arguments   -lobjc -framework ExceptionHandling conftest.c  1>&5
+configure:7543: checking for -dead_strip option to ld
+configure:7554: /usr/bin/clang -o conftest  -std=gnu99 -fno-common -Qunused-arguments   -lobjc -Wl,-dead_strip conftest.c  1>&5
+configure:8704: checking whether the C++ compiler (/usr/bin/clang++  -fno-common -fno-rtti  -lobjc) actually is a C++ compiler
+configure:8723: /usr/bin/clang++ -o conftest  -fno-common -fno-rtti -Qunused-arguments   -lobjc conftest.C  1>&5
+configure:8903: checking for ANSI C header files
+configure:9010: checking for working const
+configure:9088: checking for mode_t
+configure:9124: checking for off_t
+configure:9160: checking for pid_t
+configure:9196: checking for size_t
+configure:9246: checking for ssize_t
+configure:9284: checking for st_blksize in struct stat
+configure:9321: checking for siginfo_t
+configure:9363: checking for endian.h
+configure:9419: checking for machine/endian.h
+configure:9475: checking for sys/isa_defs.h
+configure:9548: checking for gcc c++0x headers bug without rtti
+configure:9631: checking for host gcc c++0x headers bug without rtti
+configure:9643: c++ -c  -std=gnu++0x  conftest.C 1>&5
+configure:9711: checking for visibility(hidden) attribute
+configure:9739: checking for visibility(default) attribute
+configure:9767: checking for visibility pragma support
+configure:9792: checking For gcc visibility bug with class-level attributes (GCC bug 26905)
+configure:9820: checking For x86_64 gcc visibility bug with builtins (GCC bug 20297)
+configure:9872: checking for gcc PR49911
+configure:9930: /usr/bin/clang++ -o conftest -O2 -Qunused-arguments   -lobjc conftest.C  1>&5
+configure:9963: checking for gcc pr39608
+configure:9993: /usr/bin/clang++ -c  -fno-common -fno-rtti -fno-exceptions -fno-math-errno -std=gnu++0x -Qunused-arguments  conftest.C 1>&5
+configure:9989:1: warning: expression result unused [-Wunused-value]
+true
+^~~~
+1 warning generated.
+configure:10023: checking for llvm pr8927
+configure:10063: /usr/bin/clang -o conftest -O2 -Qunused-arguments   -lobjc conftest.c  1>&5
+configure:10102: checking for dirent.h that defines DIR
+configure:10143: checking for opendir in -ldir
+configure:10237: checking for sys/byteorder.h
+configure:10237: checking for compat.h
+configure:10237: checking for getopt.h
+configure:10237: checking for sys/bitypes.h
+configure:10237: checking for memory.h
+configure:10237: checking for unistd.h
+configure:10237: checking for gnu/libc-version.h
+configure:10237: checking for nl_types.h
+configure:10237: checking for malloc.h
+configure:10237: checking for X11/XKBlib.h
+configure:10237: checking for io.h
+configure:10237: checking for cpuid.h
+configure:10285: checking for sys/statvfs.h
+configure:10285: checking for sys/statfs.h
+configure:10285: checking for sys/vfs.h
+configure:10285: checking for sys/mount.h
+configure:10332: checking for sys/quota.h
+configure:10378: checking for linux/quota.h
+configure:10485: checking for sys/cdefs.h
+configure:10550: checking for linux/perf_event.h
+configure:10626: checking for gethostbyname_r in -lc_r
+configure:10794: checking for dladdr
+configure:10966: checking for socket in -lsocket
+configure:11152: checking whether /usr/bin/clang accepts -pthread
+configure:11280: checking whether /usr/bin/clang needs -traditional
+configure:11326: checking for 8-bit clean memcmp
+configure:11366: checking for fchmod
+configure:11366: checking for flockfile
+configure:11366: checking for getc_unlocked
+configure:11366: checking for _getc_nolock
+configure:11366: checking for getpagesize
+configure:11366: checking for lchown
+configure:11366: checking for localtime_r
+configure:11366: checking for lstat64
+configure:11366: checking for memmove
+configure:11366: checking for random
+configure:11366: checking for sbrk
+configure:11366: checking for snprintf
+configure:11366: checking for stat64
+configure:11366: checking for statvfs
+configure:11366: checking for statvfs64
+configure:11366: checking for strerror
+configure:11366: checking for strtok_r
+configure:11366: checking for truncate64
+configure:11424: checking for sin in -lm
+configure:11476: checking for log2
+configure:11476: checking for log1p
+configure:11476: checking for expm1
+configure:11476: checking for sqrt1pm1
+configure:11476: checking for acosh
+configure:11476: checking for asinh
+configure:11476: checking for atanh
+configure:11476: checking for hypot
+configure:11476: checking for trunc
+configure:11476: checking for cbrt
+configure:11543: checking for wcrtomb
+configure:11578: checking for mbrtowc
+configure:11622: checking for res_ninit()
+configure:11673: checking for nl_langinfo and CODESET
+configure:11720: checking for an implementation of va_copy()
+configure:11757: checking whether va_list can be copied by value
+configure:11874: checking whether the C++ "using" keyword resolves ambiguity
+configure:11919: checking for C++ dynamic_cast to void*
+configure:11970: checking whether C++ requires implementation of unused virtual methods
+configure:12008: checking for trouble comparing to zero near std::operator!=()
+configure:12054: checking for __thread keyword for TLS variables
+configure:12104: checking for __attribute__((always_inline))
+configure:12131: checking for __attribute__((malloc))
+configure:12158: checking for __attribute__((warn_unused_result))
+configure:12194: checking for LC_MESSAGES
+configure:12232: checking for localeconv
+configure:12717: checking for gzread in -lz
+configure:12771: /usr/bin/clang -c  -std=gnu99 -fno-common -fno-math-errno -pthread -Qunused-arguments  conftest.c 1>&5
+configure:13139: checking for valid optimization flags
+configure:13150: /usr/bin/clang -c  -std=gnu99 -fno-common -fno-math-errno -pthread -O3 -fno-stack-protector -Qunused-arguments  conftest.c 1>&5
+configure:14373: checking for __cxa_demangle
+configure:14458: checking for unwind.h
+configure:14488: checking for _Unwind_Backtrace
+configure:14587: checking for -pipe support
+configure:14601: checking whether C compiler supports -fprofile-generate
+configure:14610: /usr/bin/clang -c  -std=gnu99 -fno-common -fno-math-errno -pthread -pipe -fprofile-generate -fprofile-correction -Qunused-arguments  conftest.c 1>&5
+configure:14661: checking for correct overload resolution with const and templates
+configure:14696: /usr/bin/clang++ -c  -fno-common -fno-rtti -fno-exceptions -fno-math-errno -std=gnu++0x -pthread -pipe -Qunused-arguments  -Wall -Wpointer-arith -Woverloaded-virtual -Werror=return-type -Wtype-limits -Wempty-body -Werror=conversion-null -Wsign-compare -Wno-invalid-offsetof -Wno-c++0x-extensions -Wno-extended-offsetof -Wno-unknown-warning-option -Wno-return-type-c-linkage -Wno-mismatched-tags -Qunused-arguments  conftest.C 1>&5
+configure:14691:37: warning: variable 'bar' is uninitialized when used here [-Wuninitialized]
+                      return foo == bar;
+                                    ^~~
+configure:14690:37: note: initialize the variable 'bar' to silence this warning
+                      const int* bar;
+                                    ^
+                                     = nullptr
+1 warning generated.
+configure:14722: checking for tm_zone tm_gmtoff in struct tm
+configure:14776: checking what kind of list files are supported by the linker
+configure:14781: /usr/bin/clang -o conftest.o -c  -std=gnu99 -fno-common -fno-math-errno -pthread -pipe -Qunused-arguments  conftest.c 1>&5
+configure:14783: /usr/bin/clang -o conftest   -lobjc conftest.list -lm  1>&5
+ld: file too small (length=18) file 'conftest.list' for architecture x86_64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+configure:14787: /usr/bin/clang -o conftest   -lobjc -Wl,-filelist,conftest.list -lm  1>&5
+configure:15191: checking for posix_fallocate
+configure:15201: /usr/bin/clang -o conftest -Qunused-arguments -Wall -Wpointer-arith -Wdeclaration-after-statement -Werror=return-type -Wempty-body -Wsign-compare -Wno-unused -std=gnu99 -fno-common -fno-math-errno -pthread -pipe -Qunused-arguments    -lobjc conftest.c -lm  1>&5
+configure:15197:1: warning: implicit declaration of function 'posix_fallocate' is invalid in C99 [-Wimplicit-function-declaration]
+posix_fallocate(0, 0, 0);
+^
+1 warning generated.
+Undefined symbols for architecture x86_64:
+  "_posix_fallocate", referenced from:
+      _main in conftest-81b0d5.o
+ld: symbol(s) not found for architecture x86_64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+configure: failed program was:
+#line 15193 "configure"
+#include "confdefs.h"
+#define _XOPEN_SOURCE 600
+  #include <fcntl.h>
+int main() {
+posix_fallocate(0, 0, 0);
+; return 0; }
+configure:15794: checking for setlocale
+configure:15852: checking for localeconv

@@ -91,7 +91,7 @@ FoldType(ExclusiveContext *cx, ParseNode *pn, ParseNodeKind kind)
 
           case PNK_STRING:
             if (pn->isKind(PNK_NUMBER)) {
-                pn->pn_atom = NumberToAtom<CanGC>(cx, pn->pn_dval);
+                pn->pn_atom = NumberToAtom(cx, pn->pn_dval);
                 if (!pn->pn_atom)
                     return false;
                 pn->setKind(PNK_STRING);
@@ -126,7 +126,7 @@ FoldBinaryNumeric(ExclusiveContext *cx, JSOp op, ParseNode *pn1, ParseNode *pn2,
         i = ToInt32(d);
         j = ToInt32(d2);
         j &= 31;
-        d = (op == JSOP_LSH) ? i << j : i >> j;
+        d = int32_t((op == JSOP_LSH) ? uint32_t(i) << j : i >> j);
         break;
 
       case JSOP_URSH:
@@ -249,7 +249,7 @@ condIf(const ParseNode *pn, ParseNodeKind kind)
 
 static bool
 Fold(ExclusiveContext *cx, ParseNode **pnp,
-     FullParseHandler &handler, const CompileOptions &options,
+     FullParseHandler &handler, const ReadOnlyCompileOptions &options,
      bool inGenexpLambda, SyntacticContext sc)
 {
     ParseNode *pn = *pnp;
@@ -264,10 +264,6 @@ Fold(ExclusiveContext *cx, ParseNode **pnp,
             pn->pn_funbox->useAsmOrInsideUseAsm() && options.asmJSOption)
         {
             return true;
-        }
-        if (pn->getKind() == PNK_MODULE) {
-            if (!Fold(cx, &pn->pn_body, handler, options, false, SyntacticContext::Other))
-                return false;
         } else {
             // Note: pn_body is nullptr for functions which are being lazily parsed.
             JS_ASSERT(pn->getKind() == PNK_FUNCTION);
@@ -597,7 +593,7 @@ Fold(ExclusiveContext *cx, ParseNode **pnp,
             JS_ASSERT(*chars == 0);
 
             /* Atomize the result string and mutate pn to refer to it. */
-            pn->pn_atom = AtomizeString<CanGC>(cx, str);
+            pn->pn_atom = AtomizeString(cx, str);
             if (!pn->pn_atom)
                 return false;
             pn->setKind(PNK_STRING);
@@ -618,7 +614,7 @@ Fold(ExclusiveContext *cx, ParseNode **pnp,
             RootedString str(cx, ConcatStrings<CanGC>(cx, left, right));
             if (!str)
                 return false;
-            pn->pn_atom = AtomizeString<CanGC>(cx, str);
+            pn->pn_atom = AtomizeString(cx, str);
             if (!pn->pn_atom)
                 return false;
             pn->setKind(PNK_STRING);

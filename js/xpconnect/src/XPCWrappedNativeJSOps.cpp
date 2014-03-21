@@ -387,14 +387,6 @@ DefinePropertyIfFound(XPCCallContext& ccx,
     if (!member->NewFunctionObject(ccx, iface, obj, funval.address()))
         return false;
 
-#ifdef off_DEBUG_jband
-    {
-        static int cloneCount = 0;
-        if (!(++cloneCount%10))
-            printf("<><><> %d cloned functions created\n", cloneCount);
-    }
-#endif
-
     if (member->IsMethod()) {
         AutoResolveName arn(ccx, id);
         if (resolved)
@@ -1137,11 +1129,8 @@ XPCNativeScriptableInfo::Construct(const XPCNativeScriptableCreateInfo* sci)
 
     XPCJSRuntime* rt = XPCJSRuntime::Get();
     XPCNativeScriptableSharedMap* map = rt->GetNativeScriptableSharedMap();
-    {   // scoped lock
-        XPCAutoLock lock(rt->GetMapLock());
-        success = map->GetNewOrUsed(sci->GetFlags(), name,
-                                    sci->GetInterfacesBitmap(), newObj);
-    }
+    success = map->GetNewOrUsed(sci->GetFlags(), name,
+                                sci->GetInterfacesBitmap(), newObj);
 
     if (!success) {
         delete newObj;

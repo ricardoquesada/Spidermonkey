@@ -349,6 +349,10 @@ class JSObject : public js::ObjectImpl
         return lastProperty()->entryCount();
     }
 
+    uint32_t propertyCountForCompilation() const {
+        return lastProperty()->entryCountForCompilation();
+    }
+
     bool hasShapeTable() const {
         return lastProperty()->hasTable();
     }
@@ -357,6 +361,8 @@ class JSObject : public js::ObjectImpl
 
     bool hasIdempotentProtoChain() const;
 
+    // MAX_FIXED_SLOTS is the biggest number of fixed slots our GC
+    // size classes will give an object.
     static const uint32_t MAX_FIXED_SLOTS = 16;
 
   public:
@@ -365,13 +371,13 @@ class JSObject : public js::ObjectImpl
 
     /* Whether a slot is at a fixed offset from this object. */
     bool isFixedSlot(size_t slot) {
-        return slot < numFixedSlots();
+        return slot < numFixedSlotsForCompilation();
     }
 
     /* Index into the dynamic slots array to use for a dynamic slot. */
     size_t dynamicSlotIndex(size_t slot) {
-        JS_ASSERT(slot >= numFixedSlots());
-        return slot - numFixedSlots();
+        JS_ASSERT(slot >= numFixedSlotsForCompilation());
+        return slot - numFixedSlotsForCompilation();
     }
 
     /*
@@ -415,17 +421,20 @@ class JSObject : public js::ObjectImpl
     }
 
     inline bool nativeSetSlotIfHasType(js::Shape *shape, const js::Value &value);
-
-    static inline void nativeSetSlotWithType(js::ExclusiveContext *cx,
-                                             js::HandleObject, js::Shape *shape,
-                                             const js::Value &value);
+    inline void nativeSetSlotWithType(js::ExclusiveContext *cx, js::Shape *shape,
+                                      const js::Value &value);
 
     inline const js::Value &getReservedSlot(uint32_t index) const {
         JS_ASSERT(index < JSSLOT_FREE(getClass()));
         return getSlot(index);
     }
 
-    inline js::HeapSlot &getReservedSlotRef(uint32_t index) {
+    const js::HeapSlot &getReservedSlotRef(uint32_t index) const {
+        JS_ASSERT(index < JSSLOT_FREE(getClass()));
+        return getSlotRef(index);
+    }
+
+    js::HeapSlot &getReservedSlotRef(uint32_t index) {
         JS_ASSERT(index < JSSLOT_FREE(getClass()));
         return getSlotRef(index);
     }
@@ -648,12 +657,11 @@ class JSObject : public js::ObjectImpl
     }
 
     inline bool setDenseElementIfHasType(uint32_t index, const js::Value &val);
-    static inline void setDenseElementWithType(js::ExclusiveContext *cx, js::HandleObject obj,
-                                               uint32_t index, const js::Value &val);
-    static inline void initDenseElementWithType(js::ExclusiveContext *cx, js::HandleObject obj,
-                                                uint32_t index, const js::Value &val);
-    static inline void setDenseElementHole(js::ExclusiveContext *cx,
-                                           js::HandleObject obj, uint32_t index);
+    inline void setDenseElementWithType(js::ExclusiveContext *cx, uint32_t index,
+                                        const js::Value &val);
+    inline void initDenseElementWithType(js::ExclusiveContext *cx, uint32_t index,
+                                         const js::Value &val);
+    inline void setDenseElementHole(js::ExclusiveContext *cx, uint32_t index);
     static inline void removeDenseElementForSparseIndex(js::ExclusiveContext *cx,
                                                         js::HandleObject obj, uint32_t index);
 
@@ -739,7 +747,7 @@ class JSObject : public js::ObjectImpl
     }
 
     bool shouldConvertDoubleElements() {
-        JS_ASSERT(isNative());
+        JS_ASSERT(getClass()->isNative());
         return getElementsHeader()->shouldConvertDoubleElements();
     }
 
@@ -1187,6 +1195,9 @@ class JSObject : public js::ObjectImpl
                       "JSObject itself must not have any fields");
         static_assert(sizeof(JSObject) % sizeof(js::Value) == 0,
                       "fixed slots after an object must be aligned");
+        static_assert(js::shadow::Object::MAX_FIXED_SLOTS == MAX_FIXED_SLOTS,
+                      "We shouldn't be confused about our actual maximum "
+                      "number of fixed slots");
     }
 
     JSObject() MOZ_DELETE;
@@ -1404,7 +1415,6 @@ const unsigned DNP_DONT_PURGE   = 1;   /* suppress js_PurgeScopeChain */
 const unsigned DNP_UNQUALIFIED  = 2;   /* Unqualified property set.  Only used in
                                        the defineHow argument of
                                        js_SetPropertyHelper. */
-const unsigned DNP_SKIP_TYPE    = 4;   /* Don't update type information */
 
 /*
  * Return successfully added or changed shape or nullptr on error.

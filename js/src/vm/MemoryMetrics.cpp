@@ -24,8 +24,7 @@
 
 using mozilla::DebugOnly;
 using mozilla::MallocSizeOf;
-using mozilla::MoveRef;
-using mozilla::OldMove;
+using mozilla::Move;
 using mozilla::PodEqual;
 
 using namespace js;
@@ -57,7 +56,15 @@ InefficientNonFlatteningStringHashPolicy::hash(const Lookup &l)
         chars = ownedChars;
     }
 
-    return mozilla::HashString(chars, l->length());
+    // We include the result of isShort() in the hash.  This is because it is
+    // possible for a particular string (i.e. unique char sequence) to have one
+    // or more copies as short strings and one or more copies as non-short
+    // strings, and treating them separately for the purposes of notable string
+    // detection makes things simpler.  In practice, although such collisions
+    // do happen, they are sufficiently rare that they are unlikely to have a
+    // significant effect on which strings are considered notable.
+    return mozilla::AddToHash(mozilla::HashString(chars, l->length()),
+                              l->isShort());
 }
 
 /* static */ bool
@@ -65,6 +72,10 @@ InefficientNonFlatteningStringHashPolicy::match(const JSString *const &k, const 
 {
     // We can't use js::EqualStrings, because that flattens our strings.
     if (k->length() != l->length())
+        return false;
+
+    // Just like in hash(), we must consider isShort() for the two strings.
+    if (k->isShort() != l->isShort())
         return false;
 
     const jschar *c1;
@@ -95,11 +106,14 @@ InefficientNonFlatteningStringHashPolicy::match(const JSString *const &k, const 
 namespace JS {
 
 NotableStringInfo::NotableStringInfo()
-  : buffer(0)
-{}
+  : buffer(0),
+    length(0)
+{
+}
 
 NotableStringInfo::NotableStringInfo(JSString *str, const StringInfo &info)
-    : StringInfo(info)
+  : StringInfo(info),
+    length(str->length())
 {
     size_t bufferSize = Min(str->length() + 1, size_t(4096));
     buffer = js_pod_malloc<char>(bufferSize);
@@ -123,17 +137,19 @@ NotableStringInfo::NotableStringInfo(JSString *str, const StringInfo &info)
     PutEscapedString(buffer, bufferSize, chars, str->length(), /* quote */ 0);
 }
 
-NotableStringInfo::NotableStringInfo(MoveRef<NotableStringInfo> info)
-    : StringInfo(info)
+NotableStringInfo::NotableStringInfo(NotableStringInfo &&info)
+  : StringInfo(Move(info)),
+    length(info.length)
 {
-    buffer = info->buffer;
-    info->buffer = nullptr;
+    buffer = info.buffer;
+    info.buffer = nullptr;
 }
 
-NotableStringInfo &NotableStringInfo::operator=(MoveRef<NotableStringInfo> info)
+NotableStringInfo &NotableStringInfo::operator=(NotableStringInfo &&info)
 {
+    MOZ_ASSERT(this != &info, "self-move assignment is prohibited");
     this->~NotableStringInfo();
-    new (this) NotableStringInfo(info);
+    new (this) NotableStringInfo(Move(info));
     return *this;
 }
 
@@ -177,6 +193,7 @@ StatsZoneCallback(JSRuntime *rt, void *data, Zone *zone)
     // CollectRuntimeStats reserves enough space.
     MOZ_ALWAYS_TRUE(rtStats->zoneStatsVector.growBy(1));
     ZoneStats &zStats = rtStats->zoneStatsVector.back();
+    zStats.initStrings(rt);
     rtStats->initExtraZoneStats(zone, &zStats);
     rtStats->currZoneStats = &zStats;
 
@@ -273,29 +290,30 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
       case JSTRACE_STRING: {
         JSString *str = static_cast<JSString *>(thing);
 
+        bool isShort = str->isShort();
         size_t strCharsSize = str->sizeOfExcludingThis(rtStats->mallocSizeOf_);
-        MOZ_ASSERT_IF(str->isShort(), strCharsSize == 0);
 
-        size_t shortStringThingSize  =  str->isShort() ? thingSize : 0;
-        size_t normalStringThingSize = !str->isShort() ? thingSize : 0;
+
+        if (isShort) {
+            zStats->stringsShortGCHeap += thingSize;
+            MOZ_ASSERT(strCharsSize == 0);
+        } else {
+            zStats->stringsNormalGCHeap += thingSize;
+            zStats->stringsNormalMallocHeap += strCharsSize;
+        }
 
         // This string hashing is expensive.  Its results are unused when doing
         // coarse-grained measurements, and skipping it more than doubles the
         // profile speed for complex pages such as gmail.com.
         if (granularity == FineGrained) {
-            ZoneStats::StringsHashMap::AddPtr p = zStats->strings.lookupForAdd(str);
+            ZoneStats::StringsHashMap::AddPtr p = zStats->strings->lookupForAdd(str);
             if (!p) {
-                JS::StringInfo info(str->length(), shortStringThingSize,
-                                    normalStringThingSize, strCharsSize);
-                zStats->strings.add(p, str, info);
+                JS::StringInfo info(isShort, thingSize, strCharsSize);
+                zStats->strings->add(p, str, info);
             } else {
-                p->value.add(shortStringThingSize, normalStringThingSize, strCharsSize);
+                p->value().add(isShort, thingSize, strCharsSize);
             }
         }
-
-        zStats->stringsShortGCHeap += shortStringThingSize;
-        zStats->stringsNormalGCHeap += normalStringThingSize;
-        zStats->stringsNormalMallocHeap += strCharsSize;
 
         break;
       }
@@ -391,32 +409,46 @@ FindNotableStrings(ZoneStats &zStats)
     // unless you add to |strings| in the meantime).
     MOZ_ASSERT(zStats.notableStrings.empty());
 
-    for (ZoneStats::StringsHashMap::Range r = zStats.strings.all(); !r.empty(); r.popFront()) {
+    for (ZoneStats::StringsHashMap::Range r = zStats.strings->all(); !r.empty(); r.popFront()) {
 
-        JSString *str = r.front().key;
-        StringInfo &info = r.front().value;
+        JSString *str = r.front().key();
+        StringInfo &info = r.front().value();
 
         // If this string is too small, or if we can't grow the notableStrings
         // vector, skip this string.
-        if (info.totalSizeOf() < NotableStringInfo::notableSize() ||
+        if (info.gcHeap + info.mallocHeap < NotableStringInfo::notableSize() ||
             !zStats.notableStrings.growBy(1))
             continue;
 
-        zStats.notableStrings.back() = OldMove(NotableStringInfo(str, info));
+        zStats.notableStrings.back() = NotableStringInfo(str, info);
 
         // We're moving this string from a non-notable to a notable bucket, so
         // subtract it out of the non-notable tallies.
-        MOZ_ASSERT(zStats.stringsShortGCHeap >= info.shortGCHeap);
-        MOZ_ASSERT(zStats.stringsNormalGCHeap >= info.normalGCHeap);
-        MOZ_ASSERT(zStats.stringsNormalMallocHeap >= info.normalMallocHeap);
-        zStats.stringsShortGCHeap -= info.shortGCHeap;
-        zStats.stringsNormalGCHeap -= info.normalGCHeap;
-        zStats.stringsNormalMallocHeap -= info.normalMallocHeap;
+        if (info.isShort) {
+            MOZ_ASSERT(zStats.stringsShortGCHeap >= info.gcHeap);
+            zStats.stringsShortGCHeap -= info.gcHeap;
+            MOZ_ASSERT(info.mallocHeap == 0);
+        } else {
+            MOZ_ASSERT(zStats.stringsNormalGCHeap >= info.gcHeap);
+            MOZ_ASSERT(zStats.stringsNormalMallocHeap >= info.mallocHeap);
+            zStats.stringsNormalGCHeap -= info.gcHeap;
+            zStats.stringsNormalMallocHeap -= info.mallocHeap;
+        }
     }
+}
 
-    // zStats.strings holds unrooted JSString pointers, which we don't want to
-    // expose out into the dangerous land where we might GC.
-    zStats.strings.clear();
+bool
+ZoneStats::initStrings(JSRuntime *rt)
+{
+    strings = rt->new_<StringsHashMap>();
+    if (!strings)
+        return false;
+    if (!strings->init()) {
+        js_delete(strings);
+        strings = nullptr;
+        return false;
+    }
+    return true;
 }
 
 JS_PUBLIC_API(bool)
@@ -447,17 +479,44 @@ JS::CollectRuntimeStats(JSRuntime *rt, RuntimeStats *rtStats, ObjectPrivateVisit
     // Take the "explicit/js/runtime/" measurements.
     rt->addSizeOfIncludingThis(rtStats->mallocSizeOf_, &rtStats->runtime);
 
-    for (size_t i = 0; i < rtStats->zoneStatsVector.length(); i++) {
-        ZoneStats &zStats = rtStats->zoneStatsVector[i];
+    ZoneStatsVector &zs = rtStats->zoneStatsVector;
+    ZoneStats &zTotals = rtStats->zTotals;
 
-        rtStats->zTotals.add(zStats);
-
-        // Move any strings which take up more than the sundries threshold
-        // (counting all of their copies together) into notableStrings.
-        FindNotableStrings(zStats);
+    // For each zone:
+    // - sum everything except its strings data into zTotals, and
+    // - find its notable strings.
+    // Also, record which zone had the biggest |strings| hashtable -- to save
+    // time and memory, we will re-use that hashtable to find the notable
+    // strings for zTotals.
+    size_t iMax = 0;
+    for (size_t i = 0; i < zs.length(); i++) {
+        zTotals.addIgnoringStrings(zs[i]);
+        FindNotableStrings(zs[i]);
+        if (zs[i].strings->count() > zs[iMax].strings->count())
+            iMax = i;
     }
 
-    FindNotableStrings(rtStats->zTotals);
+    // Transfer the biggest strings table to zTotals.  We can do this because:
+    // (a) we've found the notable strings for zs[IMax], and so don't need it
+    //     any more for zs, and
+    // (b) zs[iMax].strings contains a subset of the values that will end up in
+    //     zTotals.strings.
+    MOZ_ASSERT(!zTotals.strings);
+    zTotals.strings = zs[iMax].strings;
+    zs[iMax].strings = nullptr;
+
+    // Add the remaining strings hashtables to zTotals, and then get the
+    // notable strings for zTotals.
+    for (size_t i = 0; i < zs.length(); i++) {
+        if (i != iMax) {
+            zTotals.addStrings(zs[i]);
+            js_delete(zs[i].strings);
+            zs[i].strings = nullptr;
+        }
+    }
+    FindNotableStrings(zTotals);
+    js_delete(zTotals.strings);
+    zTotals.strings = nullptr;
 
     for (size_t i = 0; i < rtStats->compartmentStatsVector.length(); i++) {
         CompartmentStats &cStats = rtStats->compartmentStatsVector[i];
@@ -475,7 +534,7 @@ JS::CollectRuntimeStats(JSRuntime *rt, RuntimeStats *rtStats, ObjectPrivateVisit
     JS_ASSERT(totalArenaSize % gc::ArenaSize == 0);
 #endif
 
-    for (CompartmentsIter comp(rt); !comp.done(); comp.next())
+    for (CompartmentsIter comp(rt, WithAtoms); !comp.done(); comp.next())
         comp->compartmentStats = nullptr;
 
     size_t numDirtyChunks =
@@ -500,7 +559,7 @@ JS_PUBLIC_API(size_t)
 JS::SystemCompartmentCount(JSRuntime *rt)
 {
     size_t n = 0;
-    for (CompartmentsIter comp(rt); !comp.done(); comp.next()) {
+    for (CompartmentsIter comp(rt, WithAtoms); !comp.done(); comp.next()) {
         if (comp->isSystem)
             ++n;
     }
@@ -511,7 +570,7 @@ JS_PUBLIC_API(size_t)
 JS::UserCompartmentCount(JSRuntime *rt)
 {
     size_t n = 0;
-    for (CompartmentsIter comp(rt); !comp.done(); comp.next()) {
+    for (CompartmentsIter comp(rt, WithAtoms); !comp.done(); comp.next()) {
         if (!comp->isSystem)
             ++n;
     }
@@ -527,7 +586,7 @@ JS::PeakSizeOfTemporary(const JSRuntime *rt)
 namespace JS {
 
 JS_PUBLIC_API(bool)
-AddSizeOfTab(JSRuntime *rt, JSObject *obj, MallocSizeOf mallocSizeOf, ObjectPrivateVisitor *opv,
+AddSizeOfTab(JSRuntime *rt, HandleObject obj, MallocSizeOf mallocSizeOf, ObjectPrivateVisitor *opv,
              TabSizes *sizes)
 {
     class SimpleJSRuntimeStats : public JS::RuntimeStats
@@ -573,7 +632,7 @@ AddSizeOfTab(JSRuntime *rt, JSObject *obj, MallocSizeOf mallocSizeOf, ObjectPriv
     }
 
     for (CompartmentsInZoneIter comp(zone); !comp.done(); comp.next())
-        comp->compartmentStats = NULL;
+        comp->compartmentStats = nullptr;
 
     rtStats.zTotals.addToTabSizes(sizes);
     rtStats.cTotals.addToTabSizes(sizes);

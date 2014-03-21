@@ -55,12 +55,21 @@ class TypeRepresentationSetBuilder {
 
 class TypeRepresentationSet {
   private:
+    friend struct TypeRepresentationSetHasher;
     friend class TypeRepresentationSetBuilder;
 
     size_t length_;
     TypeRepresentation **entries_; // Allocated using temp policy
 
     TypeRepresentationSet(size_t length, TypeRepresentation **entries);
+
+    size_t length() const {
+        return length_;
+    }
+
+    TypeRepresentation *get(uint32_t i) const {
+        return entries_[i];
+    }
 
   public:
     //////////////////////////////////////////////////////////////////////
@@ -76,9 +85,22 @@ class TypeRepresentationSet {
     // Query the set
 
     bool empty();
-    size_t length();
-    TypeRepresentation *get(size_t i);
+    bool singleton();
     bool allOfKind(TypeRepresentation::Kind kind);
+
+    // Returns true only when non-empty and `kind()` is
+    // `TypeRepresentation::Array`
+    bool allOfArrayKind();
+
+    // Returns true only if (1) non-empty, (2) for all types t in this
+    // set, t is sized, and (3) there is some size S such that for all
+    // types t in this set, `t.size() == S`.  When the above holds,
+    // then also sets `*out` to S; otherwise leaves `*out` unchanged
+    // and returns false.
+    //
+    // At the moment condition (2) trivially holds.  When Bug 922115
+    // lands, some array types will be unsized.
+    bool allHaveSameSize(size_t *out);
 
     //////////////////////////////////////////////////////////////////////
     // The following operations are only valid on a non-empty set:
@@ -86,13 +108,19 @@ class TypeRepresentationSet {
     TypeRepresentation::Kind kind();
 
     //////////////////////////////////////////////////////////////////////
-    // Array operations
-    //
-    // Only valid when `kind() == TypeRepresentation::Array`
+    // The following operations are only valid on a singleton set:
 
-    // Returns the length of the arrays in this set, or SIZE_MAX
-    // if they are not all the same.
-    size_t arrayLength();
+    TypeRepresentation *getTypeRepresentation();
+
+    //////////////////////////////////////////////////////////////////////
+    // SizedArray operations
+    //
+    // Only valid when `kind() == TypeRepresentation::SizedArray`
+
+    // Determines whether all arrays in this set have the same,
+    // statically known, array length and return that length
+    // (via `*length`) if so. Otherwise returns false.
+    bool hasKnownArrayLength(size_t *length);
 
     // Returns a `TypeRepresentationSet` representing the element
     // types of the various array types in this set. The returned set

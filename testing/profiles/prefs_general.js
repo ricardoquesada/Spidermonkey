@@ -57,6 +57,8 @@ user_pref("extensions.enabledScopes", 5);
 user_pref("extensions.getAddons.cache.enabled", false);
 // Disable intalling any distribution add-ons
 user_pref("extensions.installDistroAddons", false);
+// XPI extensions are required for test harnesses to load
+user_pref("extensions.defaultProviders.enabled", true);
 
 user_pref("geo.wifi.uri", "http://%(server)s/tests/dom/tests/mochitest/geolocation/network_geolocation.sjs");
 user_pref("geo.wifi.testing", true);
@@ -152,3 +154,7 @@ user_pref("browser.pagethumbnails.capturing_disabled", true);
 // Indicate that the download panel has been shown once so that whichever
 // download test runs first doesn't show the popup inconsistently.
 user_pref("browser.download.panel.shown", true);
+
+// prefs for firefox metro.
+// Disable first-tun tab
+user_pref("browser.firstrun.count", 0);

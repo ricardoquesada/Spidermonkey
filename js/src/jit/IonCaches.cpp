@@ -106,7 +106,7 @@ IonCache::LinkStatus
 IonCache::linkCode(JSContext *cx, MacroAssembler &masm, IonScript *ion, IonCode **code)
 {
     Linker linker(masm);
-    *code = linker.newCode(cx, JSC::ION_CODE);
+    *code = linker.newCode<CanGC>(cx, JSC::ION_CODE);
     if (!*code)
         return LINK_ERROR;
 
@@ -410,7 +410,7 @@ IonCache::linkAndAttachStub(JSContext *cx, MacroAssembler &masm, StubAttacher &a
 
     if (pc_) {
         IonSpew(IonSpew_InlineCaches, "Cache %p(%s:%d/%d) generated %s %s stub at %p",
-                this, script_->filename(), script_->lineno, pc_ - script_->code,
+                this, script_->filename(), script_->lineno, script_->pcToOffset(pc_),
                 attachKind, CacheName(kind()), code->raw());
     } else {
         IonSpew(IonSpew_InlineCaches, "Cache %p generated %s %s stub at %p",
@@ -611,12 +611,19 @@ IsCacheableGetPropCallNative(JSObject *obj, JSObject *holder, Shape *shape)
     if (!shape->hasGetterValue() || !shape->getterValue().isObject())
         return false;
 
-    // Don't cache if obj has an outerObject hook.
-    if (obj->getClass()->ext.outerObject)
+    if (!shape->getterValue().toObject().is<JSFunction>())
         return false;
 
-    return shape->getterValue().toObject().is<JSFunction>() &&
-           shape->getterValue().toObject().as<JSFunction>().isNative();
+    JSFunction& getter = shape->getterValue().toObject().as<JSFunction>();
+    if (!getter.isNative())
+        return false;
+
+    // Check for a DOM method; those are OK with both inner and outer objects.
+    if (getter.jitInfo())
+        return true;
+
+    // For non-DOM methods, don't cache if obj has an outerObject hook.
+    return !obj->getClass()->ext.outerObject;
 }
 
 static bool
@@ -687,12 +694,16 @@ GenerateDOMProxyChecks(JSContext *cx, MacroAssembler &masm, JSObject *obj,
         ExpandoAndGeneration *expandoAndGeneration = (ExpandoAndGeneration*)expandoVal.toPrivate();
         masm.movePtr(ImmPtr(expandoAndGeneration), tempVal.scratchReg());
 
-        masm.branch32(Assembler::NotEqual, Address(tempVal.scratchReg(), sizeof(Value)),
-                                                   Imm32(expandoAndGeneration->generation),
-                                                   &failDOMProxyCheck);
+        masm.branch32(Assembler::NotEqual,
+                      Address(tempVal.scratchReg(),
+                              ExpandoAndGeneration::offsetOfGeneration()),
+                      Imm32(expandoAndGeneration->generation),
+                      &failDOMProxyCheck);
 
         expandoVal = expandoAndGeneration->expando;
-        masm.loadValue(Address(tempVal.scratchReg(), 0), tempVal);
+        masm.loadValue(Address(tempVal.scratchReg(),
+                               ExpandoAndGeneration::offsetOfExpando()),
+                       tempVal);
     }
 
     // If the incoming object does not have an expando object then we're sure we're not
@@ -1151,11 +1162,6 @@ CanAttachNativeGetProp(typename GetPropCache::Context cx, const GetPropCache &ca
     if (IsCacheableGetPropReadSlot(obj, holder, shape) ||
         IsCacheableNoProperty(obj, holder, shape, pc, cache.output()))
     {
-        // TI infers the possible types of native object properties. There's one
-        // edge case though: for singleton objects it does not add the initial
-        // "undefined" type, see the propertySet comment in jsinfer.h.
-        if (!cache.canMonitorSingletonUndefinedSlot(holder, shape))
-            return GetPropertyIC::CanAttachNone;
         return GetPropertyIC::CanAttachReadSlot;
     }
 
@@ -1208,17 +1214,6 @@ GetPropertyIC::allowArrayLength(Context cx, HandleObject obj) const
     }
 
     return true;
-}
-
-bool
-GetPropertyIC::canMonitorSingletonUndefinedSlot(HandleObject holder, HandleShape shape) const
-{
-    // We can't monitor the return type inside an idempotent cache,
-    // so we don't handle this case.
-    return !(idempotent() &&
-             holder &&
-             holder->hasSingletonType() &&
-             holder->getSlot(shape->slot()).isUndefined());
 }
 
 bool
@@ -1400,8 +1395,10 @@ GetPropertyIC::tryAttachDOMProxyShadowed(JSContext *cx, IonScript *ion,
     JS_ASSERT(canAttachStub());
     JS_ASSERT(!*emitted);
     JS_ASSERT(IsCacheableDOMProxy(obj));
+    JS_ASSERT(monitoredResult());
+    JS_ASSERT(output().hasValue());
 
-    if (idempotent() || !output().hasValue())
+    if (idempotent())
         return true;
 
     *emitted = true;
@@ -1446,6 +1443,8 @@ GetPropertyIC::tryAttachDOMProxyUnshadowed(JSContext *cx, IonScript *ion, Handle
     JS_ASSERT(canAttachStub());
     JS_ASSERT(!*emitted);
     JS_ASSERT(IsCacheableDOMProxy(obj));
+    JS_ASSERT(monitoredResult());
+    JS_ASSERT(output().hasValue());
 
     RootedObject checkObj(cx, obj->getTaggedProto().toObjectOrNull());
     RootedObject holder(cx);
@@ -1460,7 +1459,7 @@ GetPropertyIC::tryAttachDOMProxyUnshadowed(JSContext *cx, IonScript *ion, Handle
         return true;
 
     // Make sure we observe our invariants if we're gonna deoptimize.
-    if (!holder && (idempotent() || !output().hasValue()))
+    if (!holder && idempotent())
         return true;
 
     *emitted = true;
@@ -1549,6 +1548,11 @@ GetPropertyIC::tryAttachProxy(JSContext *cx, IonScript *ion, HandleObject obj,
     if (!obj->is<ProxyObject>())
         return true;
 
+    // TI can't be sure about our properties, so make sure anything
+    // we return can be monitored directly.
+    if (!monitoredResult())
+        return true;
+
     // Skim off DOM proxies.
     if (IsCacheableDOMProxy(obj)) {
         RootedId id(cx, NameToId(name));
@@ -1590,11 +1594,13 @@ GetPropertyIC::tryAttachGenericProxy(JSContext *cx, IonScript *ion, HandleObject
     JS_ASSERT(canAttachStub());
     JS_ASSERT(!*emitted);
     JS_ASSERT(obj->is<ProxyObject>());
+    JS_ASSERT(monitoredResult());
+    JS_ASSERT(output().hasValue());
 
     if (hasGenericProxyStub())
         return true;
 
-    if (idempotent() || !output().hasValue())
+    if (idempotent())
         return true;
 
     *emitted = true;
@@ -2563,7 +2569,8 @@ SetPropertyIC::attachCallSetter(JSContext *cx, IonScript *ion,
 
 static void
 GenerateAddSlot(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &attacher,
-                JSObject *obj, Shape *oldShape, Register object, ConstantOrRegister value)
+                JSObject *obj, Shape *oldShape, Register object, ConstantOrRegister value,
+                bool checkTypeset)
 {
     JS_ASSERT(obj->isNative());
 
@@ -2576,8 +2583,22 @@ GenerateAddSlot(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &att
     // Guard shapes along prototype chain.
     masm.branchTestObjShape(Assembler::NotEqual, object, oldShape, &failures);
 
-    Label protoFailures;
+    Label failuresPopObject;
     masm.push(object);    // save object reg because we clobber it
+
+    // Guard that the incoming value is in the type set for the property
+    // if a type barrier is required.
+    if (checkTypeset) {
+        TypedOrValueRegister valReg = value.reg();
+        types::TypeObject *type = obj->type();
+        types::HeapTypeSet *propTypes = type->maybeGetProperty(obj->lastProperty()->propid());
+        JS_ASSERT(propTypes);
+        JS_ASSERT(!propTypes->unknown());
+
+        Register scratchReg = object;
+        masm.guardTypeSet(valReg, propTypes, scratchReg, &failuresPopObject);
+        masm.loadPtr(Address(StackPointer, 0), object);
+    }
 
     JSObject *proto = obj->getProto();
     Register protoReg = object;
@@ -2589,7 +2610,7 @@ GenerateAddSlot(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &att
         masm.loadPtr(Address(protoReg, offsetof(types::TypeObject, proto)), protoReg);
 
         // Ensure that its shape matches.
-        masm.branchTestObjShape(Assembler::NotEqual, protoReg, protoShape, &protoFailures);
+        masm.branchTestObjShape(Assembler::NotEqual, protoReg, protoShape, &failuresPopObject);
 
         proto = proto->getProto();
     }
@@ -2621,7 +2642,7 @@ GenerateAddSlot(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &att
     attacher.jumpRejoin(masm);
 
     // Failure.
-    masm.bind(&protoFailures);
+    masm.bind(&failuresPopObject);
     masm.pop(object);
     masm.bind(&failures);
 
@@ -2629,39 +2650,23 @@ GenerateAddSlot(JSContext *cx, MacroAssembler &masm, IonCache::StubAttacher &att
 }
 
 bool
-SetPropertyIC::attachAddSlot(JSContext *cx, IonScript *ion, JSObject *obj, HandleShape oldShape)
+SetPropertyIC::attachAddSlot(JSContext *cx, IonScript *ion, JSObject *obj, HandleShape oldShape,
+                             bool checkTypeset)
 {
+    JS_ASSERT_IF(!needsTypeBarrier(), !checkTypeset);
+
     MacroAssembler masm(cx);
     RepatchStubAppender attacher(*this);
-    GenerateAddSlot(cx, masm, attacher, obj, oldShape, object(), value());
+    GenerateAddSlot(cx, masm, attacher, obj, oldShape, object(), value(), checkTypeset);
     return linkAndAttachStub(cx, masm, attacher, ion, "adding");
 }
 
 static bool
-IsPropertySetInlineable(HandleObject obj, HandleId id, MutableHandleShape pshape,
-                        ConstantOrRegister val, bool needsTypeBarrier, bool *checkTypeset)
+CanInlineSetPropTypeCheck(JSObject *obj, jsid id, ConstantOrRegister val, bool *checkTypeset)
 {
-    JS_ASSERT(obj->isNative());
-
-    // Do a pure non-proto chain climbing lookup. See note in
-    // CanAttachNativeGetProp.
-    pshape.set(obj->nativeLookupPure(id));
-
-    if (!pshape)
-        return false;
-
-    if (!pshape->hasSlot())
-        return false;
-
-    if (!pshape->hasDefaultSetter())
-        return false;
-
-    if (!pshape->writable())
-        return false;
-
     bool shouldCheck = false;
     types::TypeObject *type = obj->type();
-    if (needsTypeBarrier && !type->unknownProperties()) {
+    if (!type->unknownProperties()) {
         types::HeapTypeSet *propTypes = type->maybeGetProperty(id);
         if (!propTypes)
             return false;
@@ -2689,12 +2694,40 @@ IsPropertySetInlineable(HandleObject obj, HandleId id, MutableHandleShape pshape
     }
 
     *checkTypeset = shouldCheck;
+    return true;
+}
+
+static bool
+IsPropertySetInlineable(HandleObject obj, HandleId id, MutableHandleShape pshape,
+                        ConstantOrRegister val, bool needsTypeBarrier, bool *checkTypeset)
+{
+    JS_ASSERT(obj->isNative());
+
+    // Do a pure non-proto chain climbing lookup. See note in
+    // CanAttachNativeGetProp.
+    pshape.set(obj->nativeLookupPure(id));
+
+    if (!pshape)
+        return false;
+
+    if (!pshape->hasSlot())
+        return false;
+
+    if (!pshape->hasDefaultSetter())
+        return false;
+
+    if (!pshape->writable())
+        return false;
+
+    if (needsTypeBarrier)
+        return CanInlineSetPropTypeCheck(obj, id, val, checkTypeset);
 
     return true;
 }
 
 static bool
-IsPropertyAddInlineable(HandleObject obj, HandleId id, uint32_t oldSlots, HandleShape oldShape)
+IsPropertyAddInlineable(HandleObject obj, HandleId id, ConstantOrRegister val, uint32_t oldSlots,
+                        HandleShape oldShape, bool needsTypeBarrier, bool *checkTypeset)
 {
     JS_ASSERT(obj->isNative());
 
@@ -2748,6 +2781,10 @@ IsPropertyAddInlineable(HandleObject obj, HandleId id, uint32_t oldSlots, Handle
     if (obj->numDynamicSlots() != oldSlots)
         return false;
 
+    if (needsTypeBarrier)
+        return CanInlineSetPropTypeCheck(obj, id, val, checkTypeset);
+
+    *checkTypeset = false;
     return true;
 }
 
@@ -2862,11 +2899,12 @@ SetPropertyIC::update(JSContext *cx, size_t cacheIndex, HandleObject obj,
         return false;
 
     // The property did not exist before, now we can try to inline the property add.
+    bool checkTypeset;
     if (!addedSetterStub && canCache == MaybeCanAttachAddSlot &&
-        !cache.needsTypeBarrier() &&
-        IsPropertyAddInlineable(obj, id, oldSlots, oldShape))
+        IsPropertyAddInlineable(obj, id, cache.value(), oldSlots, oldShape, cache.needsTypeBarrier(),
+                                &checkTypeset))
     {
-        if (!cache.attachAddSlot(cx, ion, obj, oldShape))
+        if (!cache.attachAddSlot(cx, ion, obj, oldShape, checkTypeset))
             return false;
     }
 
@@ -2942,12 +2980,13 @@ SetPropertyParIC::update(ForkJoinSlice *slice, size_t cacheIndex, HandleObject o
     if (!baseops::SetPropertyHelper<ParallelExecution>(slice, obj, obj, id, 0, &v, cache.strict()))
         return false;
 
+    bool checkTypeset;
     if (!attachedStub && canCache == SetPropertyIC::MaybeCanAttachAddSlot &&
-        !cache.needsTypeBarrier() &&
-        IsPropertyAddInlineable(obj, id, oldSlots, oldShape))
+        IsPropertyAddInlineable(obj, id, cache.value(), oldSlots, oldShape, cache.needsTypeBarrier(),
+                                &checkTypeset))
     {
         LockedJSContext cx(slice);
-        if (cache.canAttachStub() && !cache.attachAddSlot(cx, ion, obj, oldShape))
+        if (cache.canAttachStub() && !cache.attachAddSlot(cx, ion, obj, oldShape, checkTypeset))
             return slice->setPendingAbortFatal(ParallelBailoutFailedIC);
     }
 
@@ -2966,11 +3005,14 @@ SetPropertyParIC::attachSetSlot(LockedJSContext &cx, IonScript *ion, JSObject *o
 }
 
 bool
-SetPropertyParIC::attachAddSlot(LockedJSContext &cx, IonScript *ion, JSObject *obj, Shape *oldShape)
+SetPropertyParIC::attachAddSlot(LockedJSContext &cx, IonScript *ion, JSObject *obj, Shape *oldShape,
+                                bool checkTypeset)
 {
+    JS_ASSERT_IF(!needsTypeBarrier(), !checkTypeset);
+
     MacroAssembler masm(cx);
     DispatchStubPrepender attacher(*this);
-    GenerateAddSlot(cx, masm, attacher, obj, oldShape, object(), value());
+    GenerateAddSlot(cx, masm, attacher, obj, oldShape, object(), value(), checkTypeset);
     return linkAndAttachStub(cx, masm, attacher, ion, "parallel adding");
 }
 
@@ -2993,7 +3035,7 @@ EqualStringsHelper(JSString *str1, JSString *str2)
     JS_ASSERT(!str2->isAtom());
     JS_ASSERT(str1->length() == str2->length());
 
-    const jschar *chars = str2->getChars(NULL);
+    const jschar *chars = str2->getChars(nullptr);
     if (!chars)
         return false;
     return mozilla::PodEqual(str1->asAtom().chars(), chars, str1->length());
@@ -3444,13 +3486,12 @@ GetElementIC::update(JSContext *cx, size_t cacheIndex, HandleObject obj,
     RootedScript script(cx);
     jsbytecode *pc;
     cache.getScriptedLocation(&script, &pc);
-    RootedValue lval(cx, ObjectValue(*obj));
 
     // Override the return value when the script is invalidated (bug 728188).
     AutoDetectInvalidation adi(cx, res.address(), ion);
 
     if (cache.isDisabled()) {
-        if (!GetElementOperation(cx, JSOp(*pc), &lval, idval, res))
+        if (!GetObjectElementOperation(cx, JSOp(*pc), obj, /* wasObject = */true, idval, res))
             return false;
         types::TypeScript::Monitor(cx, script, pc, res);
         return true;
@@ -3494,7 +3535,7 @@ GetElementIC::update(JSContext *cx, size_t cacheIndex, HandleObject obj,
         }
     }
 
-    if (!GetElementOperation(cx, JSOp(*pc), &lval, idval, res))
+    if (!GetObjectElementOperation(cx, JSOp(*pc), obj, /* wasObject = */true, idval, res))
         return false;
 
     // Disable cache when we reach max stubs or update failed too much.

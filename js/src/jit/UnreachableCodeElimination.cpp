@@ -123,8 +123,7 @@ UnreachableCodeElimination::optimizableSuccessor(MBasicBlock *block)
     if (!v->isConstant())
         return nullptr;
 
-    const Value &val = v->toConstant()->value();
-    BranchDirection bdir = ToBoolean(val) ? TRUE_BRANCH : FALSE_BRANCH;
+    BranchDirection bdir = v->toConstant()->valueToBoolean() ? TRUE_BRANCH : FALSE_BRANCH;
     return testIns->branchSuccessor(bdir);
 }
 
@@ -189,7 +188,7 @@ UnreachableCodeElimination::prunePointlessBranchesAndMarkReachableBlocks()
         MBasicBlock *succ = optimizableSuccessor(block);
         JS_ASSERT(succ);
 
-        MGoto *gotoIns = MGoto::New(succ);
+        MGoto *gotoIns = MGoto::New(graph_.alloc(), succ);
         block->discardLastIns();
         block->end(gotoIns);
         MBasicBlock *successorWithPhis = block->successorWithPhis();

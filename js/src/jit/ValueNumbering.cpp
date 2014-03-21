@@ -16,9 +16,16 @@ using namespace js::jit;
 ValueNumberer::ValueNumberer(MIRGenerator *mir, MIRGraph &graph, bool optimistic)
   : mir(mir),
     graph_(graph),
+    values(graph.alloc()),
     pessimisticPass_(!optimistic),
     count_(0)
 { }
+
+TempAllocator &
+ValueNumberer::alloc() const
+{
+    return graph_.alloc();
+}
 
 uint32_t
 ValueNumberer::lookupValue(MDefinition *ins)
@@ -26,8 +33,8 @@ ValueNumberer::lookupValue(MDefinition *ins)
     ValueMap::AddPtr p = values.lookupForAdd(ins);
     if (p) {
         // make sure this is in the correct group
-        setClass(ins, p->key);
-        return p->value;
+        setClass(ins, p->key());
+        return p->value();
     }
 
     if (!values.add(p, ins, ins->id()))
@@ -43,14 +50,14 @@ ValueNumberer::simplify(MDefinition *def, bool useValueNumbers)
     if (def->isEffectful())
         return def;
 
-    MDefinition *ins = def->foldsTo(useValueNumbers);
-
-    if (ins == def || !ins->updateForFolding(def))
+    MDefinition *ins = def->foldsTo(alloc(), useValueNumbers);
+    if (ins == def)
         return def;
 
-    // ensure this instruction has a VN
+    // Ensure this instruction has a value number.
     if (!ins->valueNumberData())
-        ins->setValueNumberData(new ValueNumberData);
+        ins->setValueNumberData(new(alloc()) ValueNumberData);
+
     if (!ins->block()) {
         // In this case, we made a new def by constant folding, for
         // example, we replaced add(#3,#4) with a new const(#7) node.
@@ -76,13 +83,13 @@ ValueNumberer::simplifyControlInstruction(MControlInstruction *def)
     if (def->isEffectful())
         return def;
 
-    MDefinition *repl = def->foldsTo(false);
-    if (repl == def || !repl->updateForFolding(def))
+    MDefinition *repl = def->foldsTo(alloc(), false);
+    if (repl == def)
         return def;
 
     // Ensure this instruction has a value number.
     if (!repl->valueNumberData())
-        repl->setValueNumberData(new ValueNumberData);
+        repl->setValueNumberData(new(alloc()) ValueNumberData);
 
     MBasicBlock *block = def->block();
 
@@ -176,9 +183,9 @@ ValueNumberer::computeValueNumbers()
         if (mir->shouldCancel("Value Numbering (preparation loop"))
             return false;
         for (MDefinitionIterator iter(*block); iter; iter++)
-            iter->setValueNumberData(new ValueNumberData);
+            iter->setValueNumberData(new(alloc()) ValueNumberData);
         MControlInstruction *jump = block->lastIns();
-        jump->setValueNumberData(new ValueNumberData);
+        jump->setValueNumberData(new(alloc()) ValueNumberData);
     }
 
     // Assign unique value numbers if pessimistic.
@@ -238,6 +245,15 @@ ValueNumberer::computeValueNumbers()
                     continue;
                 }
 
+                // Don't bother storing this instruction in the HashMap if
+                // (a) eliminateRedundancies will never eliminate it (because
+                // it's non-movable or effectful) and (b) no other instruction's
+                // value number depends on it.
+                if (!ins->hasDefUses() && (!ins->isMovable() || ins->isEffectful())) {
+                    iter++;
+                    continue;
+                }
+
                 uint32_t value = lookupValue(ins);
 
                 if (!value)
@@ -278,7 +294,8 @@ ValueNumberer::computeValueNumbers()
     for (ReversePostorderIterator block(graph_.rpoBegin()); block != graph_.rpoEnd(); block++) {
         for (MDefinitionIterator iter(*block); iter; iter++) {
             JS_ASSERT(!iter->isInWorklist());
-            JS_ASSERT(iter->valueNumber() != 0);
+            JS_ASSERT_IF(iter->valueNumber() == 0,
+                         !iter->hasDefUses() && (!iter->isMovable() || iter->isEffectful()));
         }
     }
 #endif
@@ -291,7 +308,7 @@ ValueNumberer::findDominatingDef(InstructionMap &defs, MDefinition *ins, size_t 
     JS_ASSERT(ins->valueNumber() != 0);
     InstructionMap::Ptr p = defs.lookup(ins->valueNumber());
     MDefinition *dom;
-    if (!p || index > p->value.validUntil) {
+    if (!p || index > p->value().validUntil) {
         DominatingValue value;
         value.def = ins;
         // Since we are traversing the dominator tree in pre-order, when we
@@ -308,7 +325,7 @@ ValueNumberer::findDominatingDef(InstructionMap &defs, MDefinition *ins, size_t 
 
         dom = ins;
     } else {
-        dom = p->value.def;
+        dom = p->value().def;
     }
 
     return dom;
@@ -333,7 +350,7 @@ ValueNumberer::eliminateRedundancies()
     // is not in dominated scope), then we insert the current instruction,
     // since it is the most dominant instruction with the given value number.
 
-    InstructionMap defs;
+    InstructionMap defs(alloc());
 
     if (!defs.init())
         return false;
@@ -341,7 +358,7 @@ ValueNumberer::eliminateRedundancies()
     IonSpew(IonSpew_GVN, "Eliminating redundant instructions");
 
     // Stack for pre-order CFG traversal.
-    Vector<MBasicBlock *, 1, IonAllocPolicy> worklist;
+    Vector<MBasicBlock *, 1, IonAllocPolicy> worklist(alloc());
 
     // The index of the current block in the CFG traversal.
     size_t index = 0;

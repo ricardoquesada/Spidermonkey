@@ -1,10 +1,5 @@
-LOCAL_PATH := $(call my-dir)
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-include $(CLEAR_VARS)
-LOCAL_MODULE    := spidermonkey_static
-LOCAL_MODULE_FILENAME := js_static
-LOCAL_SRC_FILES := ./lib/$(TARGET_ARCH_ABI)/libjs_static.a
-LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/include
-LOCAL_CPPFLAGS := -D__STDC_LIMIT_MACROS=1
-LOCAL_EXPORT_CPPFLAGS := -D__STDC_LIMIT_MACROS=1
-include $(PREBUILT_STATIC_LIBRARY)
+# empty file to block B2G/Gonk from trying to build anything inside mozilla-central

@@ -94,6 +94,7 @@ class CodeGeneratorX86Shared : public CodeGeneratorShared
     virtual bool visitDivSelfI(LDivSelfI *ins);
     virtual bool visitModI(LModI *ins);
     virtual bool visitModPowTwoI(LModPowTwoI *ins);
+    virtual bool visitModSelfI(LModSelfI *ins);
     virtual bool visitBitNotI(LBitNotI *ins);
     virtual bool visitBitOpI(LBitOpI *ins);
     virtual bool visitShiftI(LShiftI *ins);
@@ -114,6 +115,7 @@ class CodeGeneratorX86Shared : public CodeGeneratorShared
     virtual bool visitMathD(LMathD *math);
     virtual bool visitMathF(LMathF *math);
     virtual bool visitFloor(LFloor *lir);
+    virtual bool visitFloorF(LFloorF *lir);
     virtual bool visitRound(LRound *lir);
     virtual bool visitGuardShape(LGuardShape *guard);
     virtual bool visitGuardObjectType(LGuardObjectType *guard);

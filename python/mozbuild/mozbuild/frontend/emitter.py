@@ -25,14 +25,19 @@ from .data import (
     GeneratedEventWebIDLFile,
     GeneratedInclude,
     GeneratedWebIDLFile,
+    HeaderFileSubstitution,
+    HostProgram,
+    HostSimpleProgram,
     InstallationTarget,
     IPDLFile,
+    LibraryDefinition,
     LocalInclude,
     PreprocessedTestWebIDLFile,
     PreprocessedWebIDLFile,
     Program,
     ReaderSummary,
     SandboxWrapped,
+    SimpleProgram,
     TestWebIDLFile,
     TestManifest,
     VariablePassthru,
@@ -66,6 +71,9 @@ class TreeMetadataEmitter(LoggingMixin):
         else:
             self.mozinfo = {}
 
+        self._libs = {}
+        self._final_libs = []
+
     def emit(self, output):
         """Convert the BuildReader output into data structures.
 
@@ -74,11 +82,17 @@ class TreeMetadataEmitter(LoggingMixin):
         """
         file_count = 0
         execution_time = 0.0
+        sandboxes = {}
 
         for out in output:
             if isinstance(out, MozbuildSandbox):
+                # Keep all sandboxes around, we will need them later.
+                sandboxes[out['OBJDIR']] = out
+
                 for o in self.emit_from_sandbox(out):
                     yield o
+                    if not o._ack:
+                        raise Exception('Unhandled object of type %s' % type(o))
 
                 # Update the stats.
                 file_count += len(out.all_paths)
@@ -86,6 +100,41 @@ class TreeMetadataEmitter(LoggingMixin):
 
             else:
                 raise Exception('Unhandled output type: %s' % out)
+
+        for objdir, libname, final_lib in self._final_libs:
+            if final_lib not in self._libs:
+                raise Exception('FINAL_LIBRARY in %s (%s) does not match any '
+                                'LIBRARY_NAME' % (objdir, final_lib))
+            libs = self._libs[final_lib]
+            if len(libs) > 1:
+                raise Exception('FINAL_LIBRARY in %s (%s) matches a '
+                                'LIBRARY_NAME defined in multiple places (%s)' %
+                                (objdir, final_lib, ', '.join(libs.keys())))
+            libs.values()[0].link_static_lib(objdir, libname)
+            self._libs[libname][objdir].refcount += 1
+            # The refcount can't go above 1 right now. It might in the future,
+            # but that will have to be specifically handled. At which point the
+            # refcount might have to be a list of referencees, for better error
+            # reporting.
+            assert self._libs[libname][objdir].refcount <= 1
+
+        def recurse_libs(path, name):
+            for p, n in self._libs[name][path].static_libraries:
+                yield p
+                for q in recurse_libs(p, n):
+                    yield q
+
+        for basename, libs in self._libs.items():
+            for path, libdef in libs.items():
+                # For all root libraries (i.e. libraries that don't have a
+                # FINAL_LIBRARY), record, for each static library it links
+                # (recursively), that its FINAL_LIBRARY is that root library.
+                if not libdef.refcount:
+                    for p in recurse_libs(path, basename):
+                        passthru = VariablePassthru(sandboxes[p])
+                        passthru.variables['FINAL_LIBRARY'] = basename
+                        yield passthru
+                yield libdef
 
         yield ReaderSummary(file_count, execution_time)
 
@@ -99,26 +148,22 @@ class TreeMetadataEmitter(LoggingMixin):
         for o in self._emit_directory_traversal_from_sandbox(sandbox): yield o
 
         for path in sandbox['CONFIGURE_SUBST_FILES']:
-            if os.path.isabs(path):
-                path = path[1:]
+            yield self._create_substitution(ConfigFileSubstitution, sandbox,
+                path)
 
-            sub = ConfigFileSubstitution(sandbox)
-            sub.input_path = os.path.join(sandbox['SRCDIR'], '%s.in' % path)
-            sub.output_path = os.path.join(sandbox['OBJDIR'], path)
-            sub.relpath = path
-            yield sub
+        for path in sandbox['CONFIGURE_DEFINE_FILES']:
+            yield self._create_substitution(HeaderFileSubstitution, sandbox,
+                path)
 
         # XPIDL source files get processed and turned into .h and .xpt files.
         # If there are multiple XPIDL files in a directory, they get linked
-        # together into a final .xpt, which has the name defined by either
-        # MODULE or XPIDL_MODULE (if the latter is defined).
-        xpidl_module = sandbox['MODULE']
-        if sandbox['XPIDL_MODULE']:
-            xpidl_module = sandbox['XPIDL_MODULE']
+        # together into a final .xpt, which has the name defined by
+        # XPIDL_MODULE.
+        xpidl_module = sandbox['XPIDL_MODULE']
 
         if sandbox['XPIDL_SOURCES'] and not xpidl_module:
-            raise SandboxValidationError('MODULE or XPIDL_MODULE must be '
-                'defined if XPIDL_SOURCES is defined.')
+            raise SandboxValidationError('XPIDL_MODULE must be defined if '
+                'XPIDL_SOURCES is defined.')
 
         if sandbox['XPIDL_SOURCES'] and sandbox['NO_DIST_INSTALL']:
             self.log(logging.WARN, 'mozbuild_warning', dict(
@@ -129,12 +174,15 @@ class TreeMetadataEmitter(LoggingMixin):
             yield XPIDLFile(sandbox, mozpath.join(sandbox['SRCDIR'], idl),
                 xpidl_module)
 
-        for symbol in ('SOURCES', 'GTEST_SOURCES', 'HOST_SOURCES'):
+        for symbol in ('SOURCES', 'HOST_SOURCES', 'UNIFIED_SOURCES'):
             for src in (sandbox[symbol] or []):
                 if not os.path.exists(os.path.join(sandbox['SRCDIR'], src)):
                     raise SandboxValidationError('Reference to a file that '
                         'doesn\'t exist in %s (%s) in %s'
                         % (symbol, src, sandbox['RELATIVEDIR']))
+
+        if sandbox.get('LIBXUL_LIBRARY') and sandbox.get('FORCE_STATIC_LIB'):
+            raise SandboxValidationError('LIBXUL_LIBRARY implies FORCE_STATIC_LIB')
 
         # Proxy some variables as-is until we have richer classes to represent
         # them. We should aim to keep this set small because it violates the
@@ -143,7 +191,7 @@ class TreeMetadataEmitter(LoggingMixin):
         varmap = dict(
             # Makefile.in : moz.build
             ANDROID_GENERATED_RESFILES='ANDROID_GENERATED_RESFILES',
-            ANDROID_RESFILES='ANDROID_RESFILES',
+            ANDROID_RES_DIRS='ANDROID_RES_DIRS',
             CPP_UNIT_TESTS='CPP_UNIT_TESTS',
             EXPORT_LIBRARY='EXPORT_LIBRARY',
             EXTRA_COMPONENTS='EXTRA_COMPONENTS',
@@ -151,46 +199,74 @@ class TreeMetadataEmitter(LoggingMixin):
             EXTRA_PP_COMPONENTS='EXTRA_PP_COMPONENTS',
             EXTRA_PP_JS_MODULES='EXTRA_PP_JS_MODULES',
             FAIL_ON_WARNINGS='FAIL_ON_WARNINGS',
+            FILES_PER_UNIFIED_FILE='FILES_PER_UNIFIED_FILE',
             FORCE_SHARED_LIB='FORCE_SHARED_LIB',
             FORCE_STATIC_LIB='FORCE_STATIC_LIB',
+            GENERATED_FILES='GENERATED_FILES',
             HOST_LIBRARY_NAME='HOST_LIBRARY_NAME',
             IS_COMPONENT='IS_COMPONENT',
             JS_MODULES_PATH='JS_MODULES_PATH',
-            LIBRARY_NAME='LIBRARY_NAME',
             LIBS='LIBS',
             LIBXUL_LIBRARY='LIBXUL_LIBRARY',
-            MODULE='MODULE',
             MSVC_ENABLE_PGO='MSVC_ENABLE_PGO',
             NO_DIST_INSTALL='NO_DIST_INSTALL',
             OS_LIBS='OS_LIBS',
             SDK_LIBRARY='SDK_LIBRARY',
-            SHARED_LIBRARY_LIBS='SHARED_LIBRARY_LIBS',
-            SIMPLE_PROGRAMS='SIMPLE_PROGRAMS',
         )
         for mak, moz in varmap.items():
             if sandbox[moz]:
                 passthru.variables[mak] = sandbox[moz]
 
-        varmap = dict(
-            ASFILES=('SOURCES', ('.s', '.asm')),
-            CSRCS=('SOURCES', '.c'),
-            CMMSRCS=('SOURCES', '.mm'),
-            CPPSRCS=('SOURCES', ('.cc', '.cpp')),
-            SSRCS=('SOURCES', '.S'),
-            HOST_CPPSRCS=('HOST_SOURCES', ('.cc', '.cpp')),
-            HOST_CSRCS=('HOST_SOURCES', '.c'),
-            GTEST_CMMSRCS=('GTEST_SOURCES', '.mm'),
-            GTEST_CPPSRCS=('GTEST_SOURCES', ('.cc', '.cpp')),
-            GTEST_CSRCS=('GTEST_SOURCES', '.c'),
-        )
-        for mak, (moz, ext) in varmap.items():
-            if sandbox[moz]:
-                filtered = [f for f in sandbox[moz] if f.endswith(ext)]
-                if filtered:
-                    passthru.variables[mak] = filtered
+        # NO_VISIBILITY_FLAGS is slightly different
+        if sandbox['NO_VISIBILITY_FLAGS']:
+            passthru.variables['VISIBILITY_FLAGS'] = ''
 
-        if passthru.variables:
-            yield passthru
+        varmap = dict(
+            SOURCES={
+                '.s': 'ASFILES',
+                '.asm': 'ASFILES',
+                '.c': 'CSRCS',
+                '.m': 'CMSRCS',
+                '.mm': 'CMMSRCS',
+                '.cc': 'CPPSRCS',
+                '.cpp': 'CPPSRCS',
+                '.S': 'SSRCS',
+            },
+            HOST_SOURCES={
+                '.c': 'HOST_CSRCS',
+                '.mm': 'HOST_CMMSRCS',
+                '.cc': 'HOST_CPPSRCS',
+                '.cpp': 'HOST_CPPSRCS',
+            },
+            UNIFIED_SOURCES={
+                '.c': 'UNIFIED_CSRCS',
+                '.mm': 'UNIFIED_CMMSRCS',
+                '.cc': 'UNIFIED_CPPSRCS',
+                '.cpp': 'UNIFIED_CPPSRCS',
+            }
+        )
+        varmap.update(dict(('GENERATED_%s' % k, v) for k, v in varmap.items()
+                           if k in ('SOURCES', 'UNIFIED_SOURCES')))
+        for variable, mapping in varmap.items():
+            for f in sandbox[variable]:
+                ext = os.path.splitext(f)[1]
+                if ext not in mapping:
+                    raise SandboxValidationError('%s has an unknown file type in %s' % (f, sandbox['RELATIVEDIR']))
+                l = passthru.variables.setdefault(mapping[ext], [])
+                l.append(f)
+                if variable.startswith('GENERATED_'):
+                    l = passthru.variables.setdefault('GARBAGE', [])
+                    l.append(f)
+
+        no_pgo = sandbox.get('NO_PGO')
+        sources = sandbox.get('SOURCES', [])
+        no_pgo_sources = [f for f in sources if sources[f].no_pgo]
+        if no_pgo:
+            if no_pgo_sources:
+                raise SandboxValidationError('NO_PGO and SOURCES[...].no_pgo cannot be set at the same time')
+            passthru.variables['NO_PROFILE_GUIDED_OPTIMIZE'] = no_pgo
+        if no_pgo_sources:
+            passthru.variables['NO_PROFILE_GUIDED_OPTIMIZE'] = no_pgo_sources
 
         exports = sandbox.get('EXPORTS')
         if exports:
@@ -204,6 +280,16 @@ class TreeMetadataEmitter(LoggingMixin):
         program = sandbox.get('PROGRAM')
         if program:
             yield Program(sandbox, program, sandbox['CONFIG']['BIN_SUFFIX'])
+
+        program = sandbox.get('HOST_PROGRAM')
+        if program:
+            yield HostProgram(sandbox, program, sandbox['CONFIG']['HOST_BIN_SUFFIX'])
+
+        for program in sandbox['SIMPLE_PROGRAMS']:
+            yield SimpleProgram(sandbox, program, sandbox['CONFIG']['BIN_SUFFIX'])
+
+        for program in sandbox['HOST_SIMPLE_PROGRAMS']:
+            yield HostSimpleProgram(sandbox, program, sandbox['CONFIG']['HOST_BIN_SUFFIX'])
 
         simple_lists = [
             ('GENERATED_EVENTS_WEBIDL_FILES', GeneratedEventWebIDLFile),
@@ -223,6 +309,21 @@ class TreeMetadataEmitter(LoggingMixin):
         if sandbox.get('FINAL_TARGET') or sandbox.get('XPI_NAME') or \
                 sandbox.get('DIST_SUBDIR'):
             yield InstallationTarget(sandbox)
+
+        libname = sandbox.get('LIBRARY_NAME')
+        final_lib = sandbox.get('FINAL_LIBRARY')
+        if not libname and final_lib:
+            # If no LIBRARY_NAME is given, create one.
+            libname = sandbox['RELATIVEDIR'].replace('/', '_')
+        if libname:
+            self._libs.setdefault(libname, {})[sandbox['OBJDIR']] = \
+                LibraryDefinition(sandbox, libname)
+
+        if final_lib:
+            if sandbox.get('FORCE_STATIC_LIB'):
+                raise SandboxValidationError('FINAL_LIBRARY implies FORCE_STATIC_LIB')
+            self._final_libs.append((sandbox['OBJDIR'], libname, final_lib))
+            passthru.variables['FORCE_STATIC_LIB'] = True
 
         # While there are multiple test manifests, the behavior is very similar
         # across them. We enforce this by having common handling of all
@@ -261,6 +362,20 @@ class TreeMetadataEmitter(LoggingMixin):
 
         for name, jar in sandbox.get('JAVA_JAR_TARGETS', {}).items():
             yield SandboxWrapped(sandbox, jar)
+
+        if passthru.variables:
+            yield passthru
+
+    def _create_substitution(self, cls, sandbox, path):
+        if os.path.isabs(path):
+            path = path[1:]
+
+        sub = cls(sandbox)
+        sub.input_path = os.path.join(sandbox['SRCDIR'], '%s.in' % path)
+        sub.output_path = os.path.join(sandbox['OBJDIR'], path)
+        sub.relpath = path
+
+        return sub
 
     def _process_test_manifest(self, sandbox, info, manifest_path):
         flavor, install_prefix, filter_inactive = info

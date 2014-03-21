@@ -19,6 +19,7 @@
 #include "js/HashTable.h"
 #include "js/HeapAPI.h"
 #include "js/Value.h"
+#include "js/Vector.h"
 
 namespace JS {
 struct Zone;
@@ -33,6 +34,10 @@ namespace gc {
 class Cell;
 class MinorCollectionTracer;
 } /* namespace gc */
+
+namespace types {
+struct TypeObject;
+}
 
 namespace jit {
 class CodeGenerator;
@@ -95,8 +100,13 @@ class Nursery
     /* Add a slots to our tracking list if it is out-of-line. */
     void notifyInitialSlots(gc::Cell *cell, HeapSlot *slots);
 
-    /* Do a minor collection. */
-    void collect(JSRuntime *rt, JS::gcreason::Reason reason);
+    typedef Vector<types::TypeObject *, 0, SystemAllocPolicy> TypeObjectList;
+
+    /*
+     * Do a minor collection, optionally specifying a list to store types which
+     * should be pretenured afterwards.
+     */
+    void collect(JSRuntime *rt, JS::gcreason::Reason reason, TypeObjectList *pretenureTypes);
 
     /*
      * Check if the thing at |*ref| in the Nursery has been forwarded. If so,
@@ -117,7 +127,10 @@ class Nursery
     static const uint8_t FreshNursery = 0x2a;
     static const uint8_t SweptNursery = 0x2b;
     static const uint8_t AllocatedThing = 0x2c;
-    void enterZealMode() { numActiveChunks_ = NumNurseryChunks; }
+    void enterZealMode() {
+        if (isEnabled())
+            numActiveChunks_ = NumNurseryChunks;
+    }
 #endif
 
   private:
@@ -152,16 +165,17 @@ class Nursery
     static const size_t MaxNurserySlots = 100;
 
     /* The amount of space in the mapped nursery available to allocations. */
-    static const size_t NurseryChunkUsableSize = gc::ChunkSize - sizeof(JSRuntime *);
+    static const size_t NurseryChunkUsableSize = gc::ChunkSize - sizeof(gc::ChunkTrailer);
 
     struct NurseryChunkLayout {
         char data[NurseryChunkUsableSize];
-        JSRuntime *runtime;
+        gc::ChunkTrailer trailer;
         uintptr_t start() { return uintptr_t(&data); }
-        uintptr_t end() { return uintptr_t(&runtime); }
+        uintptr_t end() { return uintptr_t(&trailer); }
     };
+    static_assert(sizeof(NurseryChunkLayout) == gc::ChunkSize,
+                  "Nursery chunk size must match gc::Chunk size.");
     NurseryChunkLayout &chunk(int index) const {
-        JS_STATIC_ASSERT(sizeof(NurseryChunkLayout) == gc::ChunkSize);
         JS_ASSERT(index < NumNurseryChunks);
         JS_ASSERT(start());
         return reinterpret_cast<NurseryChunkLayout *>(start())[index];
@@ -215,11 +229,13 @@ class Nursery
     /* Allocates a new GC thing from the tenured generation during minor GC. */
     void *allocateFromTenured(JS::Zone *zone, gc::AllocKind thingKind);
 
+    struct TenureCountCache;
+
     /*
      * Move the object at |src| in the Nursery to an already-allocated cell
      * |dst| in Tenured.
      */
-    void collectToFixedPoint(gc::MinorCollectionTracer *trc);
+    void collectToFixedPoint(gc::MinorCollectionTracer *trc, TenureCountCache &tenureCounts);
     JS_ALWAYS_INLINE void traceObject(gc::MinorCollectionTracer *trc, JSObject *src);
     JS_ALWAYS_INLINE void markSlots(gc::MinorCollectionTracer *trc, HeapSlot *vp, uint32_t nslots);
     JS_ALWAYS_INLINE void markSlots(gc::MinorCollectionTracer *trc, HeapSlot *vp, HeapSlot *end);

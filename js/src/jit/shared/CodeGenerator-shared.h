@@ -98,6 +98,10 @@ class CodeGeneratorShared : public LInstructionVisitor
     // beginning of the code buffer.
     size_t osrEntryOffset_;
 
+    TempAllocator &alloc() const {
+        return graph.mir().alloc();
+    }
+
     inline void setOsrEntryOffset(size_t offset) {
         JS_ASSERT(osrEntryOffset_ == 0);
         osrEntryOffset_ = offset;
@@ -672,7 +676,7 @@ inline OutOfLineCode *
 CodeGeneratorShared::oolCallVM(const VMFunction &fun, LInstruction *lir, const ArgSeq &args,
                                const StoreOutputTo &out)
 {
-    OutOfLineCode *ool = new OutOfLineCallVM<ArgSeq, StoreOutputTo>(lir, fun, args, out);
+    OutOfLineCode *ool = new(alloc()) OutOfLineCallVM<ArgSeq, StoreOutputTo>(lir, fun, args, out);
     if (!addOutOfLineCode(ool))
         return nullptr;
     return ool;

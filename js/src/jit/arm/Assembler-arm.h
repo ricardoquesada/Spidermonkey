@@ -7,9 +7,9 @@
 #ifndef jit_arm_Assembler_arm_h
 #define jit_arm_Assembler_arm_h
 
+#include "mozilla/ArrayUtils.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/MathAlgorithms.h"
-#include "mozilla/Util.h"
 
 #include "assembler/assembler/AssemblerBufferWithConstantPool.h"
 #include "jit/arm/Architecture-arm.h"
@@ -68,12 +68,8 @@ static const uint32_t NumCallTempNonArgRegs =
     mozilla::ArrayLength(CallTempNonArgRegs);
 class ABIArgGenerator
 {
-#if defined(JS_CPU_ARM_HARDFP)
     unsigned intRegIndex_;
     unsigned floatRegIndex_;
-#else
-    unsigned argRegIndex_;
-#endif
     uint32_t stackOffset_;
     ABIArg current_;
 
@@ -98,9 +94,9 @@ static MOZ_CONSTEXPR_VAR Register StackPointer = sp;
 static MOZ_CONSTEXPR_VAR Register FramePointer = InvalidReg;
 static MOZ_CONSTEXPR_VAR Register ReturnReg = r0;
 static MOZ_CONSTEXPR_VAR FloatRegister ReturnFloatReg = { FloatRegisters::d0 };
-static MOZ_CONSTEXPR_VAR FloatRegister ScratchFloatReg = { FloatRegisters::d1 };
+static MOZ_CONSTEXPR_VAR FloatRegister ScratchFloatReg = { FloatRegisters::d15 };
 
-static MOZ_CONSTEXPR_VAR FloatRegister NANReg = { FloatRegisters::d15 };
+static MOZ_CONSTEXPR_VAR FloatRegister NANReg = { FloatRegisters::d14 };
 
 static MOZ_CONSTEXPR_VAR FloatRegister d0  = {FloatRegisters::d0};
 static MOZ_CONSTEXPR_VAR FloatRegister d1  = {FloatRegisters::d1};
@@ -1160,7 +1156,7 @@ class Assembler
         LessThanOrEqual = LE,
         Overflow = VS,
         Signed = MI,
-        Unsigned = PL,
+        NotSigned = PL,
         Zero = EQ,
         NonZero = NE,
         Always  = AL,
@@ -1303,12 +1299,17 @@ class Assembler
     void initWithAllocator() {
         m_buffer.initWithAllocator();
 
+        // Note that the sizes for the double pools are set to 1020 rather than 1024 to
+        // work around a rare edge case that would otherwise bail out - which is not
+        // possible for Asm.js code and causes a compilation failure.  See the comment at
+        // the fail_bail call within IonAssemberBufferWithConstantPools.h: finishPool().
+
         // Set up the backwards double region
-        new (&pools_[2]) Pool (1024, 8, 4, 8, 8, m_buffer.LifoAlloc_, true);
+        new (&pools_[2]) Pool (1020, 8, 4, 8, 8, m_buffer.LifoAlloc_, true);
         // Set up the backwards 32 bit region
         new (&pools_[3]) Pool (4096, 4, 4, 8, 4, m_buffer.LifoAlloc_, true, true);
         // Set up the forwards double region
-        new (doublePool) Pool (1024, 8, 4, 8, 8, m_buffer.LifoAlloc_, false, false, &pools_[2]);
+        new (doublePool) Pool (1020, 8, 4, 8, 8, m_buffer.LifoAlloc_, false, false, &pools_[2]);
         // Set up the forwards 32 bit region
         new (int32Pool) Pool (4096, 4, 4, 8, 4, m_buffer.LifoAlloc_, false, true, &pools_[3]);
         for (int i = 0; i < 4; i++) {

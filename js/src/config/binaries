@@ -1,0 +1,1 @@
+$(DEPTH)/config/binaries $(DEPTH)/config/host_nsinstall.o $(DEPTH)/config/host_pathsub.o $(DEPTH)/config/nsinstall_real: $(DEPTH)/config/Makefile $(DEPTH)/config/backend.mk $(DEPTH)/config/nsinstall.c $(topsrcdir)/config/pathsub.h $(DEPTH)/config/pathsub.c

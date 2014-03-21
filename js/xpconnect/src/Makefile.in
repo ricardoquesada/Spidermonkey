@@ -3,12 +3,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-CPPSRCS += \
-  DictionaryHelpers.cpp \
-  GeneratedEvents.cpp \
-  dom_quickstubs.cpp \
-  $(NULL)
-
 LOCAL_INCLUDES = \
 		-I$(srcdir)/../wrappers \
 		-I$(srcdir)/../loader \
@@ -32,11 +26,6 @@ LOCAL_INCLUDES += \
     $(NULL)
 endif
 
-SHARED_LIBRARY_LIBS = \
-  ../loader/$(LIB_PREFIX)jsloader_s.$(LIB_SUFFIX) \
-  ../wrappers/$(LIB_PREFIX)xpcwrappers_s.$(LIB_SUFFIX) \
-  $(NULL)
-
 EXTRA_MDDEPEND_FILES = dom_qsgen.pp dictionary_helper_gen.pp event_impl_gen.pp
 
 INSTALL_TARGETS += extra_export_files
@@ -48,43 +37,14 @@ extra_export_files_FILES := \
 extra_export_files_DEST = $(DIST)/include
 extra_export_files_TARGET := export
 
-# XPCShellImpl.cpp requires hardcoded vendor/profile/appname stuff on Windows
-# This sucks, bug 921148 tracks this.
-ifeq (windows,$(MOZ_WIDGET_TOOLKIT))
-  ifdef MOZ_APP_PROFILE
-    DEFINES += -DMOZ_APP_PROFILE='"$(MOZ_APP_PROFILE)"'
-  else
-    ifdef MOZ_APP_VENDOR
-      DEFINES += -DMOZ_APP_VENDOR='"$(MOZ_APP_VENDOR)"'
-    endif
-    ifdef MOZ_APP_BASENAME
-      DEFINES += -DMOZ_APP_BASENAME='"$(MOZ_APP_BASENAME)"'
-    endif
-    DEFINES += -DMOZ_APP_NAME='"$(MOZ_APP_NAME)"'
-  endif
-endif
-
 include $(topsrcdir)/config/rules.mk
-
-DEFINES += \
-  -DJS_THREADSAFE \
-  $(NULL)
-
-ifdef MOZ_JSDEBUGGER
-DEFINES += -DMOZ_JSDEBUGGER
-endif
-
-nsXPConnect.$(OBJ_SUFFIX): dom_quickstubs.h
-
-XPCJSRuntime.$(OBJ_SUFFIX): dom_quickstubs.h
 
 dom_quickstubs.h: dom_quickstubs.cpp
 
 dom_quickstubs.cpp: $(srcdir)/dom_quickstubs.qsconf \
                     $(srcdir)/qsgen.py \
                     $(LIBXUL_DIST)/sdk/bin/header.py \
-                    $(LIBXUL_DIST)/sdk/bin/xpidl.py \
-                    $(DEPTH)/js/src/js-confdefs.h
+                    $(LIBXUL_DIST)/sdk/bin/xpidl.py
 	$(PYTHON) $(topsrcdir)/config/pythonpath.py \
 	  $(PLY_INCLUDE) \
 	  -I$(LIBXUL_DIST)/sdk/bin \
@@ -96,16 +56,13 @@ dom_quickstubs.cpp: $(srcdir)/dom_quickstubs.qsconf \
 	  $(ENABLE_TRACEABLE_FLAGS) \
 	  $(srcdir)/dom_quickstubs.qsconf
 
-DictionaryHelpers.$(OBJ_SUFFIX): DictionaryHelpers.cpp
-
 DictionaryHelpers.h: DictionaryHelpers.cpp
 
 DictionaryHelpers.cpp: $(srcdir)/dictionary_helper_gen.conf \
                        event_impl_gen.conf \
                        $(srcdir)/dictionary_helper_gen.py \
                        $(LIBXUL_DIST)/sdk/bin/header.py \
-                       $(LIBXUL_DIST)/sdk/bin/xpidl.py \
-                       $(DEPTH)/js/src/js-confdefs.h
+                       $(LIBXUL_DIST)/sdk/bin/xpidl.py
 	$(PYTHON) $(topsrcdir)/config/pythonpath.py \
 	  $(PLY_INCLUDE) \
 	  -I$(LIBXUL_DIST)/sdk/bin \
@@ -117,19 +74,15 @@ DictionaryHelpers.cpp: $(srcdir)/dictionary_helper_gen.conf \
 	  $(srcdir)/dictionary_helper_gen.conf \
 	  event_impl_gen.conf
 
-GeneratedEvents.$(OBJ_SUFFIX): GeneratedEvents.h \
-                               GeneratedEvents.cpp
-
 event_impl_gen.conf : $(srcdir)/event_impl_gen.conf.in
-	$(PYTHON) $(topsrcdir)/config/Preprocessor.py $(DEFINES) $(ACDEFINES) $^ > event_impl_gen.conf
+	$(call py_action,preprocessor,$(DEFINES) $(ACDEFINES) $^ -o event_impl_gen.conf)
 
 GeneratedEvents.h: $(srcdir)/dictionary_helper_gen.conf \
                    event_impl_gen.conf \
                    $(srcdir)/dictionary_helper_gen.py \
                    $(srcdir)/event_impl_gen.py \
                    $(LIBXUL_DIST)/sdk/bin/header.py \
-                   $(LIBXUL_DIST)/sdk/bin/xpidl.py \
-                   $(DEPTH)/js/src/js-confdefs.h
+                   $(LIBXUL_DIST)/sdk/bin/xpidl.py
 	$(PYTHON) $(topsrcdir)/config/pythonpath.py \
 	  $(PLY_INCLUDE) \
 	  -I$(LIBXUL_DIST)/sdk/bin \
@@ -147,8 +100,7 @@ GeneratedEvents.cpp: DictionaryHelpers.h \
                      $(srcdir)/dictionary_helper_gen.py \
                      $(srcdir)/event_impl_gen.py \
                      $(LIBXUL_DIST)/sdk/bin/header.py \
-                     $(LIBXUL_DIST)/sdk/bin/xpidl.py \
-                     $(DEPTH)/js/src/js-confdefs.h
+                     $(LIBXUL_DIST)/sdk/bin/xpidl.py
 	$(PYTHON) $(topsrcdir)/config/pythonpath.py \
 	  $(PLY_INCLUDE) \
 	  -I$(LIBXUL_DIST)/sdk/bin \
@@ -169,13 +121,6 @@ GeneratedEvents-webidl: event_impl_gen.conf
 	  event_impl_gen.conf
 
 GARBAGE += \
-		dom_quickstubs.h \
-		dom_quickstubs.cpp \
-		DictionaryHelpers.h \
-		DictionaryHelpers.cpp \
-		GeneratedEvents.h \
-		GeneratedEvents.cpp \
-		GeneratedEventClasses.h \
 		event_impl_gen.conf \
 		xpidl_debug \
 		$(MDDEPDIR)/dom_qsgen.pp \

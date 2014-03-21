@@ -6,6 +6,7 @@
 
 #include "jsfriendapi.h"
 #include "jsd_xpc.h"
+#include "xpcpublic.h"
 
 #include "js/GCAPI.h"
 #include "js/OldDebugAPI.h"
@@ -30,6 +31,7 @@
 
 /* XXX DOM dependency */
 #include "nsIScriptContext.h"
+#include "nsPIDOMWindow.h"
 #include "nsDOMJSUtils.h"
 #include "SandboxPrivate.h"
 #include "nsJSPrincipals.h"
@@ -1007,8 +1009,10 @@ jsdScript::CreatePPLineMap()
             "arg5", "arg6", "arg7", "arg8",
             "arg9", "arg10", "arg11", "arg12"
         };
+        JS::CompileOptions options(cx);
+        options.setFileAndLine("x-jsd:ppbuffer?type=function", 3);
         fun = JS_CompileUCFunction (cx, obj, "ppfun", nargs, argnames, chars,
-                                    length, "x-jsd:ppbuffer?type=function", 3);
+                                    length, options);
         if (!fun || !(script = JS_GetFunctionScript(cx, fun)))
             return nullptr;
         baseLine = 3;
@@ -1028,7 +1032,9 @@ jsdScript::CreatePPLineMap()
         }
 
         JS::Anchor<JSString *> kungFuDeathGrip(jsstr);
-        script = JS_CompileUCScript (cx, obj, chars, length, "x-jsd:ppbuffer?type=script", 1);
+        JS::CompileOptions options(cx);
+        options.setFileAndLine("x-jsd:ppbuffer?type=script", 1);
+        script = JS_CompileUCScript(cx, obj, chars, length, options);
         if (!script)
             return nullptr;
         baseLine = 1;
@@ -1585,7 +1591,9 @@ jsdContext::FromPtr (JSDContext *aJSDCx, JSContext *aJSCx)
 }
 
 jsdContext::jsdContext (JSDContext *aJSDCx, JSContext *aJSCx,
-                        nsISupports *aISCx) : mValid(true), mTag(0),
+                        nsISupports *aISCx) : mValid(true),
+                                              mScriptDisabledForWindowWithID(0),
+                                              mTag(0),
                                               mJSDCx(aJSDCx),
                                               mJSCx(aJSCx), mISCx(aISCx)
 {
@@ -1643,7 +1651,6 @@ jsdContext::GetJSContext(JSContext **_rval)
 #define JSOPTION_WERROR                         JS_BIT(1)
 #define JSOPTION_VAROBJFIX                      JS_BIT(2)
 #define JSOPTION_PRIVATE_IS_NSISUPPORTS         JS_BIT(3)
-#define JSOPTION_COMPILE_N_GO                   JS_BIT(4)
 #define JSOPTION_DONT_REPORT_UNCAUGHT           JS_BIT(8)
 #define JSOPTION_NO_DEFAULT_COMPARTMENT_OBJECT  JS_BIT(11)
 #define JSOPTION_NO_SCRIPT_RVAL                 JS_BIT(12)
@@ -1662,13 +1669,12 @@ jsdContext::GetOptions(uint32_t *_rval)
            | (JS::ContextOptionsRef(mJSCx).werror() ? JSOPTION_WERROR : 0)
            | (JS::ContextOptionsRef(mJSCx).varObjFix() ? JSOPTION_VAROBJFIX : 0)
            | (JS::ContextOptionsRef(mJSCx).privateIsNSISupports() ? JSOPTION_PRIVATE_IS_NSISUPPORTS : 0)
-           | (JS::ContextOptionsRef(mJSCx).compileAndGo() ? JSOPTION_COMPILE_N_GO : 0)
            | (JS::ContextOptionsRef(mJSCx).dontReportUncaught() ? JSOPTION_DONT_REPORT_UNCAUGHT : 0)
            | (JS::ContextOptionsRef(mJSCx).noDefaultCompartmentObject() ? JSOPTION_NO_DEFAULT_COMPARTMENT_OBJECT : 0)
            | (JS::ContextOptionsRef(mJSCx).noScriptRval() ? JSOPTION_NO_SCRIPT_RVAL : 0)
+           | (JS::ContextOptionsRef(mJSCx).strictMode() ? JSOPTION_STRICT_MODE : 0)
            | (JS::ContextOptionsRef(mJSCx).baseline() ? JSOPTION_BASELINE : 0)
            | (JS::ContextOptionsRef(mJSCx).typeInference() ? JSOPTION_TYPE_INFERENCE : 0)
-           | (JS::ContextOptionsRef(mJSCx).strictMode() ? JSOPTION_STRICT_MODE : 0)
            | (JS::ContextOptionsRef(mJSCx).ion() ? JSOPTION_ION : 0)
            | (JS::ContextOptionsRef(mJSCx).asmJS() ? JSOPTION_ASMJS : 0);
     return NS_OK;
@@ -1688,13 +1694,12 @@ jsdContext::SetOptions(uint32_t options)
     JS::ContextOptionsRef(mJSCx).setExtraWarnings(options & JSOPTION_EXTRA_WARNINGS)
                                 .setWerror(options & JSOPTION_WERROR)
                                 .setVarObjFix(options & JSOPTION_VAROBJFIX)
-                                .setCompileAndGo(options & JSOPTION_COMPILE_N_GO)
                                 .setDontReportUncaught(options & JSOPTION_DONT_REPORT_UNCAUGHT)
                                 .setNoDefaultCompartmentObject(options & JSOPTION_NO_DEFAULT_COMPARTMENT_OBJECT)
                                 .setNoScriptRval(options & JSOPTION_NO_SCRIPT_RVAL)
+                                .setStrictMode(options & JSOPTION_STRICT_MODE)
                                 .setBaseline(options & JSOPTION_BASELINE)
                                 .setTypeInference(options & JSOPTION_TYPE_INFERENCE)
-                                .setStrictMode(options & JSOPTION_STRICT_MODE)
                                 .setIon(options & JSOPTION_ION)
                                 .setAsmJS(options & JSOPTION_ASMJS);
     return NS_OK;
@@ -1754,17 +1759,7 @@ NS_IMETHODIMP
 jsdContext::GetScriptsEnabled (bool *_rval)
 {
     ASSERT_VALID_EPHEMERAL;
-    if (!mISCx) {
-        *_rval = true;
-        return NS_OK;
-    }
-
-    nsCOMPtr<nsIScriptContext> context = do_QueryInterface(mISCx);
-    if (!context)
-        return NS_ERROR_NO_INTERFACE;
-
-    *_rval = context->GetScriptsEnabled();
-
+    *_rval = IsScriptEnabled();
     return NS_OK;
 }
 
@@ -1772,17 +1767,29 @@ NS_IMETHODIMP
 jsdContext::SetScriptsEnabled (bool _rval)
 {
     ASSERT_VALID_EPHEMERAL;
-    if (!mISCx) {
-        if (_rval)
-            return NS_OK;
-        return NS_ERROR_NO_INTERFACE;
+    if (_rval == IsScriptEnabled())
+        return NS_OK;
+
+    nsCOMPtr<nsIScriptContext> scx = do_QueryInterface(mISCx);
+    NS_ENSURE_TRUE(scx && scx->GetWindowProxy(), NS_ERROR_NO_INTERFACE);
+    nsCOMPtr<nsPIDOMWindow> piWin = do_QueryInterface(scx->GetGlobalObject());
+    NS_ENSURE_TRUE(piWin, NS_ERROR_NO_INTERFACE);
+    uint64_t currentWindowID = piWin->WindowID();
+
+    if (_rval) {
+        if (mScriptDisabledForWindowWithID != currentWindowID) {
+            NS_WARNING("Please stop abusing JSD and fix your code!");
+            return NS_ERROR_UNEXPECTED;
+        }
+        xpc::Scriptability::Get(scx->GetWindowProxy()).Unblock();
+        piWin->ResumeTimeouts();
+        mScriptDisabledForWindowWithID = 0;
     }
-
-    nsCOMPtr<nsIScriptContext> context = do_QueryInterface(mISCx);
-    if (!context)
-        return NS_ERROR_NO_INTERFACE;
-
-    context->SetScriptsEnabled(_rval, true);
+    else {
+        piWin->SuspendTimeouts();
+        xpc::Scriptability::Get(scx->GetWindowProxy()).Block();
+        mScriptDisabledForWindowWithID = currentWindowID;
+    }
 
     return NS_OK;
 }

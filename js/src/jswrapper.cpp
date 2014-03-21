@@ -149,12 +149,10 @@ ErrorCopier::~ErrorCopier()
     JSContext *cx = ac.ref().context()->asJSContext();
     if (ac.ref().origin() != cx->compartment() && cx->isExceptionPending()) {
         RootedValue exc(cx, cx->getPendingException());
-        if (exc.isObject() && exc.toObject().is<ErrorObject>() &&
-            exc.toObject().as<ErrorObject>().getExnPrivate())
-        {
+        if (exc.isObject() && exc.toObject().is<ErrorObject>()) {
             cx->clearPendingException();
             ac.destroy();
-            Rooted<JSObject*> errObj(cx, &exc.toObject());
+            Rooted<ErrorObject*> errObj(cx, &exc.toObject().as<ErrorObject>());
             JSObject *copyobj = js_CopyErrorObject(cx, errObj, scope);
             if (copyobj)
                 cx->setPendingException(ObjectValue(*copyobj));
@@ -181,9 +179,12 @@ bool Wrapper::finalizeInBackground(Value priv)
     /*
      * Make the 'background-finalized-ness' of the wrapper the same as the
      * wrapped object, to allow transplanting between them.
+     *
+     * If the wrapped object is in the nursery then we know it doesn't have a
+     * finalizer, and so background finalization is ok.
      */
     if (IsInsideNursery(priv.toObject().runtimeFromMainThread(), &priv.toObject()))
-        return false;
+        return true;
     return IsBackgroundFinalized(priv.toObject().tenuredGetAllocKind());
 }
 
@@ -686,6 +687,25 @@ SecurityWrapper<Base>::defineProperty(JSContext *cx, HandleObject wrapper,
     return Base::defineProperty(cx, wrapper, id, desc);
 }
 
+template <class Base>
+bool
+SecurityWrapper<Base>::watch(JSContext *cx, HandleObject proxy,
+                             HandleId id, HandleObject callable)
+{
+    JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_UNWRAP_DENIED);
+    return false;
+}
+
+template <class Base>
+bool
+SecurityWrapper<Base>::unwatch(JSContext *cx, HandleObject proxy,
+                               HandleId id)
+{
+    JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_UNWRAP_DENIED);
+    return false;
+}
+
+
 template class js::SecurityWrapper<Wrapper>;
 template class js::SecurityWrapper<CrossCompartmentWrapper>;
 
@@ -882,7 +902,7 @@ js::NukeCrossCompartmentWrappers(JSContext* cx,
     // Iterate through scopes looking for system cross compartment wrappers
     // that point to an object that shares a global with obj.
 
-    for (CompartmentsIter c(rt); !c.done(); c.next()) {
+    for (CompartmentsIter c(rt, SkipAtoms); !c.done(); c.next()) {
         if (!sourceFilter.match(c))
             continue;
 
@@ -890,7 +910,7 @@ js::NukeCrossCompartmentWrappers(JSContext* cx,
         for (JSCompartment::WrapperEnum e(c); !e.empty(); e.popFront()) {
             // Some cross-compartment wrappers are for strings.  We're not
             // interested in those.
-            const CrossCompartmentKey &k = e.front().key;
+            const CrossCompartmentKey &k = e.front().key();
             if (k.kind != CrossCompartmentKey::ObjectWrapper)
                 continue;
 
@@ -938,7 +958,7 @@ js::RemapWrapper(JSContext *cx, JSObject *wobjArg, JSObject *newTargetArg)
     // The old value should still be in the cross-compartment wrapper map, and
     // the lookup should return wobj.
     WrapperMap::Ptr p = wcompartment->lookupWrapper(origv);
-    JS_ASSERT(&p->value.unsafeGet()->toObject() == wobj);
+    JS_ASSERT(&p->value().unsafeGet()->toObject() == wobj);
     wcompartment->removeWrapper(p);
 
     // When we remove origv from the wrapper map, its wrapper, wobj, must
@@ -989,7 +1009,7 @@ js::RemapAllWrappersForObject(JSContext *cx, JSObject *oldTargetArg,
     if (!toTransplant.reserve(cx->runtime()->numCompartments))
         return false;
 
-    for (CompartmentsIter c(cx->runtime()); !c.done(); c.next()) {
+    for (CompartmentsIter c(cx->runtime(), SkipAtoms); !c.done(); c.next()) {
         if (WrapperMap::Ptr wp = c->lookupWrapper(origv)) {
             // We found a wrapper. Remember and root it.
             toTransplant.infallibleAppend(WrapperValue(wp));
@@ -1014,7 +1034,7 @@ js::RecomputeWrappers(JSContext *cx, const CompartmentFilter &sourceFilter,
 
     AutoWrapperVector toRecompute(cx);
 
-    for (CompartmentsIter c(cx->runtime()); !c.done(); c.next()) {
+    for (CompartmentsIter c(cx->runtime(), SkipAtoms); !c.done(); c.next()) {
         // Filter by source compartment.
         if (!sourceFilter.match(c))
             continue;
@@ -1022,7 +1042,7 @@ js::RecomputeWrappers(JSContext *cx, const CompartmentFilter &sourceFilter,
         // Iterate over the wrappers, filtering appropriately.
         for (JSCompartment::WrapperEnum e(c); !e.empty(); e.popFront()) {
             // Filter out non-objects.
-            const CrossCompartmentKey &k = e.front().key;
+            const CrossCompartmentKey &k = e.front().key();
             if (k.kind != CrossCompartmentKey::ObjectWrapper)
                 continue;
 

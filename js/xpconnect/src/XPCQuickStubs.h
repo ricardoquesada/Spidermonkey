@@ -92,14 +92,6 @@ xpc_qsThrowGetterSetterFailed(JSContext *cx, nsresult rv,
 bool
 xpc_qsThrowMethodFailed(JSContext *cx, nsresult rv, jsval *vp);
 
-bool
-xpc_qsThrowMethodFailedWithCcx(XPCCallContext &ccx, nsresult rv);
-
-bool
-xpc_qsThrowMethodFailedWithDetails(JSContext *cx, nsresult rv,
-                                   const char *ifaceName,
-                                   const char *memberName);
-
 /**
  * Fail after converting a method argument fails.
  *
@@ -235,7 +227,7 @@ protected:
      * when |v| is JSVAL_IS_NULL and JSVAL_IS_VOID respectively.
      */
     template<class traits>
-    JSString* InitOrStringify(JSContext* cx, jsval v,
+    JSString* InitOrStringify(JSContext* cx, JS::HandleValue v,
                               JS::MutableHandleValue pval,
                               bool notpassed,
                               StringificationBehavior nullBehavior,
@@ -263,7 +255,7 @@ protected:
                 return nullptr;
             }
 
-            s = JS_ValueToString(cx, v);
+            s = JS::ToString(cx, v);
             if (!s) {
                 mValid = false;
                 return nullptr;
@@ -361,10 +353,6 @@ xpc_qsJsvalToCharStr(JSContext *cx, jsval v, JSAutoByteString *bytes);
 bool
 xpc_qsJsvalToWcharStr(JSContext *cx, jsval v, JS::MutableHandleValue pval, const PRUnichar **pstr);
 
-
-/** Convert an nsString to JSString, returning true on success. This will sometimes modify |str| to be empty. */
-bool
-xpc_qsStringToJsstring(JSContext *cx, nsString &str, JSString **rval);
 
 nsresult
 getWrapper(JSContext *cx,

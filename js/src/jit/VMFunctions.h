@@ -570,7 +570,8 @@ JSObject *NewGCThing(JSContext *cx, gc::AllocKind allocKind, size_t thingSize,
                      gc::InitialHeap initialHeap);
 
 bool CheckOverRecursed(JSContext *cx);
-bool CheckOverRecursedWithExtra(JSContext *cx, uint32_t extra);
+bool CheckOverRecursedWithExtra(JSContext *cx, BaselineFrame *frame,
+                                uint32_t extra, uint32_t earlyCheck);
 
 bool DefVarOrConst(JSContext *cx, HandlePropertyName dn, unsigned attrs, HandleObject scopeChain);
 bool SetConst(JSContext *cx, HandlePropertyName name, HandleObject scopeChain, HandleValue rval);
@@ -660,6 +661,7 @@ bool InitBaselineFrameForOsr(BaselineFrame *frame, StackFrame *interpFrame,
 JSObject *CreateDerivedTypedObj(JSContext *cx, HandleObject type,
                                 HandleObject owner, int32_t offset);
 
+bool Recompile(JSContext *cx);
 } // namespace jit
 } // namespace js
 

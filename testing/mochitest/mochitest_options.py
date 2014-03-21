@@ -69,6 +69,12 @@ class MochitestOptions(optparse.OptionParser):
           "help": "file to which logging occurs",
           "default": "",
         }],
+        [["--hide-subtests"],
+        { "action": "store_true",
+          "dest": "hide_subtests",
+          "help": "only show subtest log output if there was a failure",
+          "default": False,
+        }],
         [["--autorun"],
         { "action": "store_true",
           "dest": "autorun",
@@ -143,6 +149,20 @@ class MochitestOptions(optparse.OptionParser):
           "type": "string",
           "dest": "testPath",
           "help": "start in the given directory's tests",
+          "default": "",
+        }],
+        [["--start-at"],
+        { "action": "store",
+          "type": "string",
+          "dest": "startAt",
+          "help": "skip over tests until reaching the given test",
+          "default": "",
+        }],
+        [["--end-at"],
+        { "action": "store",
+          "type": "string",
+          "dest": "endAt",
+          "help": "don't run any tests after the given one",
           "default": "",
         }],
         [["--browser-chrome"],
@@ -260,9 +280,8 @@ class MochitestOptions(optparse.OptionParser):
         [["--run-until-failure"],
         { "action": "store_true",
           "dest": "runUntilFailure",
-          "help": "Run a test repeatedly and stops on the first time the test fails. "
-                "Only available when running a single test. Default cap is 30 runs, "
-                "which can be overwritten with the --repeat parameter.",
+          "help": "Run tests repeatedly and stops on the first time a test fails. "
+                "Default cap is 30 runs, which can be overwritten with the --repeat parameter.",
           "default": False,
         }],
         [["--run-only-tests"],
@@ -326,6 +345,44 @@ class MochitestOptions(optparse.OptionParser):
           "dest": "jsdebugger",
           "help": "open the browser debugger",
         }],
+        [["--debug-on-failure"],
+        { "action": "store_true",
+          "default": False,
+          "dest": "debugOnFailure",
+          "help": "breaks execution and enters the JS debugger on a test failure. Should be used together with --jsdebugger."
+        }],
+        [["--e10s"],
+        { "action": "store_true",
+          "default": False,
+          "dest": "e10s",
+          "help": "Run tests with electrolysis preferences and test filtering enabled.",
+        }],
+        [["--dmd-path"],
+         { "action": "store",
+           "default": None,
+           "dest": "dmdPath",
+           "help": "Specifies the path to the directory containing the shared library for DMD.",
+        }],
+        [["--dump-output-directory"],
+         { "action": "store",
+           "default": None,
+           "dest": "dumpOutputDirectory",
+           "help": "Specifies the directory in which to place dumped memory reports.",
+        }],
+        [["--dump-about-memory-after-test"],
+         { "action": "store_true",
+           "default": False,
+           "dest": "dumpAboutMemoryAfterTest",
+           "help": "Produce an about:memory dump after each test in the directory specified "
+                  "by --dump-output-directory."
+        }],
+        [["--dump-dmd-after-test"],
+         { "action": "store_true",
+           "default": False,
+           "dest": "dumpDMDAfterTest",
+           "help": "Produce a DMD dump after each test in the directory specified "
+                  "by --dump-output-directory."
+        }],
     ]
 
     def __init__(self, **kwargs):
@@ -367,6 +424,8 @@ class MochitestOptions(optparse.OptionParser):
         options.xrePath = mochitest.getFullPath(options.xrePath)
         options.profilePath = mochitest.getFullPath(options.profilePath)
         options.app = mochitest.getFullPath(options.app)
+        if options.dmdPath is not None:
+            options.dmdPath = mochitest.getFullPath(options.dmdPath)
 
         if not os.path.exists(options.app):
             msg = """\
@@ -428,6 +487,9 @@ class MochitestOptions(optparse.OptionParser):
             ]
             options.autorun = False
 
+        if options.debugOnFailure and not options.jsdebugger:
+          self.error("--debug-on-failure should be used together with --jsdebugger.")
+
         # Try to guess the testing modules directory.
         # This somewhat grotesque hack allows the buildbot machines to find the
         # modules directory without having to configure the buildbot hosts. This
@@ -466,10 +528,16 @@ class MochitestOptions(optparse.OptionParser):
                            mochitest.immersiveHelperPath)
 
         if options.runUntilFailure:
-            if not os.path.isfile(os.path.join(mochitest.oldcwd, os.path.dirname(__file__), mochitest.getTestRoot(options), options.testPath)):
-                self.error("--run-until-failure can only be used together with --test-path specifying a single test.")
             if not options.repeat:
                 options.repeat = 29
+
+        if options.dumpOutputDirectory is None:
+            options.dumpOutputDirectory = tempfile.gettempdir()
+
+        if options.dumpAboutMemoryAfterTest or options.dumpDMDAfterTest:
+            if not os.path.isdir(options.dumpOutputDirectory):
+                self.error('--dump-output-directory not a directory: %s' %
+                           options.dumpOutputDirectory)
 
         return options
 

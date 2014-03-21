@@ -10,7 +10,6 @@ dnl ========================================================
 AC_PREREQ(2.13)
 AC_INIT(jsapi.h)
 AC_CONFIG_AUX_DIR(${srcdir}/build/autoconf)
-AC_CONFIG_HEADER(js-config.h)
 AC_CANONICAL_SYSTEM
 TARGET_CPU="${target_cpu}"
 TARGET_VENDOR="${target_vendor}"
@@ -125,6 +124,7 @@ MOZ_ARG_DISABLE_BOOL(compile-environment,
 [  --disable-compile-environment
                           Disable compiler/library checks.],
     COMPILE_ENVIRONMENT= )
+AC_SUBST(COMPILE_ENVIRONMENT)
 
 dnl Check for Perl first -- needed for win32 SDK checks
 MOZ_PATH_PROGS(PERL, $PERL perl5 perl )
@@ -175,11 +175,6 @@ MOZ_ARG_WITH_STRING(gonk-toolchain-prefix,
 [  --with-gonk-toolchain-prefix=DIR
                           prefix to gonk toolchain commands],
     gonk_toolchain_prefix=$withval)
-
-MOZ_ARG_WITH_STRING(ios-target,
-[  --with-ios-target=SDK
-                     what target sdk to use, defaults to iPhoneSimulator],
-    ios_target=$withval)
 
 if test -n "$gonkdir" ; then
     kernel_name=`uname -s | tr "[[:upper:]]" "[[:lower:]]"`
@@ -232,8 +227,6 @@ if test -n "$gonkdir" ; then
     AC_DEFINE(ANDROID)
     AC_DEFINE(GONK)
     CROSS_COMPILE=1
-elif test -n "$ios_target" ; then
-    MOZ_IOS_SDK
 else
     MOZ_ANDROID_NDK
 fi
@@ -291,7 +284,7 @@ dnl to use the cross-compile setup for now
 dnl ========================================================
 
 dnl AR_FLAGS set here so HOST_AR_FLAGS can be set correctly (see bug 538269)
-AR_FLAGS='cr $@'
+AR_FLAGS='crs $@'
 
 if test "$COMPILE_ENVIRONMENT"; then
 
@@ -679,15 +672,12 @@ dnl ========================================================
 dnl = Mac OS X SDK support
 dnl ========================================================
 MACOS_SDK_DIR=
-NEXT_ROOT=
 MOZ_ARG_WITH_STRING(macos-sdk,
 [  --with-macos-sdk=dir    Location of platform SDK to use (Mac OS X only)],
     MACOS_SDK_DIR=$withval)
 
 dnl MACOS_SDK_DIR will be set to the SDK location whenever one is in use.
-dnl NEXT_ROOT will be set and exported only if it's needed.
 AC_SUBST(MACOS_SDK_DIR)
-AC_SUBST(NEXT_ROOT)
 
 if test "$MACOS_SDK_DIR"; then
   dnl Sync this section with the ones in NSPR and NSS.
@@ -1145,7 +1135,6 @@ if test "$GNU_CC"; then
     #
     _WARNINGS_CFLAGS="${_WARNINGS_CFLAGS} -Wall -Wpointer-arith -Wdeclaration-after-statement"
     MOZ_C_SUPPORTS_WARNING(-W, error=return-type, ac_c_has_werror_return_type)
-    MOZ_C_SUPPORTS_WARNING(-W, type-limits, ac_c_has_wtype_limits)
     MOZ_C_SUPPORTS_WARNING(-W, empty-body, ac_c_has_wempty_body)
     MOZ_C_SUPPORTS_WARNING(-W, sign-compare, ac_c_has_sign_compare)
 
@@ -1330,7 +1319,7 @@ case "$host" in
 *mingw*)
     if test -n "$_WIN32_MSVC"; then
         HOST_AR=lib
-        HOST_AR_FLAGS='-NOLOGO -OUT:"$@"'
+        HOST_AR_FLAGS='-NOLOGO -OUT:$@'
         HOST_CFLAGS="$HOST_CFLAGS -TC -nologo -Fd\$(HOST_PDBFILE)"
         HOST_RANLIB='echo ranlib'
     else
@@ -1629,7 +1618,7 @@ ia64*-hpux*)
             AS="$(basename "$AS_BIN")"
         fi
         AR='lib'
-        AR_FLAGS='-NOLOGO -OUT:"$@"'
+        AR_FLAGS='-NOLOGO -OUT:$@'
         AR_EXTRACT=
         RANLIB='echo not_ranlib'
         STRIP='echo not_strip'
@@ -1655,8 +1644,11 @@ ia64*-hpux*)
         if test "$_CC_SUITE" -ge "12"; then
             dnl VS2013+ requires -FS when parallel building by make -jN.
             dnl If nothing, compiler sometimes causes C1041 error.
-            CFLAGS="$CFLAGS -FS"
-            CXXFLAGS="$CXXFLAGS -FS"
+            dnl
+            dnl Visual Studio 2013 supports -Gw flags
+            dnl http://blogs.msdn.com/b/vcblog/archive/2013/09/11/introducing-gw-compiler-switch.aspx
+            CFLAGS="$CFLAGS -FS -Gw"
+            CXXFLAGS="$CXXFLAGS -FS -Gw"
         fi
         # khuey says we can safely ignore MSVC warning C4251
         # MSVC warning C4244 (implicit type conversion may lose data) warns
@@ -2094,7 +2086,10 @@ if test "$ENABLE_YARR_JIT"; then
     AC_DEFINE(ENABLE_YARR_JIT)
 fi
 
-MOZ_COMPILER_OPTS
+if test -n "$COMPILE_ENVIRONMENT"; then
+    MOZ_COMPILER_OPTS
+fi
+
 if test -z "$SKIP_COMPILER_CHECKS"; then
 dnl Checks for typedefs, structures, and compiler characteristics.
 dnl ========================================================
@@ -2547,15 +2542,23 @@ fi
 AC_CACHE_CHECK(
     [for res_ninit()],
     ac_cv_func_res_ninit,
-    [AC_TRY_LINK([
-        #ifdef linux
-        #define _BSD_SOURCE 1
-        #endif
-        #include <resolv.h>
-        ],
-        [int foo = res_ninit(&_res);],
-        [ac_cv_func_res_ninit=yes],
-        [ac_cv_func_res_ninit=no])
+    [if test "$OS_TARGET" = NetBSD -o "$OS_TARGET" = OpenBSD; then
+        dnl no need for res_ninit() on NetBSD and OpenBSD
+        ac_cv_func_res_ninit=no
+     else
+       AC_TRY_LINK([
+            #ifdef linux
+            #define _BSD_SOURCE 1
+            #endif
+            #include <sys/types.h>
+            #include <netinet/in.h>
+            #include <arpa/nameser.h>
+            #include <resolv.h>
+            ],
+            [int foo = res_ninit(&_res);],
+            [ac_cv_func_res_ninit=yes],
+            [ac_cv_func_res_ninit=no])
+     fi
     ])
 
 if test "$ac_cv_func_res_ninit" = "yes"; then
@@ -2566,17 +2569,17 @@ dnl    AC_CHECK_LIB(bind, res_ninit, AC_DEFINE(HAVE_RES_NINIT),
 dnl        AC_CHECK_LIB(resolv, res_ninit, AC_DEFINE(HAVE_RES_NINIT)))
 fi
 
+AM_LANGINFO_CODESET
+
 AC_LANG_C
 
 dnl **********************
 dnl *** va_copy checks ***
 dnl **********************
-dnl we currently check for all three va_copy possibilities, so we get
-dnl all results in config.log for bug reports.
-AC_MSG_CHECKING(for an implementation of va_copy())
-AC_CACHE_VAL(ac_cv_va_copy,[
-    AC_TRY_RUN([
-        #include <stdarg.h>
+AC_CACHE_CHECK([for an implementation of va_copy()],
+               ac_cv_va_copy,
+    [AC_TRY_COMPILE([#include <stdarg.h>
+                     #include <stdlib.h>
         void f (int i, ...) {
             va_list args1, args2;
             va_start (args1, i);
@@ -2584,37 +2587,16 @@ AC_CACHE_VAL(ac_cv_va_copy,[
             if (va_arg (args2, int) != 42 || va_arg (args1, int) != 42)
                 exit (1);
             va_end (args1); va_end (args2);
-        }
-        int main() { f (0, 42); return 0; }],
-        ac_cv_va_copy=yes,
-        ac_cv_va_copy=no,
-        ac_cv_va_copy=no
-    )
-])
-AC_MSG_RESULT($ac_cv_va_copy)
-AC_MSG_CHECKING(for an implementation of __va_copy())
-AC_CACHE_VAL(ac_cv___va_copy,[
-    AC_TRY_RUN([
-        #include <stdarg.h>
-        void f (int i, ...) {
-            va_list args1, args2;
-            va_start (args1, i);
-            __va_copy (args2, args1);
-            if (va_arg (args2, int) != 42 || va_arg (args1, int) != 42)
-                exit (1);
-            va_end (args1); va_end (args2);
-        }
-        int main() { f (0, 42); return 0; }],
-        ac_cv___va_copy=yes,
-        ac_cv___va_copy=no,
-        ac_cv___va_copy=no
-    )
-])
-AC_MSG_RESULT($ac_cv___va_copy)
-AC_MSG_CHECKING(whether va_lists can be copied by value)
-AC_CACHE_VAL(ac_cv_va_val_copy,[
-    AC_TRY_RUN([
-        #include <stdarg.h>
+        }],
+        [f(0, 42); return 0],
+        [ac_cv_va_copy=yes],
+        [ac_cv_va_copy=no]
+    )]
+)
+AC_CACHE_CHECK([whether va_list can be copied by value],
+               ac_cv_va_val_copy,
+    [AC_TRY_COMPILE([#include <stdarg.h>
+                     #include <stdlib.h>
         void f (int i, ...) {
             va_list args1, args2;
             va_start (args1, i);
@@ -2622,25 +2604,20 @@ AC_CACHE_VAL(ac_cv_va_val_copy,[
             if (va_arg (args2, int) != 42 || va_arg (args1, int) != 42)
                 exit (1);
             va_end (args1); va_end (args2);
-        }
-        int main() { f (0, 42); return 0; }],
-        ac_cv_va_val_copy=yes,
-        ac_cv_va_val_copy=no,
-        ac_cv_va_val_copy=yes
-    )
-])
+        }],
+        [f(0, 42); return 0],
+        [ac_cv_va_val_copy=yes],
+        [ac_cv_va_val_copy=no],
+    )]
+)
 if test "x$ac_cv_va_copy" = "xyes"; then
     AC_DEFINE(VA_COPY, va_copy)
-    AC_DEFINE(HAVE_VA_COPY)
-elif test "x$ac_cv___va_copy" = "xyes"; then
-    AC_DEFINE(VA_COPY, __va_copy)
     AC_DEFINE(HAVE_VA_COPY)
 fi
 
 if test "x$ac_cv_va_val_copy" = "xno"; then
    AC_DEFINE(HAVE_VA_LIST_AS_ARRAY)
 fi
-AC_MSG_RESULT($ac_cv_va_val_copy)
 
 dnl ===================================================================
 dnl ========================================================
@@ -2906,6 +2883,21 @@ AC_SUBST(NIGHTLY_BUILD)
 AC_SUBST(RELEASE_BUILD)
 
 dnl ========================================================
+dnl Disable compiling sources in unified mode.
+dnl ========================================================
+
+if test -z "$NIGHTLY_BUILD"; then
+    MOZ_DISABLE_UNIFIED_COMPILATION=1
+fi
+
+MOZ_ARG_DISABLE_BOOL(unified-compilation,
+[  --disable-unified-compilation
+                          Disable unified compilation of some C/C++ sources],
+    MOZ_DISABLE_UNIFIED_COMPILATION=1,
+    MOZ_DISABLE_UNIFIED_COMPILATION=)
+AC_SUBST(MOZ_DISABLE_UNIFIED_COMPILATION)
+
+dnl ========================================================
 dnl =
 dnl = Check for external package dependencies
 dnl =
@@ -2940,11 +2932,50 @@ MOZ_ARG_WITH_STRING(nspr-libs,
 AC_SUBST(NSPR_CFLAGS)
 AC_SUBST(NSPR_LIBS)
 
+JS_THREADSAFE=1
+MOZ_ARG_DISABLE_BOOL(threadsafe,
+[  --disable-threadsafe    Disable support for multiple threads.],
+    JS_THREADSAFE= ,
+    JS_THREADSAFE=1 )
+if test -n "$JS_THREADSAFE"; then
+    AC_DEFINE(JS_THREADSAFE)
+fi
+
+if test "$_USE_SYSTEM_NSPR" || (test "$NSPR_CFLAGS" -o "$NSPR_LIBS"); then
+  _HAS_NSPR=1
+fi
+
+case "$target" in
+  *linux*|*darwin*|*dragonfly*|*freebsd*|*netbsd*|*openbsd*)
+    if test -z "$_HAS_NSPR" && test "$JS_THREADSAFE"; then
+      JS_POSIX_NSPR_DEFAULT=1
+    fi
+    ;;
+esac
+
+MOZ_ARG_ENABLE_BOOL(posix-nspr-emulation,
+[  --enable-posix-nspr-emulation
+                          Enable emulation of NSPR for POSIX systems],
+    JS_POSIX_NSPR=1,
+    JS_POSIX_NSPR=,
+    JS_POSIX_NSPR="$JS_POSIX_NSPR_DEFAULT" )
+if test -n "$JS_POSIX_NSPR"; then
+    AC_DEFINE(JS_POSIX_NSPR)
+fi
+
+AC_SUBST(JS_POSIX_NSPR)
+
 dnl Pass either --with-system-nspr or (--with-nspr-cflags and
 dnl --with-nspr-libs), but not both.
 if test "$_USE_SYSTEM_NSPR" && (test "$NSPR_CFLAGS" -o "$NSPR_LIBS"); then
     AC_MSG_ERROR([--with-system-nspr and --with-nspr-libs/cflags are mutually exclusive.
 See 'configure --help'.])
+fi
+
+dnl Can't use --enable-posix-nspr-emulation if compiling with NSPR.
+if test "$_HAS_NSPR" && test "$JS_POSIX_NSPR"; then
+    AC_MSG_ERROR([--enable-posix-nspr-emulation is mututally exclusive with --with-system-nspr
+and --with-nspr-libs/cflags. See 'configure --help'.])
 fi
 
 if test -n "$_USE_SYSTEM_NSPR"; then
@@ -2977,6 +3008,10 @@ ZLIB_DIR=yes
 
 MOZ_ZLIB_CHECK([1.2.3])
 
+if test -n "$ZLIB_IN_MOZGLUE"; then
+    AC_DEFINE(ZLIB_IN_MOZGLUE)
+fi
+
 dnl ========================================================
 dnl system libffi Support
 dnl ========================================================
@@ -3005,6 +3040,19 @@ dnl ========================================================
 MOZ_ARG_HEADER(Application)
 
 ENABLE_TESTS=1
+
+dnl ========================================================
+dnl Tell the build system that ../../mfbt exists outside
+dnl the source tree, but files from there are included from
+dnl inside the tree.
+dnl
+dnl This should probably be a --with-external-source-dir
+dnl option, like the root mozilla-central configure, but
+dnl then anyone building the standalone js shell would need
+dnl to remember to pass it, and it is only used in one file.
+dnl ========================================================
+EXTERNAL_SOURCE_DIR=../../mfbt
+AC_SUBST(EXTERNAL_SOURCE_DIR)
 
 USE_ARM_KUSER=
 
@@ -4093,15 +4141,6 @@ elif test "$OS_ARCH" != "WINNT" -a "$OS_ARCH" != "OS2"; then
   AC_DEFINE(XP_UNIX)
 fi
 
-JS_THREADSAFE=1
-MOZ_ARG_DISABLE_BOOL(threadsafe,
-[  --disable-threadsafe    Disable support for multiple threads.],
-    JS_THREADSAFE= ,
-    JS_THREADSAFE=1 )
-if test -n "$JS_THREADSAFE"; then
-    AC_DEFINE(JS_THREADSAFE)
-fi
-
 if test "$MOZ_DEBUG"; then
     AC_DEFINE(MOZ_REFLOW_PERF)
     AC_DEFINE(MOZ_REFLOW_PERF_DSP)
@@ -4167,21 +4206,42 @@ dnl Settings for the implementation of the ECMAScript Internationalization API
 if test -n "$ENABLE_INTL_API"; then
     AC_DEFINE(ENABLE_INTL_API)
 
+    MOZ_CONFIG_ICU()
+
     if test -z "$MOZ_NATIVE_ICU"; then
         case "$OS_TARGET" in
             WINNT)
                 ICU_LIB_NAMES="icuin icuuc icudt"
+                if test -n "$MOZ_SHARED_ICU"; then
+                    DBG_SUFFIX=
+                    if test -n "$MOZ_DEBUG"; then
+                        DBG_SUFFIX=d
+                    fi
+                    MOZ_ICU_LIBS='$(foreach lib,$(ICU_LIB_NAMES),$(DEPTH)/intl/icu/target/lib/$(LIB_PREFIX)$(lib)$(DBG_SUFFIX).$(LIB_SUFFIX))'
+                fi
                 ;;
-            Darwin|Linux|DragonFly|FreeBSD|NetBSD|OpenBSD)
+            Darwin)
                 ICU_LIB_NAMES="icui18n icuuc icudata"
+                if test -n "$MOZ_SHARED_ICU"; then
+                   MOZ_ICU_LIBS='$(foreach lib,$(ICU_LIB_NAMES),$(DEPTH)/intl/icu/target/lib/$(DLL_PREFIX)$(lib).$(MOZ_ICU_VERSION)$(DLL_SUFFIX))'
+                fi
+                ;;
+            Linux|DragonFly|FreeBSD|NetBSD|OpenBSD)
+                ICU_LIB_NAMES="icui18n icuuc icudata"
+                if test -n "$MOZ_SHARED_ICU"; then
+                   MOZ_ICU_LIBS='$(foreach lib,$(ICU_LIB_NAMES),$(DEPTH)/intl/icu/target/lib/$(DLL_PREFIX)$(lib)$(DLL_SUFFIX).$(MOZ_ICU_VERSION))'
+                fi
                 ;;
             *)
                 AC_MSG_ERROR([ECMAScript Internationalization API is not yet supported on this platform])
         esac
-        MOZ_ICU_LIBS='$(call EXPAND_LIBNAME_PATH,$(ICU_LIB_NAMES),$(DEPTH)/intl/icu/lib)'
+        if test -z "$MOZ_SHARED_ICU"; then
+            MOZ_ICU_LIBS='$(call EXPAND_LIBNAME_PATH,$(ICU_LIB_NAMES),$(DEPTH)/intl/icu/target/lib)'
+        fi
     fi
 fi
 
+AC_SUBST(DBG_SUFFIX)
 AC_SUBST(ENABLE_INTL_API)
 AC_SUBST(ICU_LIB_NAMES)
 AC_SUBST(MOZ_ICU_LIBS)
@@ -4189,8 +4249,12 @@ AC_SUBST(MOZ_NATIVE_ICU)
 
 dnl Settings for ICU
 if test -n "$ENABLE_INTL_API" -a -z "$MOZ_NATIVE_ICU"; then
-    dnl We build ICU as a static library.
-    AC_DEFINE(U_STATIC_IMPLEMENTATION)
+    dnl We build ICU as a static library for non-shared js builds and as a shared library for shared js builds.
+    if test -z "$MOZ_SHARED_ICU"; then
+        AC_DEFINE(U_STATIC_IMPLEMENTATION)
+    else
+        AC_DEFINE(U_COMBINED_IMPLEMENTATION)
+    fi
 
     dnl Source files that use ICU should have control over which parts of the ICU
     dnl namespace they want to use.
@@ -4208,33 +4272,103 @@ if test -n "$ENABLE_INTL_API" -a -z "$MOZ_NATIVE_ICU"; then
     ICU_CPPFLAGS="$ICU_CPPFLAGS -DUCONFIG_NO_REGULAR_EXPRESSIONS"
     ICU_CPPFLAGS="$ICU_CPPFLAGS -DUCONFIG_NO_BREAK_ITERATION"
 
+    ICU_CROSS_BUILD_OPT=""
     ICU_SRCDIR=""
-    # Set OS dependent options for ICU
-    case "$OS_TARGET" in
-        Darwin)
-            ICU_TARGET=MacOSX
-            ;;
-        Linux)
-            ICU_TARGET=Linux
-            ;;
-        WINNT)
-            ICU_TARGET=MSYS/MSVC
-            ICU_SRCDIR="--srcdir=$(cd $srcdir/../../intl/icu/source; pwd -W)"
-            ;;
-        DragonFly|FreeBSD|NetBSD|OpenBSD)
-            ICU_TARGET=BSD
-            ;;
-    esac
+    if test "$HOST_OS_ARCH" = "WINNT"; then
+        ICU_SRCDIR="--srcdir=$(cd $srcdir/../../intl/icu/source; pwd -W)"
+    fi
 
-    # To reduce library size, use static linking
-    ICU_LINK_OPTS="--enable-static --disable-shared"
+    if test "$CROSS_COMPILE"; then
+        # Building host tools.  It is necessary to build target binary.
+        case "$HOST_OS_ARCH" in
+            Darwin)
+                ICU_TARGET=MacOSX
+                ;;
+            Linux)
+                ICU_TARGET=Linux
+                ;;
+            WINNT)
+                ICU_TARGET=MSYS/MSVC
+                ;;
+            *bsd*|dragonfly*)
+                ICU_TARGET=BSD
+                ;;
+        esac
+
+        # Remove _DEPEND_CFLAGS from HOST_FLAGS to avoid configure error
+        HOST_ICU_CFLAGS="$HOST_CFLAGS"
+        HOST_ICU_CXXFLAGS="$HOST_CXXFLAGS"
+
+        HOST_ICU_CFLAGS=`echo $HOST_ICU_CFLAGS | sed "s|$_DEPEND_CFLAGS||g"`
+        HOST_ICU_CXXFLAGS=`echo $HOST_ICU_CFXXLAGS | sed "s|$_DEPEND_CFLAGS||g"`
+
+        # ICU requires RTTI
+        if test "$GNU_CC"; then
+            HOST_ICU_CXXFLAGS=`echo $HOST_ICU_CXXFLAGS | sed 's|-fno-rtti|-frtti|g'`
+        elif test "$_MSC_VER"; then
+            HOST_ICU_CXXFLAGS=`echo $HOST_ICU_CXXFLAGS | sed 's|-GR-|-GR|g'`
+        fi
+
+        HOST_ICU_BUILD_OPTS=""
+        if test -n "$MOZ_DEBUG"; then
+            HOST_ICU_BUILD_OPTS="$HOST_ICU_BUILD_OPTS --enable-debug"
+        fi
+
+        abs_srcdir=`(cd $srcdir; pwd)`
+        mkdir -p $_objdir/intl/icu/host
+        (cd $_objdir/intl/icu/host
+         MOZ_SUBCONFIGURE_WRAP([.],[
+         CC="$HOST_CC" CXX="$HOST_CXX" LD="$HOST_LD" \
+         CFLAGS="$HOST_ICU_CFLAGS $HOST_OPTIMIZE_FLAGS" \
+         CPPFLAGS="$ICU_CPPFLAGS" \
+         CXXFLAGS="$HOST_ICU_CXXFLAGS $HOST_OPTIMZIE_FLAGS" \
+                $SHELL $abs_srcdir/../../intl/icu/source/runConfigureICU \
+                $HOST_ICU_BUILD_OPTS \
+                $ICU_TARGET \
+        dnl Shell quoting is fun.
+                ${ICU_SRCDIR+"$ICU_SRCDIR"} \
+                --enable-static --disable-shared \
+                --enable-extras=no --enable-icuio=no --enable-layout=no \
+                --enable-tests=no --enable-samples=no || exit 1
+         ])
+        ) || exit 1
+
+        # generate config/icucross.mk
+        $GMAKE -C $_objdir/intl/icu/host/ config/icucross.mk
+
+        # --with-cross-build requires absolute path
+        ICU_HOST_PATH=`cd $_objdir/intl/icu/host && pwd`
+        ICU_CROSS_BUILD_OPT="--with-cross-build=$ICU_HOST_PATH"
+        ICU_TARGET_OPT="--build=$build --host=$target"
+    else
+        # CROSS_COMPILE isn't set build and target are i386 and x86-64.
+        # So we must set target for --build and --host.
+        ICU_TARGET_OPT="--build=$target --host=$target"
+    fi
+
+    if test -z "$MOZ_SHARED_ICU"; then
+        # To reduce library size, use static linking
+        ICU_LINK_OPTS="--enable-static --disable-shared"
+    else
+        ICU_LINK_OPTS="--disable-static --enable-shared"
+    fi
     # Force the ICU static libraries to be position independent code
-    ICU_CFLAGS="$DSO_PIC_CFLAGS"
-    ICU_CXXFLAGS="$DSO_PIC_CFLAGS"
+    ICU_CFLAGS="$DSO_PIC_CFLAGS $CFLAGS"
+    ICU_CXXFLAGS="$DSO_PIC_CFLAGS $CXXFLAGS"
 
     ICU_BUILD_OPTS=""
-    if test -n "$MOZ_DEBUG"; then
-        ICU_BUILD_OPTS="$ICU_BUILD_OPTS --enable-debug"
+    if test -n "$MOZ_DEBUG" -o "MOZ_DEBUG_SYMBOLS"; then
+        ICU_CFLAGS="$ICU_CFLAGS $MOZ_DEBUG_FLAGS"
+        ICU_CXXFLAGS="$ICU_CXXFLAGS $MOZ_DEBUG_FLAGS"
+        ICU_LDFLAGS="$MOZ_DEBUG_LDFLAGS"
+        if test -z "$MOZ_DEBUG"; then
+            # To generate debug symbols, it requires MOZ_DEBUG_FLAGS.
+            # But, not debug build.
+            ICU_CFLAGS="$ICU_CFLAGS -UDEBUG -DNDEBUG"
+            ICU_CXXFLAGS="$ICU_CXXFLAGS -UDEBUG -DNDEBUG"
+        else
+            ICU_BUILD_OPTS="$ICU_BUILD_OPTS --enable-debug"
+        fi
     fi
     if test -z "$MOZ_OPTIMIZE"; then
         ICU_BUILD_OPTS="$ICU_BUILD_OPTS --disable-release"
@@ -4243,21 +4377,58 @@ if test -n "$ENABLE_INTL_API" -a -z "$MOZ_NATIVE_ICU"; then
         ICU_CXXFLAGS="$ICU_CXXFLAGS $MOZ_OPTIMIZE_FLAGS"
     fi
 
-    abs_srcdir=`(cd $srcdir; pwd)`
-    mkdir -p $_objdir/intl/icu
-    (cd $_objdir/intl/icu
+    if test "$am_cv_langinfo_codeset" = "no"; then
+        # ex. Android
+        ICU_CPPFLAGS="$ICU_CPPFLAGS -DU_HAVE_NL_LANGINFO_CODESET=0"
+    fi
+
+    # ICU requires RTTI
+    if test "$GNU_CC"; then
+        ICU_CXXFLAGS=`echo $ICU_CXXFLAGS | sed 's|-fno-rtti|-frtti|g'`
+    else
+        if test "$_MSC_VER"; then
+            ICU_CXXFLAGS=`echo $ICU_CXXFLAGS | sed 's|-GR-|-GR|g'`
+        fi
+
+        # Add RTL flags for MSVCRT.DLL
+        if test -n "$MOZ_DEBUG"; then
+            ICU_CFLAGS="$ICU_CFLAGS -MDd"
+            ICU_CXXFLAGS="$ICU_CXXFLAGS -MDd"
+        else
+            ICU_CFLAGS="$ICU_CFLAGS -MD"
+            ICU_CXXFLAGS="$ICU_CXXFLAGS -MD"
+        fi
+
+        # add disable optimize flag for workaround for bug 899948
+        if test -z "$MOZ_OPTIMIZE"; then
+            ICU_CFLAGS="$ICU_CFLAGS -Od"
+            ICU_CXXFLAGS="$ICU_CXXFLAGS -Od"
+        fi
+    fi
+
+    # We cannot use AC_OUTPUT_SUBDIRS since ICU tree is out of spidermonkey.
+    # When using AC_OUTPUT_SUBDIRS, objdir of ICU is out of objdir
+    # due to relative path.
+    # If building ICU moves into root of mozilla tree, we can use
+    # AC_OUTPUT_SUBDIR instead.
+    mkdir -p $_objdir/intl/icu/target
+    (cd $_objdir/intl/icu/target
      MOZ_SUBCONFIGURE_WRAP([.],[
-     CC="$CC" CXX="$CXX" \
-     CFLAGS="$ICU_CFLAGS" CPPFLAGS="$ICU_CPPFLAGS" CXXFLAGS="$ICU_CXXFLAGS" \
-            $SHELL $abs_srcdir/../../intl/icu/source/runConfigureICU \
-            $ICU_BUILD_OPTS \
-            $ICU_TARGET \
-            $ICU_LINK_OPTS \
-dnl Shell quoting is fun.
-            ${ICU_SRCDIR+"$ICU_SRCDIR"} \
-            --enable-extras=no --enable-icuio=no  --enable-layout=no \
-            --enable-tests=no --enable-samples=no || exit 1
-     ])
+       AR="$AR" CC="$CC" CXX="$CXX" LD="$LD" \
+       ARFLAGS="$ARFLAGS" \
+       CPPFLAGS="$ICU_CPPFLAGS $CPPFLAGS" \
+       CFLAGS="$ICU_CFLAGS" \
+       CXXFLAGS="$ICU_CXXFLAGS" \
+       LDFLAGS="$ICU_LDFLAGS $LDFLAGS" \
+       $SHELL $_topsrcdir/../../intl/icu/source/configure \
+                $ICU_BUILD_OPTS \
+                $ICU_CROSS_BUILD_OPT \
+                $ICU_LINK_OPTS \
+                ${ICU_SRCDIR+"$ICU_SRCDIR"} \
+                $ICU_TARGET_OPT \
+                --disable-extras --disable-icuio --disable-layout \
+                --disable-tests --disable-samples || exit 1
+       ])
     ) || exit 1
 fi
 
@@ -4278,7 +4449,7 @@ AC_SUBST(TOOLCHAIN_PREFIX)
 dnl Spit out some output
 dnl ========================================================
 
-AC_OUTPUT([js-confdefs.h config/autoconf.mk config/emptyvars.mk])
+AC_OUTPUT()
 
 # Produce the js-config script at configure time; see the comments for
 # 'js*-config' in Makefile.in.
@@ -4296,16 +4467,9 @@ if test "$JS_HAS_CTYPES" -a -z "$MOZ_NATIVE_FFI"; then
     ac_configure_args="$ac_configure_args --with-pic"
   fi
   if test "$CROSS_COMPILE"; then
-    case "$target" in
-    *-android*|*-linuxandroid*)
-      export AS CC CXX CPP LD AR RANLIB STRIP CPPFLAGS CFLAGS LDFLAGS
+    export AS CC CXX CPP LD AR RANLIB STRIP CPPFLAGS CFLAGS LDFLAGS
 
-      ac_configure_args="$ac_configure_args --build=$build --host=$target HOST_CC=\"$HOST_CC\""
-      ;;
-    *)
-      ac_configure_args="$ac_configure_args --build=$build --host=$target HOST_CC=\"$HOST_CC\" CC=\"$CC\""
-      ;;
-    esac
+    ac_configure_args="$ac_configure_args --build=$build --host=$target HOST_CC=\"$HOST_CC\""
   fi
   if test "$_MSC_VER"; then
     # Use a wrapper script for cl and ml that looks more like gcc.

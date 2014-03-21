@@ -1,3 +1,4 @@
+/* -*- js-indent-level: 2; tab-width: 2; indent-tabs-mode: nil -*- */
 // Test timeout (seconds)
 var gTimeoutSeconds = 30;
 var gConfig;
@@ -12,6 +13,9 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "Services",
   "resource://gre/modules/Services.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this, "BrowserNewTabPreloader",
+  "resource:///modules/BrowserNewTabPreloader.jsm", "BrowserNewTabPreloader");
 
 window.addEventListener("load", testOnLoad, false);
 
@@ -71,16 +75,20 @@ function Tester(aTests, aDumper, aCallback) {
   this._scriptLoader.loadSubScript("chrome://mochikit/content/tests/SimpleTest/SpecialPowersObserverAPI.js", simpleTestScope);
   this._scriptLoader.loadSubScript("chrome://mochikit/content/tests/SimpleTest/ChromePowers.js", simpleTestScope);
   this._scriptLoader.loadSubScript("chrome://mochikit/content/tests/SimpleTest/SimpleTest.js", simpleTestScope);
+  this._scriptLoader.loadSubScript("chrome://mochikit/content/tests/SimpleTest/MemoryStats.js", simpleTestScope);
   this._scriptLoader.loadSubScript("chrome://mochikit/content/chrome-harness.js", simpleTestScope);
   this.SimpleTest = simpleTestScope.SimpleTest;
+  this.MemoryStats = simpleTestScope.MemoryStats;
   this.Task = Components.utils.import("resource://gre/modules/Task.jsm", null).Task;
   this.Promise = Components.utils.import("resource://gre/modules/commonjs/sdk/core/promise.js", null).Promise;
+  this.Assert = Components.utils.import("resource://testing-common/Assert.jsm", null).Assert;
 }
 Tester.prototype = {
   EventUtils: {},
   SimpleTest: {},
   Task: null,
   Promise: null,
+  Assert: null,
 
   repeat: 0,
   runUntilFailure: false,
@@ -185,9 +193,6 @@ Tester.prototype = {
     var failCount = this.tests.reduce(function(a, f) a + f.failCount, 0);
     var todoCount = this.tests.reduce(function(a, f) a + f.todoCount, 0);
 
-    if (failCount > 0 && this.runUntilFailure)
-      this.repeat = 0;
-
     if (this.repeat > 0) {
       --this.repeat;
       this.currentTestIndex = -1;
@@ -220,6 +225,12 @@ Tester.prototype = {
       this.tests = null;
       this.openedWindows = null;
     }
+  },
+
+  haltTests: function Tester_haltTests() {
+    // Do not run any further tests
+    this.currentTestIndex = this.tests.length - 1;
+    this.repeat = 0;
   },
 
   observe: function Tester_observe(aSubject, aTopic, aData) {
@@ -349,10 +360,27 @@ Tester.prototype = {
         }
       }
 
+      // Dump memory stats for main thread.
+      if (Cc["@mozilla.org/xre/runtime;1"]
+          .getService(Ci.nsIXULRuntime)
+          .processType == Ci.nsIXULRuntime.PROCESS_TYPE_DEFAULT)
+      {
+        this.MemoryStats.dump((l) => { this.dumper.dump(l + "\n"); },
+                              this.currentTestIndex,
+                              this.currentTest.path,
+                              gConfig.dumpOutputDirectory,
+                              gConfig.dumpAboutMemoryAfterTest,
+                              gConfig.dumpDMDAfterTest);
+      }
+
       // Note the test run time
       let time = Date.now() - this.lastStartTime;
       this.dumper.dump("INFO TEST-END | " + this.currentTest.path + " | finished in " + time + "ms\n");
       this.currentTest.setDuration(time);
+
+      if (this.runUntilFailure && this.currentTest.failCount > 0) {
+        this.haltTests();
+      }
 
       testScope.destroy();
       this.currentTest.scope = null;
@@ -371,6 +399,36 @@ Tester.prototype = {
         if (window.gBrowser) {
           gBrowser.addTab();
           gBrowser.removeCurrentTab();
+        }
+
+        // Uninitialize a few things explicitly so that they can clean up
+        // frames and browser intentionally kept alive until shutdown to
+        // eliminate false positives.
+        if (gConfig.testRoot == "browser") {
+          // Replace the document currently loaded in the browser's sidebar.
+          // This will prevent false positives for tests that were the last
+          // to touch the sidebar. They will thus not be blamed for leaking
+          // a document.
+          let sidebar = document.getElementById("sidebar");
+          sidebar.setAttribute("src", "data:text/html;charset=utf-8,");
+          sidebar.docShell.createAboutBlankContentViewer(null);
+          sidebar.setAttribute("src", "about:blank");
+
+          // Do the same for the social sidebar.
+          let socialSidebar = document.getElementById("social-sidebar-browser");
+          socialSidebar.setAttribute("src", "data:text/html;charset=utf-8,");
+          socialSidebar.docShell.createAboutBlankContentViewer(null);
+          socialSidebar.setAttribute("src", "about:blank");
+
+          // Destroy BackgroundPageThumbs resources.
+          let {BackgroundPageThumbs} =
+            Cu.import("resource://gre/modules/BackgroundPageThumbs.jsm", {});
+          BackgroundPageThumbs._destroy();
+
+          BrowserNewTabPreloader.uninit();
+          SocialFlyout.unload();
+          SocialShare.uninit();
+          TabView.uninit();
         }
 
         // Schedule GC and CC runs before finishing in order to detect
@@ -430,7 +488,8 @@ Tester.prototype = {
     this.SimpleTest.reset();
 
     // Load the tests into a testscope
-    this.currentTest.scope = new testScope(this, this.currentTest);
+    let currentScope = this.currentTest.scope = new testScope(this, this.currentTest);
+    let currentTest = this.currentTest;
 
     // Import utils in the test scope.
     this.currentTest.scope.EventUtils = this.EventUtils;
@@ -438,6 +497,23 @@ Tester.prototype = {
     this.currentTest.scope.gTestPath = this.currentTest.path;
     this.currentTest.scope.Task = this.Task;
     this.currentTest.scope.Promise = this.Promise;
+    // Pass a custom report function for mochitest style reporting.
+    this.currentTest.scope.Assert = new this.Assert(function(err, message, stack) {
+      let res;
+      if (err) {
+        res = new testResult(false, err.message, err.stack, false, err.stack);
+      } else {
+        res = new testResult(true, message, "", false, stack);
+      }
+      currentTest.addResult(res);
+    });
+
+    // Allow Assert.jsm methods to be tacked to the current scope.
+    this.currentTest.scope.export_assertions = function() {
+      for (let func in this.Assert) {
+        this[func] = this.Assert[func].bind(this.Assert);
+      }
+    };
 
     // Override SimpleTest methods with ours.
     ["ok", "is", "isnot", "ise", "todo", "todo_is", "todo_isnot", "info", "expectAssertions"].forEach(function(m) {
@@ -476,8 +552,6 @@ Tester.prototype = {
         if ("test" in this.currentTest.scope) {
           throw "Cannot run both a add_task test and a normal test at the same time.";
         }
-        let testScope = this.currentTest.scope;
-        let currentTest = this.currentTest;
         this.Task.spawn(function() {
           let task;
           while ((task = this.__tasks.shift())) {
@@ -494,7 +568,7 @@ Tester.prototype = {
             this.SimpleTest.info("Leaving test " + task.name);
           }
           this.finish();
-        }.bind(testScope));
+        }.bind(currentScope));
       } else if ("generatorTest" in this.currentTest.scope) {
         if ("test" in this.currentTest.scope) {
           throw "Cannot run both a generator test and a normal test at the same time.";
@@ -601,6 +675,12 @@ function testResult(aCondition, aName, aDiag, aIsTodo, aStack) {
       this.result = "TEST-UNEXPECTED-PASS";
     else
       this.result = "TEST-UNEXPECTED-FAIL";
+
+    if (gConfig.debugOnFailure) {
+      // You've hit this line because you requested to break into the
+      // debugger upon a testcase failure on your test run.
+      debugger;
+    }
   }
 }
 
@@ -758,6 +838,7 @@ testScope.prototype = {
   SimpleTest: {},
   Task: null,
   Promise: null,
+  Assert: null,
 
   /**
    * Add a test function which is a Task function.

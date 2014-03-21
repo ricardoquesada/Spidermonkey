@@ -899,6 +899,7 @@ class Shape : public gc::BarrieredCell<Shape>
     JS_ENUM_HEADER(SlotInfo, uint32_t)
     {
         /* Number of fixed slots in objects with this shape. */
+        // FIXED_SLOTS_MAX is the biggest count of fixed slots a Shape can store
         FIXED_SLOTS_MAX        = 0x1f,
         FIXED_SLOTS_SHIFT      = 27,
         FIXED_SLOTS_MASK       = uint32_t(FIXED_SLOTS_MAX << FIXED_SLOTS_SHIFT),
@@ -1166,10 +1167,14 @@ class Shape : public gc::BarrieredCell<Shape>
         return JSID_IS_EMPTY(propid_);
     }
 
-    uint32_t slotSpan() const {
+    uint32_t slotSpan(const Class *clasp) const {
         JS_ASSERT(!inDictionary());
-        uint32_t free = JSSLOT_FREE(getObjectClass());
+        uint32_t free = JSSLOT_FREE(clasp);
         return hasMissingSlot() ? free : Max(free, maybeSlot() + 1);
+    }
+
+    uint32_t slotSpan() const {
+        return slotSpan(getObjectClass());
     }
 
     void setSlot(uint32_t slot) {
@@ -1256,10 +1261,12 @@ class Shape : public gc::BarrieredCell<Shape>
     uint32_t entryCount() {
         if (hasTable())
             return table().entryCount;
+        return entryCountForCompilation();
+    }
 
-        Shape *shape = this;
+    uint32_t entryCountForCompilation() {
         uint32_t count = 0;
-        for (Shape::Range<NoGC> r(shape); !r.empty(); r.popFront())
+        for (Shape::Range<NoGC> r(this); !r.empty(); r.popFront())
             ++count;
         return count;
     }
@@ -1295,6 +1302,7 @@ class Shape : public gc::BarrieredCell<Shape>
     }
 
     inline Shape *search(ExclusiveContext *cx, jsid id);
+    inline Shape *searchLinear(jsid id);
 
     /* For JIT usage */
     static inline size_t offsetOfBase() { return offsetof(Shape, base_); }
@@ -1304,6 +1312,8 @@ class Shape : public gc::BarrieredCell<Shape>
         JS_STATIC_ASSERT(offsetof(Shape, base_) == offsetof(js::shadow::Shape, base));
         JS_STATIC_ASSERT(offsetof(Shape, slotInfo) == offsetof(js::shadow::Shape, slotInfo));
         JS_STATIC_ASSERT(FIXED_SLOTS_SHIFT == js::shadow::Shape::FIXED_SLOTS_SHIFT);
+        static_assert(js::shadow::Object::MAX_FIXED_SLOTS <= FIXED_SLOTS_MAX,
+                      "verify numFixedSlots() bitfield is big enough");
     }
 };
 
@@ -1372,6 +1382,19 @@ struct EmptyShape : public js::Shape
      * and the table entry is purged.
      */
     static void insertInitialShape(ExclusiveContext *cx, HandleShape shape, HandleObject proto);
+
+    /*
+     * Some object subclasses are allocated with a built-in set of properties.
+     * The first time such an object is created, these built-in properties must
+     * be set manually, to compute an initial shape.  Afterward, that initial
+     * shape can be reused for newly-created objects that use the subclass's
+     * standard prototype.  This method should be used in a post-allocation
+     * init method, to ensure that objects of such subclasses compute and cache
+     * the initial shape, if it hasn't already been computed.
+     */
+    template<class ObjectSubclass>
+    static inline bool
+    ensureInitialCustomShape(ExclusiveContext *cx, Handle<ObjectSubclass*> obj);
 };
 
 /*
@@ -1582,6 +1605,25 @@ Shape::Shape(UnownedBaseShape *base, uint32_t nfixed)
     kids.setNull();
 }
 
+inline Shape *
+Shape::searchLinear(jsid id)
+{
+    /*
+     * Non-dictionary shapes can acquire a table at any point the main thread
+     * is operating on it, so other threads inspecting such shapes can't use
+     * their table without racing. This function can be called from any thread
+     * on any non-dictionary shape.
+     */
+    JS_ASSERT(!inDictionary());
+
+    for (Shape *shape = this; shape; shape = shape->parent) {
+        if (shape->propidRef() == id)
+            return shape;
+    }
+
+    return nullptr;
+}
+
 /*
  * Keep this function in sync with search. It neither hashifies the start
  * shape nor increments linear search count.
@@ -1598,12 +1640,7 @@ Shape::searchNoHashify(Shape *start, jsid id)
         return SHAPE_FETCH(spp);
     }
 
-    for (Shape *shape = start; shape; shape = shape->parent) {
-        if (shape->propidRef() == id)
-            return shape;
-    }
-
-    return nullptr;
+    return start->searchLinear(id);
 }
 
 inline bool

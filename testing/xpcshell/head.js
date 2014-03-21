@@ -93,7 +93,7 @@ try {
     let (crashReporter =
           Components.classes["@mozilla.org/toolkit/crash-reporter;1"]
           .getService(Components.interfaces.nsICrashReporter)) {
-      crashReporter.minidumpPath = do_get_tempdir();
+      crashReporter.minidumpPath = do_get_minidumpdir();
     }
   }
 }
@@ -184,6 +184,15 @@ function _do_quit() {
 }
 
 function _format_exception_stack(stack) {
+  if (typeof stack == "object" && stack.caller) {
+    let frame = stack;
+    let strStack = "";
+    while (frame != null) {
+      strStack += frame + "\n";
+      frame = frame.caller;
+    }
+    stack = strStack;
+  }
   // frame is of the form "fname@file:line"
   let frame_regexp = new RegExp("(.*)@(.*):(\\d*)", "g");
   return stack.split("\n").reduce(function(stack_msg, frame) {
@@ -343,6 +352,24 @@ function _execute_test() {
   // _TEST_FILE is dynamically defined by <runxpcshelltests.py>.
   _load_files(_TEST_FILE);
 
+  // Support a common assertion library, Assert.jsm.
+  let Assert = Components.utils.import("resource://testing-common/Assert.jsm", null).Assert;
+  // Pass a custom report function for xpcshell-test style reporting.
+  let assertImpl = new Assert(function(err, message, stack) {
+    if (err) {
+      do_report_result(false, err.message, err.stack);
+    } else {
+      do_report_result(true, message, stack);
+    }
+  });
+  // Allow Assert.jsm methods to be tacked to the current scope.
+  this.export_assertions = function() {
+    for (let func in assertImpl) {
+      this[func] = assertImpl[func].bind(assertImpl);
+    }
+  };
+  this.Assert = assertImpl;
+
   try {
     do_test_pending("MAIN run_test");
     run_test();
@@ -421,6 +448,12 @@ function _load_files(aFiles) {
     } catch (e if e instanceof SyntaxError) {
       _log("javascript_error",
            {_message: "TEST-UNEXPECTED-FAIL | (xpcshell/head.js) | Source file " + element + " contains SyntaxError",
+            diagnostic: _exception_message(e),
+            source_file: element,
+            stack: _format_exception_stack(e.stack)});
+    } catch (e) {
+      _log("javascript_error",
+           {_message: "TEST-UNEXPECTED-FAIL | (xpcshell/head.js) | Source file " + element + " contains an error",
             diagnostic: _exception_message(e),
             source_file: element,
             stack: _format_exception_stack(e.stack)});
@@ -1070,6 +1103,26 @@ function do_get_tempdir() {
                        .createInstance(Components.interfaces.nsILocalFile);
   file.initWithPath(path);
   return file;
+}
+
+/**
+ * Returns the directory for crashreporter minidumps.
+ *
+ * @return nsILocalFile of the minidump directory
+ */
+function do_get_minidumpdir() {
+  let env = Components.classes["@mozilla.org/process/environment;1"]
+                      .getService(Components.interfaces.nsIEnvironment);
+  // the python harness may set this in the environment for us
+  let path = env.get("XPCSHELL_MINIDUMP_DIR");
+  if (path) {
+    let file = Components.classes["@mozilla.org/file/local;1"]
+                         .createInstance(Components.interfaces.nsILocalFile);
+    file.initWithPath(path);
+    return file;
+  } else {
+    return do_get_tempdir();
+  }
 }
 
 /**

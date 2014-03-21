@@ -9,6 +9,7 @@
 #include "mozilla/DebugOnly.h"
 
 #include "jit/IonCode.h"
+#include "js/SliceBudget.h"
 #include "vm/ArgumentsObject.h"
 #include "vm/ScopeObject.h"
 #include "vm/Shape.h"
@@ -151,7 +152,7 @@ CheckMarkedThing(JSTracer *trc, T *thing)
                  thing->zone()->isCollecting() || rt->isAtomsZone(thing->zone()));
 
     JS_ASSERT_IF(IS_GC_MARKING_TRACER(trc) && AsGCMarker(trc)->getMarkColor() == GRAY,
-                 thing->zone()->isGCMarkingGray() || rt->isAtomsZone(thing->zone()));
+                 !thing->zone()->isGCMarkingBlack() || rt->isAtomsZone(thing->zone()));
 
     /*
      * Try to assert that the thing is allocated.  This is complicated by the
@@ -219,7 +220,7 @@ MarkUnbarriered(JSTracer *trc, T **thingp, const char *name)
 
 template <typename T>
 static void
-Mark(JSTracer *trc, EncapsulatedPtr<T> *thing, const char *name)
+Mark(JSTracer *trc, BarrieredPtr<T> *thing, const char *name)
 {
     JS_SET_TRACING_NAME(trc, name);
     MarkInternal(trc, thing->unsafeGet());
@@ -311,7 +312,7 @@ IsAboutToBeFinalized(T **thingp)
 
 #define DeclMarkerImpl(base, type)                                                                \
 void                                                                                              \
-Mark##base(JSTracer *trc, EncapsulatedPtr<type> *thing, const char *name)                         \
+Mark##base(JSTracer *trc, BarrieredPtr<type> *thing, const char *name)                         \
 {                                                                                                 \
     Mark<type>(trc, thing, name);                                                                 \
 }                                                                                                 \
@@ -352,7 +353,7 @@ Is##base##Marked(type **thingp)                                                 
 }                                                                                                 \
                                                                                                   \
 bool                                                                                              \
-Is##base##Marked(EncapsulatedPtr<type> *thingp)                                                   \
+Is##base##Marked(BarrieredPtr<type> *thingp)                                                   \
 {                                                                                                 \
     return IsMarked<type>(thingp->unsafeGet());                                                   \
 }                                                                                                 \
@@ -364,7 +365,7 @@ Is##base##AboutToBeFinalized(type **thingp)                                     
 }                                                                                                 \
                                                                                                   \
 bool                                                                                              \
-Is##base##AboutToBeFinalized(EncapsulatedPtr<type> *thingp)                                       \
+Is##base##AboutToBeFinalized(BarrieredPtr<type> *thingp)                                       \
 {                                                                                                 \
     return IsAboutToBeFinalized<type>(thingp->unsafeGet());                                       \
 }
@@ -476,7 +477,7 @@ MarkIdInternal(JSTracer *trc, jsid *id)
 }
 
 void
-gc::MarkId(JSTracer *trc, EncapsulatedId *id, const char *name)
+gc::MarkId(JSTracer *trc, BarrieredId *id, const char *name)
 {
     JS_SET_TRACING_NAME(trc, name);
     MarkIdInternal(trc, id->unsafeGet());
@@ -537,7 +538,7 @@ MarkValueInternal(JSTracer *trc, Value *v)
 }
 
 void
-gc::MarkValue(JSTracer *trc, EncapsulatedValue *v, const char *name)
+gc::MarkValue(JSTracer *trc, BarrieredValue *v, const char *name)
 {
     JS_SET_TRACING_NAME(trc, name);
     MarkValueInternal(trc, v->unsafeGet());
@@ -568,7 +569,7 @@ gc::MarkTypeRoot(JSTracer *trc, types::Type *v, const char *name)
 }
 
 void
-gc::MarkValueRange(JSTracer *trc, size_t len, EncapsulatedValue *vec, const char *name)
+gc::MarkValueRange(JSTracer *trc, size_t len, BarrieredValue *vec, const char *name)
 {
     for (size_t i = 0; i < len; ++i) {
         JS_SET_TRACING_INDEX(trc, name, i);
@@ -877,7 +878,7 @@ ScanShape(GCMarker *gcmarker, Shape *shape)
   restart:
     PushMarkStack(gcmarker, shape->base());
 
-    const EncapsulatedId &id = shape->propidRef();
+    const BarrieredId &id = shape->propidRef();
     if (JSID_IS_STRING(id))
         PushMarkStack(gcmarker, JSID_TO_STRING(id));
     else if (JS_UNLIKELY(JSID_IS_OBJECT(id)))
@@ -1270,7 +1271,7 @@ struct SlotArrayLayout
 void
 GCMarker::saveValueRanges()
 {
-    for (uintptr_t *p = stack.tos; p > stack.stack; ) {
+    for (uintptr_t *p = stack.tos_; p > stack.stack_; ) {
         uintptr_t tag = *--p & StackTagMask;
         if (tag == ValueArrayTag) {
             *p &= ~StackTagMask;
@@ -1474,7 +1475,7 @@ GCMarker::processMarkStackTop(SliceBudget &budget)
         /* Call the trace hook if necessary. */
         const Class *clasp = type->clasp;
         if (clasp->trace) {
-            JS_ASSERT_IF(runtime->gcMode == JSGC_MODE_INCREMENTAL &&
+            JS_ASSERT_IF(runtime->gcMode() == JSGC_MODE_INCREMENTAL &&
                          runtime->gcIncrementalEnabled,
                          clasp->flags & JSCLASS_IMPLEMENTS_BARRIERS);
             clasp->trace(this, obj);

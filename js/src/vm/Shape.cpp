@@ -14,6 +14,7 @@
 
 #include "jsatom.h"
 #include "jscntxt.h"
+#include "jshashutil.h"
 #include "jsobj.h"
 
 #include "js/HashTable.h"
@@ -330,15 +331,12 @@ Shape::replaceLastProperty(ExclusiveContext *cx, const StackBaseShape &base,
                                            base.flags & BaseShape::OBJECT_FLAG_MASK);
     }
 
-    StackShape child(shape);
-    StackShape::AutoRooter childRoot(cx, &child);
-    {
-        UnownedBaseShape *nbase = BaseShape::getUnowned(cx, base);
-        if (!nbase)
-            return nullptr;
+    UnownedBaseShape *nbase = BaseShape::getUnowned(cx, base);
+    if (!nbase)
+        return nullptr;
 
-        child.base = nbase;
-    }
+    StackShape child(shape);
+    child.base = nbase;
 
     return cx->compartment()->propertyTree.getChild(cx, shape->parent,
                                                     shape->numFixedSlots(), child);
@@ -367,10 +365,20 @@ JSObject::getChildPropertyOnDictionary(ThreadSafeContext *cx, JS::HandleObject o
                 return nullptr;
             child.setSlot(slot);
         } else {
-            /* Slots can only be allocated out of order on objects in dictionary mode. */
+            /*
+             * Slots can only be allocated out of order on objects in
+             * dictionary mode.  Otherwise the child's slot must be after the
+             * parent's slot (if it has one), because slot number determines
+             * slot span for objects with that shape.  Usually child slot
+             * *immediately* follows parent slot, but there may be a slot gap
+             * when the object uses some -- but not all -- of its reserved
+             * slots to store properties.
+             */
             JS_ASSERT(obj->inDictionaryMode() ||
                       parent->hasMissingSlot() ||
-                      child.slot() == parent->maybeSlot() + 1);
+                      child.slot() == parent->maybeSlot() + 1 ||
+                      (parent->maybeSlot() + 1 < JSSLOT_FREE(obj->getClass()) &&
+                       child.slot() == JSSLOT_FREE(obj->getClass())));
         }
     }
 
@@ -396,9 +404,10 @@ JSObject::getChildPropertyOnDictionary(ThreadSafeContext *cx, JS::HandleObject o
 JSObject::getChildProperty(ExclusiveContext *cx,
                            HandleObject obj, HandleShape parent, StackShape &child)
 {
+    StackShape::AutoRooter childRoot(cx, &child);
     RootedShape shape(cx, getChildPropertyOnDictionary(cx, obj, parent, child));
 
-    if (!shape) {
+    if (!obj->inDictionaryMode()) {
         shape = cx->compartment()->propertyTree.getChild(cx, parent, obj->numFixedSlots(), child);
         if (!shape)
             return nullptr;
@@ -415,11 +424,12 @@ JSObject::getChildProperty(ExclusiveContext *cx,
 JSObject::lookupChildProperty(ThreadSafeContext *cx,
                               HandleObject obj, HandleShape parent, StackShape &child)
 {
+    StackShape::AutoRooter childRoot(cx, &child);
     JS_ASSERT(cx->isThreadLocal(obj));
 
     RootedShape shape(cx, getChildPropertyOnDictionary(cx, obj, parent, child));
 
-    if (!shape) {
+    if (!obj->inDictionaryMode()) {
         shape = cx->compartment_->propertyTree.lookupChild(cx, parent, child);
         if (!shape)
             return nullptr;
@@ -673,6 +683,61 @@ JSObject::addPropertyInternal<ParallelExecution>(ForkJoinSlice *cx,
                                                  unsigned flags, int shortid, Shape **spp,
                                                  bool allowDictionary);
 
+JSObject *
+js::NewReshapedObject(JSContext *cx, HandleTypeObject type, JSObject *parent,
+                      gc::AllocKind allocKind, HandleShape shape, NewObjectKind newKind)
+{
+    RootedObject res(cx, NewObjectWithType(cx, type, parent, allocKind, newKind));
+    if (!res)
+        return nullptr;
+
+    if (shape->isEmptyShape())
+        return res;
+
+    /* Get all the ids in the object, in order. */
+    js::AutoIdVector ids(cx);
+    {
+        for (unsigned i = 0; i <= shape->slot(); i++) {
+            if (!ids.append(JSID_VOID))
+                return nullptr;
+        }
+        Shape *nshape = shape;
+        while (!nshape->isEmptyShape()) {
+            ids[nshape->slot()] = nshape->propid();
+            nshape = nshape->previous();
+        }
+    }
+
+    /* Construct the new shape, without updating type information. */
+    RootedId id(cx);
+    RootedShape newShape(cx, res->lastProperty());
+    for (unsigned i = 0; i < ids.length(); i++) {
+        id = ids[i];
+        JS_ASSERT(!res->nativeContains(cx, id));
+
+        uint32_t index;
+        bool indexed = js_IdIsIndex(id, &index);
+
+        Rooted<UnownedBaseShape*> nbase(cx, newShape->base()->unowned());
+        if (indexed) {
+            StackBaseShape base(nbase);
+            base.flags |= BaseShape::INDEXED;
+            nbase = GetOrLookupUnownedBaseShape<SequentialExecution>(cx, base);
+            if (!nbase)
+                return nullptr;
+        }
+
+        StackShape child(nbase, id, i, res->numFixedSlots(), JSPROP_ENUMERATE, 0, 0);
+        newShape = cx->compartment()->propertyTree.getChild(cx, newShape, res->numFixedSlots(), child);
+        if (!newShape)
+            return nullptr;
+        if (!JSObject::setLastProperty(cx, res, newShape))
+            return nullptr;
+    }
+
+    return res;
+}
+
 /*
  * Check and adjust the new attributes for the shape to make sure that our
  * slot access optimizations are sound. It is responsibility of the callers to
@@ -923,16 +988,6 @@ JSObject::changeProperty(typename ExecutionModeTraits<mode>::ExclusiveContextTyp
             return nullptr;
     } else {
         types::MarkTypePropertyConfigured(cx->asExclusiveContext(), obj, shape->propid());
-    }
-
-    if (attrs & (JSPROP_GETTER | JSPROP_SETTER)) {
-        if (mode == ParallelExecution) {
-            if (!types::HasTypePropertyId(obj, shape->propid(), types::Type::UnknownType()))
-                return nullptr;
-        } else {
-            types::AddTypePropertyId(cx->asExclusiveContext(), obj, shape->propid(),
-                                     types::Type::UnknownType());
-        }
     }
 
     if (getter == JS_PropertyStub)
@@ -1424,8 +1479,7 @@ BaseShape::getUnowned(ExclusiveContext *cx, const StackBaseShape &base)
     if (!table.initialized() && !table.init())
         return nullptr;
 
-    BaseShapeSet::AddPtr p = table.lookupForAdd(&base);
-
+    DependentAddPtr<BaseShapeSet> p(cx, table, &base);
     if (p)
         return *p;
 
@@ -1439,7 +1493,7 @@ BaseShape::getUnowned(ExclusiveContext *cx, const StackBaseShape &base)
 
     UnownedBaseShape *nbase = static_cast<UnownedBaseShape *>(nbase_);
 
-    if (!table.relookupOrAdd(p, &base, nbase))
+    if (!p.add(table, &base, nbase))
         return nullptr;
 
     return nbase;
@@ -1551,9 +1605,8 @@ EmptyShape::getInitialShape(ExclusiveContext *cx, const Class *clasp, TaggedProt
         return nullptr;
 
     typedef InitialShapeEntry::Lookup Lookup;
-    InitialShapeSet::AddPtr p =
-        table.lookupForAdd(Lookup(clasp, proto, parent, metadata, nfixed, objectFlags));
-
+    DependentAddPtr<InitialShapeSet>
+        p(cx, table, Lookup(clasp, proto, parent, metadata, nfixed, objectFlags));
     if (p)
         return p->shape;
 
@@ -1572,11 +1625,9 @@ EmptyShape::getInitialShape(ExclusiveContext *cx, const Class *clasp, TaggedProt
         return nullptr;
     new (shape) EmptyShape(nbase, nfixed);
 
-    if (!table.relookupOrAdd(p, Lookup(clasp, protoRoot, parentRoot, metadataRoot, nfixed, objectFlags),
-                             InitialShapeEntry(shape, protoRoot)))
-    {
+    Lookup lookup(clasp, protoRoot, parentRoot, metadataRoot, nfixed, objectFlags);
+    if (!p.add(table, lookup, InitialShapeEntry(shape, protoRoot)))
         return nullptr;
-    }
 
     return shape;
 }

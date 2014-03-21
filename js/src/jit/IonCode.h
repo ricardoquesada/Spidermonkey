@@ -131,6 +131,7 @@ class IonCode : public gc::BarrieredCell<IonCode>
     // Allocates a new IonCode object which will be managed by the GC. If no
     // object can be allocated, nullptr is returned. On failure, |pool| is
     // automatically released, so the code may be freed.
+    template <AllowGC allowGC>
     static IonCode *New(JSContext *cx, uint8_t *code, uint32_t bufferSize, JSC::ExecutablePool *pool);
 
   public:
@@ -190,10 +191,6 @@ struct IonScript
     // Number of times this script bailed out without invalidation.
     uint32_t numBailouts_;
 
-    // Number of times this scripted bailed out to enter a catch or
-    // finally block.
-    uint32_t numExceptionBailouts_;
-
     // Flag set when it is likely that one of our (transitive) call
     // targets is not compiled.  Used in ForkJoin.cpp to decide when
     // we should add call targets to the worklist.
@@ -201,6 +198,9 @@ struct IonScript
 
     // Flag set if IonScript was compiled with SPS profiling enabled.
     bool hasSPSInstrumentation_;
+
+    // Flag for if this script is getting recompiled.
+    bool recompiling_;
 
     // Any kind of data needed by the runtime, these can be either cache
     // information or profiling info.
@@ -310,7 +310,8 @@ struct IonScript
     }
     bool addDependentAsmJSModule(JSContext *cx, DependentAsmJSModuleExit exit);
     void removeDependentAsmJSModule(DependentAsmJSModuleExit exit) {
-        JS_ASSERT(dependentAsmJSModules);
+        if (!dependentAsmJSModules)
+            return;
         for (size_t i = 0; i < dependentAsmJSModules->length(); i++) {
             if (dependentAsmJSModules->begin()[i].module == exit.module &&
                 dependentAsmJSModules->begin()[i].exitIndex == exit.exitIndex)
@@ -411,12 +412,6 @@ struct IonScript
     }
     bool bailoutExpected() const {
         return numBailouts_ > 0;
-    }
-    void incNumExceptionBailouts() {
-        numExceptionBailouts_++;
-    }
-    uint32_t numExceptionBailouts() const {
-        return numExceptionBailouts_;
     }
     void setHasUncompiledCallTarget() {
         hasUncompiledCallTarget_ = true;
@@ -536,6 +531,18 @@ struct IonScript
     }
     void resetOsrPcMismatchCounter() {
         osrPcMismatchCounter_ = 0;
+    }
+
+    void setRecompiling() {
+        recompiling_ = true;
+    }
+
+    bool isRecompiling() const {
+        return recompiling_;
+    }
+
+    void clearRecompiling() {
+        recompiling_ = false;
     }
 
     static void writeBarrierPre(Zone *zone, IonScript *ionScript);

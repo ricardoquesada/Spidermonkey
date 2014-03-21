@@ -531,6 +531,7 @@ class GetPropertyIC : public RepatchIonCache
     size_t numLocations_;
 
     bool allowGetters_ : 1;
+    bool monitoredResult_ : 1;
     bool hasTypedArrayLengthStub_ : 1;
     bool hasStrictArgumentsLengthStub_ : 1;
     bool hasNormalArgumentsLengthStub_ : 1;
@@ -540,7 +541,7 @@ class GetPropertyIC : public RepatchIonCache
     GetPropertyIC(RegisterSet liveRegs,
                   Register object, PropertyName *name,
                   TypedOrValueRegister output,
-                  bool allowGetters)
+                  bool allowGetters, bool monitoredResult)
       : liveRegs_(liveRegs),
         object_(object),
         name_(name),
@@ -548,6 +549,7 @@ class GetPropertyIC : public RepatchIonCache
         locationsIndex_(0),
         numLocations_(0),
         allowGetters_(allowGetters),
+        monitoredResult_(monitoredResult),
         hasTypedArrayLengthStub_(false),
         hasStrictArgumentsLengthStub_(false),
         hasNormalArgumentsLengthStub_(false),
@@ -570,6 +572,9 @@ class GetPropertyIC : public RepatchIonCache
     }
     bool allowGetters() const {
         return allowGetters_ && !idempotent();
+    }
+    bool monitoredResult() const {
+        return monitoredResult_;
     }
     bool hasTypedArrayLengthStub() const {
         return hasTypedArrayLengthStub_;
@@ -603,7 +608,6 @@ class GetPropertyIC : public RepatchIonCache
 
     // Helpers for CanAttachNativeGetProp
     typedef JSContext * Context;
-    bool canMonitorSingletonUndefinedSlot(HandleObject holder, HandleShape shape) const;
     bool allowArrayLength(Context cx, HandleObject obj) const;
 
     // Attach the proper stub, if possible
@@ -691,7 +695,8 @@ class SetPropertyIC : public RepatchIonCache
                        bool checkTypeset);
     bool attachCallSetter(JSContext *cx, IonScript *ion, HandleObject obj,
                           HandleObject holder, HandleShape shape, void *returnAddr);
-    bool attachAddSlot(JSContext *cx, IonScript *ion, JSObject *obj, HandleShape oldShape);
+    bool attachAddSlot(JSContext *cx, IonScript *ion, JSObject *obj, HandleShape oldShape,
+                       bool checkTypeset);
     bool attachGenericProxy(JSContext *cx, IonScript *ion, void *returnAddr);
     bool attachDOMProxyShadowed(JSContext *cx, IonScript *ion, HandleObject obj,
                                 void *returnAddr);
@@ -1181,7 +1186,8 @@ class SetPropertyParIC : public ParallelIonCache
 
     bool attachSetSlot(LockedJSContext &cx, IonScript *ion, JSObject *obj, Shape *shape,
                        bool checkTypeset);
-    bool attachAddSlot(LockedJSContext &cx, IonScript *ion, JSObject *obj, Shape *oldShape);
+    bool attachAddSlot(LockedJSContext &cx, IonScript *ion, JSObject *obj, Shape *oldShape,
+                       bool checkTypeset);
 
     static bool update(ForkJoinSlice *slice, size_t cacheIndex, HandleObject obj,
                        HandleValue value);

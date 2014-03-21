@@ -6,10 +6,10 @@
 
 #include "jsarray.h"
 
+#include "mozilla/ArrayUtils.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/MathAlgorithms.h"
-#include "mozilla/Util.h"
 
 #include "jsapi.h"
 #include "jsatom.h"
@@ -137,7 +137,7 @@ static bool
 DoubleIndexToId(JSContext *cx, double index, MutableHandleId id)
 {
     if (index == uint32_t(index))
-        return IndexToId(cx, uint32_t(index), id);
+        return IndexToId(cx, uint32_t(index), id.address());
 
     Value tmp = DoubleValue(index);
     return ValueToId<CanGC>(cx, HandleValue::fromMarkedLocation(&tmp), id);
@@ -286,7 +286,7 @@ SetArrayElement(JSContext *cx, HandleObject obj, double index, HandleValue v)
                 break;
             if (idx >= arr->length())
                 arr->setLengthInt32(idx + 1);
-            JSObject::setDenseElementWithType(cx, arr, idx, v);
+            arr->setDenseElementWithType(cx, idx, v);
             return true;
         } while (false);
 
@@ -677,14 +677,12 @@ js::ArraySetLength(typename ExecutionModeTraits<mode>::ContextType cxArg,
 
     RootedValue v(cxArg, NumberValue(newLen));
     if (mode == ParallelExecution) {
-        // Adding the property type or overflowing int32 requires changing TI
-        // state.
-        if (!HasTypePropertyId(arr, id, v) || newLen > INT32_MAX)
+        // Overflowing int32 requires changing TI state.
+        if (newLen > INT32_MAX)
             return false;
         arr->setLengthInt32(newLen);
     } else {
         JSContext *cx = cxArg->asJSContext();
-        AddTypePropertyId(cx, arr, id, v);
         ArrayObject::setLength(cx, arr, newLen);
     }
 
@@ -718,7 +716,7 @@ js::ArraySetLength(typename ExecutionModeTraits<mode>::ContextType cxArg,
         // returned from the function before step 15 above.
         JSContext *cx = cxArg->asJSContext();
         RootedId elementId(cx);
-        if (!IndexToId(cx, newLen - 1, &elementId))
+        if (!IndexToId(cx, newLen - 1, elementId.address()))
             return false;
         return arr->reportNotConfigurable(cx, elementId);
     }
@@ -1097,10 +1095,13 @@ ArrayJoin(JSContext *cx, CallArgs &args)
             return false;
         seplen = sepstr->length();
     } else {
-        static const jschar comma = ',';
-        sepchars = &comma;
-        seplen = 1;
+        HandlePropertyName comma = cx->names().comma;
+        sepstr = comma;
+        sepchars = comma->chars();
+        seplen = comma->length();
     }
+
+    JS::Anchor<JSString*> anchor(sepstr);
 
     // Step 6 is implicit in the loops below
 
@@ -1125,9 +1126,6 @@ ArrayJoin(JSContext *cx, CallArgs &args)
         if (!ArrayJoinKernel<Locale>(cx, op, obj, length, sb))
             return false;
     }
-
-    // Ensure that sepstr stays alive longer than sepchars.
-    JS_AnchorPtr(sepstr);
 
     // Step 11
     JSString *str = sb.finishString();
@@ -1200,7 +1198,7 @@ InitArrayTypes(JSContext *cx, TypeObject *type, const Value *vector, unsigned co
     if (cx->typeInferenceEnabled() && !type->unknownProperties()) {
         AutoEnterAnalysis enter(cx);
 
-        TypeSet *types = type->getProperty(cx, JSID_VOID);
+        HeapTypeSet *types = type->getProperty(cx, JSID_VOID);
         if (!types)
             return false;
 
@@ -1493,10 +1491,10 @@ CompareSubStringValues(JSContext *cx, const jschar *s1, size_t l1,
     if (!JS_CHECK_OPERATION_LIMIT(cx))
         return false;
 
-    int32_t result;
-    if (!s1 || !s2 || !CompareChars(s1, l1, s2, l2, &result))
+    if (!s1 || !s2)
         return false;
 
+    int32_t result = CompareChars(s1, l1, s2, l2);
     *lessOrEqualp = (result <= 0);
     return true;
 }
@@ -1683,7 +1681,7 @@ MatchNumericComparator(JSContext *cx, const Value &v)
     if (!script)
         return Match_Failure;
 
-    jsbytecode *pc = script->code;
+    jsbytecode *pc = script->code();
 
     uint16_t arg0, arg1;
     if (JSOp(*pc) != JSOP_GETARG)
@@ -2022,7 +2020,7 @@ NewbornArrayPushImpl(JSContext *cx, HandleObject obj, const Value &v)
 
     arr->setDenseInitializedLength(length + 1);
     arr->setLengthInt32(length + 1);
-    JSObject::initDenseElementWithType(cx, arr, length, v);
+    arr->initDenseElementWithType(cx, length, v);
     return true;
 }
 
@@ -2043,32 +2041,41 @@ js::array_push(JSContext *cx, unsigned argc, Value *vp)
     if (!obj)
         return false;
 
-    /* Fast path for the fully-dense case. */
-    if (obj->is<ArrayObject>()) {
-        Rooted<ArrayObject*> arr(cx, &obj->as<ArrayObject>());
-        if (arr->lengthIsWritable() && !ObjectMayHaveExtraIndexedProperties(arr)) {
-            uint32_t length = arr->length();
-            uint32_t argCount = args.length();
-            JSObject::EnsureDenseResult result = arr->ensureDenseElements(cx, length, argCount);
-            if (result == JSObject::ED_FAILED)
-                return false;
-
-            if (result == JSObject::ED_OK) {
-                arr->setLengthInt32(length + argCount);
-                for (uint32_t i = 0, index = length; i < argCount; index++, i++)
-                    JSObject::setDenseElementWithType(cx, arr, index, args[i]);
-                args.rval().setNumber(arr->length());
-                return true;
-            }
-
-            MOZ_ASSERT(result == JSObject::ED_SPARSE);
-        }
-    }
-
     /* Steps 2-3. */
     uint32_t length;
     if (!GetLengthProperty(cx, obj, &length))
         return false;
+
+    /* Fast path for native objects with dense elements. */
+    do {
+        if (!obj->isNative())
+            break;
+
+        if (obj->is<ArrayObject>() && !obj->as<ArrayObject>().lengthIsWritable())
+            break;
+
+        if (ObjectMayHaveExtraIndexedProperties(obj))
+            break;
+
+        uint32_t argCount = args.length();
+        JSObject::EnsureDenseResult result = obj->ensureDenseElements(cx, length, argCount);
+        if (result == JSObject::ED_FAILED)
+            return false;
+
+        if (result == JSObject::ED_OK) {
+            for (uint32_t i = 0, index = length; i < argCount; index++, i++)
+                obj->setDenseElementWithType(cx, index, args[i]);
+            uint32_t newlength = length + argCount;
+            args.rval().setNumber(newlength);
+            if (obj->is<ArrayObject>()) {
+                obj->as<ArrayObject>().setLengthInt32(newlength);
+                return true;
+            }
+            return SetLengthProperty(cx, obj, newlength);
+        }
+
+        MOZ_ASSERT(result == JSObject::ED_SPARSE);
+    } while (false);
 
     /* Steps 4-5. */
     if (!InitArrayElements(cx, obj, length, args.length(), args.array(), UpdateTypes))
@@ -2718,22 +2725,21 @@ array_slice(JSContext *cx, unsigned argc, Value *vp)
         begin = end;
 
     Rooted<ArrayObject*> narr(cx);
-
-    if (obj->is<ArrayObject>() && end <= obj->getDenseInitializedLength() &&
-        !ObjectMayHaveExtraIndexedProperties(obj))
-    {
-        narr = NewDenseCopiedArray(cx, end - begin, obj, begin);
-        if (!narr)
-            return false;
-        TryReuseArrayType(obj, narr);
-        args.rval().setObject(*narr);
-        return true;
-    }
-
     narr = NewDenseAllocatedArray(cx, end - begin);
     if (!narr)
         return false;
     TryReuseArrayType(obj, narr);
+
+    if (obj->is<ArrayObject>() && !ObjectMayHaveExtraIndexedProperties(obj)) {
+        if (obj->getDenseInitializedLength() > begin) {
+            uint32_t numSourceElements = obj->getDenseInitializedLength() - begin;
+            uint32_t initLength = Min(numSourceElements, end - begin);
+            narr->setDenseInitializedLength(initLength);
+            narr->initDenseElements(0, &obj->getDenseElement(begin), initLength);
+        }
+        args.rval().setObject(*narr);
+        return true;
+    }
 
     RootedValue value(cx);
     for (slot = begin; slot < end; slot++) {
@@ -2959,6 +2965,8 @@ static const JSFunctionSpec array_methods[] = {
     JS_SELF_HOSTED_FN("findIndex",   "ArrayFindIndex",   1,0),
 
     JS_SELF_HOSTED_FN("@@iterator",  "ArrayValues",      0,0),
+    JS_SELF_HOSTED_FN("entries",     "ArrayEntries",     0,0),
+    JS_SELF_HOSTED_FN("keys",        "ArrayKeys",        0,0),
     JS_FS_END
 };
 

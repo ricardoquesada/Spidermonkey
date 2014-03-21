@@ -1,0 +1,1 @@
+/Users/panda/StudyWork/mozilla-release/js/src/shell/js-gdb.py

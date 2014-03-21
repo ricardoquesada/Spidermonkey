@@ -4,27 +4,26 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-MODULE = 'xpcwrappers'
-
 EXPORTS += [
     'WrapperFactory.h',
 ]
 
-SOURCES += [
+UNIFIED_SOURCES += [
     'AccessCheck.cpp',
     'ChromeObjectWrapper.cpp',
     'FilteringWrapper.cpp',
     'WaiveXrayWrapper.cpp',
     'WrapperFactory.cpp',
-    'XrayWrapper.cpp',
 ]
 
-LIBRARY_NAME = 'xpcwrappers_s'
+# XrayWrapper needs to be built separately becaue of template instantiations.
+SOURCES += [
+    'XrayWrapper.cpp',
+]
 
 # warning C4661 for FilteringWrapper
 FAIL_ON_WARNINGS = not CONFIG['_MSC_VER']
 
-LIBXUL_LIBRARY = True
-
 MSVC_ENABLE_PGO = True
 
+FINAL_LIBRARY = 'xpconnect_s'

@@ -97,8 +97,11 @@ class MochitestRunner(MozbuildObject):
 
         self.tests_dir = os.path.join(self.topobjdir, '_tests')
         self.mochitest_dir = os.path.join(self.tests_dir, 'testing', 'mochitest')
+        self.lib_dir = os.path.join(self.topobjdir, 'dist', 'lib')
 
-    def run_b2g_test(self, test_file=None, b2g_home=None, xre_path=None, **kwargs):
+    def run_b2g_test(self, test_file=None, b2g_home=None, xre_path=None,
+                     total_chunks=None, this_chunk=None, no_window=None,
+                     **kwargs):
         """Runs a b2g mochitest.
 
         test_file is a path to a test file. It can be a relative path from the
@@ -136,11 +139,18 @@ class MochitestRunner(MozbuildObject):
                 print('Specified test path does not exist: %s' % test_root_file)
                 return 1
             options.testPath = test_path
+        elif conditions.is_b2g_desktop(self):
+            options.testManifest = 'b2g-desktop.json'
         else:
             options.testManifest = 'b2g.json'
 
         for k, v in kwargs.iteritems():
             setattr(options, k, v)
+        options.noWindow = no_window
+        options.totalChunks = total_chunks
+        options.thisChunk = this_chunk
+
+        options.symbolsPath = os.path.join(self.distdir, 'crashreporter-symbols')
 
         options.consoleLevel = 'INFO'
         if conditions.is_b2g_desktop(self):
@@ -185,7 +195,10 @@ class MochitestRunner(MozbuildObject):
     def run_desktop_test(self, suite=None, test_file=None, debugger=None,
         debugger_args=None, shuffle=False, keep_open=False, rerun_failures=False,
         no_autorun=False, repeat=0, run_until_failure=False, slow=False,
-        chunk_by_dir=0, total_chunks=None, this_chunk=None, jsdebugger=False):
+        chunk_by_dir=0, total_chunks=None, this_chunk=None, jsdebugger=False,
+        debug_on_failure=False, start_at=None, end_at=None, e10s=False,
+        dmd=False, dump_output_directory=None, dump_about_memory_after_test=False,
+        dump_dmd_after_test=False, **kwargs):
         """Runs a mochitest.
 
         test_file is a path to a test file. It can be a relative path from the
@@ -272,6 +285,9 @@ class MochitestRunner(MozbuildObject):
         else:
             raise Exception('None or unrecognized mochitest suite type.')
 
+        if dmd:
+            options.dmdPath = self.lib_dir
+
         options.autorun = not no_autorun
         options.closeWhenDone = not keep_open
         options.shuffle = shuffle
@@ -286,8 +302,19 @@ class MochitestRunner(MozbuildObject):
         options.totalChunks = total_chunks
         options.thisChunk = this_chunk
         options.jsdebugger = jsdebugger
+        options.debugOnFailure = debug_on_failure
+        options.startAt = start_at
+        options.endAt = end_at
+        options.e10s = e10s
+        options.dumpAboutMemoryAfterTest = dump_about_memory_after_test
+        options.dumpDMDAfterTest = dump_dmd_after_test
+        options.dumpOutputDirectory = dump_output_directory
+        mozinfo.update({"e10s": e10s}) # for test manifest parsing.
 
         options.failureFile = failure_file_path
+
+        for k, v in kwargs.iteritems():
+            setattr(options, k, v)
 
         if test_path:
             test_root = runner.getTestRoot(options)
@@ -297,7 +324,15 @@ class MochitestRunner(MozbuildObject):
                 print('You may need to run |mach build| to build the test files.')
                 return 1
 
-            options.testPath = test_path
+            # Handle test_path pointing at a manifest file so conditions in
+            # the manifest are processed.  This is a temporary solution
+            # pending bug 938019.
+            # The manifest basename is the same as |suite|, except for plain
+            manifest_base = 'mochitest' if suite == 'plain' else suite
+            if os.path.basename(test_root_file) == manifest_base + '.ini':
+                options.manifestFile = test_root_file
+            else:
+                options.testPath = test_path
 
         if rerun_failures:
             options.testManifest = failure_file_path
@@ -384,14 +419,22 @@ def MochitestCommand(func):
     func = repeat(func)
 
     runUntilFailure = CommandArgument("--run-until-failure", action='store_true',
-        help='Run a test repeatedly and stops on the first time the test fails. ' \
-             'Only available when running a single test. Default cap is 30 runs, ' \
-             'which can be overwritten with the --repeat parameter.')
+        help='Run tests repeatedly and stops on the first time a test fails. ' \
+             'Default cap is 30 runs, which can be overwritten ' \
+             'with the --repeat parameter.')
     func = runUntilFailure(func)
 
     slow = CommandArgument('--slow', action='store_true',
         help='Delay execution between tests.')
     func = slow(func)
+
+    end_at = CommandArgument('--end-at', type=str,
+        help='Stop running the test sequence at this test.')
+    func = end_at(func)
+
+    start_at = CommandArgument('--start-at', type=str,
+        help='Start running the test sequence at this test.')
+    func = start_at(func)
 
     chunk_dir = CommandArgument('--chunk-by-dir', type=int,
         help='Group tests together in chunks by this many top directories.')
@@ -405,9 +448,38 @@ def MochitestCommand(func):
         help='If running tests by chunks, the number of the chunk to run.')
     func = this_chunk(func)
 
+    hide_subtests = CommandArgument('--hide-subtests', action='store_true',
+        help='If specified, will only log subtest results on failure or timeout.')
+    func = hide_subtests(func)
+
+    debug_on_failure = CommandArgument('--debug-on-failure', action='store_true',
+        help='Breaks execution and enters the JS debugger on a test failure. ' \
+             'Should be used together with --jsdebugger.')
+    func = debug_on_failure(func)
+
     jsdebugger = CommandArgument('--jsdebugger', action='store_true',
         help='Start the browser JS debugger before running the test. Implies --no-autorun.')
     func = jsdebugger(func)
+
+    this_chunk = CommandArgument('--e10s', action='store_true',
+        help='Run tests with electrolysis preferences and test filtering enabled.')
+    func = this_chunk(func)
+
+    dmd = CommandArgument('--dmd', action='store_true',
+        help='Run tests with DMD active.')
+    func = dmd(func)
+
+    dumpAboutMemory = CommandArgument('--dump-about-memory-after-test', action='store_true',
+        help='Dump an about:memory log after every test.')
+    func = dumpAboutMemory(func)
+
+    dumpDMD = CommandArgument('--dump-dmd-after-test', action='store_true',
+        help='Dump a DMD log after every test.')
+    func = dumpDMD(func)
+
+    dumpOutputDirectory = CommandArgument('--dump-output-directory', action='store',
+        help='Specifies the directory in which to place dumped memory reports.')
+    func = dumpOutputDirectory(func)
 
     path = CommandArgument('test_file', default=None, nargs='?',
         metavar='TEST',
@@ -462,6 +534,10 @@ def B2GCommand(func):
     this_chunk = CommandArgument('--this-chunk', type=int,
         help='If running tests by chunks, the number of the chunk to run.')
     func = this_chunk(func)
+
+    hide_subtests = CommandArgument('--hide-subtests', action='store_true',
+        help='If specified, will only log subtest results on failure or timeout.')
+    func = hide_subtests(func)
 
     path = CommandArgument('test_file', default=None, nargs='?',
         metavar='TEST',

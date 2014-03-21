@@ -7,10 +7,10 @@
 #include "vm/ForkJoin.h"
 
 #include "jscntxt.h"
+#include "jslock.h"
+#include "jsprf.h"
 
 #ifdef JS_THREADSAFE
-# include "prprf.h"
-# include "prthread.h"
 # include "jit/BaselineJIT.h"
 # include "vm/Monitor.h"
 #endif
@@ -155,9 +155,9 @@ static bool
 ExecuteSequentially(JSContext *cx, HandleValue funVal, bool *complete)
 {
     uint32_t numSlices = ForkJoinSlices(cx);
-    FastInvokeGuard fig(cx, funVal);
     bool allComplete = true;
     for (uint32_t i = 0; i < numSlices; i++) {
+        FastInvokeGuard fig(cx, funVal);
         InvokeArgs &args = fig.args();
         if (!args.init(3))
             return false;
@@ -1473,6 +1473,11 @@ ForkJoinShared::executePortion(PerThreadData *perThread,
     // WARNING: This code runs ON THE PARALLEL WORKER THREAD.
     // Therefore, it should NOT access `cx_` in any way!
 
+    // ForkJoinSlice already contains an AutoAssertNoGC; however, the analysis
+    // does not propagate this type information. We duplicate the assertion
+    // here for maximum clarity.
+    JS::AutoAssertNoGC nogc(runtime());
+
     Allocator *allocator = allocators_[threadId];
     ForkJoinSlice slice(perThread, threadId, numSlices_, allocator,
                         this, &records_[threadId]);
@@ -1482,7 +1487,9 @@ ForkJoinShared::executePortion(PerThreadData *perThread,
 
     // Make a new IonContext for the slice, which is needed if we need to
     // re-enter the VM.
-    IonContext icx(cx_->runtime(), cx_->compartment(), nullptr);
+    IonContext icx(CompileRuntime::get(cx_->runtime()),
+                   CompileCompartment::get(cx_->compartment()),
+                   nullptr);
 
     JS_ASSERT(slice.bailoutRecord->topScript == nullptr);
 
@@ -1683,7 +1690,8 @@ ForkJoinSlice::ForkJoinSlice(PerThreadData *perThreadData,
     numSlices(numSlices),
     bailoutRecord(bailoutRecord),
     shared(shared),
-    acquiredContext_(false)
+    acquiredContext_(false),
+    nogc_(shared->runtime())
 {
     /*
      * Unsafely set the zone. This is used to track malloc counters and to
@@ -1953,11 +1961,11 @@ class ParallelSpewer
         }
     }
 
-    bool isActive(SpewChannel channel) {
+    bool isActive(js::parallel::SpewChannel channel) {
         return active[channel];
     }
 
-    void spewVA(SpewChannel channel, const char *fmt, va_list ap) {
+    void spewVA(js::parallel::SpewChannel channel, const char *fmt, va_list ap) {
         if (!active[channel])
             return;
 
@@ -1966,22 +1974,22 @@ class ParallelSpewer
         char buf[BufferSize];
 
         if (ForkJoinSlice *slice = ForkJoinSlice::Current()) {
-            PR_snprintf(buf, BufferSize, "[%sParallel:%u%s] ",
+            JS_snprintf(buf, BufferSize, "[%sParallel:%u%s] ",
                         sliceColor(slice->sliceId), slice->sliceId, reset());
         } else {
-            PR_snprintf(buf, BufferSize, "[Parallel:M] ");
+            JS_snprintf(buf, BufferSize, "[Parallel:M] ");
         }
 
         for (uint32_t i = 0; i < depth; i++)
-            PR_snprintf(buf + strlen(buf), BufferSize, "  ");
+            JS_snprintf(buf + strlen(buf), BufferSize, "  ");
 
-        PR_vsnprintf(buf + strlen(buf), BufferSize, fmt, ap);
-        PR_snprintf(buf + strlen(buf), BufferSize, "\n");
+        JS_vsnprintf(buf + strlen(buf), BufferSize, fmt, ap);
+        JS_snprintf(buf + strlen(buf), BufferSize, "\n");
 
         fprintf(stderr, "%s", buf);
     }
 
-    void spew(SpewChannel channel, const char *fmt, ...) {
+    void spew(js::parallel::SpewChannel channel, const char *fmt, ...) {
         va_list ap;
         va_start(ap, fmt);
         spewVA(channel, fmt, ap);
@@ -2097,7 +2105,7 @@ class ParallelSpewer
             return;
 
         char buf[BufferSize];
-        PR_vsnprintf(buf, BufferSize, fmt, ap);
+        JS_vsnprintf(buf, BufferSize, fmt, ap);
 
         JSScript *script = mir->block()->info().script();
         spew(SpewCompile, "%s%s%s: %s (%s:%u)", cyan(), mir->opName(), reset(), buf,
