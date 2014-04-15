@@ -36,16 +36,25 @@ iPhoneOS|iPhoneSimulator)
     fi
 
     if test "$ios_target" == "iPhoneSimulator" ; then
-        dnl force ios_arch to i386 for simulator
-        CPU_ARCH=i386
-        ios_arch=i386
+        if test "$ios_arch" == "i386"; then
+            dnl force ios_arch to i386 for simulator
+            CPU_ARCH=i386
+            ios_arch=i386
+        fi
+
+        if test "$ios_arch" == "x86_64"; then
+            dnl force ios_arch to x86_64 for simulator
+            CPU_ARCH=x86_64
+            ios_arch=x86_64
+        fi
+
         target_name=x86
         target=i386-darwin
         TARGET_CPU=i386
     else
         if test -z "$ios_arch" ; then
             ios_arch=armv7
-        fi 
+        fi
         target_name=arm
         target=arm-darwin
         TARGET_CPU=armv7
