@@ -1,1 +1,0 @@
-/Users/panda/StudyWork/mozilla-release/mfbt/GuardObjects.h

@@ -12493,7 +12493,7 @@ if test "${enable_threadsafe+set}" = set; then
   if test "$enableval" = "no"; then
     JS_THREADSAFE= 
   elif test "$enableval" = "yes"; then
-    JS_THREADSAFE=1 
+    JS_THREADSAFE=0 
   else
     { echo "configure: error: Option, threadsafe, does not take an argument ($enableval)." 1>&2; echo "configure: error: Option, threadsafe, does not take an argument ($enableval)." 1>&5; exit 1; }
   fi
