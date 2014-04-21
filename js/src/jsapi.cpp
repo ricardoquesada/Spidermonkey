@@ -4505,11 +4505,13 @@ JS::CanCompileOffThread(JSContext *cx, const ReadOnlyCompileOptions &options, si
         if (length < TINY_LENGTH)
             return false;
 
+    #ifdef JS_THREADSAFE
         // If the parsing task would have to wait for GC to complete, it'll probably
         // be faster to just start it synchronously on the main thread unless the
         // script is huge.
         if (OffThreadParsingMustWaitForGC(cx->runtime()) && length < HUGE_LENGTH)
             return false;
+    #endif
     }
 
     return cx->runtime()->canUseParallelParsing();
