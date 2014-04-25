@@ -23,7 +23,7 @@ class NameResolver
 {
     static const size_t MaxParents = 100;
 
-    JSContext *cx;
+    ExclusiveContext *cx;
     size_t nparents;                /* number of parents in the parents array */
     ParseNode *parents[MaxParents]; /* history of ParseNodes we've been looking at */
     StringBuffer *buf;              /* when resolving, buffer to append to */
@@ -262,14 +262,14 @@ class NameResolver
     }
 
   public:
-    explicit NameResolver(JSContext *cx) : cx(cx), nparents(0), buf(nullptr) {}
+    explicit NameResolver(ExclusiveContext *cx) : cx(cx), nparents(0), buf(nullptr) {}
 
     /*
      * Resolve all names for anonymous functions recursively within the
      * ParseNode instance given. The prefix is for each subsequent name, and
      * should initially be nullptr.
      */
-    void resolve(ParseNode *cur, HandleAtom prefixArg = NullPtr()) {
+    void resolve(ParseNode *cur, HandleAtom prefixArg = js::NullPtr()) {
         RootedAtom prefix(cx, prefixArg);
         if (cur == nullptr)
             return;
@@ -316,7 +316,7 @@ class NameResolver
             resolve(cur->pn_kid3, prefix);
             break;
           case PN_CODE:
-            JS_ASSERT(cur->isKind(PNK_MODULE) || cur->isKind(PNK_FUNCTION));
+            JS_ASSERT(cur->isKind(PNK_FUNCTION));
             resolve(cur->pn_body, prefix);
             break;
           case PN_LIST:
@@ -331,7 +331,7 @@ class NameResolver
 } /* anonymous namespace */
 
 bool
-frontend::NameFunctions(JSContext *cx, ParseNode *pn)
+frontend::NameFunctions(ExclusiveContext *cx, ParseNode *pn)
 {
     NameResolver nr(cx);
     nr.resolve(pn);

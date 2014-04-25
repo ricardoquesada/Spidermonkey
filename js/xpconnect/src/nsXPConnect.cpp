@@ -180,19 +180,8 @@ nsXPConnect::ReleaseXPConnectSingleton()
             }
         }
 #endif
-#ifdef XPC_DUMP_AT_SHUTDOWN
-        // NOTE: to see really interesting stuff turn on the prlog stuff.
-        // See the comment at the top of XPCLog.h to see how to do that.
-        xpc->DebugDump(7);
-#endif
         nsrefcnt cnt;
         NS_RELEASE2(xpc, cnt);
-#ifdef XPC_DUMP_AT_SHUTDOWN
-        if (0 != cnt)
-            printf("*** dangling reference to nsXPConnect: refcnt=%d\n", cnt);
-        else
-            printf("+++ XPConnect had no dangling references.\n");
-#endif
     }
 }
 
@@ -526,19 +515,12 @@ nsXPConnect::InitClassesWithNewWrappedGlobal(JSContext * aJSContext,
     MOZ_ASSERT(js::GetObjectClass(global)->flags & JSCLASS_DOM_GLOBAL);
 
     // Init WebIDL binding constructors wanted on all XPConnect globals.
-    // Additional bindings may be created lazily, see BackstagePass::NewResolve.
     //
     // XXX Please do not add any additional classes here without the approval of
     //     the XPConnect module owner.
     if (!TextDecoderBinding::GetConstructorObject(aJSContext, global) ||
         !TextEncoderBinding::GetConstructorObject(aJSContext, global) ||
         !DOMErrorBinding::GetConstructorObject(aJSContext, global)) {
-        return UnexpectedFailure(NS_ERROR_FAILURE);
-    }
-
-    if (nsContentUtils::IsSystemPrincipal(aPrincipal) &&
-        !IndexedDatabaseManager::DefineIndexedDBLazyGetter(aJSContext,
-                                                           global)) {
         return UnexpectedFailure(NS_ERROR_FAILURE);
     }
 
@@ -809,12 +791,9 @@ nsXPConnect::RescueOrphansInScope(JSContext *aJSContext, JSObject *aScopeArg)
     // might need to rescue.
     nsTArray<nsRefPtr<XPCWrappedNative> > wrappersToMove;
 
-    {   // scoped lock
-        XPCAutoLock lock(GetRuntime()->GetMapLock());
-        Native2WrappedNativeMap *map = scope->GetWrappedNativeMap();
-        wrappersToMove.SetCapacity(map->Count());
-        map->Enumerate(MoveableWrapperFinder, &wrappersToMove);
-    }
+    Native2WrappedNativeMap *map = scope->GetWrappedNativeMap();
+    wrappersToMove.SetCapacity(map->Count());
+    map->Enumerate(MoveableWrapperFinder, &wrappersToMove);
 
     // Now that we have the wrappers, reparent them to the new scope.
     for (uint32_t i = 0, stop = wrappersToMove.Length(); i < stop; ++i) {
@@ -893,10 +872,7 @@ nsXPConnect::SetFunctionThisTranslator(const nsIID & aIID,
 {
     XPCJSRuntime* rt = GetRuntime();
     IID2ThisTranslatorMap* map = rt->GetThisTranslatorMap();
-    {
-        XPCAutoLock lock(rt->GetMapLock()); // scoped lock
-        map->Add(aIID, aTranslator);
-    }
+    map->Add(aIID, aTranslator);
     return NS_OK;
 }
 
@@ -1296,6 +1272,13 @@ JSContext*
 nsXPConnect::GetCurrentJSContext()
 {
     return GetRuntime()->GetJSContextStack()->Peek();
+}
+
+/* virtual */
+JSContext*
+nsXPConnect::InitSafeJSContext()
+{
+    return GetRuntime()->GetJSContextStack()->InitSafeJSContext();
 }
 
 /* virtual */

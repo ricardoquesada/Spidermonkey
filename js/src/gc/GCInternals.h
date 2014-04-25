@@ -7,12 +7,17 @@
 #ifndef gc_GCInternals_h
 #define gc_GCInternals_h
 
+#include "jscntxt.h"
 #include "jsworkers.h"
 
+#include "gc/Zone.h"
 #include "vm/Runtime.h"
 
 namespace js {
 namespace gc {
+
+void
+MarkPersistentRootedChains(JSTracer *trc);
 
 void
 MarkRuntime(JSTracer *trc, bool useSavedRoots = false);
@@ -23,9 +28,10 @@ BufferGrayRoots(GCMarker *gcmarker);
 class AutoCopyFreeListToArenas
 {
     JSRuntime *runtime;
+    ZoneSelector selector;
 
   public:
-    AutoCopyFreeListToArenas(JSRuntime *rt);
+    AutoCopyFreeListToArenas(JSRuntime *rt, ZoneSelector selector);
     ~AutoCopyFreeListToArenas();
 };
 
@@ -45,23 +51,23 @@ class AutoTraceSession
     ~AutoTraceSession();
 
   protected:
+    AutoLockForExclusiveAccess lock;
     JSRuntime *runtime;
 
   private:
     AutoTraceSession(const AutoTraceSession&) MOZ_DELETE;
     void operator=(const AutoTraceSession&) MOZ_DELETE;
 
-    js::HeapState prevState;
+    HeapState prevState;
 };
 
 struct AutoPrepareForTracing
 {
     AutoFinishGC finish;
-    AutoPauseWorkersForTracing pause;
     AutoTraceSession session;
     AutoCopyFreeListToArenas copy;
 
-    AutoPrepareForTracing(JSRuntime *rt);
+    AutoPrepareForTracing(JSRuntime *rt, ZoneSelector selector);
 };
 
 class IncrementalSafety

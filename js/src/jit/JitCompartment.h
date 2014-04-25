@@ -275,7 +275,7 @@ class JitRuntime
 
     bool handleAccessViolation(JSRuntime *rt, void *faultingAddress);
 
-    IonCode *getVMWrapper(const VMFunction &f);
+    IonCode *getVMWrapper(const VMFunction &f) const;
     IonCode *debugTrapHandler(JSContext *cx);
 
     IonCode *getGenericBailoutHandler() const {
@@ -290,7 +290,7 @@ class JitRuntime
         return bailoutTail_;
     }
 
-    IonCode *getBailoutTable(const FrameSizeClass &frameClass);
+    IonCode *getBailoutTable(const FrameSizeClass &frameClass) const;
 
     IonCode *getArgumentsRectifier(ExecutionMode mode) const {
         switch (mode) {
@@ -368,7 +368,7 @@ class JitCompartment
     IonCode *getStubCode(uint32_t key) {
         ICStubCodeMap::AddPtr p = stubCodes_->lookupForAdd(key);
         if (p)
-            return p->value;
+            return p->value();
         return nullptr;
     }
     bool putStubCode(uint32_t key, Handle<IonCode *> stubCode) {
@@ -424,7 +424,7 @@ class JitCompartment
         return rt->execAlloc_;
     }
 
-    IonCode *stringConcatStub(ExecutionMode mode) {
+    IonCode *stringConcatStub(ExecutionMode mode) const {
         switch (mode) {
           case SequentialExecution: return stringConcatStub_;
           case ParallelExecution:   return parallelStringConcatStub_;

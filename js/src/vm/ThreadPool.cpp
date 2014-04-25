@@ -7,9 +7,6 @@
 #include "vm/ThreadPool.h"
 
 #include "jslock.h"
-#ifdef JS_THREADSAFE
-# include "prthread.h"
-#endif
 
 #include "vm/Monitor.h"
 #include "vm/Runtime.h"
@@ -186,40 +183,19 @@ ThreadPoolWorker::terminate()
 // them down when requested.
 
 ThreadPool::ThreadPool(JSRuntime *rt)
-  :
-#if defined(JS_THREADSAFE) || defined(DEBUG)
-    runtime_(rt),
-#endif
-    numWorkers_(0) // updated during init()
+  : runtime_(rt)
 {
-}
-
-bool
-ThreadPool::init()
-{
-    // Compute the number of worker threads (which may legally
-    // be zero, as described in ThreadPool.h).  This is not
-    // done in the constructor because runtime_->useHelperThreads()
-    // doesn't return the right thing then.
-
-#ifdef JS_THREADSAFE
-    if (runtime_->useHelperThreads())
-        numWorkers_ = GetCPUCount() - 1;
-    else
-        numWorkers_ = 0;
-
-# ifdef DEBUG
-    if (char *jsthreads = getenv("JS_THREADPOOL_SIZE"))
-        numWorkers_ = strtol(jsthreads, nullptr, 10);
-# endif
-#endif
-
-    return true;
 }
 
 ThreadPool::~ThreadPool()
 {
     terminateWorkers();
+}
+
+size_t
+ThreadPool::numWorkers() const
+{
+    return runtime_->workerThreadCount();
 }
 
 bool
@@ -240,7 +216,7 @@ ThreadPool::lazyStartWorkers(JSContext *cx)
     }
 
     // Allocate workers array and then start the worker threads.
-    // Note that numWorkers_ is the number of *desired* workers,
+    // Note that numWorkers() is the number of *desired* workers,
     // but workers_.length() is the number of *successfully
     // initialized* workers.
     for (size_t workerId = 0; workerId < numWorkers(); workerId++) {

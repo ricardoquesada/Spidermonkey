@@ -8,11 +8,6 @@
  * JS math package.
  */
 
-#if defined(XP_WIN)
-/* _CRT_RAND_S must be #defined before #including stdlib.h to get rand_s(). */
-#define _CRT_RAND_S
-#endif
-
 #include "jsmath.h"
 
 #include "mozilla/Constants.h"
@@ -40,6 +35,7 @@
 using namespace js;
 
 using mozilla::Abs;
+using mozilla::DoubleEqualsInt32;
 using mozilla::DoubleIsInt32;
 using mozilla::ExponentComponent;
 using mozilla::IsFinite;
@@ -293,16 +289,15 @@ js::math_atan2(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (args.length() <= 1) {
-        args.rval().setNaN();
-        return true;
-    }
-
-    double x, y;
-    if (!ToNumber(cx, args[0], &x) || !ToNumber(cx, args[1], &y))
+    double y;
+    if (!ToNumber(cx, args.get(0), &y))
         return false;
 
-    double z = ecmaAtan2(x, y);
+    double x;
+    if (!ToNumber(cx, args.get(1), &x))
+        return false;
+
+    double z = ecmaAtan2(y, x);
     args.rval().setDouble(z);
     return true;
 }
@@ -611,8 +606,9 @@ js::ecmaPow(double x, double y)
      * Use powi if the exponent is an integer-valued double. We don't have to
      * check for NaN since a comparison with NaN is always false.
      */
-    if (int32_t(y) == y)
-        return powi(x, int32_t(y));
+    int32_t yi;
+    if (DoubleEqualsInt32(y, &yi))
+        return powi(x, yi);
 
     /*
      * Because C99 and ECMA specify different behavior for pow(),
@@ -638,13 +634,12 @@ js_math_pow(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (args.length() <= 1) {
-        args.rval().setNaN();
-        return true;
-    }
+    double x;
+    if (!ToNumber(cx, args.get(0), &x))
+        return false;
 
-    double x, y;
-    if (!ToNumber(cx, args[0], &x) || !ToNumber(cx, args[1], &y))
+    double y;
+    if (!ToNumber(cx, args.get(1), &y))
         return false;
 
     /*
@@ -1273,10 +1268,40 @@ js::math_atanh(JSContext *cx, unsigned argc, Value *vp)
     return math_function<math_atanh_impl>(cx, argc, vp);
 }
 
+/* Consistency wrapper for platform deviations in hypot() */
+double
+js::ecmaHypot(double x, double y)
+{
+#ifdef XP_WIN
+    /*
+     * Workaround MS hypot bug, where hypot(Infinity, NaN or Math.MIN_VALUE)
+     * is NaN, not Infinity.
+     */
+    if (mozilla::IsInfinite(x) || mozilla::IsInfinite(y)) {
+        return mozilla::PositiveInfinity();
+    }
+#endif
+    return hypot(x, y);
+}
+
 bool
 js::math_hypot(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
+
+    // IonMonkey calls the system hypot function directly if two arguments are
+    // given. Do that here as well to get the same results.
+    if (args.length() == 2) {
+        double x, y;
+        if (!ToNumber(cx, args[0], &x))
+            return false;
+        if (!ToNumber(cx, args[1], &y))
+            return false;
+
+        double result = ecmaHypot(x, y);
+        args.rval().setNumber(result);
+        return true;
+    }
 
     bool isInfinite = false;
     bool isNaN = false;
@@ -1445,7 +1470,10 @@ static const JSFunctionSpec math_static_methods[] = {
 JSObject *
 js_InitMathClass(JSContext *cx, HandleObject obj)
 {
-    RootedObject Math(cx, NewObjectWithClassProto(cx, &MathClass, nullptr, obj, SingletonObject));
+    RootedObject proto(cx, obj->as<GlobalObject>().getOrCreateObjectPrototype(cx));
+    if (!proto)
+        return nullptr;
+    RootedObject Math(cx, NewObjectWithGivenProto(cx, &MathClass, proto, obj, SingletonObject));
     if (!Math)
         return nullptr;
 
@@ -1459,7 +1487,7 @@ js_InitMathClass(JSContext *cx, HandleObject obj)
     if (!JS_DefineConstDoubles(cx, Math, math_constants))
         return nullptr;
 
-    obj->as<GlobalObject>().markStandardClassInitializedNoProto(&MathClass);
+    obj->as<GlobalObject>().setConstructor(JSProto_Math, ObjectValue(*Math));
 
     return Math;
 }

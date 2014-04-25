@@ -101,6 +101,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitElements(LElements *lir);
     bool visitConvertElementsToDoubles(LConvertElementsToDoubles *lir);
     bool visitMaybeToDoubleElement(LMaybeToDoubleElement *lir);
+    bool visitGuardObjectIdentity(LGuardObjectIdentity *guard);
     bool visitTypeBarrierV(LTypeBarrierV *lir);
     bool visitTypeBarrierO(LTypeBarrierO *lir);
     bool visitMonitorTypes(LMonitorTypes *lir);
@@ -119,8 +120,10 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitApplyArgsGeneric(LApplyArgsGeneric *apply);
     bool visitBail(LBail *lir);
     bool visitGetDynamicName(LGetDynamicName *lir);
-    bool visitFilterArgumentsOrEval(LFilterArgumentsOrEval *lir);
-    bool visitCallDirectEval(LCallDirectEval *lir);
+    bool visitFilterArgumentsOrEvalS(LFilterArgumentsOrEvalS *lir);
+    bool visitFilterArgumentsOrEvalV(LFilterArgumentsOrEvalV *lir);
+    bool visitCallDirectEvalS(LCallDirectEvalS *lir);
+    bool visitCallDirectEvalV(LCallDirectEvalV *lir);
     bool visitDoubleToInt32(LDoubleToInt32 *lir);
     bool visitFloat32ToInt32(LFloat32ToInt32 *lir);
     bool visitNewSlots(LNewSlots *lir);
@@ -154,6 +157,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitReturnFromCtor(LReturnFromCtor *lir);
     bool visitComputeThis(LComputeThis *lir);
     bool visitArrayLength(LArrayLength *lir);
+    bool visitSetArrayLength(LSetArrayLength *lir);
     bool visitTypedArrayLength(LTypedArrayLength *lir);
     bool visitTypedArrayElements(LTypedArrayElements *lir);
     bool visitTypedObjectElements(LTypedObjectElements *lir);
@@ -179,6 +183,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitSetPropertyPolymorphicT(LSetPropertyPolymorphicT *ins);
     bool visitAbsI(LAbsI *lir);
     bool visitAtan2D(LAtan2D *lir);
+    bool visitHypot(LHypot *lir);
     bool visitPowI(LPowI *lir);
     bool visitPowD(LPowD *lir);
     bool visitRandom(LRandom *lir);
@@ -201,6 +206,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitConcatPar(LConcatPar *lir);
     bool visitCharCodeAt(LCharCodeAt *lir);
     bool visitFromCharCode(LFromCharCode *lir);
+    bool visitStringSplit(LStringSplit *lir);
     bool visitFunctionEnvironment(LFunctionEnvironment *lir);
     bool visitForkJoinSlice(LForkJoinSlice *lir);
     bool visitGuardThreadLocalObject(LGuardThreadLocalObject *lir);
@@ -263,6 +269,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitCallInstanceOf(LCallInstanceOf *ins);
     bool visitFunctionBoundary(LFunctionBoundary *lir);
     bool visitGetDOMProperty(LGetDOMProperty *lir);
+    bool visitGetDOMMember(LGetDOMMember *lir);
     bool visitSetDOMProperty(LSetDOMProperty *lir);
     bool visitCallDOMNative(LCallDOMNative *lir);
     bool visitCallGetIntrinsicValue(LCallGetIntrinsicValue *lir);
@@ -338,7 +345,7 @@ class CodeGenerator : public CodeGeneratorSpecific
   private:
     bool addGetPropertyCache(LInstruction *ins, RegisterSet liveRegs, Register objReg,
                              PropertyName *name, TypedOrValueRegister output,
-                             bool allowGetters);
+                             bool allowGetters, bool monitoredResult);
     bool addGetElementCache(LInstruction *ins, Register obj, ConstantOrRegister index,
                             TypedOrValueRegister output, bool monitoredResult,
                             bool allowDoubleResult);
@@ -361,7 +368,20 @@ class CodeGenerator : public CodeGeneratorSpecific
     void emitLambdaInit(const Register &resultReg, const Register &scopeChainReg,
                         const LambdaFunctionInfo &info);
 
+    bool emitFilterArgumentsOrEval(LInstruction *lir, Register string, Register temp1,
+                                   Register temp2);
+
     IonScriptCounts *maybeCreateScriptCounts();
+
+    // This function behaves like testValueTruthy with the exception that it can
+    // choose to let control flow fall through when the object is truthy, as
+    // an optimization. Use testValueTruthy when it's required to branch to one
+    // of the two labels.
+    void testValueTruthyKernel(const ValueOperand &value,
+                               const LDefinition *scratch1, const LDefinition *scratch2,
+                               FloatRegister fr,
+                               Label *ifTruthy, Label *ifFalsy,
+                               OutOfLineTestObject *ool);
 
     // Test whether value is truthy or not and jump to the corresponding label.
     // If the value can be an object that emulates |undefined|, |ool| must be
@@ -374,11 +394,34 @@ class CodeGenerator : public CodeGeneratorSpecific
                          Label *ifTruthy, Label *ifFalsy,
                          OutOfLineTestObject *ool);
 
-    // Like testValueTruthy but takes an object, and |ool| must be non-null.
-    // (If it's known that an object can never emulate |undefined| it shouldn't
-    // be tested in the first place.)
-    void testObjectTruthy(Register objreg, Label *ifTruthy, Label *ifFalsy, Register scratch,
-                          OutOfLineTestObject *ool);
+    // This function behaves like testObjectEmulatesUndefined with the exception
+    // that it can choose to let control flow fall through when the object
+    // doesn't emulate undefined, as an optimization. Use the regular
+    // testObjectEmulatesUndefined when it's required to branch to one of the
+    // two labels.
+    void testObjectEmulatesUndefinedKernel(Register objreg,
+                                           Label *ifEmulatesUndefined,
+                                           Label *ifDoesntEmulateUndefined,
+                                           Register scratch, OutOfLineTestObject *ool);
+
+    // Test whether an object emulates |undefined|.  If it does, jump to
+    // |ifEmulatesUndefined|; the caller is responsible for binding this label.
+    // If it doesn't, fall through; the label |ifDoesntEmulateUndefined| (which
+    // must be initially unbound) will be bound at this point.
+    void branchTestObjectEmulatesUndefined(Register objreg,
+                                           Label *ifEmulatesUndefined,
+                                           Label *ifDoesntEmulateUndefined,
+                                           Register scratch, OutOfLineTestObject *ool);
+
+    // Test whether an object emulates |undefined|, and jump to the
+    // corresponding label.
+    //
+    // This method should be used when subsequent code can't be laid out in a
+    // straight line; if it can, branchTest* should be used instead.
+    void testObjectEmulatesUndefined(Register objreg,
+                                     Label *ifEmulatesUndefined,
+                                     Label *ifDoesntEmulateUndefined,
+                                     Register scratch, OutOfLineTestObject *ool);
 
     // Get a label for the start of block which can be used for jumping, in
     // place of jumpToBlock.

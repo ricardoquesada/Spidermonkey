@@ -55,7 +55,7 @@ FindKeyword(const jschar *s, size_t length)
 {
     JS_ASSERT(length != 0);
 
-    register size_t i;
+    size_t i;
     const KeywordInfo *kw;
     const char *chars;
 
@@ -260,7 +260,7 @@ TokenStream::SourceCoords::lineNumAndColumnIndex(uint32_t offset, uint32_t *line
 #endif
 
 // Initialize members that aren't initialized in |init|.
-TokenStream::TokenStream(ExclusiveContext *cx, const CompileOptions &options,
+TokenStream::TokenStream(ExclusiveContext *cx, const ReadOnlyCompileOptions &options,
                          const jschar *base, size_t length, StrictModeGetter *smg)
   : srcCoords(cx, options.lineno),
     options_(options),
@@ -272,7 +272,7 @@ TokenStream::TokenStream(ExclusiveContext *cx, const CompileOptions &options,
     linebase(base - options.column),
     prevLinebase(nullptr),
     userbuf(cx, base - options.column, length + options.column), // See comment below
-    filename(options.filename),
+    filename(options.filename()),
     sourceURL_(nullptr),
     sourceMapURL_(nullptr),
     tokenbuf(cx),
@@ -287,7 +287,7 @@ TokenStream::TokenStream(ExclusiveContext *cx, const CompileOptions &options,
 
     // The caller must ensure that a reference is held on the supplied principals
     // throughout compilation.
-    JS_ASSERT_IF(originPrincipals, originPrincipals->refcount);
+    JS_ASSERT_IF(originPrincipals, originPrincipals->refcount > 0);
 
     // Column numbers are computed as offsets from the current line's base, so the
     // initial line's base must be included in the buffer. linebase and userbuf
@@ -909,7 +909,7 @@ TokenStream::newToken(ptrdiff_t adjust)
 JS_ALWAYS_INLINE JSAtom *
 TokenStream::atomize(ExclusiveContext *cx, CharBuffer &cb)
 {
-    return AtomizeChars<CanGC>(cx, cb.begin(), cb.length());
+    return AtomizeChars(cx, cb.begin(), cb.length());
 }
 
 #ifdef DEBUG
@@ -1178,7 +1178,7 @@ TokenStream::getTokenInternal(Modifier modifier)
                 goto out;
         }
 
-        JSAtom *atom = AtomizeChars<CanGC>(cx, chars, length);
+        JSAtom *atom = AtomizeChars(cx, chars, length);
         if (!atom)
             goto error;
         tp->type = TOK_NAME;

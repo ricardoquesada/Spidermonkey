@@ -18,14 +18,26 @@ if not CONFIG['JS_DISABLE_SHELL']:
 
 TEST_DIRS += ['jsapi-tests', 'tests', 'gdb']
 
-MODULE = 'js'
+mfbt_root = '../../mfbt'
+LOCAL_INCLUDES += ['%s/double-conversion' % mfbt_root]
 
 if CONFIG['JS_STANDALONE']:
     LIBRARY_NAME = 'mozjs-%s' % CONFIG['MOZILLA_SYMBOLVERSION']
+
+    # When building standalone, we need to include mfbt sources, and to declare
+    # "exported" mfbt symbols on its behalf when we use its headers.
+    include('%s/common.mozbuild' % mfbt_root)
 else:
     LIBRARY_NAME = 'mozjs'
 
-CONFIGURE_SUBST_FILES += ['devtools/rootAnalysis/Makefile']
+CONFIGURE_SUBST_FILES += [
+    'devtools/rootAnalysis/Makefile',
+    'js-confdefs.h',
+]
+
+CONFIGURE_DEFINE_FILES += [
+    'js-config.h',
+]
 
 # Changes to internal header files, used externally, massively slow down
 # browser builds.  Don't add new files here unless you know what you're
@@ -69,6 +81,7 @@ EXPORTS.js += [
     '../public/PropertyKey.h',
     '../public/RequiredDefines.h',
     '../public/RootingAPI.h',
+    '../public/SliceBudget.h',
     '../public/StructuredClone.h',
     '../public/Tracer.h',
     '../public/TypeDecls.h',
@@ -77,12 +90,11 @@ EXPORTS.js += [
     '../public/Vector.h',
 ]
 
-SOURCES += [
+UNIFIED_SOURCES += [
     'assembler/jit/ExecutableAllocator.cpp',
     'builtin/Eval.cpp',
     'builtin/Intl.cpp',
     'builtin/MapObject.cpp',
-    'builtin/Module.cpp',
     'builtin/Object.cpp',
     'builtin/ParallelArray.cpp',
     'builtin/Profilers.cpp',
@@ -98,7 +110,6 @@ SOURCES += [
     'frontend/NameFunctions.cpp',
     'frontend/ParseMaps.cpp',
     'frontend/ParseNode.cpp',
-    'frontend/Parser.cpp',
     'frontend/TokenStream.cpp',
     'gc/Barrier.cpp',
     'gc/Iteration.cpp',
@@ -114,8 +125,6 @@ SOURCES += [
     'jsalloc.cpp',
     'jsanalyze.cpp',
     'jsapi.cpp',
-    'jsarray.cpp',
-    'jsatom.cpp',
     'jsbool.cpp',
     'jscntxt.cpp',
     'jscompartment.cpp',
@@ -128,7 +137,6 @@ SOURCES += [
     'jsgc.cpp',
     'jsinfer.cpp',
     'jsiter.cpp',
-    'jsmath.cpp',
     'jsnativestack.cpp',
     'jsnum.cpp',
     'jsobj.cpp',
@@ -141,7 +149,6 @@ SOURCES += [
     'jsreflect.cpp',
     'jsscript.cpp',
     'jsstr.cpp',
-    'jsutil.cpp',
     'jswatchpoint.cpp',
     'jsweakmap.cpp',
     'jsworkers.cpp',
@@ -153,6 +160,7 @@ SOURCES += [
     'vm/CharacterEncoding.cpp',
     'vm/DateTime.cpp',
     'vm/Debugger.cpp',
+    'vm/ErrorObject.cpp',
     'vm/ForkJoin.cpp',
     'vm/GlobalObject.cpp',
     'vm/Id.cpp',
@@ -187,6 +195,27 @@ SOURCES += [
     'yarr/YarrSyntaxChecker.cpp',
 ]
 
+# jsarray.cpp and jsatom.cpp cannot be built in unified mode because
+# xpcshell is broken during packaging when compiled with gcc-4.8.2
+# frontend/Parser.cpp cannot be built in unified mode because of explicit
+# template instantiations.
+# jsmath.cpp cannot be built in unified mode because it needs to pull rand_s
+# from <stdlib.h> on Windows through a preprocessor define.
+# jsutil.cpp cannot be built in unified mode because it is needed for
+# check-vanilla-allocations.
+SOURCES += [
+    'frontend/Parser.cpp',
+    'jsarray.cpp',
+    'jsatom.cpp',
+    'jsmath.cpp',
+    'jsutil.cpp',
+]
+
+if CONFIG['JS_POSIX_NSPR']:
+    UNIFIED_SOURCES += [
+        'vm/PosixNSPR.cpp',
+    ]
+
 if CONFIG['MOZ_INSTRUMENTS']:
     SOURCES += [
         'devtools/Instruments.cpp',
@@ -198,7 +227,7 @@ if CONFIG['ENABLE_TRACE_LOGGING']:
     ]
 
 if CONFIG['ENABLE_ION']:
-    SOURCES += [
+    UNIFIED_SOURCES += [
         'jit/AliasAnalysis.cpp',
         'jit/AsmJS.cpp',
         'jit/AsmJSLink.cpp',
@@ -217,6 +246,7 @@ if CONFIG['ENABLE_ION']:
         'jit/BytecodeAnalysis.cpp',
         'jit/C1Spewer.cpp',
         'jit/CodeGenerator.cpp',
+        'jit/CompileWrappers.cpp',
         'jit/EdgeCaseAnalysis.cpp',
         'jit/EffectiveAddressAnalysis.cpp',
         'jit/Ion.cpp',
@@ -254,7 +284,7 @@ if CONFIG['ENABLE_ION']:
         'jit/VMFunctions.cpp',
     ]
     if CONFIG['TARGET_CPU'].find('86') != -1:
-        SOURCES += [
+        UNIFIED_SOURCES += [
             'jit/shared/Assembler-x86-shared.cpp',
             'jit/shared/BaselineCompiler-x86-shared.cpp',
             'jit/shared/BaselineIC-x86-shared.cpp',
@@ -264,7 +294,7 @@ if CONFIG['ENABLE_ION']:
             'jit/shared/MoveEmitter-x86-shared.cpp',
         ]
         if CONFIG['TARGET_CPU'] == 'x86_64':
-            SOURCES += [
+            UNIFIED_SOURCES += [
                 'jit/x64/Assembler-x64.cpp',
                 'jit/x64/Bailouts-x64.cpp',
                 'jit/x64/BaselineCompiler-x64.cpp',
@@ -275,7 +305,7 @@ if CONFIG['ENABLE_ION']:
                 'jit/x64/Trampoline-x64.cpp',
             ]
         else:
-            SOURCES += [
+            UNIFIED_SOURCES += [
                 'jit/x86/Assembler-x86.cpp',
                 'jit/x86/Bailouts-x86.cpp',
                 'jit/x86/BaselineCompiler-x86.cpp',
@@ -286,7 +316,7 @@ if CONFIG['ENABLE_ION']:
                 'jit/x86/Trampoline-x86.cpp',
             ]
     elif CONFIG['TARGET_CPU'].find('arm') != -1:
-        SOURCES += [
+        UNIFIED_SOURCES += [
             'jit/arm/Architecture-arm.cpp',
             'jit/arm/Assembler-arm.cpp',
             'jit/arm/Bailouts-arm.cpp',
@@ -355,4 +385,41 @@ HOST_SOURCES += [
     'jsoplengen.cpp',
 ]
 
+HOST_SIMPLE_PROGRAMS += [
+    'host_%s' % f.replace('.cpp', '') for f in HOST_SOURCES
+]
+
+# JavaScript must be built shared, even for static builds, as it is used by
+# other modules which are always built shared. Failure to do so results in
+# the js code getting copied into xpinstall and jsd as well as mozilla-bin,
+# and then the static data cells used for locking no longer work.
+#
+# In fact, we now build both a static and a shared library, as the
+# JS shell would like to link to the static library.
+
+if CONFIG['JS_SHARED_LIBRARY']:
+    FORCE_SHARED_LIB = True
+
 FORCE_STATIC_LIB = True
+
+if CONFIG['MOZ_ETW']:
+    GENERATED_FILES = [
+        'ETWProvider.h',
+    ]
+
+if CONFIG['NIGHTLY_BUILD']:
+    DEFINES['ENABLE_PARALLEL_JS'] = True
+    DEFINES['ENABLE_BINARYDATA'] = True
+
+DEFINES['EXPORT_JS_API'] = True
+
+if CONFIG['JS_THREADSAFE']:
+    DEFINES['JS_THREADSAFE'] = True
+
+if CONFIG['JS_HAS_CTYPES']:
+    DEFINES['JS_HAS_CTYPES'] = True
+    for var in ('DLL_PREFIX', 'DLL_SUFFIX'):
+        DEFINES[var] = '"%s"' % CONFIG[var]
+
+if CONFIG['MOZ_LINKER']:
+    DEFINES['MOZ_LINKER'] = True

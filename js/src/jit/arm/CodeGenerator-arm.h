@@ -110,6 +110,7 @@ class CodeGeneratorARM : public CodeGeneratorShared
     virtual bool visitMathD(LMathD *math);
     virtual bool visitMathF(LMathF *math);
     virtual bool visitFloor(LFloor *lir);
+    virtual bool visitFloorF(LFloorF *lir);
     virtual bool visitRound(LRound *lir);
     virtual bool visitTruncateDToInt32(LTruncateDToInt32 *ins);
     virtual bool visitTruncateFToInt32(LTruncateFToInt32 *ins);
@@ -176,11 +177,12 @@ class CodeGeneratorARM : public CodeGeneratorShared
   protected:
     void postAsmJSCall(LAsmJSCall *lir) {
 #if  !defined(JS_CPU_ARM_HARDFP)
-        if (lir->mir()->type() == MIRType_Double) {
-            masm.ma_vxfer(r0, r1, d0);
+        if (lir->mir()->callee().which() == MAsmJSCall::Callee::Builtin) {
+            if (lir->mir()->type() == MIRType_Double)
+                masm.ma_vxfer(r0, r1, d0);
         }
 #endif
-}
+    }
 
     bool visitEffectiveAddress(LEffectiveAddress *ins);
     bool visitUDiv(LUDiv *ins);

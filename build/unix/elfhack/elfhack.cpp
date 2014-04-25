@@ -26,7 +26,7 @@
 #define R_ARM_THM_JUMP24 0x1e
 #endif
 
-char *rundir = NULL;
+char *rundir = nullptr;
 
 template <typename T>
 struct wrapped {
@@ -63,7 +63,7 @@ typedef serializable<Elf_RelHack_Traits> Elf_RelHack;
 class ElfRelHack_Section: public ElfSection {
 public:
     ElfRelHack_Section(Elf_Shdr &s)
-    : ElfSection(s, NULL, NULL)
+    : ElfSection(s, nullptr, nullptr)
     {
         name = elfhack_data;
     };
@@ -90,7 +90,7 @@ private:
 class ElfRelHackCode_Section: public ElfSection {
 public:
     ElfRelHackCode_Section(Elf_Shdr &s, Elf &e, unsigned int init)
-    : ElfSection(s, NULL, NULL), parent(e), init(init) {
+    : ElfSection(s, nullptr, nullptr), parent(e), init(init) {
         std::string file(rundir);
         file += "/inject/";
         switch (parent.getMachine()) {
@@ -106,8 +106,6 @@ public:
         default:
             throw std::runtime_error("unsupported architecture");
         }
-        if (!init)
-            file += "-noinit";
         file += ".o";
         std::ifstream inject(file.c_str(), std::ios::in|std::ios::binary);
         elf = new Elf(inject);
@@ -116,39 +114,27 @@ public:
         if (elf->getMachine() != parent.getMachine())
             throw std::runtime_error("architecture of object for injected code doesn't match");
 
-        ElfSymtab_Section *symtab = NULL;
+        ElfSymtab_Section *symtab = nullptr;
 
-        // Get all executable sections from the injected code object.
-        // Most of the time, there will only be one for the init function,
-        // but on e.g. x86, there is a separate section for
-        // __i686.get_pc_thunk.$reg
-        // Find the symbol table at the same time.
-        for (ElfSection *section = elf->getSection(1); section != NULL;
+        // Find the symbol table.
+        for (ElfSection *section = elf->getSection(1); section != nullptr;
              section = section->getNext()) {
-            if ((section->getType() == SHT_PROGBITS) &&
-                (section->getFlags() & SHF_EXECINSTR)) {
-                code.push_back(section);
-                // We need to align this section depending on the greater
-                // alignment required by code sections.
-                if (shdr.sh_addralign < section->getAddrAlign())
-                    shdr.sh_addralign = section->getAddrAlign();
-            } else if (section->getType() == SHT_SYMTAB) {
+            if (section->getType() == SHT_SYMTAB)
                 symtab = (ElfSymtab_Section *) section;
-            }
         }
-        assert(code.size() != 0);
-        if (symtab == NULL)
+        if (symtab == nullptr)
             throw std::runtime_error("Couldn't find a symbol table for the injected code");
 
         // Find the init symbol
         entry_point = -1;
-        int shndx = 0;
-        Elf_SymValue *sym = symtab->lookup("init");
-        if (sym) {
-            entry_point = sym->value.getValue();
-            shndx = sym->value.getSection()->getIndex();
-        } else
+        Elf_SymValue *sym = symtab->lookup(init ? "init" : "init_noinit");
+        if (!sym)
             throw std::runtime_error("Couldn't find an 'init' symbol in the injected code");
+
+        entry_point = sym->value.getValue();
+
+        // Get all relevant sections from the injected code object.
+        add_code_section(sym->value.getSection());
 
         // Adjust code sections offsets according to their size
         std::vector<ElfSection *>::iterator c = code.begin();
@@ -158,6 +144,10 @@ public:
             if (addr & ((*c)->getAddrAlign() - 1))
                 addr = (addr | ((*c)->getAddrAlign() - 1)) + 1;
             (*c)->getShdr().sh_addr = addr;
+            // We need to align this section depending on the greater
+            // alignment required by code sections.
+            if (shdr.sh_addralign < (*c)->getAddrAlign())
+                shdr.sh_addralign = (*c)->getAddrAlign();
         }
         shdr.sh_size = code.back()->getAddr() + code.back()->getSize();
         data = new char[shdr.sh_size];
@@ -165,8 +155,6 @@ public:
         for (c = code.begin(); c != code.end(); c++) {
             memcpy(buf, (*c)->getData(), (*c)->getSize());
             buf += (*c)->getSize();
-            if ((*c)->getIndex() < shndx)
-                entry_point += (*c)->getSize();
         }
         name = elfhack_text;
     }
@@ -182,14 +170,15 @@ public:
             (*c)->getShdr().sh_addr += getAddr();
 
         // Apply relocations
-        for (ElfSection *rel = elf->getSection(1); rel != NULL; rel = rel->getNext())
-            if ((rel->getType() == SHT_REL) || (rel->getType() == SHT_RELA)) {
-                ElfSection *section = rel->getInfo().section;
-                if ((section->getType() == SHT_PROGBITS) && (section->getFlags() & SHF_EXECINSTR)) {
+        for (std::vector<ElfSection *>::iterator c = code.begin(); c != code.end(); c++) {
+            for (ElfSection *rel = elf->getSection(1); rel != nullptr; rel = rel->getNext())
+                if (((rel->getType() == SHT_REL) ||
+                     (rel->getType() == SHT_RELA)) &&
+                    (rel->getInfo().section == *c)) {
                     if (rel->getType() == SHT_REL)
-                        apply_relocations((ElfRel_Section<Elf_Rel> *)rel, section);
+                        apply_relocations((ElfRel_Section<Elf_Rel> *)rel, *c);
                     else
-                        apply_relocations((ElfRel_Section<Elf_Rela> *)rel, section);
+                        apply_relocations((ElfRel_Section<Elf_Rela> *)rel, *c);
                 }
             }
 
@@ -204,6 +193,48 @@ public:
         return entry_point;
     }
 private:
+    void add_code_section(ElfSection *section)
+    {
+        if (section) {
+            code.push_back(section);
+            find_code(section);
+        }
+    }
+
+    /* Look at the relocations associated to the given section to find other
+     * sections that it requires */
+    void find_code(ElfSection *section)
+    {
+        for (ElfSection *s = elf->getSection(1); s != nullptr;
+             s = s->getNext()) {
+            if (((s->getType() == SHT_REL) ||
+                 (s->getType() == SHT_RELA)) &&
+                (s->getInfo().section == section)) {
+                if (s->getType() == SHT_REL)
+                    scan_relocs_for_code((ElfRel_Section<Elf_Rel> *)s);
+                else
+                    scan_relocs_for_code((ElfRel_Section<Elf_Rela> *)s);
+            }
+        }
+    }
+
+    template <typename Rel_Type>
+    void scan_relocs_for_code(ElfRel_Section<Rel_Type> *rel)
+    {
+        ElfSymtab_Section *symtab = (ElfSymtab_Section *)rel->getLink();
+        for (auto r = rel->rels.begin(); r != rel->rels.end(); r++) {
+            ElfSection *section = symtab->syms[ELF32_R_SYM(r->r_info)].value.getSection();
+            if (section) {
+                for (ElfSection *s = elf->getSection(1); s != nullptr; s = s->getNext()) {
+                    if (section == s)
+                        section = nullptr;
+                        break;
+                }
+            }
+            add_code_section(section);
+        }
+    }
+
     class pc32_relocation {
     public:
         Elf32_Addr operator()(unsigned int base_addr, Elf32_Off offset,
@@ -315,7 +346,7 @@ private:
             // TODO: various checks on the symbol
             const char *name = symtab->syms[ELF32_R_SYM(r->r_info)].name;
             unsigned int addr;
-            if (symtab->syms[ELF32_R_SYM(r->r_info)].value.getSection() == NULL) {
+            if (symtab->syms[ELF32_R_SYM(r->r_info)].value.getSection() == nullptr) {
                 if (strcmp(name, "relhack") == 0) {
                     addr = getNext()->getAddr();
                 } else if (strcmp(name, "elf_header") == 0) {
@@ -469,7 +500,7 @@ template <typename Rel_Type>
 int do_relocation_section(Elf *elf, unsigned int rel_type, unsigned int rel_type2, bool force, bool fill)
 {
     ElfDynamic_Section *dyn = elf->getDynSection();
-    if (dyn ==NULL) {
+    if (dyn == nullptr) {
         fprintf(stderr, "Couldn't find SHT_DYNAMIC section\n");
         return -1;
     }
@@ -504,7 +535,7 @@ int do_relocation_section(Elf *elf, unsigned int rel_type, unsigned int rel_type
     // are actually run by DT_INIT code.
     ElfValue *value = dyn->getValueForType(DT_INIT);
     unsigned int original_init = value ? value->getValue() : 0;
-    ElfSection *init_array = NULL;
+    ElfSection *init_array = nullptr;
     if (!value || !value->getValue()) {
         value = dyn->getValueForType(DT_INIT_ARRAYSZ);
         if (value && value->getValue() >= entry_sz)
@@ -531,9 +562,9 @@ int do_relocation_section(Elf *elf, unsigned int rel_type, unsigned int rel_type
         // __cxa_pure_virtual is a function used in vtables to point at pure
         // virtual methods. The __cxa_pure_virtual function usually abort()s.
         // These functions are however normally never called. In the case
-        // where they would, jumping to the NULL address instead of calling
+        // where they would, jumping to the null address instead of calling
         // __cxa_pure_virtual is going to work just as well. So we can remove
-        // relocations for the __cxa_pure_virtual symbol and NULL out the
+        // relocations for the __cxa_pure_virtual symbol and null out the
         // content at the offset pointed by the relocation.
         if (sym) {
             if (sym->defined) {
@@ -586,7 +617,7 @@ int do_relocation_section(Elf *elf, unsigned int rel_type, unsigned int rel_type
     }
     if (relhack_entry.r_offset)
         relhack->push_back(relhack_entry);
-    // Last entry must be NULL
+    // Last entry must be nullptr
     relhack_entry.r_offset = relhack_entry.r_info = 0;
     relhack->push_back(relhack_entry);
 
@@ -668,7 +699,7 @@ void do_file(const char *name, bool backup = false, bool force = false, bool fil
         return;
     }
 
-    for (ElfSection *section = elf.getSection(1); section != NULL;
+    for (ElfSection *section = elf.getSection(1); section != nullptr;
          section = section->getNext()) {
         if (section->getName() &&
             (strncmp(section->getName(), ".elfhack.", 9) == 0)) {
@@ -713,8 +744,8 @@ void undo_file(const char *name, bool backup = false)
         return;
     }
 
-    ElfSection *data = NULL, *text = NULL;
-    for (ElfSection *section = elf.getSection(1); section != NULL;
+    ElfSection *data = nullptr, *text = nullptr;
+    for (ElfSection *section = elf.getSection(1); section != nullptr;
          section = section->getNext()) {
         if (section->getName() &&
             (strcmp(section->getName(), elfhack_data) == 0))
@@ -735,9 +766,9 @@ void undo_file(const char *name, bool backup = false)
 
     ElfSegment *first = elf.getSegmentByType(PT_LOAD);
     ElfSegment *second = elf.getSegmentByType(PT_LOAD, first);
-    ElfSegment *filler = NULL;
+    ElfSegment *filler = nullptr;
     // If the second PT_LOAD is a filler from elfhack --fill, check the third.
-    if (!second->isElfHackFillerSegment()) {
+    if (second->isElfHackFillerSegment()) {
         filler = second;
         second = elf.getSegmentByType(PT_LOAD, filler);
     }
@@ -772,7 +803,7 @@ int main(int argc, char *argv[])
     bool revert = false;
     bool fill = false;
     char *lastSlash = rindex(argv[0], '/');
-    if (lastSlash != NULL)
+    if (lastSlash != nullptr)
         rundir = strndup(argv[0], lastSlash - argv[0]);
     for (arg = 1; arg < argc; arg++) {
         if (strcmp(argv[arg], "-f") == 0)

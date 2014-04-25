@@ -13,6 +13,7 @@
 #include "jsutil.h"
 #include "NamespaceImports.h"
 
+#include "gc/Rooting.h"
 #include "js/RootingAPI.h"
 #include "vm/Unicode.h"
 
@@ -47,19 +48,16 @@ SkipSpace(const jschar *s, const jschar *end)
 
 // Return less than, equal to, or greater than zero depending on whether
 // s1 is less than, equal to, or greater than s2.
-inline bool
-CompareChars(const jschar *s1, size_t l1, const jschar *s2, size_t l2, int32_t *result)
+inline int32_t
+CompareChars(const jschar *s1, size_t l1, const jschar *s2, size_t l2)
 {
     size_t n = Min(l1, l2);
     for (size_t i = 0; i < n; i++) {
-        if (int32_t cmp = s1[i] - s2[i]) {
-            *result = cmp;
-            return true;
-        }
+        if (int32_t cmp = s1[i] - s2[i])
+            return cmp;
     }
 
-    *result = (int32_t)(l1 - l2);
-    return true;
+    return (int32_t)(l1 - l2);
 }
 
 }  /* namespace js */
@@ -209,6 +207,9 @@ EqualStrings(JSLinearString *str1, JSLinearString *str2);
 extern bool
 CompareStrings(JSContext *cx, JSString *str1, JSString *str2, int32_t *result);
 
+extern int32_t
+CompareAtoms(JSAtom *atom1, JSAtom *atom2);
+
 /*
  * Return true if the string matches the given sequence of ASCII bytes.
  */
@@ -354,6 +355,13 @@ str_search(JSContext *cx, unsigned argc, Value *vp);
 
 bool
 str_split(JSContext *cx, unsigned argc, Value *vp);
+
+JSObject *
+str_split_string(JSContext *cx, HandleTypeObject type, HandleString str, HandleString sep);
+
+bool
+str_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
+            MutableHandleObject objp);
 
 } /* namespace js */
 

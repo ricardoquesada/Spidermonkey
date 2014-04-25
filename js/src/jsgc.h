@@ -16,6 +16,7 @@
 #include "jsobj.h"
 
 #include "js/GCAPI.h"
+#include "js/SliceBudget.h"
 #include "js/Tracer.h"
 #include "js/Vector.h"
 
@@ -39,7 +40,6 @@ class PropertyName;
 class ScopeObject;
 class Shape;
 class UnownedBaseShape;
-struct SliceBudget;
 
 unsigned GetCPUCount();
 
@@ -616,6 +616,8 @@ class ArenaLists
     void *allocateFromArena(JS::Zone *zone, AllocKind thingKind);
     inline void *allocateFromArenaInline(JS::Zone *zone, AllocKind thingKind);
 
+    inline void normalizeBackgroundFinalizeState(AllocKind thingKind);
+
     friend class js::Nursery;
 };
 
@@ -668,6 +670,9 @@ AddObjectRoot(JSRuntime *rt, JSObject **rp, const char *name);
 extern bool
 AddScriptRoot(JSContext *cx, JSScript **rp, const char *name);
 
+extern void
+RemoveRoot(JSRuntime *rt, void *rp);
+
 } /* namespace js */
 
 extern bool
@@ -687,11 +692,11 @@ extern void
 TraceRuntime(JSTracer *trc);
 
 /* Must be called with GC lock taken. */
-extern void
+extern bool
 TriggerGC(JSRuntime *rt, JS::gcreason::Reason reason);
 
 /* Must be called with GC lock taken. */
-extern void
+extern bool
 TriggerZoneGC(Zone *zone, JS::gcreason::Reason reason);
 
 extern void
@@ -728,6 +733,9 @@ PrepareForDebugGC(JSRuntime *rt);
 
 extern void
 MinorGC(JSRuntime *rt, JS::gcreason::Reason reason);
+
+extern void
+MinorGC(JSContext *cx, JS::gcreason::Reason reason);
 
 #ifdef JS_GC_ZEAL
 extern void
@@ -786,6 +794,8 @@ class GCHelperThread {
     PRCondVar         *wakeup;
     PRCondVar         *done;
     volatile State    state;
+
+    void wait(PRCondVar *which);
 
     bool              sweepFlag;
     bool              shrinkFlag;
@@ -903,184 +913,158 @@ struct GCChunkHasher {
 
 typedef HashSet<js::gc::Chunk *, GCChunkHasher, SystemAllocPolicy> GCChunkSet;
 
+static const size_t NON_INCREMENTAL_MARK_STACK_BASE_CAPACITY = 4096;
+static const size_t INCREMENTAL_MARK_STACK_BASE_CAPACITY = 32768;
+
 template<class T>
 struct MarkStack {
-    T *stack;
-    T *tos;
-    T *limit;
+    T *stack_;
+    T *tos_;
+    T *end_;
 
-    T *ballast;
-    T *ballastLimit;
+    // The capacity we start with and reset() to.
+    size_t baseCapacity_;
+    size_t maxCapacity_;
 
-    size_t sizeLimit;
-
-    MarkStack(size_t sizeLimit)
-      : stack(nullptr),
-        tos(nullptr),
-        limit(nullptr),
-        ballast(nullptr),
-        ballastLimit(nullptr),
-        sizeLimit(sizeLimit) { }
+    MarkStack(size_t maxCapacity)
+      : stack_(nullptr),
+        tos_(nullptr),
+        end_(nullptr),
+        baseCapacity_(0),
+        maxCapacity_(maxCapacity)
+    {}
 
     ~MarkStack() {
-        if (stack != ballast)
-            js_free(stack);
-        js_free(ballast);
+        js_free(stack_);
     }
 
-    bool init(size_t ballastcap) {
-        JS_ASSERT(!stack);
+    size_t capacity() { return end_ - stack_; }
 
-        if (ballastcap == 0)
-            return true;
+    ptrdiff_t position() const { return tos_ - stack_; }
 
-        ballast = js_pod_malloc<T>(ballastcap);
-        if (!ballast)
+    void setStack(T *stack, size_t tosIndex, size_t capacity) {
+        stack_ = stack;
+        tos_ = stack + tosIndex;
+        end_ = stack + capacity;
+    }
+
+    void setBaseCapacity(JSGCMode mode) {
+        switch (mode) {
+          case JSGC_MODE_GLOBAL:
+          case JSGC_MODE_COMPARTMENT:
+            baseCapacity_ = NON_INCREMENTAL_MARK_STACK_BASE_CAPACITY;
+            break;
+          case JSGC_MODE_INCREMENTAL:
+            baseCapacity_ = INCREMENTAL_MARK_STACK_BASE_CAPACITY;
+            break;
+          default:
+            MOZ_ASSUME_UNREACHABLE("bad gc mode");
+        }
+
+        if (baseCapacity_ > maxCapacity_)
+            baseCapacity_ = maxCapacity_;
+    }
+
+    bool init(JSGCMode gcMode) {
+        setBaseCapacity(gcMode);
+
+        JS_ASSERT(!stack_);
+        T *newStack = js_pod_malloc<T>(baseCapacity_);
+        if (!newStack)
             return false;
-        ballastLimit = ballast + ballastcap;
-        initFromBallast();
+
+        setStack(newStack, 0, baseCapacity_);
         return true;
     }
 
-    void initFromBallast() {
-        stack = ballast;
-        limit = ballastLimit;
-        if (size_t(limit - stack) > sizeLimit)
-            limit = stack + sizeLimit;
-        tos = stack;
-    }
-
-    void setSizeLimit(size_t size) {
+    void setMaxCapacity(size_t maxCapacity) {
         JS_ASSERT(isEmpty());
+        maxCapacity_ = maxCapacity;
+        if (baseCapacity_ > maxCapacity_)
+            baseCapacity_ = maxCapacity_;
 
-        sizeLimit = size;
         reset();
     }
 
     bool push(T item) {
-        if (tos == limit) {
+        if (tos_ == end_) {
             if (!enlarge())
                 return false;
         }
-        JS_ASSERT(tos < limit);
-        *tos++ = item;
+        JS_ASSERT(tos_ < end_);
+        *tos_++ = item;
         return true;
     }
 
     bool push(T item1, T item2, T item3) {
-        T *nextTos = tos + 3;
-        if (nextTos > limit) {
+        T *nextTos = tos_ + 3;
+        if (nextTos > end_) {
             if (!enlarge())
                 return false;
-            nextTos = tos + 3;
+            nextTos = tos_ + 3;
         }
-        JS_ASSERT(nextTos <= limit);
-        tos[0] = item1;
-        tos[1] = item2;
-        tos[2] = item3;
-        tos = nextTos;
+        JS_ASSERT(nextTos <= end_);
+        tos_[0] = item1;
+        tos_[1] = item2;
+        tos_[2] = item3;
+        tos_ = nextTos;
         return true;
     }
 
     bool isEmpty() const {
-        return tos == stack;
+        return tos_ == stack_;
     }
 
     T pop() {
         JS_ASSERT(!isEmpty());
-        return *--tos;
-    }
-
-    ptrdiff_t position() const {
-        return tos - stack;
+        return *--tos_;
     }
 
     void reset() {
-        if (stack != ballast)
-            js_free(stack);
-        initFromBallast();
-        JS_ASSERT(stack == ballast);
+        if (capacity() == baseCapacity_) {
+            // No size change; keep the current stack.
+            setStack(stack_, 0, baseCapacity_);
+            return;
+        }
+
+        T *newStack = (T *)js_realloc(stack_, sizeof(T) * baseCapacity_);
+        if (!newStack) {
+            // If the realloc fails, just keep using the existing stack; it's
+            // not ideal but better than failing.
+            newStack = stack_;
+            baseCapacity_ = capacity();
+        }
+        setStack(newStack, 0, baseCapacity_);
     }
 
     bool enlarge() {
-        size_t tosIndex = tos - stack;
-        size_t cap = limit - stack;
-        if (cap == sizeLimit)
+        if (capacity() == maxCapacity_)
             return false;
-        size_t newcap = cap * 2;
-        if (newcap == 0)
-            newcap = 32;
-        if (newcap > sizeLimit)
-            newcap = sizeLimit;
 
-        T *newStack;
-        if (stack == ballast) {
-            newStack = js_pod_malloc<T>(newcap);
-            if (!newStack)
-                return false;
-            for (T *src = stack, *dst = newStack; src < tos; )
-                *dst++ = *src++;
-        } else {
-            newStack = (T *)js_realloc(stack, sizeof(T) * newcap);
-            if (!newStack)
-                return false;
-        }
-        stack = newStack;
-        tos = stack + tosIndex;
-        limit = newStack + newcap;
+        size_t newCapacity = capacity() * 2;
+        if (newCapacity > maxCapacity_)
+            newCapacity = maxCapacity_;
+
+        size_t tosIndex = position();
+
+        T *newStack = (T *)js_realloc(stack_, sizeof(T) * newCapacity);
+        if (!newStack)
+            return false;
+
+        setStack(newStack, tosIndex, newCapacity);
         return true;
     }
 
+    void setGCMode(JSGCMode gcMode) {
+        // The mark stack won't be resized until the next call to reset(), but
+        // that will happen at the end of the next GC.
+        setBaseCapacity(gcMode);
+    }
+
     size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
-        size_t n = 0;
-        if (stack != ballast)
-            n += mallocSizeOf(stack);
-        n += mallocSizeOf(ballast);
-        return n;
+        return mallocSizeOf(stack_);
     }
 };
-
-/*
- * This class records how much work has been done in a given GC slice, so that
- * we can return before pausing for too long. Some slices are allowed to run for
- * unlimited time, and others are bounded. To reduce the number of gettimeofday
- * calls, we only check the time every 1000 operations.
- */
-struct SliceBudget {
-    int64_t deadline; /* in microseconds */
-    intptr_t counter;
-
-    static const intptr_t CounterReset = 1000;
-
-    static const int64_t Unlimited = 0;
-    static int64_t TimeBudget(int64_t millis);
-    static int64_t WorkBudget(int64_t work);
-
-    /* Equivalent to SliceBudget(UnlimitedBudget). */
-    SliceBudget();
-
-    /* Instantiate as SliceBudget(Time/WorkBudget(n)). */
-    SliceBudget(int64_t budget);
-
-    void reset() {
-        deadline = INT64_MAX;
-        counter = INTPTR_MAX;
-    }
-
-    void step(intptr_t amt = 1) {
-        counter -= amt;
-    }
-
-    bool checkOverBudget();
-
-    bool isOverBudget() {
-        if (counter >= 0)
-            return false;
-        return checkOverBudget();
-    }
-};
-
-static const size_t MARK_STACK_LENGTH = 32768;
 
 struct GrayRoot {
     void *thing;
@@ -1122,10 +1106,10 @@ struct GCMarker : public JSTracer {
 
   public:
     explicit GCMarker(JSRuntime *rt);
-    bool init();
+    bool init(JSGCMode gcMode);
 
-    void setSizeLimit(size_t size) { stack.setSizeLimit(size); }
-    size_t sizeLimit() const { return stack.sizeLimit; }
+    void setMaxCapacity(size_t maxCap) { stack.setMaxCapacity(maxCap); }
+    size_t maxCapacity() const { return stack.maxCapacity_; }
 
     void start();
     void stop();
@@ -1201,6 +1185,8 @@ struct GCMarker : public JSTracer {
 
     static void GrayCallback(JSTracer *trc, void **thing, JSGCTraceKind kind);
 
+    void setGCMode(JSGCMode mode) { stack.setGCMode(mode); }
+
     size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
 
     MarkStack<uintptr_t> stack;
@@ -1257,7 +1243,14 @@ struct GCMarker : public JSTracer {
     /* Count of arenas that are currently in the stack. */
     mozilla::DebugOnly<size_t> markLaterArenas;
 
-    bool grayFailed;
+    enum GrayBufferState
+    {
+        GRAY_BUFFER_UNUSED,
+        GRAY_BUFFER_OK,
+        GRAY_BUFFER_FAILED
+    };
+
+    GrayBufferState grayBufferState;
 };
 
 void

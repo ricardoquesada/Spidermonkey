@@ -51,7 +51,7 @@ struct CallsiteCloneKey {
     typedef CallsiteCloneKey Lookup;
 
     static inline uint32_t hash(CallsiteCloneKey key) {
-        return uint32_t(size_t(key.script->code + key.offset) ^ size_t(key.original));
+        return uint32_t(size_t(key.script->offsetToPC(key.offset)) ^ size_t(key.original));
     }
 
     static inline bool match(const CallsiteCloneKey &a, const CallsiteCloneKey &b) {
@@ -63,6 +63,10 @@ typedef HashMap<CallsiteCloneKey,
                 ReadBarriered<JSFunction>,
                 CallsiteCloneKey,
                 SystemAllocPolicy> CallsiteCloneTable;
+
+JSFunction *
+ExistingCloneFunctionAtCallsite(const CallsiteCloneTable &table, JSFunction *fun,
+                                JSScript *script, jsbytecode *pc);
 
 JSFunction *CloneFunctionAtCallsite(JSContext *cx, HandleFunction fun,
                                     HandleScript script, jsbytecode *pc);
@@ -278,14 +282,11 @@ struct ThreadSafeContext : ContextFriendFields,
     PropertyName *emptyString() { return runtime_->emptyString; }
     FreeOp *defaultFreeOp() { return runtime_->defaultFreeOp(); }
     bool useHelperThreads() { return runtime_->useHelperThreads(); }
-    size_t helperThreadCount() { return runtime_->helperThreadCount(); }
+    unsigned cpuCount() { return runtime_->cpuCount(); }
+    size_t workerThreadCount() { return runtime_->workerThreadCount(); }
     void *runtimeAddressForJit() { return runtime_; }
     void *stackLimitAddress(StackKind kind) { return &runtime_->mainThread.nativeStackLimit[kind]; }
-
-    // GCs cannot happen while non-main threads are running.
-    uint64_t gcNumber() { return runtime_->gcNumber; }
     size_t gcSystemPageSize() { return runtime_->gcSystemPageSize; }
-    bool isHeapBusy() { return runtime_->isHeapBusy(); }
     bool signalHandlersInstalled() const { return runtime_->signalHandlersInstalled(); }
     bool jitSupportsFloatingPoint() const { return runtime_->jitSupportsFloatingPoint; }
 
@@ -351,9 +352,6 @@ class ExclusiveContext : public ThreadSafeContext
     void setWorkerThread(WorkerThread *workerThread);
     WorkerThread *workerThread() const { return workerThread_; }
 
-    // If required, pause this thread until notified to continue by the main thread.
-    inline void maybePause() const;
-
     // Threads with an ExclusiveContext may freely access any data in their
     // compartment and zone.
     JSCompartment *compartment() const {
@@ -391,7 +389,7 @@ class ExclusiveContext : public ThreadSafeContext
         return runtime_->scriptDataTable();
     }
 
-#ifdef JS_WORKER_THREADS
+#ifdef JS_THREADSAFE
     // Since JSRuntime::workerThreadState is necessarily initialized from the
     // main thread before the first worker thread can access it, there is no
     // possibility for a race read/writing it.
@@ -882,6 +880,19 @@ class AutoStringVector : public AutoVectorRooter<JSString *>
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
+class AutoPropertyNameVector : public AutoVectorRooter<PropertyName *>
+{
+  public:
+    explicit AutoPropertyNameVector(JSContext *cx
+                                    MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+        : AutoVectorRooter<PropertyName *>(cx, STRINGVECTOR)
+    {
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+    }
+
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
+};
+
 class AutoShapeVector : public AutoVectorRooter<Shape *>
 {
   public:
@@ -1014,9 +1025,65 @@ bool intrinsic_UnsafePutElements(JSContext *cx, unsigned argc, Value *vp);
 bool intrinsic_UnsafeSetReservedSlot(JSContext *cx, unsigned argc, Value *vp);
 bool intrinsic_UnsafeGetReservedSlot(JSContext *cx, unsigned argc, Value *vp);
 bool intrinsic_HaveSameClass(JSContext *cx, unsigned argc, Value *vp);
+bool intrinsic_IsPackedArray(JSContext *cx, unsigned argc, Value *vp);
 
 bool intrinsic_ShouldForceSequential(JSContext *cx, unsigned argc, Value *vp);
 bool intrinsic_NewParallelArray(JSContext *cx, unsigned argc, Value *vp);
+
+class AutoLockForExclusiveAccess
+{
+#ifdef JS_THREADSAFE
+    JSRuntime *runtime;
+
+    void init(JSRuntime *rt) {
+        runtime = rt;
+        if (runtime->numExclusiveThreads) {
+            runtime->assertCanLock(JSRuntime::ExclusiveAccessLock);
+            PR_Lock(runtime->exclusiveAccessLock);
+            runtime->exclusiveAccessOwner = PR_GetCurrentThread();
+        } else {
+            JS_ASSERT(!runtime->mainThreadHasExclusiveAccess);
+            runtime->mainThreadHasExclusiveAccess = true;
+        }
+    }
+
+  public:
+    AutoLockForExclusiveAccess(ExclusiveContext *cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM) {
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+        init(cx->runtime_);
+    }
+    AutoLockForExclusiveAccess(JSRuntime *rt MOZ_GUARD_OBJECT_NOTIFIER_PARAM) {
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+        init(rt);
+    }
+    ~AutoLockForExclusiveAccess() {
+        if (runtime->numExclusiveThreads) {
+            JS_ASSERT(runtime->exclusiveAccessOwner == PR_GetCurrentThread());
+#ifdef DEBUG
+            runtime->exclusiveAccessOwner = nullptr;
+#endif
+            PR_Unlock(runtime->exclusiveAccessLock);
+        } else {
+            JS_ASSERT(runtime->mainThreadHasExclusiveAccess);
+            runtime->mainThreadHasExclusiveAccess = false;
+        }
+    }
+#else // JS_THREADSAFE
+  public:
+    AutoLockForExclusiveAccess(ExclusiveContext *cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM) {
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+    }
+    AutoLockForExclusiveAccess(JSRuntime *rt MOZ_GUARD_OBJECT_NOTIFIER_PARAM) {
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+    }
+    ~AutoLockForExclusiveAccess() {
+        // An empty destructor is needed to avoid warnings from clang about
+        // unused local variables of this type.
+    }
+#endif // JS_THREADSAFE
+
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
+};
 
 } /* namespace js */
 

@@ -30,7 +30,7 @@ class LIRGenerator;
 //   streamline the process of prototyping new allocators.
 struct AllocationIntegrityState
 {
-    AllocationIntegrityState(LIRGraph &graph)
+    explicit AllocationIntegrityState(const LIRGraph &graph)
       : graph(graph)
     {}
 
@@ -46,7 +46,7 @@ struct AllocationIntegrityState
 
   private:
 
-    LIRGraph &graph;
+    const LIRGraph &graph;
 
     // For all instructions and phis in the graph, keep track of the virtual
     // registers for all inputs and outputs of the nodes. These are overwritten
@@ -284,6 +284,9 @@ class InstructionDataMap
 // Common superclass for register allocators.
 class RegisterAllocator
 {
+    void operator=(const RegisterAllocator &) MOZ_DELETE;
+    RegisterAllocator(const RegisterAllocator &) MOZ_DELETE;
+
   protected:
     // Context
     MIRGenerator *mir;
@@ -318,16 +321,22 @@ class RegisterAllocator
 
     bool init();
 
-    CodePosition outputOf(uint32_t pos) const {
+    TempAllocator &alloc() const {
+        return mir->alloc();
+    }
+
+    static CodePosition outputOf(uint32_t pos) {
         return CodePosition(pos, CodePosition::OUTPUT);
     }
-    CodePosition outputOf(const LInstruction *ins) const {
+    static CodePosition outputOf(const LInstruction *ins) {
         return CodePosition(ins->id(), CodePosition::OUTPUT);
     }
-    CodePosition inputOf(uint32_t pos) const {
+    static CodePosition inputOf(uint32_t pos) {
         return CodePosition(pos, CodePosition::INPUT);
     }
-    CodePosition inputOf(const LInstruction *ins) const {
+    static CodePosition inputOf(const LInstruction *ins) {
+        // Phi nodes "use" their inputs before the beginning of the block.
+        JS_ASSERT(!ins->isPhi());
         return CodePosition(ins->id(), CodePosition::INPUT);
     }
 
@@ -339,17 +348,6 @@ class RegisterAllocator
     }
     LMoveGroup *getMoveGroupAfter(CodePosition pos) {
         return getMoveGroupAfter(pos.ins());
-    }
-
-    size_t findFirstNonCallSafepoint(CodePosition from) const
-    {
-        size_t i = 0;
-        for (; i < graph.numNonCallSafepoints(); i++) {
-            const LInstruction *ins = graph.getNonCallSafepoint(i);
-            if (from <= inputOf(ins))
-                break;
-        }
-        return i;
     }
 
     CodePosition minimalDefEnd(LInstruction *ins) {
@@ -369,7 +367,7 @@ class RegisterAllocator
 };
 
 static inline AnyRegister
-GetFixedRegister(LDefinition *def, const LUse *use)
+GetFixedRegister(const LDefinition *def, const LUse *use)
 {
     return def->type() == LDefinition::DOUBLE
            ? AnyRegister(FloatRegister::FromCode(use->registerCode()))

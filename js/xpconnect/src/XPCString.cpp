@@ -24,6 +24,7 @@
 #include "jsapi.h"
 #include "xpcpublic.h"
 
+using namespace JS;
 
 // static
 void
@@ -59,55 +60,34 @@ const JSStringFinalizer XPCStringConvert::sDOMStringFinalizer =
 
 // convert a readable to a JSString, copying string data
 // static
-jsval
+bool
 XPCStringConvert::ReadableToJSVal(JSContext *cx,
                                   const nsAString &readable,
-                                  nsStringBuffer** sharedBuffer)
+                                  nsStringBuffer** sharedBuffer,
+                                  MutableHandleValue vp)
 {
-    JSString *str;
     *sharedBuffer = nullptr;
 
     uint32_t length = readable.Length();
-
-    if (length == 0)
-        return JS_GetEmptyStringValue(cx);
+    if (length == 0) {
+        vp.set(JS_GetEmptyStringValue(cx));
+        return true;
+    }
 
     nsStringBuffer *buf = nsStringBuffer::FromString(readable);
     if (buf) {
-        JS::RootedValue val(cx);
         bool shared;
-        bool ok = StringBufferToJSVal(cx, buf, length, &val, &shared);
-        if (!ok) {
-            return JS::NullValue();
-        }
-
-        if (shared) {
+        if (!StringBufferToJSVal(cx, buf, length, vp, &shared))
+            return false;
+        if (shared)
             *sharedBuffer = buf;
-        }
-        return val;
+        return true;
     }
 
     // blech, have to copy.
-
-    jschar *chars = reinterpret_cast<jschar *>
-                                    (JS_malloc(cx, (length + 1) *
-                                               sizeof(jschar)));
-    if (!chars)
-        return JS::NullValue();
-
-    if (length && !CopyUnicodeTo(readable, 0,
-                                 reinterpret_cast<PRUnichar *>(chars),
-                                 length)) {
-        JS_free(cx, chars);
-        return JS::NullValue();
-    }
-
-    chars[length] = 0;
-
-    str = JS_NewUCString(cx, chars, length);
-    if (!str) {
-        JS_free(cx, chars);
-    }
-
-    return str ? STRING_TO_JSVAL(str) : JSVAL_NULL;
+    JSString *str = JS_NewUCStringCopyN(cx, readable.BeginReading(), length);
+    if (!str)
+        return false;
+    vp.setString(str);
+    return true;
 }

@@ -2,8 +2,6 @@
 # Any copyright is dedicated to the Public Domain.
 # http://creativecommons.org/publicdomain/zero/1.0/
 
-MODULE = 'module_name'
-
 SOURCES += ['fans.asm', 'tans.s']
 
 EXTRA_COMPONENTS=['fans.js', 'tans.js']
@@ -14,25 +12,16 @@ EXTRA_PP_JS_MODULES = ['bar.pp.jsm', 'foo.pp.jsm']
 
 CPP_UNIT_TESTS = ['foo.cpp']
 
-GTEST_SOURCES += ['test1.c', 'test2.c']
-GTEST_SOURCES += ['test1.mm', 'test2.mm']
-GTEST_SOURCES += ['test1.cpp', 'test2.cpp']
-
 HOST_SOURCES += ['fans.cpp', 'tans.cpp']
 HOST_SOURCES += ['fans.c', 'tans.c']
 
 HOST_LIBRARY_NAME = 'host_fans'
 
-LIBRARY_NAME = 'lib_name'
 LIBS += ['fans.lib', 'tans.lib']
 
 OS_LIBS += ['foo.so', '-l123', 'aaa.a']
 
 SDK_LIBRARY += ['fans.sdk', 'tans.sdk']
-
-SHARED_LIBRARY_LIBS += ['fans.sll', 'tans.sll']
-
-SIMPLE_PROGRAMS += ['fans.x', 'tans.x']
 
 SOURCES += ['fans.c', 'tans.c']
 
@@ -47,6 +36,6 @@ MSVC_ENABLE_PGO = True
 NO_DIST_INSTALL = True
 
 FORCE_SHARED_LIB = True
-FORCE_STATIC_LIB = True
 EXPORT_LIBRARY = True
 IS_COMPONENT = True
+NO_VISIBILITY_FLAGS = True

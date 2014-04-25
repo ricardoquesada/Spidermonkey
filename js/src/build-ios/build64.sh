@@ -41,12 +41,11 @@ rmdir tmp
 #
 # lipo create
 #
-if [ -e libjs_static.i386.a ]  && [ -e libjs_static.armv7.a ] && [ -e libjs_static.armv7s.a ] && [ -e libjs_static.arm64.a ] ; then
+if [ -e libjs_static.arm64.a ] ; then
     echo "creating fat version of the library"
-    $LIPO -create -output libjs_static.a libjs_static.i386.a libjs_static.armv7.a libjs_static.armv7s.a libjs_static.arm64.a
     # remove debugging info
-    $STRIP -S libjs_static.a
-    $LIPO -info libjs_static.a
+    $STRIP -S libjs_static.arm64.a
+    $LIPO -info libjs_static.arm64.a
 fi
 
 #

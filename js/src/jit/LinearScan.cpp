@@ -245,14 +245,13 @@ LinearScanAllocator::resolveControlFlow()
                 LiveInterval *from = vregs[input].intervalFor(outputOf(predecessor->lastId()));
                 JS_ASSERT(from);
 
-                LMoveGroup *moves = predecessor->getExitMoveGroup();
-                if (!addMove(moves, from, to))
+                if (!moveAtExit(predecessor, from, to))
                     return false;
             }
 
             if (vreg->mustSpillAtDefinition() && !to->isSpill()) {
                 // Make sure this phi is spilled at the loop header.
-                LMoveGroup *moves = successor->getEntryMoveGroup();
+                LMoveGroup *moves = successor->getEntryMoveGroup(alloc());
                 if (!moves->add(to->getAllocation(), vregs[to->vreg()].canonicalSpill()))
                     return false;
             }
@@ -284,12 +283,10 @@ LinearScanAllocator::resolveControlFlow()
 
                 if (mSuccessor->numPredecessors() > 1) {
                     JS_ASSERT(predecessor->mir()->numSuccessors() == 1);
-                    LMoveGroup *moves = predecessor->getExitMoveGroup();
-                    if (!addMove(moves, from, to))
+                    if (!moveAtExit(predecessor, from, to))
                         return false;
                 } else {
-                    LMoveGroup *moves = successor->getEntryMoveGroup();
-                    if (!addMove(moves, from, to))
+                    if (!moveAtEntry(successor, from, to))
                         return false;
                 }
             }
@@ -384,13 +381,13 @@ LinearScanAllocator::reifyAllocations()
                 spillFrom = from->getAllocation();
             } else {
                 if (def->policy() == LDefinition::MUST_REUSE_INPUT) {
-                    LAllocation *alloc = reg->ins()->getOperand(def->getReusedInput());
-                    LAllocation *origAlloc = LAllocation::New(*alloc);
+                    LAllocation *inputAlloc = reg->ins()->getOperand(def->getReusedInput());
+                    LAllocation *origAlloc = LAllocation::New(alloc(), *inputAlloc);
 
-                    JS_ASSERT(!alloc->isUse());
+                    JS_ASSERT(!inputAlloc->isUse());
 
-                    *alloc = *interval->getAllocation();
-                    if (!moveInputAlloc(inputOf(reg->ins()), origAlloc, alloc))
+                    *inputAlloc = *interval->getAllocation();
+                    if (!moveInputAlloc(inputOf(reg->ins()), origAlloc, inputAlloc))
                         return false;
                 }
 
@@ -656,7 +653,7 @@ LinearScanAllocator::splitInterval(LiveInterval *interval, CodePosition pos)
     JS_ASSERT(reg);
 
     // Do the split.
-    LiveInterval *newInterval = new LiveInterval(interval->vreg(), interval->index() + 1);
+    LiveInterval *newInterval = LiveInterval::New(alloc(), interval->vreg(), interval->index() + 1);
     if (!interval->splitFrom(pos, newInterval))
         return false;
 
@@ -1143,7 +1140,7 @@ LinearScanAllocator::canCoexist(LiveInterval *a, LiveInterval *b)
 void
 LinearScanAllocator::validateIntervals()
 {
-    if (!js_IonOptions.assertGraphConsistency)
+    if (!js_IonOptions.checkGraphConsistency)
         return;
 
     for (IntervalIterator i(active.begin()); i != active.end(); i++) {
@@ -1189,7 +1186,7 @@ LinearScanAllocator::validateIntervals()
 void
 LinearScanAllocator::validateAllocations()
 {
-    if (!js_IonOptions.assertGraphConsistency)
+    if (!js_IonOptions.checkGraphConsistency)
         return;
 
     for (IntervalIterator i(handled.begin()); i != handled.end(); i++) {

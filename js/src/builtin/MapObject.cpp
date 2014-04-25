@@ -22,9 +22,9 @@
 using namespace js;
 
 using mozilla::DoubleIsInt32;
+using mozilla::Forward;
 using mozilla::IsNaN;
-using mozilla::OldMove;
-using mozilla::MoveRef;
+using mozilla::Move;
 using mozilla::ArrayLength;
 using JS::DoubleNaNValue;
 
@@ -81,7 +81,7 @@ class OrderedHashTable
         Data *chain;
 
         Data(const T &e, Data *c) : element(e), chain(c) {}
-        Data(MoveRef<T> e, Data *c) : element(e), chain(c) {}
+        Data(T &&e, Data *c) : element(Move(e)), chain(c) {}
     };
 
     class Range;
@@ -167,10 +167,11 @@ class OrderedHashTable
      * not. On allocation failure, return false. If this returns false, it
      * means the element was not added to the table.
      */
-    bool put(const T &element) {
+    template <typename ElementInput>
+    bool put(ElementInput &&element) {
         HashNumber h = prepareHash(Ops::getKey(element));
         if (Data *e = lookup(Ops::getKey(element), h)) {
-            e->element = element;
+            e->element = Forward<ElementInput>(element);
             return true;
         }
 
@@ -185,7 +186,7 @@ class OrderedHashTable
         h >>= hashShift;
         liveCount++;
         Data *e = &data[dataLength++];
-        new (e) Data(element, hashTable[h]);
+        new (e) Data(Forward<ElementInput>(element), hashTable[h]);
         hashTable[h] = e;
         return true;
     }
@@ -592,7 +593,7 @@ class OrderedHashTable
             if (!Ops::isEmpty(Ops::getKey(rp->element))) {
                 HashNumber h = prepareHash(Ops::getKey(rp->element)) >> hashShift;
                 if (rp != wp)
-                    wp->element = OldMove(rp->element);
+                    wp->element = Move(rp->element);
                 wp->chain = hashTable[h];
                 hashTable[h] = wp;
                 wp++;
@@ -639,7 +640,7 @@ class OrderedHashTable
         for (Data *p = data, *end = data + dataLength; p != end; p++) {
             if (!Ops::isEmpty(Ops::getKey(p->element))) {
                 HashNumber h = prepareHash(Ops::getKey(p->element)) >> newHashShift;
-                new (wp) Data(OldMove(p->element), newHashTable[h]);
+                new (wp) Data(Move(p->element), newHashTable[h]);
                 newHashTable[h] = wp;
                 wp++;
             }
@@ -679,15 +680,16 @@ class OrderedHashMap
             value = rhs.value;
         }
 
-        void operator=(MoveRef<Entry> rhs) {
-            const_cast<Key &>(key) = OldMove(rhs->key);
-            value = OldMove(rhs->value);
+        void operator=(Entry &&rhs) {
+            MOZ_ASSERT(this != &rhs, "self-move assignment is prohibited");
+            const_cast<Key &>(key) = Move(rhs.key);
+            value = Move(rhs.value);
         }
 
       public:
         Entry() : key(), value() {}
         Entry(const Key &k, const Value &v) : key(k), value(v) {}
-        Entry(MoveRef<Entry> rhs) : key(OldMove(rhs->key)), value(OldMove(rhs->value)) {}
+        Entry(Entry &&rhs) : key(Move(rhs.key)), value(Move(rhs.value)) {}
 
         const Key key;
         Value value;
@@ -774,7 +776,7 @@ HashableValue::setValue(JSContext *cx, HandleValue v)
 {
     if (v.isString()) {
         // Atomize so that hash() and operator==() are fast and infallible.
-        JSString *str = AtomizeString<CanGC>(cx, v.toString(), DoNotInternAtom);
+        JSString *str = AtomizeString(cx, v.toString(), DoNotInternAtom);
         if (!str)
             return false;
         value = StringValue(str);
@@ -1101,29 +1103,50 @@ MapObject::mark(JSTracer *trc, JSObject *obj)
 }
 
 #ifdef JSGC_GENERATIONAL
+struct UnbarrieredHashPolicy {
+    typedef Value Lookup;
+    static HashNumber hash(const Lookup &v) { return v.asRawBits(); }
+    static bool match(const Value &k, const Lookup &l) { return k == l; }
+    static bool isEmpty(const Value &v) { return v.isMagic(JS_HASH_KEY_EMPTY); }
+    static void makeEmpty(Value *vp) { vp->setMagic(JS_HASH_KEY_EMPTY); }
+};
+
 template <typename TableType>
 class OrderedHashTableRef : public gc::BufferableRef
 {
     TableType *table;
-    HashableValue key;
+    Value key;
 
   public:
-    explicit OrderedHashTableRef(TableType *t, const HashableValue &k) : table(t), key(k) {}
+    explicit OrderedHashTableRef(TableType *t, const Value &k) : table(t), key(k) {}
 
     void mark(JSTracer *trc) {
-        HashableValue prior = key;
-        key = key.mark(trc);
+        JS_ASSERT(UnbarrieredHashPolicy::hash(key) ==
+                  HashableValue::Hasher::hash(*reinterpret_cast<HashableValue*>(&key)));
+        Value prior = key;
+        gc::MarkValueUnbarriered(trc, &key, "ordered hash table key");
         table->rekeyOneEntry(prior, key);
     }
 };
 #endif
 
-template <typename TableType>
 static void
-WriteBarrierPost(JSRuntime *rt, TableType *table, const HashableValue &key)
+WriteBarrierPost(JSRuntime *rt, ValueMap *map, const HashableValue &key)
 {
 #ifdef JSGC_GENERATIONAL
-    rt->gcStoreBuffer.putGeneric(OrderedHashTableRef<TableType>(table, key));
+    typedef OrderedHashMap<Value, Value, UnbarrieredHashPolicy, RuntimeAllocPolicy> UnbarrieredMap;
+    rt->gcStoreBuffer.putGeneric(OrderedHashTableRef<UnbarrieredMap>(
+                reinterpret_cast<UnbarrieredMap *>(map), key.get()));
+#endif
+}
+
+static void
+WriteBarrierPost(JSRuntime *rt, ValueSet *set, const HashableValue &key)
+{
+#ifdef JSGC_GENERATIONAL
+    typedef OrderedHashSet<Value, UnbarrieredHashPolicy, RuntimeAllocPolicy> UnbarrieredSet;
+    rt->gcStoreBuffer.putGeneric(OrderedHashTableRef<UnbarrieredSet>(
+                reinterpret_cast<UnbarrieredSet *>(set), key.get()));
 #endif
 }
 

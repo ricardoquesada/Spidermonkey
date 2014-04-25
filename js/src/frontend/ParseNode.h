@@ -9,7 +9,6 @@
 
 #include "mozilla/Attributes.h"
 
-#include "builtin/Module.h"
 #include "frontend/TokenStream.h"
 
 namespace js {
@@ -129,13 +128,20 @@ class UpvarCookie
     F(ARRAYPUSH) \
     F(LEXICALSCOPE) \
     F(LET) \
+    F(IMPORT) \
+    F(IMPORT_SPEC_LIST) \
+    F(IMPORT_SPEC) \
+    F(EXPORT) \
+    F(EXPORT_FROM) \
+    F(EXPORT_SPEC_LIST) \
+    F(EXPORT_SPEC) \
+    F(EXPORT_BATCH_SPEC) \
     F(SEQ) \
     F(FORIN) \
     F(FOROF) \
     F(FORHEAD) \
     F(ARGSBODY) \
     F(SPREAD) \
-    F(MODULE) \
     \
     /* Unary operators. */ \
     F(TYPEOF) \
@@ -431,7 +437,6 @@ class BreakStatement;
 class ContinueStatement;
 class ConditionalExpression;
 class PropertyAccess;
-class ModuleBox;
 
 class ParseNode
 {
@@ -518,15 +523,13 @@ class ParseNode
         } binary;
         struct {                        /* one kid if unary */
             ParseNode   *kid;
-            bool        hidden;         /* hidden genexp-induced JSOP_YIELD
-                                           or directive prologue member (as
+            bool        prologue;       /* directive prologue member (as
                                            pn_prologue) */
         } unary;
         struct {                        /* name, labeled statement, etc. */
             union {
                 JSAtom      *atom;      /* lexical name or label atom */
                 ObjectBox   *objbox;    /* block or regexp object */
-                ModuleBox   *modulebox; /* module object */
                 FunctionBox *funbox;    /* function object */
             };
             union {
@@ -571,8 +574,7 @@ class ParseNode
 #define pn_pval         pn_u.binary.pval
 #define pn_iflags       pn_u.binary.iflags
 #define pn_kid          pn_u.unary.kid
-#define pn_hidden       pn_u.unary.hidden
-#define pn_prologue     pn_u.unary.hidden
+#define pn_prologue     pn_u.unary.prologue
 #define pn_atom         pn_u.name.atom
 #define pn_objbox       pn_u.name.objbox
 #define pn_expr         pn_u.name.expr
@@ -1428,9 +1430,7 @@ class ObjectBox
     JSObject *object;
 
     ObjectBox(JSObject *object, ObjectBox *traceLink);
-    bool isModuleBox() { return object->is<Module>(); }
     bool isFunctionBox() { return object->is<JSFunction>(); }
-    ModuleBox *asModuleBox();
     FunctionBox *asFunctionBox();
     void trace(JSTracer *trc);
 
@@ -1441,7 +1441,6 @@ class ObjectBox
     ObjectBox *emitLink;
 
     ObjectBox(JSFunction *function, ObjectBox *traceLink);
-    ObjectBox(Module *module, ObjectBox *traceLink);
 };
 
 enum ParseReportKind

@@ -48,8 +48,10 @@
     _(ApplyArgsGeneric)             \
     _(Bail)                         \
     _(GetDynamicName)               \
-    _(FilterArgumentsOrEval)        \
-    _(CallDirectEval)               \
+    _(FilterArgumentsOrEvalS)       \
+    _(FilterArgumentsOrEvalV)       \
+    _(CallDirectEvalS)              \
+    _(CallDirectEvalV)              \
     _(StackArgT)                    \
     _(StackArgV)                    \
     _(CreateThis)                   \
@@ -105,6 +107,7 @@
     _(SqrtD)                        \
     _(SqrtF)                        \
     _(Atan2D)                       \
+    _(Hypot)                        \
     _(PowI)                         \
     _(PowD)                         \
     _(Random)                       \
@@ -126,6 +129,7 @@
     _(ConcatPar)                    \
     _(CharCodeAt)                   \
     _(FromCharCode)                 \
+    _(StringSplit)                  \
     _(Int32ToDouble)                \
     _(Float32ToDouble)              \
     _(DoubleToFloat32)              \
@@ -161,6 +165,7 @@
     _(StoreSlotT)                   \
     _(GuardShape)                   \
     _(GuardObjectType)              \
+    _(GuardObjectIdentity)          \
     _(GuardClass)                   \
     _(GuardThreadLocalObject)       \
     _(TypeBarrierV)                 \
@@ -231,6 +236,7 @@
     _(IteratorMore)                 \
     _(IteratorEnd)                  \
     _(ArrayLength)                  \
+    _(SetArrayLength)               \
     _(TypedArrayLength)             \
     _(TypedArrayElements)           \
     _(TypedObjectElements)          \
@@ -246,6 +252,7 @@
     _(TypeOfV)                      \
     _(ToIdV)                        \
     _(Floor)                        \
+    _(FloorF)                       \
     _(Round)                        \
     _(In)                           \
     _(InArray)                      \
@@ -256,6 +263,7 @@
     _(InterruptCheckImplicit)       \
     _(FunctionBoundary)             \
     _(GetDOMProperty)               \
+    _(GetDOMMember)                 \
     _(SetDOMProperty)               \
     _(CallDOMNative)                \
     _(IsCallable)                   \

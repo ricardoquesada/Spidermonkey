@@ -4,9 +4,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-MODULE = 'lwbrk'
-
-SOURCES += [
+UNIFIED_SOURCES += [
     'nsJISx4051LineBreaker.cpp',
     'nsSampleWordBreaker.cpp',
     'nsSemanticUnitScanner.cpp',
@@ -21,7 +19,7 @@ elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
         'nsUniscribeBreaker.cpp',
     ]
 elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
-    SOURCES += [
+    UNIFIED_SOURCES += [
         'nsCarbonBreaker.cpp',
     ]
 else:
@@ -33,9 +31,7 @@ else:
     ]
 
 
-LIBRARY_NAME = 'lwbrk_s'
-
-LIBXUL_LIBRARY = True
 
 MSVC_ENABLE_PGO = True
 
+FINAL_LIBRARY = 'i18n'

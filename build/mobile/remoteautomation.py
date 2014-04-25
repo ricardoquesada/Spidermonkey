@@ -15,7 +15,8 @@ import mozcrash
 
 # signatures for logcat messages that we don't care about much
 fennecLogcatFilters = [ "The character encoding of the HTML document was not declared",
-                           "Use of Mutation Events is deprecated. Use MutationObserver instead." ]
+                        "Use of Mutation Events is deprecated. Use MutationObserver instead.",
+                        "Unexpected value from nativeGetEnabledTags: 0" ]
 
 class RemoteAutomation(Automation):
     _devicemanager = None
@@ -47,19 +48,23 @@ class RemoteAutomation(Automation):
         self._remoteLog = logfile
 
     # Set up what we need for the remote environment
-    def environment(self, env = None, xrePath = None, crashreporter = True):
+    def environment(self, env=None, xrePath=None, crashreporter=True, debugger=False, dmdPath=None):
         # Because we are running remote, we don't want to mimic the local env
         # so no copying of os.environ
         if env is None:
             env = {}
 
+        if dmdPath:
+            env['DMD'] = '1'
+            env['MOZ_REPLACE_MALLOC_LIB'] = os.path.join(dmdPath, 'libdmd.so')
+
         # Except for the mochitest results table hiding option, which isn't
         # passed to runtestsremote.py as an actual option, but through the
-        # MOZ_CRASHREPORTER_DISABLE environment variable.
+        # MOZ_HIDE_RESULTS_TABLE environment variable.
         if 'MOZ_HIDE_RESULTS_TABLE' in os.environ:
             env['MOZ_HIDE_RESULTS_TABLE'] = os.environ['MOZ_HIDE_RESULTS_TABLE']
 
-        if crashreporter:
+        if crashreporter and not debugger:
             env['MOZ_CRASHREPORTER_NO_REPORT'] = '1'
             env['MOZ_CRASHREPORTER'] = '1'
         else:

@@ -18,7 +18,11 @@ using namespace js;
 using namespace js::jit;
 
 LIRGraph::LIRGraph(MIRGraph *mir)
-  : numVirtualRegisters_(0),
+  : blocks_(mir->alloc()),
+    constantPool_(mir->alloc()),
+    safepoints_(mir->alloc()),
+    nonCallSafepoints_(mir->alloc()),
+    numVirtualRegisters_(0),
     numInstructions_(1), // First id is 1.
     localSlotCount_(0),
     argumentSlotCount_(0),
@@ -51,12 +55,6 @@ LIRGraph::removeBlock(size_t i)
     blocks_.erase(blocks_.begin() + i);
 }
 
-Label *
-LBlock::label()
-{
-    return begin()->toLabel()->label();
-}
-
 uint32_t
 LBlock::firstId()
 {
@@ -81,22 +79,24 @@ LBlock::lastId()
 }
 
 LMoveGroup *
-LBlock::getEntryMoveGroup()
+LBlock::getEntryMoveGroup(TempAllocator &alloc)
 {
     if (entryMoveGroup_)
         return entryMoveGroup_;
-    entryMoveGroup_ = new LMoveGroup;
-    JS_ASSERT(begin()->isLabel());
-    insertAfter(*begin(), entryMoveGroup_);
+    entryMoveGroup_ = LMoveGroup::New(alloc);
+    if (begin()->isLabel())
+        insertAfter(*begin(), entryMoveGroup_);
+    else
+        insertBefore(*begin(), entryMoveGroup_);
     return entryMoveGroup_;
 }
 
 LMoveGroup *
-LBlock::getExitMoveGroup()
+LBlock::getExitMoveGroup(TempAllocator &alloc)
 {
     if (exitMoveGroup_)
         return exitMoveGroup_;
-    exitMoveGroup_ = new LMoveGroup;
+    exitMoveGroup_ = LMoveGroup::New(alloc);
     insertBefore(*rbegin(), exitMoveGroup_);
     return exitMoveGroup_;
 }
@@ -129,7 +129,7 @@ LSnapshot::init(MIRGenerator *gen)
 LSnapshot *
 LSnapshot::New(MIRGenerator *gen, MResumePoint *mir, BailoutKind kind)
 {
-    LSnapshot *snapshot = new LSnapshot(mir, kind);
+    LSnapshot *snapshot = new(gen->alloc()) LSnapshot(mir, kind);
     if (!snapshot->init(gen))
         return nullptr;
 
@@ -165,7 +165,7 @@ LPhi::LPhi(MPhi *mir)
 LPhi *
 LPhi::New(MIRGenerator *gen, MPhi *ins)
 {
-    LPhi *phi = new LPhi(ins);
+    LPhi *phi = new(gen->alloc()) LPhi(ins);
     if (!phi->init(gen))
         return nullptr;
     return phi;
@@ -236,8 +236,17 @@ PrintUse(char *buf, size_t size, const LUse *use)
         JS_snprintf(buf, size, "v%d:%s", use->virtualRegister(),
                     Registers::GetName(Registers::Code(use->registerCode())));
         break;
-      default:
+      case LUse::ANY:
+        JS_snprintf(buf, size, "v%d:r?", use->virtualRegister());
+        break;
+      case LUse::KEEPALIVE:
         JS_snprintf(buf, size, "v%d:*", use->virtualRegister());
+        break;
+      case LUse::RECOVERED_INPUT:
+        JS_snprintf(buf, size, "v%d:**", use->virtualRegister());
+        break;
+      default:
+        MOZ_ASSUME_UNREACHABLE("invalid use policy");
     }
 }
 
@@ -279,6 +288,12 @@ LAllocation::toString() const
 #endif // DEBUG
 
 void
+LAllocation::dump() const
+{
+    fprintf(stderr, "%s\n", toString());
+}
+
+void
 LInstruction::printOperands(FILE *fp)
 {
     for (size_t i = 0, e = numOperands(); i < e; i++) {
@@ -306,7 +321,7 @@ LInstruction::assignSnapshot(LSnapshot *snapshot)
 }
 
 void
-LInstruction::print(FILE *fp)
+LInstruction::dump(FILE *fp)
 {
     fprintf(fp, "{");
     for (size_t i = 0; i < numDefs(); i++) {
@@ -333,10 +348,16 @@ LInstruction::print(FILE *fp)
 }
 
 void
-LInstruction::initSafepoint()
+LInstruction::dump()
+{
+    return dump(stderr);
+}
+
+void
+LInstruction::initSafepoint(TempAllocator &alloc)
 {
     JS_ASSERT(!safepoint_);
-    safepoint_ = new LSafepoint();
+    safepoint_ = new(alloc) LSafepoint(alloc);
     JS_ASSERT(safepoint_);
 }
 

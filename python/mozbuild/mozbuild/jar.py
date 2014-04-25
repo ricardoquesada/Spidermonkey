@@ -22,7 +22,7 @@ from mozbuild.util import (
     PushbackIter,
 )
 
-from Preprocessor import Preprocessor
+from mozbuild.preprocessor import Preprocessor
 from mozbuild.action.buildlist import addEntriesToListFile
 if sys.platform == 'win32':
     from ctypes import windll, WinError
@@ -513,8 +513,8 @@ def main(args=None):
         jm.relativesrcdir = options.relativesrcdir
         jm.l10nmerge = options.locale_mergedir
         if jm.l10nmerge and not os.path.isdir(jm.l10nmerge):
-            logging.warning("WARNING: --locale-mergedir passed, but '%s' does not exist. Ignore this message if the locale is complete."
-                            )
+            logging.warning("WARNING: --locale-mergedir passed, but '%s' does not exist. "
+                "Ignore this message if the locale is complete." % jm.l10nmerge)
     elif options.locale_mergedir:
         p.error('l10n-base required when using locale-mergedir')
     jm.localedirs = options.l10n_src

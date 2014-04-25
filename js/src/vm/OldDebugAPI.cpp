@@ -170,7 +170,7 @@ js::DebugExceptionUnwind(JSContext *cx, AbstractFramePtr frame, jsbytecode *pc)
 JS_FRIEND_API(bool)
 JS_SetDebugModeForAllCompartments(JSContext *cx, bool debug)
 {
-    for (ZonesIter zone(cx->runtime()); !zone.done(); zone.next()) {
+    for (ZonesIter zone(cx->runtime(), SkipAtoms); !zone.done(); zone.next()) {
         // Invalidate a zone at a time to avoid doing a zone-wide CellIter
         // per compartment.
         AutoDebugModeInvalidation invalidate(zone);
@@ -391,7 +391,7 @@ JS_LineNumberToPC(JSContext *cx, JSScript *script, unsigned lineno)
 JS_PUBLIC_API(jsbytecode *)
 JS_EndPC(JSContext *cx, JSScript *script)
 {
-    return script->code + script->length;
+    return script->codeEnd();
 }
 
 JS_PUBLIC_API(bool)
@@ -399,7 +399,7 @@ JS_GetLinePCs(JSContext *cx, JSScript *script,
               unsigned startLine, unsigned maxLines,
               unsigned* count, unsigned** retLines, jsbytecode*** retPCs)
 {
-    size_t len = (script->length > maxLines ? maxLines : script->length);
+    size_t len = (script->length() > maxLines ? maxLines : script->length());
     unsigned *lines = cx->pod_malloc<unsigned>(len);
     if (!lines)
         return false;
@@ -424,7 +424,7 @@ JS_GetLinePCs(JSContext *cx, JSScript *script,
 
             if (lineno >= startLine) {
                 lines[i] = lineno;
-                pcs[i] = script->code + offset;
+                pcs[i] = script->offsetToPC(offset);
                 if (++i >= maxLines)
                     break;
             }
@@ -757,10 +757,10 @@ JS_PutPropertyDescArray(JSContext *cx, JSPropertyDescArray *pda)
 
     pd = pda->array;
     for (i = 0; i < pda->length; i++) {
-        js_RemoveRoot(cx->runtime(), &pd[i].id);
-        js_RemoveRoot(cx->runtime(), &pd[i].value);
+        RemoveRoot(cx->runtime(), &pd[i].id);
+        RemoveRoot(cx->runtime(), &pd[i].value);
         if (pd[i].flags & JSPD_ALIAS)
-            js_RemoveRoot(cx->runtime(), &pd[i].alias);
+            RemoveRoot(cx->runtime(), &pd[i].alias);
     }
     js_free(pd);
     pda->array = nullptr;
@@ -1032,11 +1032,19 @@ FormatValue(JSContext *cx, const Value &vArg, JSAutoByteString &bytes)
 {
     RootedValue v(cx, vArg);
 
-    mozilla::Maybe<AutoCompartment> ac;
-    if (v.isObject())
-        ac.construct(cx, &v.toObject());
+    /*
+     * We could use Maybe<AutoCompartment> here, but G++ can't quite follow
+     * that, and warns about uninitialized members being used in the
+     * destructor.
+     */
+    RootedString str(cx);
+    if (v.isObject()) {
+        AutoCompartment ac(cx, &v.toObject());
+        str = ToString<CanGC>(cx, v);
+    } else {
+        str = ToString<CanGC>(cx, v);
+    }
 
-    JSString *str = ToString<CanGC>(cx, v);
     if (!str)
         return nullptr;
     const char *buf = bytes.encodeLatin1(cx, str);
@@ -1119,7 +1127,7 @@ FormatFrame(JSContext *cx, const NonBuiltinScriptFrameIter &iter, char *buf, int
             if (i < bindings.length()) {
                 name = nameBytes.encodeLatin1(cx, bindings[i].name());
                 if (!buf)
-                    return NULL;
+                    return nullptr;
             }
 
             if (value) {

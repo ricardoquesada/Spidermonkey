@@ -37,7 +37,7 @@
  * Currently, all "globals" related to typed objects are packaged
  * within a single "module" object `TypedObject`. This module has its
  * own js::Class and when that class is initialized, we also create
- * and define all other values (in `js_InitTypedObjectClass()`).
+ * and define all other values (in `js_InitTypedObjectModuleClass()`).
  *
  * - Type objects, meta type objects, and type representations:
  *
@@ -101,24 +101,60 @@ namespace js {
  * somewhat, rather than sticking them all into the global object.
  * Eventually it will go away and become a module.
  */
-extern const Class TypedObjectClass;
-
-template <ScalarTypeRepresentation::Type type, typename T>
-class NumericType
-{
-  private:
-    static const Class * typeToClass();
+class TypedObjectModuleObject : public JSObject {
   public:
-    static bool reify(JSContext *cx, void *mem, MutableHandleValue vp);
+    enum Slot {
+        ArrayTypePrototype,
+        StructTypePrototype,
+        SlotCount
+    };
+
+    static const Class class_;
+
+    bool getSuitableClaspAndProto(JSContext *cx,
+                                  TypeRepresentation::Kind kind,
+                                  const Class **clasp,
+                                  MutableHandleObject proto);
+};
+
+// Type for scalar type constructors like `uint8`. All such type
+// constructors share a common js::Class and JSFunctionSpec. Scalar
+// types are non-opaque (their storage is visible unless combined with
+// an opaque reference type.)
+class ScalarType
+{
+  public:
+    static const Class class_;
+    static const JSFunctionSpec typeObjectMethods[];
+    typedef ScalarTypeRepresentation TypeRepr;
+
+    static bool call(JSContext *cx, unsigned argc, Value *vp);
+};
+
+// Type for reference type constructors like `Any`, `String`, and
+// `Object`. All such type constructors share a common js::Class and
+// JSFunctionSpec. All these types are opaque.
+class ReferenceType
+{
+  public:
+    static const Class class_;
+    static const JSFunctionSpec typeObjectMethods[];
+    typedef ReferenceTypeRepresentation TypeRepr;
+
     static bool call(JSContext *cx, unsigned argc, Value *vp);
 };
 
 /*
- * These are the classes of the scalar type descriptors, like `uint8`,
- * `uint16` etc. Each of these classes has exactly one instance that
- * is pre-created.
+ * Type descriptors `float32x4` and `int32x4`
  */
-extern const Class NumericTypeClasses[ScalarTypeRepresentation::TYPE_MAX];
+class X4Type : public JSObject
+{
+  private:
+  public:
+    static const Class class_;
+
+    static bool call(JSContext *cx, unsigned argc, Value *vp);
+};
 
 /*
  * Type descriptor created by `new ArrayType(...)`
@@ -126,6 +162,18 @@ extern const Class NumericTypeClasses[ScalarTypeRepresentation::TYPE_MAX];
 class ArrayType : public JSObject
 {
   private:
+    // Helper for creating a new ArrayType object, either sized or unsized.
+    // - `arrayTypePrototype` - prototype for the new object to be created,
+    //                          either ArrayType.prototype or
+    //                          unsizedArrayType.__proto__ depending on
+    //                          whether this is a sized or unsized array
+    // - `arrayTypeReprObj` - a type representation object for the array
+    // - `elementType` - type object for the elements in the array
+    static JSObject *create(JSContext *cx,
+                            HandleObject arrayTypePrototype,
+                            HandleObject arrayTypeReprObj,
+                            HandleObject elementType);
+
   public:
     static const Class class_;
 
@@ -143,12 +191,9 @@ class ArrayType : public JSObject
     // does `new ArrayType(elem)`. It produces an array type object.
     static bool construct(JSContext *cx, unsigned argc, Value *vp);
 
-    static JSObject *create(JSContext *cx, HandleObject arrayTypeGlobal,
-                            HandleObject elementType, size_t length);
-    static bool repeat(JSContext *cx, unsigned argc, Value *vp);
-    static bool subarray(JSContext *cx, unsigned argc, Value *vp);
-
-    static bool toSource(JSContext *cx, unsigned argc, Value *vp);
+    // This is the sized method on unsized array type objects.  It
+    // produces a sized variant.
+    static bool dimension(JSContext *cx, unsigned int argc, jsval *vp);
 
     static JSObject *elementType(JSContext *cx, HandleObject obj);
 };
@@ -185,8 +230,6 @@ class StructType : public JSObject
     // This is the function that gets called when the user
     // does `new StructType(...)`. It produces a struct type object.
     static bool construct(JSContext *cx, unsigned argc, Value *vp);
-
-    static bool toSource(JSContext *cx, unsigned argc, Value *vp);
 
     static bool convertAndCopyTo(JSContext *cx,
                                  StructTypeRepresentation *typeRepr,
@@ -278,13 +321,18 @@ class TypedDatum : public JSObject
                               MutableHandleValue statep, MutableHandleId idp);
 
   public:
-    // Returns the offset in bytes within the object where the `void*`
-    // pointer can be found.
+    // Each typed object contains a void* pointer pointing at the
+    // binary data that it represents. (That data may be owned by this
+    // object or this object may alias data owned by someone else.)
+    // This function returns the offset in bytes within the object
+    // where the `void*` pointer can be found. It is intended for use
+    // by the JIT.
     static size_t dataOffset();
 
     static TypedDatum *createUnattachedWithClass(JSContext *cx,
                                                  const Class *clasp,
-                                                 HandleObject type);
+                                                 HandleObject type,
+                                                 int32_t length);
 
     // Creates an unattached typed object or handle (depending on the
     // type parameter T). Note that it is only legal for unattached
@@ -293,8 +341,9 @@ class TypedDatum : public JSObject
     //
     // Arguments:
     // - type: type object for resulting object
+    // - length: 0 unless this is an array, otherwise the length
     template<class T>
-    static T *createUnattached(JSContext *cx, HandleObject type);
+    static T *createUnattached(JSContext *cx, HandleObject type, int32_t length);
 
     // Creates a datum that aliases the memory pointed at by `owner`
     // at the given offset. The datum will be a handle iff type is a
@@ -304,8 +353,9 @@ class TypedDatum : public JSObject
                                      HandleObject typedContents,
                                      size_t offset);
 
+
     // If `this` is the owner of the memory, use this.
-    void attach(void *mem);
+    void attach(uint8_t *mem);
 
     // Otherwise, use this to attach to memory referenced by another datum.
     void attach(JSObject &datum, uint32_t offset);
@@ -316,8 +366,12 @@ class TypedObject : public TypedDatum
   public:
     static const Class class_;
 
-    // creates zeroed memory of size of type
-    static JSObject *createZeroed(JSContext *cx, HandleObject type);
+    // Creates a new typed object whose memory is freshly allocated
+    // and initialized with zeroes (or, in the case of references, an
+    // appropriate default value).
+    static TypedObject *createZeroed(JSContext *cx,
+                                     HandleObject typeObj,
+                                     int32_t length);
 
     // user-accessible constructor (`new TypeDescriptor(...)`)
     static bool construct(JSContext *cx, unsigned argc, Value *vp);
@@ -329,6 +383,13 @@ class TypedHandle : public TypedDatum
     static const Class class_;
     static const JSFunctionSpec handleStaticMethods[];
 };
+
+/*
+ * Usage: NewTypedHandle(typeObj)
+ *
+ * Constructs a new, unattached instance of `Handle`.
+ */
+bool NewTypedHandle(JSContext *cx, unsigned argc, Value *vp);
 
 /*
  * Usage: NewTypedHandle(typeObj)
@@ -389,7 +450,7 @@ extern const JSJitInfo ObjectIsTypedObjectJitInfo;
  * Usage: IsAttached(obj)
  *
  * Given a TypedDatum `obj`, returns true if `obj` is
- * "attached" (i.e., its data pointer is NULL).
+ * "attached" (i.e., its data pointer is nullptr).
  */
 bool IsAttached(ThreadSafeContext *cx, unsigned argc, Value *vp);
 extern const JSJitInfo IsAttachedJitInfo;
@@ -417,15 +478,57 @@ bool Memcpy(ThreadSafeContext *cx, unsigned argc, Value *vp);
 extern const JSJitInfo MemcpyJitInfo;
 
 /*
- * Usage: StoreScalar(targetDatum, targetOffset, value)
+ * Usage: GetTypedObjectModule()
  *
- * Intrinsic function. Stores value (which must be an int32 or uint32)
- * by `scalarTypeRepr` (which must be a type repr obj) and stores the
- * value at the memory for `targetDatum` at offset `targetOffset`.
- * `targetDatum` must be attached.
+ * Returns the global "typed object" module, which provides access
+ * to the various builtin type descriptors. These are currently
+ * exported as immutable properties so it is safe for self-hosted code
+ * to access them; eventually this should be linked into the module
+ * system.
+ */
+bool GetTypedObjectModule(JSContext *cx, unsigned argc, Value *vp);
+
+/*
+ * Usage: Store_int8(targetDatum, targetOffset, value)
+ *        ...
+ *        Store_uint8(targetDatum, targetOffset, value)
+ *        ...
+ *        Store_float32(targetDatum, targetOffset, value)
+ *        Store_float64(targetDatum, targetOffset, value)
+ *
+ * Intrinsic function. Stores `value` into the memory referenced by
+ * `targetDatum` at the offset `targetOffset`.
+ *
+ * Assumes (and asserts) that:
+ * - `targetDatum` is attached
+ * - `targetOffset` is a valid offset within the bounds of `targetDatum`
+ * - `value` is a number
  */
 #define JS_STORE_SCALAR_CLASS_DEFN(_constant, T, _name)                       \
 class StoreScalar##T {                                                        \
+  public:                                                                     \
+    static bool Func(ThreadSafeContext *cx, unsigned argc, Value *vp);        \
+    static const JSJitInfo JitInfo;                                           \
+};
+
+/*
+ * Usage: Store_Any(targetDatum, targetOffset, value)
+ *        Store_Object(targetDatum, targetOffset, value)
+ *        Store_string(targetDatum, targetOffset, value)
+ *
+ * Intrinsic function. Stores `value` into the memory referenced by
+ * `targetDatum` at the offset `targetOffset`.
+ *
+ * Assumes (and asserts) that:
+ * - `targetDatum` is attached
+ * - `targetOffset` is a valid offset within the bounds of `targetDatum`
+ * - `value` is an object (`Store_Object`) or string (`Store_string`).
+ */
+#define JS_STORE_REFERENCE_CLASS_DEFN(_constant, T, _name)                    \
+class StoreReference##T {                                                     \
+  private:                                                                    \
+    static void store(T* heap, const Value &v);                               \
+                                                                              \
   public:                                                                     \
     static bool Func(ThreadSafeContext *cx, unsigned argc, Value *vp);        \
     static const JSJitInfo JitInfo;                                           \
@@ -446,10 +549,30 @@ class LoadScalar##T {                                                         \
     static const JSJitInfo JitInfo;                                           \
 };
 
+/*
+ * Usage: LoadReference(targetDatum, targetOffset, value)
+ *
+ * Intrinsic function. Stores value (which must be an int32 or uint32)
+ * by `scalarTypeRepr` (which must be a type repr obj) and stores the
+ * value at the memory for `targetDatum` at offset `targetOffset`.
+ * `targetDatum` must be attached.
+ */
+#define JS_LOAD_REFERENCE_CLASS_DEFN(_constant, T, _name)                     \
+class LoadReference##T {                                                      \
+  private:                                                                    \
+    static void load(T* heap, MutableHandleValue v);                          \
+                                                                              \
+  public:                                                                     \
+    static bool Func(ThreadSafeContext *cx, unsigned argc, Value *vp);        \
+    static const JSJitInfo JitInfo;                                           \
+};
+
 // I was using templates for this stuff instead of macros, but ran
 // into problems with the Unagi compiler.
 JS_FOR_EACH_UNIQUE_SCALAR_TYPE_REPR_CTYPE(JS_STORE_SCALAR_CLASS_DEFN)
 JS_FOR_EACH_UNIQUE_SCALAR_TYPE_REPR_CTYPE(JS_LOAD_SCALAR_CLASS_DEFN)
+JS_FOR_EACH_REFERENCE_TYPE_REPR(JS_STORE_REFERENCE_CLASS_DEFN)
+JS_FOR_EACH_REFERENCE_TYPE_REPR(JS_LOAD_REFERENCE_CLASS_DEFN)
 
 } // namespace js
 

@@ -8,9 +8,9 @@
 
 #include "jsiter.h"
 
+#include "mozilla/ArrayUtils.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/PodOperations.h"
-#include "mozilla/Util.h"
 
 #include "jsarray.h"
 #include "jsatom.h"
@@ -344,7 +344,7 @@ GetCustomIterator(JSContext *cx, HandleObject obj, unsigned flags, MutableHandle
             return false;
         RootedValue val(cx, ObjectValue(*obj));
         js_ReportValueError2(cx, JSMSG_BAD_TRAP_RETURN_VALUE,
-                             -1, val, NullPtr(), bytes.ptr());
+                             -1, val, js::NullPtr(), bytes.ptr());
         return false;
     }
     return true;
@@ -396,7 +396,11 @@ NewPropertyIteratorObject(JSContext *cx, unsigned flags)
         return &obj->as<PropertyIteratorObject>();
     }
 
-    return &NewBuiltinClassInstance(cx, &PropertyIteratorObject::class_)->as<PropertyIteratorObject>();
+    JSObject *obj = NewBuiltinClassInstance(cx, &PropertyIteratorObject::class_);
+    if (!obj)
+        return nullptr;
+
+    return &obj->as<PropertyIteratorObject>();
 }
 
 NativeIterator *
@@ -618,8 +622,10 @@ js::GetIterator(JSContext *cx, HandleObject obj, unsigned flags, MutableHandleVa
                     if (!pobj->isNative() ||
                         !pobj->hasEmptyElements() ||
                         pobj->hasUncacheableProto() ||
-                        obj->getOps()->enumerate ||
-                        pobj->getClass()->enumerate != JS_EnumerateStub) {
+                        pobj->getOps()->enumerate ||
+                        pobj->getClass()->enumerate != JS_EnumerateStub ||
+                        pobj->nativeContainsPure(cx->names().iteratorIntrinsic))
+                    {
                         shapes.clear();
                         goto miss;
                     }
@@ -1117,7 +1123,7 @@ bool
 js_SuppressDeletedElement(JSContext *cx, HandleObject obj, uint32_t index)
 {
     RootedId id(cx);
-    if (!IndexToId(cx, index, &id))
+    if (!IndexToId(cx, index, id.address()))
         return false;
     return js_SuppressDeletedProperty(cx, obj, id);
 }
@@ -1440,7 +1446,7 @@ GeneratorState::~GeneratorState()
 }
 
 StackFrame *
-GeneratorState::pushInterpreterFrame(JSContext *cx, FrameGuard *)
+GeneratorState::pushInterpreterFrame(JSContext *cx)
 {
     /*
      * Write barrier is needed since the generator stack can be updated,
@@ -1702,7 +1708,7 @@ star_generator_next(JSContext *cx, CallArgs args)
     if (gen->state == JSGEN_NEWBORN && args.hasDefined(0)) {
         RootedValue val(cx, args[0]);
         js_ReportValueError(cx, JSMSG_BAD_GENERATOR_SEND,
-                            JSDVG_SEARCH_STACK, val, NullPtr());
+                            JSDVG_SEARCH_STACK, val, js::NullPtr());
         return false;
     }
 
@@ -1737,7 +1743,7 @@ legacy_generator_next(JSContext *cx, CallArgs args)
     if (gen->state == JSGEN_NEWBORN && args.hasDefined(0)) {
         RootedValue val(cx, args[0]);
         js_ReportValueError(cx, JSMSG_BAD_GENERATOR_SEND,
-                            JSDVG_SEARCH_STACK, val, NullPtr());
+                            JSDVG_SEARCH_STACK, val, js::NullPtr());
         return false;
     }
 
@@ -1833,21 +1839,21 @@ static const JSFunctionSpec legacy_generator_methods[] = {
 };
 
 static JSObject*
-NewObjectWithObjectPrototype(JSContext *cx, Handle<GlobalObject *> global)
+NewSingletonObjectWithObjectPrototype(JSContext *cx, Handle<GlobalObject *> global)
 {
     JSObject *proto = global->getOrCreateObjectPrototype(cx);
     if (!proto)
         return nullptr;
-    return NewObjectWithGivenProto(cx, &JSObject::class_, proto, global);
+    return NewObjectWithGivenProto(cx, &JSObject::class_, proto, global, SingletonObject);
 }
 
 static JSObject*
-NewObjectWithFunctionPrototype(JSContext *cx, Handle<GlobalObject *> global)
+NewSingletonObjectWithFunctionPrototype(JSContext *cx, Handle<GlobalObject *> global)
 {
     JSObject *proto = global->getOrCreateFunctionPrototype(cx);
     if (!proto)
         return nullptr;
-    return NewObjectWithGivenProto(cx, &JSObject::class_, proto, global);
+    return NewObjectWithGivenProto(cx, &JSObject::class_, proto, global, SingletonObject);
 }
 
 /* static */ bool
@@ -1900,20 +1906,20 @@ GlobalObject::initIteratorClasses(JSContext *cx, Handle<GlobalObject *> global)
     }
 
     if (global->getSlot(LEGACY_GENERATOR_OBJECT_PROTO).isUndefined()) {
-        proto = NewObjectWithObjectPrototype(cx, global);
+        proto = NewSingletonObjectWithObjectPrototype(cx, global);
         if (!proto || !DefinePropertiesAndBrand(cx, proto, nullptr, legacy_generator_methods))
             return false;
         global->setReservedSlot(LEGACY_GENERATOR_OBJECT_PROTO, ObjectValue(*proto));
     }
 
     if (global->getSlot(STAR_GENERATOR_OBJECT_PROTO).isUndefined()) {
-        RootedObject genObjectProto(cx, NewObjectWithObjectPrototype(cx, global));
+        RootedObject genObjectProto(cx, NewSingletonObjectWithObjectPrototype(cx, global));
         if (!genObjectProto)
             return false;
         if (!DefinePropertiesAndBrand(cx, genObjectProto, nullptr, star_generator_methods))
             return false;
 
-        RootedObject genFunctionProto(cx, NewObjectWithFunctionPrototype(cx, global));
+        RootedObject genFunctionProto(cx, NewSingletonObjectWithFunctionPrototype(cx, global));
         if (!genFunctionProto)
             return false;
         if (!LinkConstructorAndPrototype(cx, genFunctionProto, genObjectProto))
@@ -1945,7 +1951,7 @@ GlobalObject::initIteratorClasses(JSContext *cx, Handle<GlobalObject *> global)
         if (!DefineConstructorAndPrototype(cx, global, JSProto_StopIteration, proto, proto))
             return false;
 
-        global->markStandardClassInitializedNoProto(&StopIterationObject::class_);
+        global->setConstructor(JSProto_StopIteration, ObjectValue(*proto));
     }
 
     return true;

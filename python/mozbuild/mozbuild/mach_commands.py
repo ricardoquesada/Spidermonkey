@@ -355,6 +355,16 @@ class Build(MachCommandBase):
                              'instead of {target_pairs}.')
                     target_pairs = new_pairs
 
+                # Ensure build backend is up to date. The alternative is to
+                # have rules in the invoked Makefile to rebuild the build
+                # backend. But that involves make reinvoking itself and there
+                # are undesired side-effects of this. See bug 877308 for a
+                # comprehensive history lesson.
+                self._run_make(directory=self.topobjdir,
+                    target='backend.RecursiveMakeBackend',
+                    force_pymake=pymake, line_handler=output.on_line,
+                    log=False, print_directory=False)
+
                 # Build target pairs.
                 for make_dir, make_target in target_pairs:
                     # We don't display build status messages during partial
@@ -492,6 +502,16 @@ class Build(MachCommandBase):
                     return 1
 
             raise
+
+    @Command('build-backend', category='build',
+        description='Generate a backend used to build the tree.')
+    def build_backend(self):
+        # When we support multiple build backends (Tup, Visual Studio, etc),
+        # this command will be expanded to support choosing what to generate.
+        python = self.virtualenv_manager.python_path
+        config_status = os.path.join(self.topobjdir, 'config.status')
+        return self._run_command_in_objdir(args=[python, config_status],
+            pass_thru=True, ensure_exit_code=False)
 
 
 @CommandProvider
@@ -740,7 +760,14 @@ class DebugProgram(MachCommandBase):
         help='Do not pass the -foreground argument by default on Mac')
     @CommandArgument('+gdbparams', default=None, metavar='params', type=str,
         help='Command-line arguments to pass to GDB itself; split as the Bourne shell would.')
-    def debug(self, params, remote, background, gdbparams):
+    # Bug 933807 introduced JS_DISABLE_SLOW_SCRIPT_SIGNALS to avoid clever
+    # segfaults induced by the slow-script-detecting logic for Ion/Odin JITted
+    # code.  If we don't pass this, the user will need to periodically type
+    # "continue" to (safely) resume execution.  There are ways to implement
+    # automatic resuming; see the bug.
+    @CommandArgument('+slowscript', action='store_true',
+        help='Do not set the JS_DISABLE_SLOW_SCRIPT_SIGNALS env variable; when not set, recoverable but misleading SIGSEGV instances may occur in Ion/Odin JIT code')
+    def debug(self, params, remote, background, gdbparams, slowscript):
         import which
         try:
             debugger = which.which('gdb')
@@ -749,6 +776,7 @@ class DebugProgram(MachCommandBase):
             print(e)
             return 1
         args = [debugger]
+        extra_env = {}
         if gdbparams:
             import pymake.process
             (argv, badchar) = pymake.process.clinetoargv(gdbparams, os.getcwd())
@@ -770,8 +798,10 @@ class DebugProgram(MachCommandBase):
             args.append('-foreground')
         if params:
             args.extend(params)
-        return self.run_process(args=args, ensure_exit_code=False,
-            pass_thru=True)
+        if not slowscript:
+            extra_env['JS_DISABLE_SLOW_SCRIPT_SIGNALS'] = '1'
+        return self.run_process(args=args, append_env=extra_env,
+            ensure_exit_code=False, pass_thru=True)
 
 @CommandProvider
 class Buildsymbols(MachCommandBase):

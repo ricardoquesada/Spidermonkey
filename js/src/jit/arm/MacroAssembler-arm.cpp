@@ -958,7 +958,7 @@ MacroAssemblerARM::ma_mod_mask(Register src, Register dest, Register hold, int32
     // Do a trial subtraction, this is the same operation as cmp, but we store the dest
     ma_sub(dest, Imm32(mask), secondScratchReg_, SetCond);
     // If (sum - C) > 0, store sum - C back into sum, thus performing a modulus.
-    ma_mov(secondScratchReg_, dest, NoSetCond, Unsigned);
+    ma_mov(secondScratchReg_, dest, NoSetCond, NotSigned);
     // Get rid of the bits that we extracted before, and set the condition codes
     as_mov(ScratchRegister, lsr(ScratchRegister, shift), SetCond);
     // If the shift produced zero, finish, otherwise, continue in the loop.
@@ -2689,11 +2689,59 @@ MacroAssemblerARMCompat::testInt32(Assembler::Condition cond, const Address &add
 }
 
 Assembler::Condition
-MacroAssemblerARMCompat::testDouble(Assembler::Condition cond, const Address &address)
+MacroAssemblerARMCompat::testDouble(Condition cond, const Address &address)
 {
     JS_ASSERT(cond == Equal || cond == NotEqual);
     extractTag(address, ScratchRegister);
     return testDouble(cond, ScratchRegister);
+}
+
+Assembler::Condition
+MacroAssemblerARMCompat::testBoolean(Condition cond, const Address &address)
+{
+    JS_ASSERT(cond == Equal || cond == NotEqual);
+    extractTag(address, ScratchRegister);
+    return testBoolean(cond, ScratchRegister);
+}
+
+Assembler::Condition
+MacroAssemblerARMCompat::testNull(Condition cond, const Address &address)
+{
+    JS_ASSERT(cond == Equal || cond == NotEqual);
+    extractTag(address, ScratchRegister);
+    return testNull(cond, ScratchRegister);
+}
+
+Assembler::Condition
+MacroAssemblerARMCompat::testUndefined(Condition cond, const Address &address)
+{
+    JS_ASSERT(cond == Equal || cond == NotEqual);
+    extractTag(address, ScratchRegister);
+    return testUndefined(cond, ScratchRegister);
+}
+
+Assembler::Condition
+MacroAssemblerARMCompat::testString(Condition cond, const Address &address)
+{
+    JS_ASSERT(cond == Equal || cond == NotEqual);
+    extractTag(address, ScratchRegister);
+    return testString(cond, ScratchRegister);
+}
+
+Assembler::Condition
+MacroAssemblerARMCompat::testObject(Condition cond, const Address &address)
+{
+    JS_ASSERT(cond == Equal || cond == NotEqual);
+    extractTag(address, ScratchRegister);
+    return testObject(cond, ScratchRegister);
+}
+
+Assembler::Condition
+MacroAssemblerARMCompat::testNumber(Condition cond, const Address &address)
+{
+    JS_ASSERT(cond == Equal || cond == NotEqual);
+    extractTag(address, ScratchRegister);
+    return testNumber(cond, ScratchRegister);
 }
 
 Assembler::Condition
@@ -3319,7 +3367,7 @@ MacroAssemblerARMCompat::storeTypeTag(ImmTag tag, Register base, Register index,
 
 void
 MacroAssemblerARMCompat::linkExitFrame() {
-    uint8_t *dest = (uint8_t*)&GetIonContext()->runtime->mainThread.ionTop;
+    uint8_t *dest = (uint8_t*)GetIonContext()->runtime->addressOfIonTop();
     movePtr(ImmPtr(dest), ScratchRegister);
     ma_str(StackPointer, Operand(ScratchRegister, 0));
 }
@@ -3614,13 +3662,24 @@ MacroAssemblerARMCompat::callWithABIPost(uint32_t stackAdjust, Result result)
     if (secondScratchReg_ != lr)
         ma_mov(secondScratchReg_, lr);
 
-    if (result == DOUBLE) {
-#ifdef JS_CPU_ARM_HARDFP
-        as_vmov(ReturnFloatReg, d0);
-#else
+    switch (result) {
+      case DOUBLE:
+#ifndef JS_CPU_ARM_HARDFP
         // Move double from r0/r1 to ReturnFloatReg.
         as_vxfer(r0, r1, ReturnFloatReg, CoreToFloat);
+        break;
 #endif
+      case FLOAT:
+#ifndef JS_CPU_ARM_HARDFP
+        // Move float32 from r0 to ReturnFloatReg.
+        as_vxfer(r0, InvalidReg, VFPRegister(d0).singleOverlay(), CoreToFloat);
+        break;
+#endif
+      case GENERAL:
+        break;
+
+      default:
+        MOZ_ASSUME_UNREACHABLE("unexpected callWithABI result");
     }
 
     freeStack(stackAdjust);
@@ -3825,7 +3884,59 @@ MacroAssemblerARMCompat::floor(FloatRegister input, Register output, Label *bail
     // the int range, and special handling is required.
     // zero is also caught by this case, but floor of a negative number
     // should never be zero.
-    ma_b(bail, Unsigned);
+    ma_b(bail, NotSigned);
+
+    bind(&fin);
+}
+
+void
+MacroAssemblerARMCompat::floorf(FloatRegister input, Register output, Label *bail)
+{
+    Label handleZero;
+    Label handleNeg;
+    Label fin;
+    compareFloat(input, InvalidFloatReg);
+    ma_b(&handleZero, Assembler::Equal);
+    ma_b(&handleNeg, Assembler::Signed);
+    // NaN is always a bail condition, just bail directly.
+    ma_b(bail, Assembler::Overflow);
+
+    // The argument is a positive number, truncation is the path to glory;
+    // Since it is known to be > 0.0, explicitly convert to a larger range,
+    // then a value that rounds to INT_MAX is explicitly different from an
+    // argument that clamps to INT_MAX
+    ma_vcvt_F32_U32(input, ScratchFloatReg);
+    ma_vxfer(VFPRegister(ScratchFloatReg).uintOverlay(), output);
+    ma_mov(output, output, SetCond);
+    ma_b(bail, Signed);
+    ma_b(&fin);
+
+    bind(&handleZero);
+    // Move the top word of the double into the output reg, if it is non-zero,
+    // then the original value was -0.0
+    as_vxfer(output, InvalidReg, VFPRegister(input).singleOverlay(), FloatToCore, Always, 0);
+    ma_cmp(output, Imm32(0));
+    ma_b(bail, NonZero);
+    ma_b(&fin);
+
+    bind(&handleNeg);
+    // Negative case, negate, then start dancing
+    ma_vneg_f32(input, input);
+    ma_vcvt_F32_U32(input, ScratchFloatReg);
+    ma_vxfer(VFPRegister(ScratchFloatReg).uintOverlay(), output);
+    ma_vcvt_U32_F32(ScratchFloatReg, ScratchFloatReg);
+    compareFloat(ScratchFloatReg, input);
+    ma_add(output, Imm32(1), output, NoSetCond, NotEqual);
+    // Negate the output.  Since INT_MIN < -INT_MAX, even after adding 1,
+    // the result will still be a negative number
+    ma_rsb(output, Imm32(0), output, SetCond);
+    // Flip the negated input back to its original value.
+    ma_vneg_f32(input, input);
+    // If the result looks non-negative, then this value didn't actually fit into
+    // the int range, and special handling is required.
+    // zero is also caught by this case, but floor of a negative number
+    // should never be zero.
+    ma_b(bail, NotSigned);
 
     bind(&fin);
 }
@@ -3912,7 +4023,7 @@ MacroAssemblerARMCompat::round(FloatRegister input, Register output, Label *bail
     // If the result looks non-negative, then this value didn't actually fit into
     // the int range, and special handling is required, or it was zero, which means
     // the result is actually -0.0 which also requires special handling.
-    ma_b(bail, Unsigned);
+    ma_b(bail, NotSigned);
 
     bind(&fin);
 }

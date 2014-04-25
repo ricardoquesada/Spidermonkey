@@ -257,7 +257,6 @@ BytecodeFallsThrough(JSOp op)
       case JSOP_GOTO:
       case JSOP_DEFAULT:
       case JSOP_RETURN:
-      case JSOP_STOP:
       case JSOP_RETRVAL:
       case JSOP_THROW:
       case JSOP_TABLESWITCH:
@@ -352,14 +351,17 @@ StackUses(JSScript *script, jsbytecode *pc);
 extern unsigned
 StackDefs(JSScript *script, jsbytecode *pc);
 
-}  /* namespace js */
-
+#ifdef DEBUG
 /*
- * Given bytecode address pc in script's main program code, return the operand
- * stack depth just before (JSOp) *pc executes.
+ * Given bytecode address pc in script's main program code, compute the operand
+ * stack depth just before (JSOp) *pc executes.  If *pc is not reachable, return
+ * false.
  */
-extern unsigned
-js_ReconstructStackDepth(JSContext *cx, JSScript *script, jsbytecode *pc);
+extern bool
+ReconstructStackDepth(JSContext *cx, JSScript *script, jsbytecode *pc, uint32_t *depth, bool *reachablePC);
+#endif
+
+}  /* namespace js */
 
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -557,7 +559,7 @@ inline bool
 FlowsIntoNext(JSOp op)
 {
     /* JSOP_YIELD is considered to flow into the next instruction, like JSOP_CALL. */
-    return op != JSOP_STOP && op != JSOP_RETURN && op != JSOP_RETRVAL && op != JSOP_THROW &&
+    return op != JSOP_RETRVAL && op != JSOP_RETURN && op != JSOP_THROW &&
            op != JSOP_GOTO && op != JSOP_RETSUB;
 }
 
@@ -772,8 +774,13 @@ JS_STATIC_ASSERT(sizeof(PCCounts) % sizeof(Value) == 0);
 static inline jsbytecode *
 GetNextPc(jsbytecode *pc)
 {
-    return pc + js_CodeSpec[JSOp(*pc)].length;
+    return pc + GetBytecodeLength(pc);
 }
+
+class StaticBlockObject;
+
+StaticBlockObject *
+GetBlockChainAtPC(JSScript *script, jsbytecode *pc);
 
 } /* namespace js */
 

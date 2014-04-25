@@ -20,6 +20,7 @@
 #include "jit/IonFrameIterator-inl.h"
 #include "vm/Interpreter-inl.h"
 #include "vm/Probes-inl.h"
+#include "vm/ScopeObject-inl.h"
 
 using namespace js;
 
@@ -123,7 +124,7 @@ StackFrame::copyFrameAndValues(JSContext *cx, Value *vp, StackFrame *otherfp,
             HeapValue::writeBarrierPost(*dst, dst);
     }
 
-    if (cx->compartment()->debugMode())
+    if (JS_UNLIKELY(cx->compartment()->debugMode()))
         DebugScopes::onGeneratorFrameChange(otherfp, this, cx);
 }
 
@@ -204,7 +205,7 @@ AssertDynamicScopeMatchesStaticScope(JSContext *cx, JSScript *script, JSObject *
 {
 #ifdef DEBUG
     RootedObject enclosingScope(cx, script->enclosingStaticScope());
-    for (StaticScopeIter i(cx, enclosingScope); !i.done(); i++) {
+    for (StaticScopeIter<NoGC> i(enclosingScope); !i.done(); i++) {
         if (i.hasDynamicScopeObject()) {
             /*
              * 'with' does not participate in the static scope of the script,
@@ -214,15 +215,15 @@ AssertDynamicScopeMatchesStaticScope(JSContext *cx, JSScript *script, JSObject *
                 scope = &scope->as<WithObject>().enclosingScope();
 
             switch (i.type()) {
-              case StaticScopeIter::BLOCK:
+              case StaticScopeIter<NoGC>::BLOCK:
                 JS_ASSERT(i.block() == scope->as<ClonedBlockObject>().staticBlock());
                 scope = &scope->as<ClonedBlockObject>().enclosingScope();
                 break;
-              case StaticScopeIter::FUNCTION:
+              case StaticScopeIter<NoGC>::FUNCTION:
                 JS_ASSERT(scope->as<CallObject>().callee().nonLazyScript() == i.funScript());
                 scope = &scope->as<CallObject>().enclosingScope();
                 break;
-              case StaticScopeIter::NAMED_LAMBDA:
+              case StaticScopeIter<NoGC>::NAMED_LAMBDA:
                 scope = &scope->as<DeclEnvObject>().enclosingScope();
                 break;
             }
@@ -254,7 +255,7 @@ StackFrame::prologue(JSContext *cx)
     RootedScript script(cx, this->script());
 
     JS_ASSERT(!isGeneratorFrame());
-    JS_ASSERT(cx->interpreterRegs().pc == script->code);
+    JS_ASSERT(cx->interpreterRegs().pc == script->code());
 
     if (isEvalFrame()) {
         if (script->strict) {
@@ -304,7 +305,7 @@ StackFrame::epilogue(JSContext *cx)
     if (isEvalFrame()) {
         if (isStrictEvalFrame()) {
             JS_ASSERT_IF(hasCallObj(), scopeChain()->as<CallObject>().isForEval());
-            if (cx->compartment()->debugMode())
+            if (JS_UNLIKELY(cx->compartment()->debugMode()))
                 DebugScopes::onPopStrictEvalScope(this);
         } else if (isDirectEvalFrame()) {
             if (isDebuggerFrame())
@@ -340,7 +341,7 @@ StackFrame::epilogue(JSContext *cx)
     else
         AssertDynamicScopeMatchesStaticScope(cx, script, scopeChain());
 
-    if (cx->compartment()->debugMode())
+    if (JS_UNLIKELY(cx->compartment()->debugMode()))
         DebugScopes::onPopCall(this, cx);
 
     if (isConstructing() && thisValue().isObject() && returnValue().isPrimitive())
@@ -374,7 +375,7 @@ StackFrame::popBlock(JSContext *cx)
 {
     JS_ASSERT(hasBlockChain());
 
-    if (cx->compartment()->debugMode())
+    if (JS_UNLIKELY(cx->compartment()->debugMode()))
         DebugScopes::onPopBlock(cx, this);
 
     if (blockChain_->needsClone()) {
@@ -388,7 +389,7 @@ StackFrame::popBlock(JSContext *cx)
 void
 StackFrame::popWith(JSContext *cx)
 {
-    if (cx->compartment()->debugMode())
+    if (JS_UNLIKELY(cx->compartment()->debugMode()))
         DebugScopes::onPopWith(this);
 
     JS_ASSERT(scopeChain()->is<WithObject>());
@@ -464,15 +465,14 @@ FrameRegs::setToEndOfScript()
 {
     JSScript *script = fp()->script();
     sp = fp()->base();
-    pc = script->code + script->length - JSOP_STOP_LENGTH;
-    JS_ASSERT(*pc == JSOP_STOP);
+    pc = script->codeEnd() - JSOP_RETRVAL_LENGTH;
+    JS_ASSERT(*pc == JSOP_RETRVAL);
 }
 
 /*****************************************************************************/
 
 StackFrame *
-InterpreterStack::pushInvokeFrame(JSContext *cx, const CallArgs &args, InitialFrameFlags initial,
-                                  FrameGuard *fg)
+InterpreterStack::pushInvokeFrame(JSContext *cx, const CallArgs &args, InitialFrameFlags initial)
 {
     LifoAlloc::Mark mark = allocator_.mark();
 
@@ -487,14 +487,13 @@ InterpreterStack::pushInvokeFrame(JSContext *cx, const CallArgs &args, InitialFr
 
     fp->mark_ = mark;
     fp->initCallFrame(cx, nullptr, nullptr, nullptr, *fun, script, argv, args.length(), flags);
-    fg->setPushed(*this, fp);
     return fp;
 }
 
 StackFrame *
 InterpreterStack::pushExecuteFrame(JSContext *cx, HandleScript script, const Value &thisv,
                                    HandleObject scopeChain, ExecuteType type,
-                                   AbstractFramePtr evalInFrame, FrameGuard *fg)
+                                   AbstractFramePtr evalInFrame)
 {
     LifoAlloc::Mark mark = allocator_.mark();
 
@@ -508,7 +507,6 @@ InterpreterStack::pushExecuteFrame(JSContext *cx, HandleScript script, const Val
     fp->initExecuteFrame(cx, script, evalInFrame, thisv, *scopeChain, type);
     fp->initVarsToUndefined();
 
-    fg->setPushed(*this, fp);
     return fp;
 }
 
@@ -569,6 +567,7 @@ ScriptFrameIter::settleOnActivation()
         // origin or of an origin accessible) by these principals.
         if (data_.principals_) {
             if (JSSubsumesOp subsumes = data_.cx_->runtime()->securityCallbacks->subsumes) {
+                JS::AutoAssertNoGC nogc;
                 if (!subsumes(data_.principals_, activation->compartment()->principals)) {
                     ++data_.activations_;
                     continue;
@@ -785,6 +784,15 @@ ScriptFrameIter::copyData() const
     JS_ASSERT(data_.ionFrames_.type() != jit::IonFrame_OptimizedJS);
 #endif
     return data_.cx_->new_<Data>(data_);
+}
+
+AbstractFramePtr
+ScriptFrameIter::copyDataAsAbstractFramePtr() const
+{
+    AbstractFramePtr frame;
+    if (Data *data = copyData())
+        frame.ptr_ = uintptr_t(data);
+    return frame;
 }
 
 JSCompartment *
@@ -1358,7 +1366,7 @@ InterpreterFrameIterator &
 InterpreterFrameIterator::operator++()
 {
     JS_ASSERT(!done());
-    if (fp_ != activation_->entry_) {
+    if (fp_ != activation_->entryFrame_) {
         pc_ = fp_->prevpc();
         sp_ = fp_->prevsp();
         fp_ = fp_->prev();

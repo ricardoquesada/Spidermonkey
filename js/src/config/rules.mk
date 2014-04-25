@@ -107,21 +107,8 @@ ifndef INCLUDED_TESTS_MOCHITEST_MK #{
   include $(topsrcdir)/config/makefiles/mochitest.mk
 endif #}
 
-ifdef MOZ_ENABLE_GTEST
-ifdef GTEST_CPPSRCS
-CPPSRCS += $(GTEST_CPPSRCS)
-endif
-
-ifdef GTEST_CSRCS
-CSRCS += $(GTEST_CSRCS)
-endif
-
-ifdef GTEST_CMMSRCS
-CMMSRCS += $(GTEST_CMMSRCS)
-endif
-endif
-
 ifdef CPP_UNIT_TESTS
+ifdef COMPILE_ENVIRONMENT
 
 # Compile the tests to $(DIST)/bin.  Make lots of niceties available by default
 # through TestHarness.h, by modifying the list of includes and the libs against
@@ -130,7 +117,7 @@ CPPSRCS += $(CPP_UNIT_TESTS)
 CPP_UNIT_TEST_BINS := $(CPP_UNIT_TESTS:.cpp=$(BIN_SUFFIX))
 SIMPLE_PROGRAMS += $(CPP_UNIT_TEST_BINS)
 INCLUDES += -I$(DIST)/include/testing
-LIBS += $(XPCOM_GLUE_LDOPTS) $(NSPR_LIBS) $(MOZ_JS_LIBS) $(if $(JS_SHARED_LIBRARY),,$(MOZ_ZLIB_LIBS))
+LIBS += $(XPCOM_GLUE_LDOPTS) $(NSPR_LIBS)
 
 ifndef MOZ_PROFILE_GENERATE
 libs:: $(CPP_UNIT_TEST_BINS) $(call mkdir_deps,$(DIST)/cppunittests)
@@ -142,7 +129,7 @@ check::
 
 cppunittests-remote: DM_TRANS?=adb
 cppunittests-remote:
-	@if [ "${TEST_DEVICE}" != "" -o "$(DM_TRANS)" = "adb" ]; then \
+	@if [ '${TEST_DEVICE}' != '' -o '$(DM_TRANS)' = 'adb' ]; then \
 		$(PYTHON) -u $(topsrcdir)/testing/remotecppunittests.py \
 			--xre-path=$(DEPTH)/dist/bin \
 			--localLib=$(DEPTH)/dist/$(MOZ_APP_NAME) \
@@ -150,9 +137,10 @@ cppunittests-remote:
 			--deviceIP=${TEST_DEVICE} \
 			$(subst .cpp,$(BIN_SUFFIX),$(CPP_UNIT_TESTS)) $(EXTRA_TEST_ARGS); \
 	else \
-		echo "please prepare your host with environment variables for TEST_DEVICE"; \
+		echo 'please prepare your host with environment variables for TEST_DEVICE'; \
 	fi
 
+endif # COMPILE_ENVIRONMENT
 endif # CPP_UNIT_TESTS
 
 .PHONY: check
@@ -208,12 +196,6 @@ endif
 
 ifneq (,$(filter OS2 WINNT,$(OS_ARCH)))
 IMPORT_LIBRARY		:= $(LIB_PREFIX)$(SHARED_LIBRARY_NAME).$(IMPORT_LIB_SUFFIX)
-endif
-
-ifeq (OS2,$(OS_ARCH))
-ifdef SHORT_LIBNAME
-SHARED_LIBRARY_NAME	:= $(SHORT_LIBNAME)
-endif
 endif
 
 ifdef MAKE_FRAMEWORK
@@ -303,6 +285,7 @@ EXCLUDED_OBJS := $(SIMPLE_PROGRAMS:$(BIN_SUFFIX)=.$(OBJ_SUFFIX))
 SIMPLE_PROGRAMS :=
 endif
 
+ifdef COMPILE_ENVIRONMENT
 ifndef TARGETS
 TARGETS			= $(LIBRARY) $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(HOST_LIBRARY) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS)
 endif
@@ -327,6 +310,19 @@ HOST_CMMOBJS = $(addprefix host_,$(notdir $(HOST_CMMSRCS:.mm=.$(OBJ_SUFFIX))))
 ifndef HOST_OBJS
 _HOST_OBJS = $(HOST_COBJS) $(HOST_CPPOBJS) $(HOST_CMOBJS) $(HOST_CMMOBJS)
 HOST_OBJS = $(strip $(_HOST_OBJS))
+endif
+else
+LIBRARY :=
+SHARED_LIBRARY :=
+IMPORT_LIBRARY :=
+REAL_LIBRARY :=
+PROGRAM :=
+SIMPLE_PROGRAMS :=
+HOST_LIBRARY :=
+HOST_PROGRAM :=
+HOST_SIMPLE_PROGRAMS :=
+SDK_BINARY := $(filter %.py,$(SDK_BINARY))
+SDK_LIBRARY :=
 endif
 
 ALL_TRASH = \
@@ -368,26 +364,21 @@ ifdef MOZ_UPDATE_XTERM
 # Its good not to have a newline at the end of the titlebar string because it
 # makes the make -s output easier to read.  Echo -n does not work on all
 # platforms, but we can trick printf into doing it.
-UPDATE_TITLE = printf "\033]0;%s in %s\007" $(1) $(shell $(BUILD_TOOLS)/print-depth-path.sh)/$(2) ;
+UPDATE_TITLE = printf '\033]0;%s in %s\007' $(1) $(relativesrcdir)/$(2) ;
 endif
 
 ifdef MACH
 ifndef NO_BUILDSTATUS_MESSAGES
 define BUILDSTATUS
-@echo "BUILDSTATUS $1"
+@echo 'BUILDSTATUS $1'
 
 endef
 endif
 endif
 
-# Static directories are largely independent of our build system. But, they
-# could share the same build mechanism (like moz.build files). We need to
-# prevent leaking of our backend state to these independent build systems. This
-# is why MOZBUILD_BACKEND_CHECKED isn't exported to make invocations for static
-# directories.
 define SUBMAKE # $(call SUBMAKE,target,directory,static)
 +@$(UPDATE_TITLE)
-+$(if $(3), MOZBUILD_BACKEND_CHECKED=,) $(MAKE) $(if $(2),-C $(2)) $(1)
++$(MAKE) $(if $(2),-C $(2)) $(1)
 
 endef # The extra line is important here! don't delete it
 
@@ -452,20 +443,6 @@ EXTRA_DSO_LDOPTS += $(MOZ_COMPONENTS_VERSION_SCRIPT_LDFLAGS)
 endif # IS_COMPONENT
 
 #
-# Enforce the requirement that MODULE_NAME must be set
-# for components in static builds
-#
-ifdef IS_COMPONENT
-ifdef EXPORT_LIBRARY
-ifndef FORCE_SHARED_LIB
-ifndef MODULE_NAME
-$(error MODULE_NAME is required for components which may be used in static builds)
-endif
-endif
-endif
-endif
-
-#
 # MacOS X specific stuff
 #
 
@@ -499,7 +476,7 @@ endif
 
 ifeq ($(OS_ARCH),NetBSD)
 ifneq (,$(filter arc cobalt hpcmips mipsco newsmips pmax sgimips,$(OS_TEST)))
-ifeq ($(MODULE),layout)
+ifneq (,$(filter layout/%,$(relativesrcdir)))
 OS_CFLAGS += -Wa,-xgot
 OS_CXXFLAGS += -Wa,-xgot
 endif
@@ -573,8 +550,10 @@ endif
 
 ifeq (_WINNT,$(GNU_CC)_$(OS_ARCH))
 OUTOPTION = -Fo# eol
+PREPROCESS_OPTION = -P -Fi# eol
 else
 OUTOPTION = -o # eol
+PREPROCESS_OPTION = -E -o #eol
 endif # WINNT && !GNU_CC
 
 ifneq (,$(filter ml%,$(AS)))
@@ -590,37 +569,23 @@ HOST_OUTOPTION = -o # eol
 endif
 ################################################################################
 
-# Regenerate the build backend if it is out of date. We only check this once
-# per traversal, hence the ifdef and the export. This rule needs to come before
-# other rules for the default target or else it may not run in time.
+# Ensure the build config is up to date. This is done automatically when builds
+# are performed through |mach build|. The check here is to catch people not
+# using mach. If we ever enforce builds through mach, this code can be removed.
 ifndef MOZBUILD_BACKEND_CHECKED
+ifndef MACH
+ifndef TOPLEVEL_BUILD
+$(DEPTH)/backend.RecursiveMakeBackend:
+	$(error Build configuration changed. Build with |mach build| or run |mach build-backend| to regenerate build config)
 
-# Since Makefile is listed as a global dependency, this has the
-# unfortunate side-effect of invalidating all targets if it is executed.
-# So e.g. if you are in /dom/bindings and /foo/moz.build changes,
-# /dom/bindings will get invalidated. The upside is if the current
-# Makefile/backend.mk is updated as a result of backend regeneration, we
-# actually pick up the changes. This should reduce the amount of
-# required clobbers and is thus the lesser evil.
-Makefile: $(DEPTH)/backend.RecursiveMakeBackend.built
-	@$(TOUCH) $@
+include $(DEPTH)/backend.RecursiveMakeBackend.pp
 
-$(DEPTH)/backend.RecursiveMakeBackend.built:
-	@echo "Build configuration changed. Regenerating backend."
-	@cd $(DEPTH) && $(PYTHON) ./config.status
-	@$(TOUCH) $@
-
-include $(DEPTH)/backend.RecursiveMakeBackend.built.pp
-
-default:: $(DEPTH)/backend.RecursiveMakeBackend.built
+default:: $(DEPTH)/backend.RecursiveMakeBackend
 
 export MOZBUILD_BACKEND_CHECKED=1
 endif
-
-
-# SUBMAKEFILES: List of Makefiles for next level down.
-#   This is used to update or create the Makefiles before invoking them.
-SUBMAKEFILES += $(addsuffix /Makefile, $(DIRS) $(TOOL_DIRS) $(PARALLEL_DIRS))
+endif
+endif
 
 # The root makefile doesn't want to do a plain export/libs, because
 # of the tiers and because of libxul. Suppress the default rules in favor
@@ -630,7 +595,9 @@ ifndef SUPPRESS_DEFAULT_RULES
 default all::
 	$(MAKE) export
 ifdef MOZ_PSEUDO_DERECURSE
+ifdef COMPILE_ENVIRONMENT
 	$(MAKE) compile
+endif
 endif
 	$(MAKE) libs
 	$(MAKE) tools
@@ -649,14 +616,6 @@ everything::
 	$(MAKE) clean
 	$(MAKE) all
 
-# Target to only regenerate makefiles
-makefiles: $(SUBMAKEFILES)
-ifneq (,$(DIRS)$(TOOL_DIRS)$(PARALLEL_DIRS))
-	$(LOOP_OVER_PARALLEL_DIRS)
-	$(LOOP_OVER_DIRS)
-	$(LOOP_OVER_TOOL_DIRS)
-endif
-
 ifneq (,$(filter-out %.$(LIB_SUFFIX),$(SHARED_LIBRARY_LIBS)))
 $(error SHARED_LIBRARY_LIBS must contain .$(LIB_SUFFIX) files only)
 endif
@@ -665,16 +624,15 @@ HOST_LIBS_DEPS = $(filter %.$(LIB_SUFFIX),$(HOST_LIBS))
 
 # Dependencies which, if modified, should cause everything to rebuild
 GLOBAL_DEPS += Makefile $(DEPTH)/config/autoconf.mk $(topsrcdir)/config/config.mk
-ifndef NO_MAKEFILE_RULE
-GLOBAL_DEPS += Makefile.in
-endif
 
 ##############################################
+ifdef COMPILE_ENVIRONMENT
 OBJ_TARGETS = $(OBJS) $(PROGOBJS) $(HOST_OBJS) $(HOST_PROGOBJS)
 
 compile:: $(OBJ_TARGETS)
 
-include $(topsrcdir)/config/makefiles/target_libs.mk
+include $(topsrcdir)/config/makefiles/target_binaries.mk
+endif
 
 ifdef IS_TOOL_DIR
 # One would think "tools:: libs" would work, but it turns out that combined with
@@ -742,7 +700,7 @@ endif # NO_PROFILE_GUIDED_OPTIMIZE
 checkout:
 	$(MAKE) -C $(topsrcdir) -f client.mk checkout
 
-clean clobber realclean clobber_all:: $(SUBMAKEFILES)
+clean clobber realclean clobber_all::
 	-$(RM) $(ALL_TRASH)
 	-$(RM) -r $(ALL_TRASH_DIRS)
 
@@ -755,7 +713,7 @@ else
 clean clobber realclean clobber_all distclean::
 	$(foreach dir,$(PARALLEL_DIRS) $(DIRS) $(TOOL_DIRS),-$(call SUBMAKE,$@,$(dir)))
 
-distclean:: $(SUBMAKEFILES)
+distclean::
 	$(foreach dir,$(PARALLEL_DIRS) $(DIRS) $(TOOL_DIRS),-$(call SUBMAKE,$@,$(dir)))
 endif
 
@@ -785,22 +743,22 @@ ifeq (_WINNT,$(GNU_CC)_$(OS_ARCH))
 	$(EXPAND_LD) -NOLOGO -OUT:$@ -PDB:$(LINK_PDBFILE) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(PROGOBJS) $(RESFILE) $(LIBS) $(EXTRA_LIBS) $(OS_LIBS)
 ifdef MSMANIFEST_TOOL
 	@if test -f $@.manifest; then \
-		if test -f "$(srcdir)/$@.manifest"; then \
-			echo "Embedding manifest from $(srcdir)/$@.manifest and $@.manifest"; \
-			mt.exe -NOLOGO -MANIFEST "$(win_srcdir)/$@.manifest" $@.manifest -OUTPUTRESOURCE:$@\;1; \
+		if test -f '$(srcdir)/$@.manifest'; then \
+			echo 'Embedding manifest from $(srcdir)/$@.manifest and $@.manifest'; \
+			mt.exe -NOLOGO -MANIFEST '$(win_srcdir)/$@.manifest' $@.manifest -OUTPUTRESOURCE:$@\;1; \
 		else \
-			echo "Embedding manifest from $@.manifest"; \
+			echo 'Embedding manifest from $@.manifest'; \
 			mt.exe -NOLOGO -MANIFEST $@.manifest -OUTPUTRESOURCE:$@\;1; \
 		fi; \
-	elif test -f "$(srcdir)/$@.manifest"; then \
-		echo "Embedding manifest from $(srcdir)/$@.manifest"; \
-		mt.exe -NOLOGO -MANIFEST "$(win_srcdir)/$@.manifest" -OUTPUTRESOURCE:$@\;1; \
+	elif test -f '$(srcdir)/$@.manifest'; then \
+		echo 'Embedding manifest from $(srcdir)/$@.manifest'; \
+		mt.exe -NOLOGO -MANIFEST '$(win_srcdir)/$@.manifest' -OUTPUTRESOURCE:$@\;1; \
 	fi
 endif	# MSVC with manifest tool
 ifdef MOZ_PROFILE_GENERATE
 # touch it a few seconds into the future to work around FAT's
 # 2-second granularity
-	touch -t `date +%Y%m%d%H%M.%S -d "now+5seconds"` pgo.relink
+	touch -t `date +%Y%m%d%H%M.%S -d 'now+5seconds'` pgo.relink
 endif
 else # !WINNT || GNU_CC
 	$(EXPAND_CCC) -o $@ $(CXXFLAGS) $(PROGOBJS) $(RESFILE) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS_DIR) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS) $(EXE_DEF_FILE) $(STLPORT_LIBS)
@@ -808,7 +766,7 @@ else # !WINNT || GNU_CC
 endif # WINNT && !GNU_CC
 
 ifdef ENABLE_STRIP
-	$(STRIP) $@
+	$(STRIP) $(STRIP_FLAGS) $@
 endif
 ifdef MOZ_POST_PROGRAM_COMMAND
 	$(MOZ_POST_PROGRAM_COMMAND) $@
@@ -820,16 +778,16 @@ ifeq (_WINNT,$(GNU_CC)_$(HOST_OS_ARCH))
 	$(EXPAND_LIBS_EXEC) -- $(HOST_LD) -NOLOGO -OUT:$@ -PDB:$(HOST_PDBFILE) $(HOST_OBJS) $(WIN32_EXE_LDFLAGS) $(HOST_LDFLAGS) $(HOST_LIBS) $(HOST_EXTRA_LIBS)
 ifdef MSMANIFEST_TOOL
 	@if test -f $@.manifest; then \
-		if test -f "$(srcdir)/$@.manifest"; then \
-			echo "Embedding manifest from $(srcdir)/$@.manifest and $@.manifest"; \
-			mt.exe -NOLOGO -MANIFEST "$(win_srcdir)/$@.manifest" $@.manifest -OUTPUTRESOURCE:$@\;1; \
+		if test -f '$(srcdir)/$@.manifest'; then \
+			echo 'Embedding manifest from $(srcdir)/$@.manifest and $@.manifest'; \
+			mt.exe -NOLOGO -MANIFEST '$(win_srcdir)/$@.manifest' $@.manifest -OUTPUTRESOURCE:$@\;1; \
 		else \
-			echo "Embedding manifest from $@.manifest"; \
+			echo 'Embedding manifest from $@.manifest'; \
 			mt.exe -NOLOGO -MANIFEST $@.manifest -OUTPUTRESOURCE:$@\;1; \
 		fi; \
-	elif test -f "$(srcdir)/$@.manifest"; then \
-		echo "Embedding manifest from $(srcdir)/$@.manifest"; \
-		mt.exe -NOLOGO -MANIFEST "$(win_srcdir)/$@.manifest" -OUTPUTRESOURCE:$@\;1; \
+	elif test -f '$(srcdir)/$@.manifest'; then \
+		echo 'Embedding manifest from $(srcdir)/$@.manifest'; \
+		mt.exe -NOLOGO -MANIFEST '$(win_srcdir)/$@.manifest' -OUTPUTRESOURCE:$@\;1; \
 	fi
 endif	# MSVC with manifest tool
 else
@@ -864,7 +822,7 @@ else
 endif # WINNT && !GNU_CC
 
 ifdef ENABLE_STRIP
-	$(STRIP) $@
+	$(STRIP) $(STRIP_FLAGS) $@
 endif
 ifdef MOZ_POST_PROGRAM_COMMAND
 	$(MOZ_POST_PROGRAM_COMMAND) $@
@@ -891,7 +849,6 @@ $(filter %.$(LIB_SUFFIX),$(LIBRARY)): $(OBJS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
 	$(REPORT_BUILD)
 	$(RM) $(LIBRARY)
 	$(EXPAND_AR) $(AR_FLAGS) $(OBJS) $(SHARED_LIBRARY_LIBS)
-	$(RANLIB) $@
 
 $(filter-out %.$(LIB_SUFFIX),$(LIBRARY)): $(filter %.$(LIB_SUFFIX),$(LIBRARY)) $(OBJS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
 # When we only build a library descriptor, blow out any existing library
@@ -925,14 +882,12 @@ $(IMPORT_LIBRARY): $(SHARED_LIBRARY)
 	$(REPORT_BUILD)
 	$(RM) $@
 	$(IMPLIB) $@ $^
-	$(RANLIB) $@
 endif # OS/2
 
 $(HOST_LIBRARY): $(HOST_OBJS) Makefile
 	$(REPORT_BUILD)
 	$(RM) $@
 	$(EXPAND_LIBS_EXEC) --extract -- $(HOST_AR) $(HOST_AR_FLAGS) $(HOST_OBJS)
-	$(HOST_RANLIB) $@
 
 ifdef HAVE_DTRACE
 ifndef XP_MACOSX
@@ -977,13 +932,13 @@ ifdef EMBED_MANIFEST_AT
 endif   # EMBED_MANIFEST_AT
 endif	# MSVC with manifest tool
 ifdef MOZ_PROFILE_GENERATE
-	touch -t `date +%Y%m%d%H%M.%S -d "now+5seconds"` pgo.relink
+	touch -t `date +%Y%m%d%H%M.%S -d 'now+5seconds'` pgo.relink
 endif
 endif	# WINNT && !GCC
 	@$(RM) foodummyfilefoo $(DELETE_AFTER_LINK)
 	chmod +x $@
 ifdef ENABLE_STRIP
-	$(STRIP) $@
+	$(STRIP) $(STRIP_FLAGS) $@
 endif
 ifdef MOZ_POST_DSO_LIB_COMMAND
 	$(MOZ_POST_DSO_LIB_COMMAND) $@
@@ -994,14 +949,14 @@ _MDDEPFILE = $(MDDEPDIR)/$(@F).pp
 
 define MAKE_DEPS_AUTO_CC
 if test -d $(@D); then \
-	echo "Building deps for $< using Sun Studio cc"; \
+	echo 'Building deps for $< using Sun Studio cc'; \
 	$(CC) $(COMPILE_CFLAGS) -xM  $< >$(_MDDEPFILE) ; \
 	$(PYTHON) $(topsrcdir)/build/unix/add_phony_targets.py $(_MDDEPFILE) ; \
 fi
 endef
 define MAKE_DEPS_AUTO_CXX
 if test -d $(@D); then \
-	echo "Building deps for $< using Sun Studio CC"; \
+	echo 'Building deps for $< using Sun Studio CC'; \
 	$(CXX) $(COMPILE_CXXFLAGS) -xM $< >$(_MDDEPFILE) ; \
 	$(PYTHON) $(topsrcdir)/build/unix/add_phony_targets.py $(_MDDEPFILE) ; \
 fi
@@ -1099,19 +1054,19 @@ $(filter %.s,$(CSRCS:%.c=%.s)): %.s: %.c $(call mkdir_deps,$(MDDEPDIR))
 
 $(filter %.i,$(CPPSRCS:%.cpp=%.i)): %.i: %.cpp $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
-	$(CCC) -C -E $(COMPILE_CXXFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS) > $*.i
+	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
 $(filter %.i,$(CPPSRCS:%.cc=%.i)): %.i: %.cc $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
-	$(CCC) -C -E $(COMPILE_CXXFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS) > $*.i
+	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
 $(filter %.i,$(CSRCS:%.c=%.i)): %.i: %.c $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
-	$(CC) -C -E $(COMPILE_CFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS) > $*.i
+	$(CC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
 $(filter %.i,$(CMMSRCS:%.mm=%.i)): %.i: %.mm $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
-	$(CCC) -C -E $(COMPILE_CXXFLAGS) $(COMPILE_CMMFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS) > $*.i
+	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $(COMPILE_CMMFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
 $(RESFILE): %.res: %.rc
 	$(REPORT_BUILD)
@@ -1148,8 +1103,8 @@ ifeq ($(HOST_OS_ARCH),WINNT)
 #  could be a file or a non-existent path, we cannot call 'pwd -W' directly
 #  on the path.  Instead, we extract the root path (i.e. "c:/"), call 'pwd -W'
 #  on it, then merge with the rest of the path.
-root-path = $(shell echo $(1) | sed -e "s|\(/[^/]*\)/\?\(.*\)|\1|")
-non-root-path = $(shell echo $(1) | sed -e "s|\(/[^/]*\)/\?\(.*\)|\2|")
+root-path = $(shell echo $(1) | sed -e 's|\(/[^/]*\)/\?\(.*\)|\1|')
+non-root-path = $(shell echo $(1) | sed -e 's|\(/[^/]*\)/\?\(.*\)|\2|')
 normalizepath = $(foreach p,$(1),$(if $(filter /%,$(1)),$(patsubst %/,%,$(shell cd $(call root-path,$(1)) && pwd -W))/$(call non-root-path,$(1)),$(1)))
 else
 normalizepath = $(1)
@@ -1161,34 +1116,6 @@ endif
 ifneq (,$(JAVAFILES)$(ANDROID_RESFILES)$(ANDROID_APKNAME)$(JAVA_JAR_TARGETS))
   include $(topsrcdir)/config/makefiles/java-build.mk
 endif
-
-###############################################################################
-# Update Files Managed by Build Backend
-###############################################################################
-
-ifndef NO_MAKEFILE_RULE
-Makefile: Makefile.in
-	@$(PYTHON) $(DEPTH)/config.status -n --file=Makefile
-	@$(TOUCH) $@
-endif
-
-ifndef NO_SUBMAKEFILES_RULE
-ifdef SUBMAKEFILES
-# VPATH does not work on some machines in this case, so add $(srcdir)
-$(SUBMAKEFILES): % : $(srcdir)/%.in
-	$(PYTHON) $(DEPTH)$(addprefix /,$(subsrcdir))/config.status -n --file="$@"
-	@$(TOUCH) "$@"
-endif
-endif
-
-ifdef AUTOUPDATE_CONFIGURE
-$(topsrcdir)/configure: $(topsrcdir)/configure.in
-	(cd $(topsrcdir) && $(AUTOCONF)) && $(PYTHON) $(DEPTH)/config.status -n --recheck
-endif
-
-$(DEPTH)/config/autoconf.mk: $(topsrcdir)/config/autoconf.mk.in
-	$(PYTHON) $(DEPTH)/config.status -n --file=$(DEPTH)/config/autoconf.mk
-	$(TOUCH) $@
 
 ###############################################################################
 # Bunch of things that extend the 'export' rule (in order):
@@ -1251,8 +1178,8 @@ INSTALL_TARGETS += _XPT_NAME
 
 ifndef NO_INTERFACES_MANIFEST
 libs:: $(call mkdir_deps,$(FINAL_TARGET)/components)
-	$(call py_action,buildlist,$(FINAL_TARGET)/components/interfaces.manifest "interfaces $(XPT_NAME)")
-	$(call py_action,buildlist,$(FINAL_TARGET)/chrome.manifest "manifest components/interfaces.manifest")
+	$(call py_action,buildlist,$(FINAL_TARGET)/components/interfaces.manifest 'interfaces $(XPT_NAME)')
+	$(call py_action,buildlist,$(FINAL_TARGET)/chrome.manifest 'manifest components/interfaces.manifest')
 endif
 endif
 
@@ -1288,7 +1215,7 @@ endif
 EXTRA_MANIFESTS = $(filter %.manifest,$(EXTRA_COMPONENTS) $(EXTRA_PP_COMPONENTS))
 ifneq (,$(EXTRA_MANIFESTS))
 libs:: $(call mkdir_deps,$(FINAL_TARGET))
-	$(call py_action,buildlist,$(FINAL_TARGET)/chrome.manifest $(patsubst %,"manifest components/%",$(notdir $(EXTRA_MANIFESTS))))
+	$(call py_action,buildlist,$(FINAL_TARGET)/chrome.manifest $(patsubst %,'manifest components/%',$(notdir $(EXTRA_MANIFESTS))))
 endif
 
 ################################################################################
@@ -1375,7 +1302,7 @@ ifdef XPI_ROOT_APPID
 # For add-on packaging we may specify that an application
 # sub-dir should be added to the root chrome manifest with
 # a specific application id.
-MAKE_JARS_FLAGS += --root-manifest-entry-appid="$(XPI_ROOT_APPID)"
+MAKE_JARS_FLAGS += --root-manifest-entry-appid='$(XPI_ROOT_APPID)'
 endif
 
 # if DIST_SUBDIR is defined but XPI_ROOT_APPID is not there's
@@ -1387,7 +1314,7 @@ endif
 endif
 endif
 
-libs realchrome:: $(CHROME_DEPS) $(FINAL_TARGET)/chrome
+libs realchrome:: $(FINAL_TARGET)/chrome
 	$(call py_action,jar_maker,\
 	  $(QUIET) -j $(FINAL_TARGET)/chrome \
 	  $(MAKE_JARS_FLAGS) $(XULPPFLAGS) $(DEFINES) $(ACDEFINES) \
@@ -1412,34 +1339,34 @@ ifneq ($(XPI_PKGNAME),)
 tools realchrome::
 ifdef STRIP_XPI
 ifndef MOZ_DEBUG
-	@echo "Stripping $(XPI_PKGNAME) package directory..."
+	@echo 'Stripping $(XPI_PKGNAME) package directory...'
 	@echo $(FINAL_TARGET)
 	@cd $(FINAL_TARGET) && find . ! -type d \
-			! -name "*.js" \
-			! -name "*.xpt" \
-			! -name "*.gif" \
-			! -name "*.jpg" \
-			! -name "*.png" \
-			! -name "*.xpm" \
-			! -name "*.txt" \
-			! -name "*.rdf" \
-			! -name "*.sh" \
-			! -name "*.properties" \
-			! -name "*.dtd" \
-			! -name "*.html" \
-			! -name "*.xul" \
-			! -name "*.css" \
-			! -name "*.xml" \
-			! -name "*.jar" \
-			! -name "*.dat" \
-			! -name "*.tbl" \
-			! -name "*.src" \
-			! -name "*.reg" \
+			! -name '*.js' \
+			! -name '*.xpt' \
+			! -name '*.gif' \
+			! -name '*.jpg' \
+			! -name '*.png' \
+			! -name '*.xpm' \
+			! -name '*.txt' \
+			! -name '*.rdf' \
+			! -name '*.sh' \
+			! -name '*.properties' \
+			! -name '*.dtd' \
+			! -name '*.html' \
+			! -name '*.xul' \
+			! -name '*.css' \
+			! -name '*.xml' \
+			! -name '*.jar' \
+			! -name '*.dat' \
+			! -name '*.tbl' \
+			! -name '*.src' \
+			! -name '*.reg' \
 			$(PLATFORM_EXCLUDE_LIST) \
 			-exec $(STRIP) $(STRIP_FLAGS) {} >/dev/null 2>&1 \;
 endif
 endif
-	@echo "Packaging $(XPI_PKGNAME).xpi..."
+	@echo 'Packaging $(XPI_PKGNAME).xpi...'
 	cd $(FINAL_TARGET) && $(ZIP) -qr ../$(XPI_PKGNAME).xpi *
 endif
 
@@ -1449,8 +1376,8 @@ $(error XPI_NAME must be set for INSTALL_EXTENSION_ID)
 endif
 
 tools::
-	$(RM) -r "$(DIST)/bin$(DIST_SUBDIR:%=/%)/extensions/$(INSTALL_EXTENSION_ID)"
-	$(NSINSTALL) -D "$(DIST)/bin$(DIST_SUBDIR:%=/%)/extensions/$(INSTALL_EXTENSION_ID)"
+	$(RM) -r '$(DIST)/bin$(DIST_SUBDIR:%=/%)/extensions/$(INSTALL_EXTENSION_ID)'
+	$(NSINSTALL) -D '$(DIST)/bin$(DIST_SUBDIR:%=/%)/extensions/$(INSTALL_EXTENSION_ID)'
 	$(call copy_dir,$(FINAL_TARGET),$(DIST)/bin$(DIST_SUBDIR:%=/%)/extensions/$(INSTALL_EXTENSION_ID))
 
 endif
@@ -1517,6 +1444,11 @@ endif
 #
 # Additionally, a FOO_TARGET variable may be added to indicate the target for
 # which the files and executables are installed. Default is "libs".
+#
+# Finally, a FOO_KEEP_PATH variable may be set to 1 to indicate the paths given
+# in FOO_FILES/FOO_EXECUTABLES are to be kept at the destination. That is,
+# if FOO_FILES is bar/baz/qux.h, and FOO_DEST is $(DIST)/include, the installed
+# file would be $(DIST)/include/bar/baz/qux.h instead of $(DIST)/include/qux.h
 
 # If we're using binary nsinstall and it's not built yet, fallback to python nsinstall.
 ifneq (,$(filter $(CONFIG_TOOLS)/nsinstall$(HOST_BIN_SUFFIX),$(install_cmd)))
@@ -1529,21 +1461,49 @@ endef
 endif
 endif
 
-define install_file_template
-$(or $(3),libs):: $(2)/$(notdir $(1))
-$(call install_cmd_override,$(2)/$(notdir $(1)))
-$(2)/$(notdir $(1)): $(1)
-	$$(call install_cmd,$(4) "$$<" "$${@D}")
+install_target_tier = $(or $($(1)_TARGET),libs)
+INSTALL_TARGETS_TIERS := $(sort $(foreach category,$(INSTALL_TARGETS),$(call install_target_tier,$(category))))
+
+install_target_result = $($(1)_DEST:%/=%)/$(if $($(1)_KEEP_PATH),$(2),$(notdir $(2)))
+install_target_files = $(foreach file,$($(1)_FILES),$(call install_target_result,$(category),$(file)))
+install_target_executables = $(foreach file,$($(1)_EXECUTABLES),$(call install_target_result,$(category),$(file)))
+
+# Work around a GNU make 3.81 bug where it gives $< the wrong value.
+# See details in bug 934864.
+define create_dependency
+$(1): $(2)
+$(1): $(2)
 endef
+
+define install_target_template
+$(call install_cmd_override,$(2))
+$(call create_dependency,$(2),$(1))
+endef
+
 $(foreach category,$(INSTALL_TARGETS),\
-  $(if $($(category)_DEST),,$(error Missing $(category)_DEST))\
-  $(foreach file,$($(category)_FILES),\
-    $(eval $(call install_file_template,$(file),$($(category)_DEST),$($(category)_TARGET),$(IFLAGS1)))\
-  )\
-  $(foreach file,$($(category)_EXECUTABLES),\
-    $(eval $(call install_file_template,$(file),$($(category)_DEST),$($(category)_TARGET),$(IFLAGS2)))\
-  )\
+  $(if $($(category)_DEST),,$(error Missing $(category)_DEST)) \
+  $(foreach tier,$(call install_target_tier,$(category)),\
+    $(eval INSTALL_TARGETS_FILES_$(tier) += $(call install_target_files,$(category))) \
+    $(eval INSTALL_TARGETS_EXECUTABLES_$(tier) += $(call install_target_executables,$(category))) \
+  ) \
+  $(foreach file,$($(category)_FILES) $($(category)_EXECUTABLES), \
+    $(eval $(call install_target_template,$(file),$(call install_target_result,$(category),$(file)))) \
+  ) \
 )
+
+$(foreach tier,$(INSTALL_TARGETS_TIERS), \
+  $(eval $(tier):: $(INSTALL_TARGETS_FILES_$(tier)) $(INSTALL_TARGETS_EXECUTABLES_$(tier))) \
+)
+
+install_targets_sanity = $(if $(filter-out $(notdir $@),$(notdir $(<))),$(error Looks like $@ has an unexpected dependency on $< which breaks INSTALL_TARGETS))
+
+$(sort $(foreach tier,$(INSTALL_TARGETS_TIERS),$(INSTALL_TARGETS_FILES_$(tier)))):
+	$(install_targets_sanity)
+	$(call install_cmd,$(IFLAGS1) '$<' '$(@D)')
+
+$(sort $(foreach tier,$(INSTALL_TARGETS_TIERS),$(INSTALL_TARGETS_EXECUTABLES_$(tier)))):
+	$(install_targets_sanity)
+	$(call install_cmd,$(IFLAGS2) '$<' '$(@D)')
 
 ################################################################################
 # Preprocessing rules
@@ -1560,40 +1520,79 @@ $(foreach category,$(INSTALL_TARGETS),\
 # If PP_TARGETS lists a category name <C> (like FOO, above), then we consult the
 # following make variables to see what to do:
 #
-# - <C> lists input files to be preprocessed with config/Preprocessor.py. We
-#   search VPATH for the names given here. If an input file name ends in '.in',
-#   that suffix is omitted from the output file name.
+# - <C> lists input files to be preprocessed with mozbuild.action.preprocessor.
+#   We search VPATH for the names given here. If an input file name ends in
+#   '.in', that suffix is omitted from the output file name.
 #
 # - <C>_PATH names the directory in which to place the preprocessed output
 #   files. We create this directory if it does not already exist. Setting
 #   this variable is optional; if unset, we install the files in $(CURDIR).
 #
-# - <C>_FLAGS lists flags to pass to Preprocessor.py, in addition to the usual
-#   bunch. Setting this variable is optional.
+# - <C>_FLAGS lists flags to pass to mozbuild.action.preprocessor, in addition
+#   to the usual bunch. Setting this variable is optional.
 #
 # - <C>_TARGET names the 'make' target that should depend on creating the output
 #   files. Setting this variable is optional; if unset, we preprocess the
 #   files for the 'libs' target.
+#
+# - <C>_KEEP_PATH may be set to 1 to indicate the paths given in <C> are to be
+#   kept under <C>_PATH. That is, if <C> is bar/baz/qux.h.in and <C>_PATH is
+#   $(DIST)/include, the preprocessed file would be $(DIST)/include/bar/baz/qux.h
+#   instead of $(DIST)/include/qux.h.
 
-# preprocess_file_template defines preprocessing rules.
-# $(call preprocess_file_template, source_file, output_file,
-#                                  makefile_target, extra_flags)
-define preprocess_file_template
-$(2): $(1) $$(GLOBAL_DEPS)
-	$$(RM) "$$@"
-	$$(PYTHON) $$(topsrcdir)/config/Preprocessor.py $(4) $$(DEFINES) $$(ACDEFINES) $$(XULPPFLAGS) "$$<" -o "$$@"
-$(3):: $(2)
-endef
+pp_target_tier = $(or $($(1)_TARGET),libs)
+PP_TARGETS_TIERS := $(sort $(foreach category,$(PP_TARGETS),$(call pp_target_tier,$(category))))
 
-$(foreach category,$(PP_TARGETS),						\
-  $(foreach file,$($(category)),						\
-    $(eval $(call preprocess_file_template,					\
-                  $(file),							\
-                  $(or $($(category)_PATH),$(CURDIR))/$(notdir $(file:.in=)),	\
-                  $(or $($(category)_TARGET),libs),				\
-                  $($(category)_FLAGS)))					\
-   )										\
- )
+pp_target_result = $(or $($(1)_PATH:%/=%),$(CURDIR))/$(if $($(1)_KEEP_PATH),$(2:.in=),$(notdir $(2:.in=)))
+pp_target_results = $(foreach file,$($(1)),$(call pp_target_result,$(category),$(file)))
+
+$(foreach category,$(PP_TARGETS), \
+  $(foreach tier,$(call pp_target_tier,$(category)), \
+    $(eval PP_TARGETS_RESULTS_$(tier) += $(call pp_target_results,$(category))) \
+  ) \
+  $(foreach file,$($(category)), \
+    $(eval $(call create_dependency,$(call pp_target_result,$(category),$(file)), \
+                                    $(file) $(GLOBAL_DEPS))) \
+  ) \
+  $(eval $(call pp_target_results,$(category)): PP_TARGET_FLAGS=$($(category)_FLAGS)) \
+)
+
+$(foreach tier,$(PP_TARGETS_TIERS), \
+  $(eval $(tier):: $(PP_TARGETS_RESULTS_$(tier))) \
+)
+
+PP_TARGETS_ALL_RESULTS := $(sort $(foreach tier,$(PP_TARGETS_TIERS),$(PP_TARGETS_RESULTS_$(tier))))
+$(PP_TARGETS_ALL_RESULTS):
+	$(if $(filter-out $(notdir $@),$(notdir $(<:.in=))),$(error Looks like $@ has an unexpected dependency on $< which breaks PP_TARGETS))
+	$(RM) '$@'
+	$(call py_action,preprocessor,--depend $(MDDEPDIR)/$(@F).pp $(PP_TARGET_FLAGS) $(DEFINES) $(ACDEFINES) $(XULPPFLAGS) '$<' -o '$@')
+
+# The depfile is based on the filename, and we don't want conflicts. So check
+# there's only one occurrence of any given filename in PP_TARGETS_ALL_RESULTS.
+PP_TARGETS_ALL_RESULT_NAMES := $(notdir $(PP_TARGETS_ALL_RESULTS))
+$(foreach file,$(sort $(PP_TARGETS_ALL_RESULT_NAMES)), \
+  $(if $(filter-out 1,$(words $(filter $(file),$(PP_TARGETS_ALL_RESULT_NAMES)))), \
+    $(error Multiple preprocessing rules are creating a $(file) file) \
+  ) \
+)
+
+ifneq (,$(filter $(PP_TARGETS_TIERS) $(PP_TARGETS_ALL_RESULTS),$(MAKECMDGOALS)))
+# If the depfile for a preprocessed file doesn't exist, add a dep to force
+# re-preprocessing.
+$(foreach file,$(PP_TARGETS_ALL_RESULTS), \
+  $(if $(wildcard $(MDDEPDIR)/$(notdir $(file)).pp), \
+    , \
+    $(eval $(file): FORCE) \
+  ) \
+)
+
+MDDEPEND_FILES := $(strip $(wildcard $(addprefix $(MDDEPDIR)/,$(addsuffix .pp,$(notdir $(PP_TARGETS_ALL_RESULTS))))))
+
+ifneq (,$(MDDEPEND_FILES))
+$(call include_deps,$(MDDEPEND_FILES))
+endif
+
+endif
 
 # Pull in non-recursive targets if this is a partial tree build.
 ifndef TOPLEVEL_BUILD
@@ -1625,7 +1624,7 @@ FORCE:
 
 tags: TAGS
 
-TAGS: $(SUBMAKEFILES) $(CSRCS) $(CPPSRCS) $(wildcard *.h)
+TAGS: $(CSRCS) $(CPPSRCS) $(wildcard *.h)
 	-etags $(CSRCS) $(CPPSRCS) $(wildcard *.h)
 	$(LOOP_OVER_PARALLEL_DIRS)
 	$(LOOP_OVER_DIRS)
@@ -1642,7 +1641,7 @@ documentation:
 	$(DOXYGEN) $(DEPTH)/config/doxygen.cfg
 
 ifdef ENABLE_TESTS
-check:: $(SUBMAKEFILES)
+check::
 	$(LOOP_OVER_PARALLEL_DIRS)
 	$(LOOP_OVER_DIRS)
 	$(LOOP_OVER_TOOL_DIRS)
@@ -1656,7 +1655,6 @@ FREEZE_VARIABLES = \
   DIRS \
   LIBRARY \
   MODULE \
-  SHORT_LIBNAME \
   TIERS \
   EXTRA_COMPONENTS \
   EXTRA_PP_COMPONENTS \
@@ -1697,3 +1695,7 @@ include $(topsrcdir)/config/makefiles/autotargets.mk
 ifneq ($(NULL),$(AUTO_DEPS))
   default all libs tools export:: $(AUTO_DEPS)
 endif
+
+export:: $(GENERATED_FILES)
+
+GARBAGE += $(GENERATED_FILES)

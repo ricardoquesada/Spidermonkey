@@ -14,6 +14,8 @@
 #include "jsproxy.h"
 
 #include "gc/Marking.h"
+#include "gc/Zone.h"
+#include "vm/Shape.h"
 #if ENABLE_YARR_JIT
 #include "yarr/YarrJIT.h"
 #else
@@ -189,7 +191,7 @@ class RegExpShared
 
     /* Called when a RegExpShared is installed into a RegExpObject. */
     void prepareForUse(ExclusiveContext *cx) {
-        gcNumberWhenUsed = cx->gcNumber();
+        gcNumberWhenUsed = cx->zone()->gcNumber();
     }
 
     /* Primary interface: run this regular expression on the given string. */
@@ -411,10 +413,10 @@ class RegExpObject : public JSObject
         setSlot(STICKY_FLAG_SLOT, BooleanValue(enabled));
     }
 
-    bool ignoreCase() const { return getSlot(IGNORE_CASE_FLAG_SLOT).toBoolean(); }
-    bool global() const     { return getSlot(GLOBAL_FLAG_SLOT).toBoolean(); }
-    bool multiline() const  { return getSlot(MULTILINE_FLAG_SLOT).toBoolean(); }
-    bool sticky() const     { return getSlot(STICKY_FLAG_SLOT).toBoolean(); }
+    bool ignoreCase() const { return getFixedSlot(IGNORE_CASE_FLAG_SLOT).toBoolean(); }
+    bool global() const     { return getFixedSlot(GLOBAL_FLAG_SLOT).toBoolean(); }
+    bool multiline() const  { return getFixedSlot(MULTILINE_FLAG_SLOT).toBoolean(); }
+    bool sticky() const     { return getFixedSlot(STICKY_FLAG_SLOT).toBoolean(); }
 
     void shared(RegExpGuard *g) const {
         JS_ASSERT(maybeShared() != nullptr);
@@ -437,12 +439,18 @@ class RegExpObject : public JSObject
   private:
     friend class RegExpObjectBuilder;
 
+    /* For access to assignInitialShape. */
+    friend bool
+    EmptyShape::ensureInitialCustomShape<RegExpObject>(ExclusiveContext *cx,
+                                                       Handle<RegExpObject*> obj);
+
     /*
      * Compute the initial shape to associate with fresh RegExp objects,
      * encoding their initial properties. Return the shape after
-     * changing this regular expression object's last property to it.
+     * changing |obj|'s last property to it.
      */
-    Shape *assignInitialShape(ExclusiveContext *cx);
+    static Shape *
+    assignInitialShape(ExclusiveContext *cx, Handle<RegExpObject*> obj);
 
     bool init(ExclusiveContext *cx, HandleAtom source, RegExpFlag flags);
 

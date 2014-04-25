@@ -25,6 +25,8 @@
 
 #include "jsobjinlines.h"
 
+#include "vm/ScopeObject-inl.h"
+
 using namespace js;
 using namespace JS;
 
@@ -69,6 +71,12 @@ JS_GetAnonymousString(JSRuntime *rt)
 {
     JS_ASSERT(rt->hasContexts());
     return rt->atomState.anonymous;
+}
+
+JS_FRIEND_API(void)
+JS_SetIsWorkerRuntime(JSRuntime *rt)
+{
+    rt->setIsWorkerRuntime();
 }
 
 JS_FRIEND_API(JSObject *)
@@ -153,7 +161,7 @@ JS::PrepareZoneForGC(Zone *zone)
 JS_FRIEND_API(void)
 JS::PrepareForFullGC(JSRuntime *rt)
 {
-    for (ZonesIter zone(rt); !zone.done(); zone.next())
+    for (ZonesIter zone(rt, WithAtoms); !zone.done(); zone.next())
         zone->scheduleGC();
 }
 
@@ -163,7 +171,7 @@ JS::PrepareForIncrementalGC(JSRuntime *rt)
     if (!JS::IsIncrementalGCInProgress(rt))
         return;
 
-    for (ZonesIter zone(rt); !zone.done(); zone.next()) {
+    for (ZonesIter zone(rt, WithAtoms); !zone.done(); zone.next()) {
         if (zone->wasGCStarted())
             PrepareZoneForGC(zone);
     }
@@ -172,7 +180,7 @@ JS::PrepareForIncrementalGC(JSRuntime *rt)
 JS_FRIEND_API(bool)
 JS::IsGCScheduled(JSRuntime *rt)
 {
-    for (ZonesIter zone(rt); !zone.done(); zone.next()) {
+    for (ZonesIter zone(rt, WithAtoms); !zone.done(); zone.next()) {
         if (zone->isGCScheduled())
             return true;
     }
@@ -453,8 +461,8 @@ js::GetOutermostEnclosingFunctionOfScriptedCaller(JSContext *cx)
 
     RootedFunction scriptedCaller(cx, iter.callee());
     RootedScript outermost(cx, scriptedCaller->nonLazyScript());
-    for (StaticScopeIter i(cx, scriptedCaller); !i.done(); i++) {
-        if (i.type() == StaticScopeIter::FUNCTION)
+    for (StaticScopeIter<NoGC> i(scriptedCaller); !i.done(); i++) {
+        if (i.type() == StaticScopeIter<NoGC>::FUNCTION)
             outermost = i.funScript();
     }
     return outermost;
@@ -539,6 +547,7 @@ JS_FRIEND_API(void)
 js::SetFunctionNativeReserved(JSObject *fun, size_t which, const Value &val)
 {
     JS_ASSERT(fun->as<JSFunction>().isNative());
+    MOZ_ASSERT_IF(val.isObject(), val.toObject().compartment() == fun->compartment());
     fun->as<JSFunction>().setExtendedSlot(which, val);
 }
 
@@ -550,6 +559,14 @@ js::GetObjectProto(JSContext *cx, JS::Handle<JSObject*> obj, JS::MutableHandle<J
 
     proto.set(reinterpret_cast<const shadow::Object*>(obj.get())->type->proto);
     return true;
+}
+
+JS_FRIEND_API(bool)
+js::GetOriginalEval(JSContext *cx, HandleObject scope, MutableHandleObject eval)
+{
+    assertSameCompartment(cx, scope);
+    Rooted<GlobalObject *> global(cx, &scope->global());
+    return GlobalObject::getOrCreateEval(cx, global, eval);
 }
 
 JS_FRIEND_API(void)
@@ -644,7 +661,7 @@ js::VisitGrayWrapperTargets(Zone *zone, GCThingCallback callback, void *closure)
     JSRuntime *rt = zone->runtimeFromMainThread();
     for (CompartmentsInZoneIter comp(zone); !comp.done(); comp.next()) {
         for (JSCompartment::WrapperEnum e(comp); !e.empty(); e.popFront()) {
-            gc::Cell *thing = e.front().key.wrapped;
+            gc::Cell *thing = e.front().key().wrapped;
             if (!IsInsideNursery(rt, thing) && thing->isMarked(gc::GRAY))
                 callback(closure, thing);
         }
@@ -899,7 +916,7 @@ JS::NotifyDidPaint(JSRuntime *rt)
 JS_FRIEND_API(bool)
 JS::IsIncrementalGCEnabled(JSRuntime *rt)
 {
-    return rt->gcIncrementalEnabled && rt->gcMode == JSGC_MODE_INCREMENTAL;
+    return rt->gcIncrementalEnabled && rt->gcMode() == JSGC_MODE_INCREMENTAL;
 }
 
 JS_FRIEND_API(bool)

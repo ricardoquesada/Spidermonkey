@@ -108,7 +108,7 @@ extern bool
 AtomIsInterned(JSContext *cx, JSAtom *atom);
 
 /* Well-known predefined C strings. */
-#define DECLARE_PROTO_STR(name,code,init) extern const char js_##name##_str[];
+#define DECLARE_PROTO_STR(name,code,init,clasp) extern const char js_##name##_str[];
 JS_FOR_EACH_PROTOTYPE(DECLARE_PROTO_STR)
 #undef DECLARE_PROTO_STR
 
@@ -199,21 +199,14 @@ enum InternBehavior
     InternAtom = true
 };
 
-template <AllowGC allowGC>
-extern JSAtom *
-AtomizeMaybeGC(ExclusiveContext *cx, const char *bytes, size_t length,
-               js::InternBehavior ib = js::DoNotInternAtom);
-
 extern JSAtom *
 Atomize(ExclusiveContext *cx, const char *bytes, size_t length,
         js::InternBehavior ib = js::DoNotInternAtom);
 
-template <AllowGC allowGC>
 extern JSAtom *
 AtomizeChars(ExclusiveContext *cx, const jschar *chars, size_t length,
              js::InternBehavior ib = js::DoNotInternAtom);
 
-template <AllowGC allowGC>
 extern JSAtom *
 AtomizeString(ExclusiveContext *cx, JSString *str, js::InternBehavior ib = js::DoNotInternAtom);
 

@@ -1,3 +1,4 @@
+/* -*- js-indent-level: 4 -*- */
 /*
  * e10s event dispatcher from content->chrome
  *
@@ -84,6 +85,9 @@ TestRunner._expectedMaxAsserts = 0;
 TestRunner.timeout = 5 * 60 * 1000; // 5 minutes.
 TestRunner.maxTimeouts = 4; // halt testing after too many timeouts
 TestRunner.runSlower = false;
+TestRunner.dumpOutputDirectory = "";
+TestRunner.dumpAboutMemoryAfterTest = false;
+TestRunner.dumpDMDAfterTest = false;
 TestRunner.slowestTestTime = 0;
 TestRunner.slowestTestURL = "";
 
@@ -212,6 +216,16 @@ TestRunner.error = function(msg) {
         TestRunner.logger.error(msg);
     } else {
         dump(msg + "\n");
+    }
+
+    if (TestRunner.runUntilFailure) {
+      TestRunner._haltTests = true;
+    }
+
+    if (TestRunner.debugOnFailure) {
+      // You've hit this line because you requested to break into the
+      // debugger upon a testcase failure on your test run.
+      debugger;
     }
 };
 
@@ -360,10 +374,7 @@ TestRunner.runNextTest = function() {
              TestRunner.onComplete();
          }
 
-        var failCount = parseInt($("fail-count").innerHTML);
-        var stopLooping = failCount > 0 && TestRunner.runUntilFailure;
-
-        if (TestRunner._currentLoop <= TestRunner.repeat && !stopLooping) {
+        if (TestRunner._currentLoop <= TestRunner.repeat && !TestRunner._haltTests) {
           TestRunner._currentLoop++;
           TestRunner.resetTests(TestRunner._urls);
           TestRunner._loopIsRestarting = true;
@@ -386,22 +397,6 @@ TestRunner.expectChildProcessCrash = function() {
 };
 
 /**
- * Statistics that we want to retrieve and display after every test is
- * done.  The keys of this table are intended to be identical to the
- * relevant attributes of nsIMemoryReporterManager.  However, since
- * nsIMemoryReporterManager doesn't necessarily support all these
- * statistics in all build configurations, we also use this table to
- * tell us whether statistics are supported or not.
- */
-var MEM_STAT_UNKNOWN = 0;
-var MEM_STAT_UNSUPPORTED = 1;
-var MEM_STAT_SUPPORTED = 2;
-TestRunner._hasMemoryStatistics = {}
-TestRunner._hasMemoryStatistics.vsize = MEM_STAT_UNKNOWN;
-TestRunner._hasMemoryStatistics.vsizeMaxContiguous = MEM_STAT_UNKNOWN;
-TestRunner._hasMemoryStatistics.heapAllocated = MEM_STAT_UNKNOWN;
-
-/**
  * This stub is called by SimpleTest when a test is finished.
 **/
 TestRunner.testFinished = function(tests) {
@@ -418,33 +413,11 @@ TestRunner.testFinished = function(tests) {
     TestRunner._lastTestFinished = TestRunner._currentTest;
     TestRunner._loopIsRestarting = false;
 
-    var mrm;
-    try {
-	mrm = Cc["@mozilla.org/memory-reporter-manager;1"]
-	    .getService(Ci.nsIMemoryReporterManager);
-    } catch (e) {
-	mrm = SpecialPowers.Cc["@mozilla.org/memory-reporter-manager;1"]
-	                   .getService(SpecialPowers.Ci.nsIMemoryReporterManager);
-    }
-    for (stat in TestRunner._hasMemoryStatistics) {
-        var supported = TestRunner._hasMemoryStatistics[stat];
-        var firstAccess = false;
-        if (supported == MEM_STAT_UNKNOWN) {
-            firstAccess = true;
-            try {
-                var value = mrm[stat];
-                supported = MEM_STAT_SUPPORTED;
-            } catch (e) {
-                supported = MEM_STAT_UNSUPPORTED;
-            }
-            TestRunner._hasMemoryStatistics[stat] = supported;
-        }
-        if (supported == MEM_STAT_SUPPORTED) {
-            TestRunner.log("TEST-INFO | MEMORY STAT " + stat + " after test: " + mrm[stat]);
-        } else if (firstAccess) {
-            TestRunner.log("TEST-INFO | MEMORY STAT " + stat + " not supported in this build configuration.");
-        }
-    }
+    MemoryStats.dump(TestRunner.log, TestRunner._currentTest,
+                     TestRunner.currentTestURL,
+                     TestRunner.dumpOutputDirectory,
+                     TestRunner.dumpAboutMemoryAfterTest,
+                     TestRunner.dumpDMDAfterTest);
 
     function cleanUpCrashDumpFiles() {
         if (!SpecialPowers.removeExpectedCrashDumpFiles(TestRunner._expectingProcessCrash)) {

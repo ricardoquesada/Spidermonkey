@@ -67,14 +67,14 @@ class BaselineInspector
   private:
 #ifdef DEBUG
     bool isValidPC(jsbytecode *pc) {
-        return (pc >= script->code) && (pc < script->code + script->length);
+        return script->containsPC(pc);
     }
 #endif
 
     ICEntry &icEntryFromPC(jsbytecode *pc) {
         JS_ASSERT(hasBaselineScript());
         JS_ASSERT(isValidPC(pc));
-        ICEntry &ent = baselineScript()->icEntryFromPCOffset(pc - script->code, prevLookedUpEntry);
+        ICEntry &ent = baselineScript()->icEntryFromPCOffset(script->pcToOffset(pc), prevLookedUpEntry);
         JS_ASSERT(ent.isForOp());
         prevLookedUpEntry = &ent;
         return ent;
@@ -116,6 +116,9 @@ class BaselineInspector
 
     DeclEnvObject *templateDeclEnvObject();
     CallObject *templateCallObject();
+
+    JSObject *commonGetPropFunction(jsbytecode *pc, Shape **lastProperty, JSFunction **commonGetter);
+    JSObject *commonSetPropFunction(jsbytecode *pc, Shape **lastProperty, JSFunction **commonSetter);
 };
 
 } // namespace jit

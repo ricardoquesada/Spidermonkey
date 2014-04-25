@@ -85,6 +85,8 @@ using JS::CallReceiver;
 using JS::CompileOptions;
 using JS::IsAcceptableThis;
 using JS::NativeImpl;
+using JS::OwningCompileOptions;
+using JS::ReadOnlyCompileOptions;
 
 using JS::Rooted;
 using JS::RootedFunction;
@@ -93,6 +95,14 @@ using JS::RootedObject;
 using JS::RootedScript;
 using JS::RootedString;
 using JS::RootedValue;
+
+using JS::PersistentRooted;
+using JS::PersistentRootedFunction;
+using JS::PersistentRootedId;
+using JS::PersistentRootedObject;
+using JS::PersistentRootedScript;
+using JS::PersistentRootedString;
+using JS::PersistentRootedValue;
 
 using JS::Handle;
 using JS::HandleFunction;

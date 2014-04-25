@@ -15,6 +15,7 @@
 #include "jscompartment.h"
 
 #include "jit/CompileInfo.h"
+#include "jit/CompileWrappers.h"
 
 namespace js {
 namespace jit {
@@ -82,12 +83,18 @@ struct IonOptions
     // Default: false
     bool checkRangeAnalysis;
 
+    // Whether to protect the GC heap during Ion compilation and ensure that
+    // only threadsafe operations are performed on it.
+    //
+    // Default: false
+    bool checkThreadSafety;
+
     // Whether to perform expensive graph-consistency DEBUG-only assertions.
     // It can be useful to disable this to reduce DEBUG-compile time of large
     // asm.js programs.
     //
     // Default: true
-    bool assertGraphConsistency;
+    bool checkGraphConsistency;
 
     // Toggles whether Unreachable Code Elimination is performed.
     //
@@ -187,12 +194,6 @@ struct IonOptions
     // Default: 1000
     uint32_t inlineMaxTotalBytecodeLength;
 
-    // Minimal ratio between the use counts of the caller and the callee to
-    // enable inlining of functions.
-    //
-    // Default: 128
-    uint32_t inlineUseCountRatio;
-
     // Whether functions are compiled immediately.
     //
     // Default: false
@@ -203,13 +204,19 @@ struct IonOptions
     // Default: 1
     uint32_t usesBeforeCompilePar;
 
+    // The maximum bytecode length the caller may have,
+    // before we stop inlining large functions in that caller.
+    //
+    // Default: 10000
+    uint32_t inliningMaxCallerBytecodeLength;
+
     void setEagerCompilation() {
         eagerCompilation = true;
         usesBeforeCompile = 0;
         baselineUsesBeforeCompile = 0;
     }
 
-    IonOptions()
+    MOZ_CONSTEXPR IonOptions()
       : gvn(true),
         gvnIsOptimistic(true),
         licm(true),
@@ -220,7 +227,8 @@ struct IonOptions
         edgeCaseAnalysis(true),
         rangeAnalysis(true),
         checkRangeAnalysis(false),
-        assertGraphConsistency(true),
+        checkThreadSafety(false),
+        checkGraphConsistency(true),
         uce(true),
         eaa(true),
 #ifdef CHECK_OSIPOINT_REGISTERS
@@ -239,9 +247,9 @@ struct IonOptions
         smallFunctionMaxBytecodeLength(100),
         polyInlineMax(4),
         inlineMaxTotalBytecodeLength(1000),
-        inlineUseCountRatio(128),
         eagerCompilation(false),
-        usesBeforeCompilePar(1)
+        usesBeforeCompilePar(1),
+        inliningMaxCallerBytecodeLength(10000)
     {
     }
 
@@ -276,14 +284,22 @@ class IonContext
   public:
     IonContext(JSContext *cx, TempAllocator *temp);
     IonContext(ExclusiveContext *cx, TempAllocator *temp);
-    IonContext(JSRuntime *rt, JSCompartment *comp, TempAllocator *temp);
-    IonContext(JSRuntime *rt);
+    IonContext(CompileRuntime *rt, CompileCompartment *comp, TempAllocator *temp);
+    IonContext(CompileRuntime *rt);
     ~IonContext();
 
-    JSRuntime *runtime;
+    // Running context when executing on the main thread. Not available during
+    // compilation.
     JSContext *cx;
-    JSCompartment *compartment;
+
+    // Allocator for temporary memory during compilation.
     TempAllocator *temp;
+
+    // Wrappers with information about the current runtime/compartment for use
+    // during compilation.
+    CompileRuntime *runtime;
+    CompileCompartment *compartment;
+
     int getNextAssemblerId() {
         return assemblerCount_++;
     }
@@ -313,6 +329,10 @@ MethodStatus CompileFunctionForBaseline(JSContext *cx, HandleScript script, Base
 MethodStatus CanEnterUsingFastInvoke(JSContext *cx, HandleScript script, uint32_t numActualArgs);
 
 MethodStatus CanEnterInParallel(JSContext *cx, HandleScript script);
+
+MethodStatus
+Recompile(JSContext *cx, HandleScript script, BaselineFrame *osrFrame, jsbytecode *osrPc,
+          bool constructing);
 
 enum IonExecStatus
 {
@@ -345,10 +365,14 @@ IonExecStatus FastInvoke(JSContext *cx, HandleFunction fun, CallArgs &args);
 
 // Walk the stack and invalidate active Ion frames for the invalid scripts.
 void Invalidate(types::TypeCompartment &types, FreeOp *fop,
-                const Vector<types::RecompileInfo> &invalid, bool resetUses = true);
-void Invalidate(JSContext *cx, const Vector<types::RecompileInfo> &invalid, bool resetUses = true);
-bool Invalidate(JSContext *cx, JSScript *script, ExecutionMode mode, bool resetUses = true);
-bool Invalidate(JSContext *cx, JSScript *script, bool resetUses = true);
+                const Vector<types::RecompileInfo> &invalid, bool resetUses = true,
+                bool cancelOffThread = true);
+void Invalidate(JSContext *cx, const Vector<types::RecompileInfo> &invalid, bool resetUses = true,
+                bool cancelOffThread = true);
+bool Invalidate(JSContext *cx, JSScript *script, ExecutionMode mode, bool resetUses = true,
+                bool cancelOffThread = true);
+bool Invalidate(JSContext *cx, JSScript *script, bool resetUses = true,
+                bool cancelOffThread = true);
 
 void MarkValueFromIon(JSRuntime *rt, Value *vp);
 void MarkShapeFromIon(JSRuntime *rt, Shape **shapep);
@@ -371,8 +395,8 @@ void FinishOffThreadBuilder(IonBuilder *builder);
 static inline bool
 IsIonEnabled(JSContext *cx)
 {
-    return cx->options().ion() &&
-        cx->options().baseline() &&
+    return cx->compartment()->options().ion(cx) &&
+        cx->compartment()->options().baseline(cx) &&
         cx->typeInferenceEnabled();
 }
 

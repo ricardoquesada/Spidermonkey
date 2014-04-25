@@ -187,7 +187,7 @@ IonFrameIterator::baselineScriptAndPc(JSScript **scriptRes, jsbytecode **pcRes) 
         // If the return address is into the prologue entry address, then assume start
         // of script.
         if (retAddr == script->baselineScript()->prologueEntryAddr()) {
-            *pcRes = script->code;
+            *pcRes = script->code();
             return;
         }
 
@@ -363,6 +363,11 @@ HandleExceptionIon(JSContext *cx, const InlineFrameIterator &frame, ResumeFromEx
 
           case JSTRY_CATCH:
             if (cx->isExceptionPending()) {
+                // Ion can compile try-catch, but bailing out to catch
+                // exceptions is slow. Reset the use count so that if we
+                // catch many exceptions we won't Ion-compile the script.
+                script->resetUseCount();
+
                 // Bailout at the start of the catch block.
                 jsbytecode *catchPC = script->main() + tn->start + tn->length;
 
@@ -477,6 +482,11 @@ HandleExceptionBaseline(JSContext *cx, const IonFrameIterator &frame, ResumeFrom
         switch (tn->kind) {
           case JSTRY_CATCH:
             if (cx->isExceptionPending()) {
+                // Ion can compile try-catch, but bailing out to catch
+                // exceptions is slow. Reset the use count so that if we
+                // catch many exceptions we won't Ion-compile the script.
+                script->resetUseCount();
+
                 // Resume at the start of the catch block.
                 rfe->kind = ResumeFromException::RESUME_CATCH;
                 jsbytecode *catchPC = script->main() + tn->start + tn->length;
@@ -1390,7 +1400,7 @@ InlineFrameIteratorMaybeGC<allowGC>::findNextFrame()
     // Read the initial frame.
     callee_ = frame_->maybeCallee();
     script_ = frame_->script();
-    pc_ = script_->code + si_.pcOffset();
+    pc_ = script_->offsetToPC(si_.pcOffset());
 #ifdef DEBUG
     numActualArgs_ = 0xbadbad;
 #endif
@@ -1435,7 +1445,7 @@ InlineFrameIteratorMaybeGC<allowGC>::findNextFrame()
         // exists though, just make sure the function points to it.
         script_ = callee_->existingScript();
 
-        pc_ = script_->code + si_.pcOffset();
+        pc_ = script_->offsetToPC(si_.pcOffset());
     }
 
     framesRead_++;
@@ -1587,7 +1597,7 @@ IonFrameIterator::dumpBaseline() const
     jsbytecode *pc;
     baselineScriptAndPc(script.address(), &pc);
 
-    fprintf(stderr, "  script = %p, pc = %p (offset %u)\n", (void *)script, pc, uint32_t(pc - script->code));
+    fprintf(stderr, "  script = %p, pc = %p (offset %u)\n", (void *)script, pc, uint32_t(script->pcToOffset(pc)));
     fprintf(stderr, "  current op: %s\n", js_CodeName[*pc]);
 
     fprintf(stderr, "  actual args: %d\n", numActualArgs());
