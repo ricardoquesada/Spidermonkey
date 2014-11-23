@@ -31,30 +31,36 @@ MOZ_ARG_WITH_STRING(ios-arch,
 case "$ios_target" in
 iPhoneOS|iPhoneSimulator)
     dnl test for Xcode 4.3+
-    if ! test -d "/Applications/Xcode.app/Contents/Developer/Platforms" ; then
+    if ! test -d `xcode-select --print-path` ; then
         AC_MSG_ERROR([You must install Xcode first from the App Store])
     fi
 
-    if test "$ios_target" == "iPhoneSimulator" ; then
-        dnl force ios_arch to i386 for simulator
-        CPU_ARCH=i386
-        ios_arch=i386
+    MIN_TYPE=-miphoneos-version-min=
+
+    if test "$ios_target" = "iPhoneSimulator"; then
+        if test "$ios_arch" = "i386"; then
+            dnl force ios_arch to i386 for simulator
+            CPU_ARCH=i386
+            ios_arch=i386
+        fi
+
         target_name=x86
         target=i386-darwin
         TARGET_CPU=i386
+        MIN_TYPE=-mios-simulator-version-min=
     else
         if test -z "$ios_arch" ; then
             ios_arch=armv7
-        fi 
+        fi
         target_name=arm
         target=arm-darwin
         TARGET_CPU=armv7
     fi
     target_os=darwin
 
-    xcode_base="/Applications/Xcode.app/Contents/Developer/Platforms"
+    xcode_base="`xcode-select --print-path`/Platforms"
     ios_sdk_root=""
-    ios_toolchain="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+    ios_toolchain="`xcode-select --print-path`/Toolchains/XcodeDefault.xctoolchain/usr/bin"
 
     dnl test to see if the actual sdk exists
     ios_sdk_root="$xcode_base"/$ios_target.platform/Developer/SDKs/$ios_target"$ios_sdk_version".sdk
@@ -73,9 +79,9 @@ iPhoneOS|iPhoneSimulator)
     STRIP="$ios_toolchain"/strip
     LDFLAGS="-isysroot $ios_sdk_root -arch $ios_arch -v"
 
-    CFLAGS="-isysroot $ios_sdk_root -arch $ios_arch -miphoneos-version-min=$ios_deploy_version -I$ios_sdk_root/usr/include -pipe -Wno-implicit-int -Wno-return-type"
+    CFLAGS="-isysroot $ios_sdk_root -arch $ios_arch $MIN_TYPE$ios_deploy_version -I$ios_sdk_root/usr/include -pipe -Wno-implicit-int -Wno-return-type"
     CXXFLAGS="$CFLAGS"
-    CPPFLAGS=""
+    CPPFLAGS="$CFLAGS"
 
     dnl prevent cross compile section from using these flags as host flags
     if test -z "$HOST_CPPFLAGS" ; then

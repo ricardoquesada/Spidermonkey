@@ -62,8 +62,8 @@ AC_LANG_RESTORE
 
 if test "$ac_have_gcc_pr49911" = "yes"; then
    AC_MSG_RESULT(yes)
-   CFLAGS="$CFLAGS -fno-tree-vrp"
-   CXXFLAGS="$CXXFLAGS -fno-tree-vrp"
+   CFLAGS="$CFLAGS"
+   CXXFLAGS="$CXXFLAGS"
 else
    AC_MSG_RESULT(no)
 fi
