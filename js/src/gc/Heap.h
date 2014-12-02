@@ -814,7 +814,7 @@ struct Chunk
 
     /* Search for a decommitted arena to allocate. */
     unsigned findDecommittedArenaOffset();
-    ArenaHeader* fetchNextDecommittedArena();
+    ArenaHeader* fetchNextDecommittedArena(JSRuntime *rt);
 
   public:
     /* Unlink and return the freeArenasHead. */

@@ -1100,6 +1100,15 @@ struct JSRuntime : js::RuntimeFriendFields,
 
     /* Stack of thread-stack-allocated GC roots. */
     js::AutoGCRooter   *autoGCRooters;
+    
+    /*
+     * The GC can only safely decommit memory when the page size of the
+     * running process matches the compiled arena size.
+     */
+    size_t              gcSystemPageSize;
+    
+    /* The OS allocation granularity may not match the page size. */
+    size_t              gcSystemAllocGranularity;
 
     /* Strong references on scripts held for PCCount profiling API. */
     js::ScriptAndCountsVector *scriptAndCountsVector;
