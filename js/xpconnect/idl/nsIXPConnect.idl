@@ -26,7 +26,6 @@ class nsAXPCNativeCallContext;
 [ptr] native JSClassPtr(JSClass);
 [ptr] native JSFreeOpPtr(JSFreeOp);
 [ptr] native JSObjectPtr(JSObject);
-[ptr] native JSValPtr(JS::Value);
 [ptr] native JSValConstPtr(const JS::Value);
       native JSPropertyOp(JSPropertyOp);
       native JSEqualityOp(JSEqualityOp);
@@ -60,7 +59,7 @@ interface nsIXPConnectJSObjectHolder : nsISupports
     [notxpcom, nostdcall] JSObjectPtr GetJSObject();
 };
 
-[uuid(2d08015d-7556-4f12-9e89-4c756d129310)]
+[uuid(675b01ba-397b-472a-9b80-5716376a2ec6)]
 interface nsIXPConnectWrappedNative : nsIXPConnectJSObjectHolder
 {
     /* attribute 'JSObject' inherited from nsIXPConnectJSObjectHolder */
@@ -84,13 +83,6 @@ interface nsIXPConnectWrappedNative : nsIXPConnectJSObjectHolder
      * globals.
      */
     void finishInitForWrappedGlobal();
-
-    /* 
-     * This returns a pointer into the instance and care should be taken
-     * to make sure the pointer is not kept past the life time of the
-     * object it points into.
-     */
-    voidPtrPtr GetSecurityInfoAddress();
 
     /*
      * NOTE: Add new IDL methods _before_ the C++ block below if you
@@ -282,19 +274,12 @@ interface nsIXPCFunctionThisTranslator : nsISupports
     { 0xbd, 0xd6, 0x0, 0x0, 0x64, 0x65, 0x73, 0x74 } }
 %}
 
-[uuid(880be309-88a1-4e98-8621-7f7e42681b20)]
+[noscript, uuid(9ec7367c-0dde-4b7a-963c-5a590ee3ee42)]
 interface nsIXPConnect : nsISupports
 {
 %{ C++
   NS_DEFINE_STATIC_CID_ACCESSOR(NS_XPCONNECT_CID)
 %}
-
-    /**
-     * Initializes classes on a global object that has already been created.
-     */
-    void
-    initClasses(in JSContextPtr aJSContext,
-                in JSObjectPtr  aGlobalJSObj);
 
     /**
      * Creates a new global object using the given aCOMObj as the global
@@ -320,7 +305,7 @@ interface nsIXPConnect : nsISupports
                   in JSCompartmentOptions aOptions);
 
     const uint32_t INIT_JS_STANDARD_CLASSES  = 1 << 0;
-    // Free bit here!
+    const uint32_t DONT_FIRE_ONNEWGLOBALHOOK = 1 << 1;
     const uint32_t OMIT_COMPONENTS_OBJECT    = 1 << 2;
 
     /**
@@ -362,9 +347,8 @@ interface nsIXPConnect : nsISupports
                in nsIIDRef     aIID);
 
     /**
-     * Same as wrapNative, but also returns the JSObject in aVal. C++ callers
-     * can pass in null for the aHolder argument, but in that case they must
-     * ensure that aVal is rooted.
+     * Same as wrapNative, but it returns the JSObject in aVal. C++ callers
+     * must ensure that aVal is rooted.
      * aIID may be null, it means the same as passing in
      * &NS_GET_IID(nsISupports) but when passing in null certain shortcuts
      * can be taken because we know without comparing IIDs that the caller is
@@ -382,8 +366,7 @@ interface nsIXPConnect : nsISupports
                       in nsWrapperCachePtr aCache,
                       in nsIIDPtr     aIID,
                       in boolean      aAllowWrapper,
-                      out jsval       aVal,
-                      out nsIXPConnectJSObjectHolder aHolder);
+                      out jsval       aVal);
 
     /**
     * wrapJS will yield a new or previously existing xpcom interface pointer
@@ -418,7 +401,7 @@ interface nsIXPConnect : nsISupports
      * Wraps the given jsval in a nsIVariant and returns the new variant.
      */
     nsIVariant
-    jSValToVariant(in JSContextPtr cx, in JSValPtr aJSVal);
+    jSValToVariant(in JSContextPtr cx, in jsval aJSVal);
 
     /**
     * This only succeeds if the JSObject is a nsIXPConnectWrappedNative.
@@ -432,12 +415,6 @@ interface nsIXPConnect : nsISupports
     getNativeOfWrapper(in JSContextPtr aJSContext,
                        in JSObjectPtr  aJSObj);
 
-    /**
-    * The security manager to use when the current JSContext has no security
-    * manager.
-    */
-    void setDefaultSecurityManager(in nsIXPCSecurityManager aManager);
-
     nsIStackFrame
     createStackFrameLocation(in uint32_t       aLanguage,
                              in string         aFilename,
@@ -447,7 +424,6 @@ interface nsIXPConnect : nsISupports
 
 
     [noscript,notxpcom,nostdcall] JSContextPtr getCurrentJSContext();
-    [noscript,notxpcom,nostdcall] JSContextPtr initSafeJSContext();
     [noscript,notxpcom,nostdcall] JSContextPtr getSafeJSContext();
 
     readonly attribute nsIStackFrame                CurrentJSStack;
@@ -506,8 +482,6 @@ interface nsIXPConnect : nsISupports
     void
     rescueOrphansInScope(in JSContextPtr aJSContext, in JSObjectPtr  aScope);
 
-    void clearAllWrappedNativeSecurityPolicies();
-
     nsIXPConnectJSObjectHolder
     getWrappedNativePrototype(in JSContextPtr aJSContext,
                               in JSObjectPtr  aScope,
@@ -537,10 +511,6 @@ interface nsIXPConnect : nsISupports
      *           the script. The actual evaluation will happen on a new
      *           temporary context.
      * @param sandbox The sandbox object to evaluate the script in.
-     * @param returnStringOnly The only results to come out of the
-     *                         computation (including exceptions) will
-     *                         be coerced into strings created in the
-     *                         sandbox.
      * @return The result of the evaluation as a jsval. If the caller
      *         intends to use the return value from this call the caller
      *         is responsible for rooting the jsval before making a call
@@ -548,8 +518,7 @@ interface nsIXPConnect : nsISupports
      */
     [noscript] jsval evalInSandboxObject(in AString source, in string filename,
                                          in JSContextPtr cx,
-                                         in JSObjectPtr sandbox,
-                                         in boolean returnStringOnly);
+                                         in JSObjectPtr sandbox);
 
     /**
      * Whether or not XPConnect should report all JS exceptions when returning
@@ -591,16 +560,6 @@ interface nsIXPConnect : nsISupports
      */
     nsIXPConnectJSObjectHolder holdObject(in JSContextPtr aJSContext,
                                           in JSObjectPtr aObject);
-
-    /**
-     * When we place the browser in JS debug mode, there can't be any
-     * JS on the stack. This is because we currently activate debugMode 
-     * on all scripts in the JSRuntime when the debugger is activated.
-     * This method will turn debug mode on or off when the context 
-     * stack reaches zero length.
-     */
-    [noscript] void setDebugModeWhenPossible(in boolean mode,
-                                             in boolean allowSyncDisable);
 
     [noscript] void writeScript(in nsIObjectOutputStream aStream,
                                 in JSContextPtr aJSContext,

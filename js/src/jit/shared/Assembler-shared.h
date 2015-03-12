@@ -11,13 +11,13 @@
 
 #include <limits.h>
 
-#include "jsworkers.h"
-
 #include "jit/IonAllocPolicy.h"
+#include "jit/Label.h"
 #include "jit/Registers.h"
 #include "jit/RegisterSets.h"
+#include "vm/HelperThreads.h"
 
-#if defined(JS_CPU_X64) || defined(JS_CPU_ARM)
+#if defined(JS_CODEGEN_X64) || defined(JS_CODEGEN_ARM)
 // JS_SMALL_BRANCH means the range on a branch instruction
 // is smaller than the whole address space
 #    define JS_SMALL_BRANCH
@@ -112,6 +112,21 @@ IsCompilingAsmJS()
     IonContext *ictx = MaybeGetIonContext();
     return ictx && ictx->compartment == nullptr;
 }
+
+static inline bool
+CanUsePointerImmediates()
+{
+    if (!IsCompilingAsmJS())
+        return true;
+
+    // Pointer immediates can still be used with asm.js when the resulting code
+    // is being profiled; the module will not be serialized in this case.
+    IonContext *ictx = MaybeGetIonContext();
+    if (ictx && ictx->runtime->profilingScripts())
+        return true;
+
+    return false;
+}
 #endif
 
 // Pointer to be embedded as an immediate in an instruction.
@@ -123,42 +138,42 @@ struct ImmPtr
     {
         // To make code serialization-safe, asm.js compilation should only
         // compile pointer immediates using AsmJSImmPtr.
-        JS_ASSERT(!IsCompilingAsmJS());
+        JS_ASSERT(CanUsePointerImmediates());
     }
 
     template <class R>
     explicit ImmPtr(R (*pf)())
       : value(JS_FUNC_TO_DATA_PTR(void *, pf))
     {
-        JS_ASSERT(!IsCompilingAsmJS());
+        JS_ASSERT(CanUsePointerImmediates());
     }
 
     template <class R, class A1>
     explicit ImmPtr(R (*pf)(A1))
       : value(JS_FUNC_TO_DATA_PTR(void *, pf))
     {
-        JS_ASSERT(!IsCompilingAsmJS());
+        JS_ASSERT(CanUsePointerImmediates());
     }
 
     template <class R, class A1, class A2>
     explicit ImmPtr(R (*pf)(A1, A2))
       : value(JS_FUNC_TO_DATA_PTR(void *, pf))
     {
-        JS_ASSERT(!IsCompilingAsmJS());
+        JS_ASSERT(CanUsePointerImmediates());
     }
 
     template <class R, class A1, class A2, class A3>
     explicit ImmPtr(R (*pf)(A1, A2, A3))
       : value(JS_FUNC_TO_DATA_PTR(void *, pf))
     {
-        JS_ASSERT(!IsCompilingAsmJS());
+        JS_ASSERT(CanUsePointerImmediates());
     }
 
     template <class R, class A1, class A2, class A3, class A4>
     explicit ImmPtr(R (*pf)(A1, A2, A3, A4))
       : value(JS_FUNC_TO_DATA_PTR(void *, pf))
     {
-        JS_ASSERT(!IsCompilingAsmJS());
+        JS_ASSERT(CanUsePointerImmediates());
     }
 
 };
@@ -180,9 +195,9 @@ struct PatchedImmPtr {
 // Used for immediates which require relocation.
 struct ImmGCPtr
 {
-    uintptr_t value;
+    const gc::Cell *value;
 
-    explicit ImmGCPtr(const gc::Cell *ptr) : value(reinterpret_cast<uintptr_t>(ptr))
+    explicit ImmGCPtr(const gc::Cell *ptr) : value(ptr)
     {
         JS_ASSERT(!IsPoisonedPtr(ptr));
         JS_ASSERT_IF(ptr, ptr->isTenured());
@@ -200,7 +215,7 @@ struct ImmMaybeNurseryPtr : public ImmGCPtr
 {
     explicit ImmMaybeNurseryPtr(gc::Cell *ptr)
     {
-        this->value = reinterpret_cast<uintptr_t>(ptr);
+        this->value = ptr;
         JS_ASSERT(!IsPoisonedPtr(ptr));
 
         // asm.js shouldn't be creating GC things
@@ -210,14 +225,14 @@ struct ImmMaybeNurseryPtr : public ImmGCPtr
 
 // Pointer to be embedded as an immediate that is loaded/stored from by an
 // instruction.
-struct AbsoluteAddress {
+struct AbsoluteAddress
+{
     void *addr;
 
     explicit AbsoluteAddress(const void *addr)
       : addr(const_cast<void*>(addr))
     {
-        // asm.js shouldn't be creating GC things
-        JS_ASSERT(!IsCompilingAsmJS());
+        JS_ASSERT(CanUsePointerImmediates());
     }
 
     AbsoluteAddress offset(ptrdiff_t delta) {
@@ -228,7 +243,8 @@ struct AbsoluteAddress {
 // The same as AbsoluteAddress except that the intention is to patch this
 // instruction. The initial value of the immediate is 'addr' and this value is
 // either clobbered or used in the patching process.
-struct PatchedAbsoluteAddress {
+struct PatchedAbsoluteAddress
+{
     void *addr;
 
     explicit PatchedAbsoluteAddress()
@@ -275,105 +291,10 @@ class Relocation {
         // buffer is relocated and the reference is relative.
         HARDCODED,
 
-        // The target is the start of an IonCode buffer, which must be traced
+        // The target is the start of a JitCode buffer, which must be traced
         // during garbage collection. Relocations and patching may be needed.
-        IONCODE
+        JITCODE
     };
-};
-
-struct LabelBase
-{
-  protected:
-    // offset_ >= 0 means that the label is either bound or has incoming
-    // uses and needs to be bound.
-    int32_t offset_ : 31;
-    bool bound_   : 1;
-
-    // Disallow assignment.
-    void operator =(const LabelBase &label);
-  public:
-    static const int32_t INVALID_OFFSET = -1;
-
-    LabelBase() : offset_(INVALID_OFFSET), bound_(false)
-    { }
-    LabelBase(const LabelBase &label)
-      : offset_(label.offset_),
-        bound_(label.bound_)
-    { }
-
-    // If the label is bound, all incoming edges have been patched and any
-    // future incoming edges will be immediately patched.
-    bool bound() const {
-        return bound_;
-    }
-    int32_t offset() const {
-        JS_ASSERT(bound() || used());
-        return offset_;
-    }
-    // Returns whether the label is not bound, but has incoming uses.
-    bool used() const {
-        return !bound() && offset_ > INVALID_OFFSET;
-    }
-    // Binds the label, fixing its final position in the code stream.
-    void bind(int32_t offset) {
-        JS_ASSERT(!bound());
-        offset_ = offset;
-        bound_ = true;
-        JS_ASSERT(offset_ == offset);
-    }
-    // Marks the label as neither bound nor used.
-    void reset() {
-        offset_ = INVALID_OFFSET;
-        bound_ = false;
-    }
-    // Sets the label's latest used position, returning the old use position in
-    // the process.
-    int32_t use(int32_t offset) {
-        JS_ASSERT(!bound());
-
-        int32_t old = offset_;
-        offset_ = offset;
-        JS_ASSERT(offset_ == offset);
-
-        return old;
-    }
-};
-
-// A label represents a position in an assembly buffer that may or may not have
-// already been generated. Labels can either be "bound" or "unbound", the
-// former meaning that its position is known and the latter that its position
-// is not yet known.
-//
-// A jump to an unbound label adds that jump to the label's incoming queue. A
-// jump to a bound label automatically computes the jump distance. The process
-// of binding a label automatically corrects all incoming jumps.
-class Label : public LabelBase
-{
-  public:
-    Label()
-    { }
-    Label(const Label &label) : LabelBase(label)
-    { }
-    ~Label()
-    {
-        if (MaybeGetIonContext())
-            JS_ASSERT_IF(!GetIonContext()->runtime->hadOutOfMemory(), !used());
-    }
-};
-
-// Label's destructor asserts that if it has been used it has also been bound.
-// In the case long-lived labels, however, failed compilation (e.g. OOM) will
-// trigger this failure innocuously. This Label silences the assertion.
-class NonAssertingLabel : public Label
-{
-  public:
-    ~NonAssertingLabel()
-    {
-#ifdef DEBUG
-        if (used())
-            bind(0);
-#endif
-    }
 };
 
 class RepatchLabel
@@ -455,7 +376,7 @@ class CodeLabel
   public:
     CodeLabel()
     { }
-    CodeLabel(const AbsoluteLabel &dest)
+    explicit CodeLabel(const AbsoluteLabel &dest)
        : dest_(dest)
     { }
     AbsoluteLabel *dest() {
@@ -466,7 +387,7 @@ class CodeLabel
     }
 };
 
-// Location of a jump or label in a generated IonCode block, relative to the
+// Location of a jump or label in a generated JitCode block, relative to the
 // start of the block.
 
 class CodeOffsetJump
@@ -505,7 +426,7 @@ class CodeOffsetLabel
     size_t offset_;
 
   public:
-    CodeOffsetLabel(size_t offset) : offset_(offset) {}
+    explicit CodeOffsetLabel(size_t offset) : offset_(offset) {}
     CodeOffsetLabel() : offset_(0) {}
 
     size_t offset() const {
@@ -515,9 +436,9 @@ class CodeOffsetLabel
 
 };
 
-// Absolute location of a jump or a label in some generated IonCode block.
+// Absolute location of a jump or a label in some generated JitCode block.
 // Can also encode a CodeOffset{Jump,Label}, such that the offset is initially
-// set and the absolute location later filled in after the final IonCode is
+// set and the absolute location later filled in after the final JitCode is
 // allocated.
 
 class CodeLocationJump
@@ -556,7 +477,7 @@ class CodeLocationJump
         jumpTableEntry_ = (uint8_t *) 0xdeadab1e;
 #endif
     }
-    CodeLocationJump(IonCode *code, CodeOffsetJump base) {
+    CodeLocationJump(JitCode *code, CodeOffsetJump base) {
         *this = base;
         repoint(code);
     }
@@ -569,7 +490,7 @@ class CodeLocationJump
 #endif
     }
 
-    void repoint(IonCode *code, MacroAssembler* masm = nullptr);
+    void repoint(JitCode *code, MacroAssembler* masm = nullptr);
 
     uint8_t *raw() const {
         JS_ASSERT(state_ == Absolute);
@@ -617,15 +538,15 @@ class CodeLocationLabel
         raw_ = nullptr;
         setUninitialized();
     }
-    CodeLocationLabel(IonCode *code, CodeOffsetLabel base) {
+    CodeLocationLabel(JitCode *code, CodeOffsetLabel base) {
         *this = base;
         repoint(code);
     }
-    CodeLocationLabel(IonCode *code) {
+    explicit CodeLocationLabel(JitCode *code) {
         raw_ = code->raw();
         setAbsolute();
     }
-    CodeLocationLabel(uint8_t *raw) {
+    explicit CodeLocationLabel(uint8_t *raw) {
         raw_ = raw;
         setAbsolute();
     }
@@ -638,7 +559,7 @@ class CodeLocationLabel
         return raw_ - other.raw_;
     }
 
-    void repoint(IonCode *code, MacroAssembler *masm = nullptr);
+    void repoint(JitCode *code, MacroAssembler *masm = nullptr);
 
 #ifdef DEBUG
     bool isSet() const {
@@ -656,6 +577,118 @@ class CodeLocationLabel
     }
 };
 
+// While the frame-pointer chain allows the stack to be unwound without
+// metadata, Error.stack still needs to know the line/column of every call in
+// the chain. A CallSiteDesc describes the line/column of a single callsite.
+// A CallSiteDesc is created by callers of MacroAssembler.
+class CallSiteDesc
+{
+    uint32_t line_;
+    uint32_t column_;
+  public:
+    CallSiteDesc() {}
+    CallSiteDesc(uint32_t line, uint32_t column) : line_(line), column_(column) {}
+    uint32_t line() const { return line_; }
+    uint32_t column() const { return column_; }
+};
+
+// Adds to CallSiteDesc the metadata necessary to walk the stack given an
+// initial stack-pointer.
+struct CallSite : public CallSiteDesc
+{
+    uint32_t returnAddressOffset_;
+    uint32_t stackDepth_;
+
+  public:
+    CallSite() {}
+
+    CallSite(CallSiteDesc desc, uint32_t returnAddressOffset, uint32_t stackDepth)
+      : CallSiteDesc(desc),
+        returnAddressOffset_(returnAddressOffset),
+        stackDepth_(stackDepth)
+    { }
+
+    void setReturnAddressOffset(uint32_t r) { returnAddressOffset_ = r; }
+    uint32_t returnAddressOffset() const { return returnAddressOffset_; }
+
+    // The stackDepth measures the amount of stack space pushed since the
+    // function was called. In particular, this includes the pushed return
+    // address on all archs (whether or not the call instruction pushes the
+    // return address (x86/x64) or the prologue does (ARM/MIPS)).
+    uint32_t stackDepth() const { return stackDepth_; }
+};
+
+typedef Vector<CallSite, 0, SystemAllocPolicy> CallSiteVector;
+
+// As an invariant across architectures, within asm.js code:
+//    $sp % StackAlignment = (AsmJSFrameSize + masm.framePushed) % StackAlignment
+// AsmJSFrameSize is 1 word, for the return address pushed by the call (or, in
+// the case of ARM/MIPS, by the first instruction of the prologue). This means
+// masm.framePushed never includes the pushed return address.
+static const uint32_t AsmJSFrameSize = sizeof(void*);
+
+// Summarizes a heap access made by asm.js code that needs to be patched later
+// and/or looked up by the asm.js signal handlers. Different architectures need
+// to know different things (x64: offset and length, ARM: where to patch in
+// heap length, x86: where to patch in heap length and base) hence the massive
+// #ifdefery.
+class AsmJSHeapAccess
+{
+    uint32_t offset_;
+#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
+    uint8_t cmpDelta_;  // the number of bytes from the cmp to the load/store instruction
+    uint8_t opLength_;  // the length of the load/store instruction
+    uint8_t isFloat32Load_;
+    AnyRegister::Code loadedReg_ : 8;
+#endif
+
+    JS_STATIC_ASSERT(AnyRegister::Total < UINT8_MAX);
+
+  public:
+    AsmJSHeapAccess() {}
+#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
+    static const uint32_t NoLengthCheck = UINT32_MAX;
+
+    // If 'cmp' equals 'offset' or if it is not supplied then the
+    // cmpDelta_ is zero indicating that there is no length to patch.
+    AsmJSHeapAccess(uint32_t offset, uint32_t after, Scalar::Type vt,
+                    AnyRegister loadedReg, uint32_t cmp = NoLengthCheck)
+      : offset_(offset),
+        cmpDelta_(cmp == NoLengthCheck ? 0 : offset - cmp),
+        opLength_(after - offset),
+        isFloat32Load_(vt == Scalar::Float32),
+        loadedReg_(loadedReg.code())
+    {}
+    AsmJSHeapAccess(uint32_t offset, uint8_t after, uint32_t cmp = NoLengthCheck)
+      : offset_(offset),
+        cmpDelta_(cmp == NoLengthCheck ? 0 : offset - cmp),
+        opLength_(after - offset),
+        isFloat32Load_(false),
+        loadedReg_(UINT8_MAX)
+    {}
+#elif defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_MIPS)
+    explicit AsmJSHeapAccess(uint32_t offset)
+      : offset_(offset)
+    {}
+#endif
+
+    uint32_t offset() const { return offset_; }
+    void setOffset(uint32_t offset) { offset_ = offset; }
+#if defined(JS_CODEGEN_X86)
+    void *patchOffsetAt(uint8_t *code) const { return code + (offset_ + opLength_); }
+#endif
+#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
+    bool hasLengthCheck() const { return cmpDelta_ > 0; }
+    void *patchLengthAt(uint8_t *code) const { return code + (offset_ - cmpDelta_); }
+    unsigned opLength() const { return opLength_; }
+    bool isLoad() const { return loadedReg_ != UINT8_MAX; }
+    bool isFloat32Load() const { return isFloat32Load_; }
+    AnyRegister loadedReg() const { return AnyRegister::FromCode(loadedReg_); }
+#endif
+};
+
+typedef Vector<AsmJSHeapAccess, 0, SystemAllocPolicy> AsmJSHeapAccessVector;
+
 struct AsmJSGlobalAccess
 {
     CodeOffsetLabel patchAt;
@@ -666,14 +699,13 @@ struct AsmJSGlobalAccess
     {}
 };
 
-typedef Vector<AsmJSGlobalAccess, 0, IonAllocPolicy> AsmJSGlobalAccessVector;
-
 // Describes the intended pointee of an immediate to be embedded in asm.js
 // code. By representing the pointee as a symbolic enum, the pointee can be
 // patched after deserialization when the address of global things has changed.
 enum AsmJSImmKind
 {
     AsmJSImm_Runtime,
+    AsmJSImm_RuntimeInterrupt,
     AsmJSImm_StackLimit,
     AsmJSImm_ReportOverRecursed,
     AsmJSImm_HandleExecutionInterrupt,
@@ -683,9 +715,7 @@ enum AsmJSImmKind
     AsmJSImm_CoerceInPlace_ToInt32,
     AsmJSImm_CoerceInPlace_ToNumber,
     AsmJSImm_ToInt32,
-    AsmJSImm_EnableActivationFromAsmJS,
-    AsmJSImm_DisableActivationFromAsmJS,
-#if defined(JS_CPU_ARM)
+#if defined(JS_CODEGEN_ARM)
     AsmJSImm_aeabi_idivmod,
     AsmJSImm_aeabi_uidivmod,
 #endif
@@ -697,11 +727,14 @@ enum AsmJSImmKind
     AsmJSImm_ACosD,
     AsmJSImm_ATanD,
     AsmJSImm_CeilD,
+    AsmJSImm_CeilF,
     AsmJSImm_FloorD,
+    AsmJSImm_FloorF,
     AsmJSImm_ExpD,
     AsmJSImm_LogD,
     AsmJSImm_PowD,
-    AsmJSImm_ATan2D
+    AsmJSImm_ATan2D,
+    AsmJSImm_Invalid
 };
 
 // Pointer to be embedded as an immediate in asm.js code.
@@ -710,7 +743,8 @@ class AsmJSImmPtr
     AsmJSImmKind kind_;
   public:
     AsmJSImmKind kind() const { return kind_; }
-    AsmJSImmPtr(AsmJSImmKind kind) : kind_(kind) { JS_ASSERT(IsCompilingAsmJS()); }
+    // This needs to be MOZ_IMPLICIT in order to make MacroAssember::CallWithABINoProfiling compile.
+    MOZ_IMPLICIT AsmJSImmPtr(AsmJSImmKind kind) : kind_(kind) { JS_ASSERT(IsCompilingAsmJS()); }
     AsmJSImmPtr() {}
 };
 
@@ -721,7 +755,7 @@ class AsmJSAbsoluteAddress
     AsmJSImmKind kind_;
   public:
     AsmJSImmKind kind() const { return kind_; }
-    AsmJSAbsoluteAddress(AsmJSImmKind kind) : kind_(kind) { JS_ASSERT(IsCompilingAsmJS()); }
+    explicit AsmJSAbsoluteAddress(AsmJSImmKind kind) : kind_(kind) { JS_ASSERT(IsCompilingAsmJS()); }
     AsmJSAbsoluteAddress() {}
 };
 
@@ -736,7 +770,49 @@ struct AsmJSAbsoluteLink
     AsmJSImmKind target;
 };
 
-typedef Vector<AsmJSAbsoluteLink, 0, SystemAllocPolicy> AsmJSAbsoluteLinkVector;
+// The base class of all Assemblers for all archs.
+class AssemblerShared
+{
+    Vector<CallSite, 0, SystemAllocPolicy> callsites_;
+    Vector<AsmJSHeapAccess, 0, SystemAllocPolicy> asmJSHeapAccesses_;
+    Vector<AsmJSGlobalAccess, 0, SystemAllocPolicy> asmJSGlobalAccesses_;
+    Vector<AsmJSAbsoluteLink, 0, SystemAllocPolicy> asmJSAbsoluteLinks_;
+
+  protected:
+    bool enoughMemory_;
+
+  public:
+    AssemblerShared()
+     : enoughMemory_(true)
+    {}
+
+    void propagateOOM(bool success) {
+        enoughMemory_ &= success;
+    }
+
+    bool oom() const {
+        return !enoughMemory_;
+    }
+
+    void append(const CallSiteDesc &desc, size_t currentOffset, size_t framePushed) {
+        // framePushed does not include AsmJSFrameSize, so add it in here (see
+        // CallSite::stackDepth).
+        CallSite callsite(desc, currentOffset, framePushed + AsmJSFrameSize);
+        enoughMemory_ &= callsites_.append(callsite);
+    }
+    CallSiteVector &&extractCallSites() { return Move(callsites_); }
+
+    void append(AsmJSHeapAccess access) { enoughMemory_ &= asmJSHeapAccesses_.append(access); }
+    AsmJSHeapAccessVector &&extractAsmJSHeapAccesses() { return Move(asmJSHeapAccesses_); }
+
+    void append(AsmJSGlobalAccess access) { enoughMemory_ &= asmJSGlobalAccesses_.append(access); }
+    size_t numAsmJSGlobalAccesses() const { return asmJSGlobalAccesses_.length(); }
+    AsmJSGlobalAccess asmJSGlobalAccess(size_t i) const { return asmJSGlobalAccesses_[i]; }
+
+    void append(AsmJSAbsoluteLink link) { enoughMemory_ &= asmJSAbsoluteLinks_.append(link); }
+    size_t numAsmJSAbsoluteLinks() const { return asmJSAbsoluteLinks_.length(); }
+    AsmJSAbsoluteLink asmJSAbsoluteLink(size_t i) const { return asmJSAbsoluteLinks_[i]; }
+};
 
 } // namespace jit
 } // namespace js

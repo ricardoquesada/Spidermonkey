@@ -6,6 +6,7 @@
 
 #include "jsonparser.h"
 
+#include "mozilla/Range.h"
 #include "mozilla/RangedPtr.h"
 
 #include <ctype.h>
@@ -13,6 +14,7 @@
 #include "jsarray.h"
 #include "jscompartment.h"
 #include "jsnum.h"
+#include "jsprf.h"
 
 #include "vm/StringBuffer.h"
 
@@ -22,7 +24,7 @@ using namespace js;
 
 using mozilla::RangedPtr;
 
-JSONParser::~JSONParser()
+JSONParserBase::~JSONParserBase()
 {
     for (size_t i = 0; i < stack.length(); i++) {
         if (stack[i].state == FinishArrayElement)
@@ -39,7 +41,7 @@ JSONParser::~JSONParser()
 }
 
 void
-JSONParser::trace(JSTracer *trc)
+JSONParserBase::trace(JSTracer *trc)
 {
     for (size_t i = 0; i < stack.length(); i++) {
         if (stack[i].state == FinishArrayElement) {
@@ -56,22 +58,57 @@ JSONParser::trace(JSTracer *trc)
     }
 }
 
+template <typename CharT>
 void
-JSONParser::error(const char *msg)
+JSONParser<CharT>::getTextPosition(uint32_t *column, uint32_t *line)
 {
-    if (errorHandling == RaiseError)
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_JSON_BAD_PARSE, msg);
+    CharPtr ptr = begin;
+    uint32_t col = 1;
+    uint32_t row = 1;
+    for (; ptr < current; ptr++) {
+        if (*ptr == '\n' || *ptr == '\r') {
+            ++row;
+            col = 1;
+            // \r\n is treated as a single newline.
+            if (ptr + 1 < current && *ptr == '\r' && *(ptr + 1) == '\n')
+                ++ptr;
+        } else {
+            ++col;
+        }
+    }
+    *column = col;
+    *line = row;
+}
+
+template <typename CharT>
+void
+JSONParser<CharT>::error(const char *msg)
+{
+    if (errorHandling == RaiseError) {
+        uint32_t column = 1, line = 1;
+        getTextPosition(&column, &line);
+
+        const size_t MaxWidth = sizeof("4294967295");
+        char columnNumber[MaxWidth];
+        JS_snprintf(columnNumber, sizeof columnNumber, "%lu", column);
+        char lineNumber[MaxWidth];
+        JS_snprintf(lineNumber, sizeof lineNumber, "%lu", line);
+
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_JSON_BAD_PARSE,
+                             msg, lineNumber, columnNumber);
+    }
 }
 
 bool
-JSONParser::errorReturn()
+JSONParserBase::errorReturn()
 {
     return errorHandling == NoError;
 }
 
-template<JSONParser::StringType ST>
-JSONParser::Token
-JSONParser::readString()
+template <typename CharT>
+template <JSONParserBase::StringType ST>
+JSONParserBase::Token
+JSONParser<CharT>::readString()
 {
     JS_ASSERT(current < end);
     JS_ASSERT(*current == '"');
@@ -90,14 +127,14 @@ JSONParser::readString()
      * Optimization: if the source contains no escaped characters, create the
      * string directly from the source text.
      */
-    RangedPtr<const jschar> start = current;
+    CharPtr start = current;
     for (; current < end; current++) {
         if (*current == '"') {
             size_t length = current - start;
             current++;
             JSFlatString *str = (ST == JSONParser::PropertyName)
                                 ? AtomizeChars(cx, start.get(), length)
-                                : js_NewStringCopyN<CanGC>(cx, start.get(), length);
+                                : NewStringCopyN<CanGC>(cx, start.get(), length);
             if (!str)
                 return token(OOM);
             return stringToken(str);
@@ -136,6 +173,7 @@ JSONParser::readString()
         }
 
         if (c != '\\') {
+            --current;
             error("bad character in string literal");
             return token(Error);
         }
@@ -154,25 +192,37 @@ JSONParser::readString()
           case 't':  c = '\t'; break;
 
           case 'u':
-            if (end - current < 4) {
+            if (end - current < 4 ||
+                !(JS7_ISHEX(current[0]) &&
+                  JS7_ISHEX(current[1]) &&
+                  JS7_ISHEX(current[2]) &&
+                  JS7_ISHEX(current[3])))
+            {
+                // Point to the first non-hexadecimal character (which may be
+                // missing).
+                if (current == end || !JS7_ISHEX(current[0]))
+                    ; // already at correct location
+                else if (current + 1 == end || !JS7_ISHEX(current[1]))
+                    current += 1;
+                else if (current + 2 == end || !JS7_ISHEX(current[2]))
+                    current += 2;
+                else if (current + 3 == end || !JS7_ISHEX(current[3]))
+                    current += 3;
+                else
+                    MOZ_CRASH("logic error determining first erroneous character");
+
                 error("bad Unicode escape");
                 return token(Error);
             }
-            if (JS7_ISHEX(current[0]) &&
-                JS7_ISHEX(current[1]) &&
-                JS7_ISHEX(current[2]) &&
-                JS7_ISHEX(current[3]))
-            {
-                c = (JS7_UNHEX(current[0]) << 12)
-                  | (JS7_UNHEX(current[1]) << 8)
-                  | (JS7_UNHEX(current[2]) << 4)
-                  | (JS7_UNHEX(current[3]));
-                current += 4;
-                break;
-            }
-            /* FALL THROUGH */
+            c = (JS7_UNHEX(current[0]) << 12)
+              | (JS7_UNHEX(current[1]) << 8)
+              | (JS7_UNHEX(current[2]) << 4)
+              | (JS7_UNHEX(current[3]));
+            current += 4;
+            break;
 
           default:
+            current--;
             error("bad escaped character");
             return token(Error);
         }
@@ -190,8 +240,9 @@ JSONParser::readString()
     return token(Error);
 }
 
-JSONParser::Token
-JSONParser::readNumber()
+template <typename CharT>
+JSONParserBase::Token
+JSONParser<CharT>::readNumber()
 {
     JS_ASSERT(current < end);
     JS_ASSERT(JS7_ISDEC(*current) || *current == '-');
@@ -209,7 +260,7 @@ JSONParser::readNumber()
         return token(Error);
     }
 
-    const RangedPtr<const jschar> digitStart = current;
+    const CharPtr digitStart = current;
 
     /* 0|[1-9][0-9]+ */
     if (!JS7_ISDEC(*current)) {
@@ -225,7 +276,7 @@ JSONParser::readNumber()
 
     /* Fast path: no fractional or exponent part. */
     if (current == end || (*current != '.' && *current != 'e' && *current != 'E')) {
-        TwoByteChars chars(digitStart.get(), current - digitStart);
+        mozilla::Range<const CharT> chars(digitStart.get(), current - digitStart);
         if (chars.length() < strlen("9007199254740992")) {
             // If the decimal number is shorter than the length of 2**53, (the
             // largest number a double can represent with integral precision),
@@ -236,7 +287,7 @@ JSONParser::readNumber()
         }
 
         double d;
-        const jschar *dummy;
+        const CharT *dummy;
         if (!GetPrefixInteger(cx, digitStart.get(), current.get(), 10, &dummy, &d))
             return token(OOM);
         JS_ASSERT(current == dummy);
@@ -282,7 +333,7 @@ JSONParser::readNumber()
     }
 
     double d;
-    const jschar *finish;
+    const CharT *finish;
     if (!js_strtod(cx, digitStart.get(), current.get(), &finish, &d))
         return token(OOM);
     JS_ASSERT(current == finish);
@@ -295,8 +346,9 @@ IsJSONWhitespace(jschar c)
     return c == '\t' || c == '\r' || c == '\n' || c == ' ';
 }
 
-JSONParser::Token
-JSONParser::advance()
+template <typename CharT>
+JSONParserBase::Token
+JSONParser<CharT>::advance()
 {
     while (current < end && IsJSONWhitespace(*current))
         current++;
@@ -376,8 +428,9 @@ JSONParser::advance()
     }
 }
 
-JSONParser::Token
-JSONParser::advanceAfterObjectOpen()
+template <typename CharT>
+JSONParserBase::Token
+JSONParser<CharT>::advanceAfterObjectOpen()
 {
     JS_ASSERT(current[-1] == '{');
 
@@ -400,8 +453,9 @@ JSONParser::advanceAfterObjectOpen()
     return token(Error);
 }
 
+template <typename CharT>
 static inline void
-AssertPastValue(const RangedPtr<const jschar> current)
+AssertPastValue(const RangedPtr<const CharT> current)
 {
     /*
      * We're past an arbitrary JSON value, so the previous character is
@@ -427,8 +481,9 @@ AssertPastValue(const RangedPtr<const jschar> current)
               JS7_ISDEC(current[-1]));
 }
 
-JSONParser::Token
-JSONParser::advanceAfterArrayElement()
+template <typename CharT>
+JSONParserBase::Token
+JSONParser<CharT>::advanceAfterArrayElement()
 {
     AssertPastValue(current);
 
@@ -453,8 +508,9 @@ JSONParser::advanceAfterArrayElement()
     return token(Error);
 }
 
-JSONParser::Token
-JSONParser::advancePropertyName()
+template <typename CharT>
+JSONParserBase::Token
+JSONParser<CharT>::advancePropertyName()
 {
     JS_ASSERT(current[-1] == ',');
 
@@ -472,8 +528,9 @@ JSONParser::advancePropertyName()
     return token(Error);
 }
 
-JSONParser::Token
-JSONParser::advancePropertyColon()
+template <typename CharT>
+JSONParserBase::Token
+JSONParser<CharT>::advancePropertyColon()
 {
     JS_ASSERT(current[-1] == '"');
 
@@ -493,8 +550,9 @@ JSONParser::advancePropertyColon()
     return token(Error);
 }
 
-JSONParser::Token
-JSONParser::advanceAfterProperty()
+template <typename CharT>
+JSONParserBase::Token
+JSONParser<CharT>::advanceAfterProperty()
 {
     AssertPastValue(current);
 
@@ -520,15 +578,15 @@ JSONParser::advanceAfterProperty()
 }
 
 JSObject *
-JSONParser::createFinishedObject(PropertyVector &properties)
+JSONParserBase::createFinishedObject(PropertyVector &properties)
 {
     /*
      * Look for an existing cached type and shape for objects with this set of
      * properties.
      */
-    if (cx->typeInferenceEnabled()) {
+    {
         JSObject *obj = cx->compartment()->types.newTypedObject(cx, properties.begin(),
-                                                              properties.length());
+                                                                properties.length());
         if (obj)
             return obj;
     }
@@ -548,10 +606,8 @@ JSONParser::createFinishedObject(PropertyVector &properties)
     for (size_t i = 0; i < properties.length(); i++) {
         propid = properties[i].id;
         value = properties[i].value;
-        if (!DefineNativeProperty(cx, obj, propid, value,
-                                  JS_PropertyStub, JS_StrictPropertyStub, JSPROP_ENUMERATE,
-                                  0, 0))
-        {
+        if (!DefineNativeProperty(cx, obj, propid, value, JS_PropertyStub, JS_StrictPropertyStub,
+                                  JSPROP_ENUMERATE)) {
             return nullptr;
         }
     }
@@ -561,14 +617,13 @@ JSONParser::createFinishedObject(PropertyVector &properties)
      * properties, and update the initializer type object cache with this
      * object's final shape.
      */
-    if (cx->typeInferenceEnabled())
-        cx->compartment()->types.fixObjectType(cx, obj);
+    cx->compartment()->types.fixObjectType(cx, obj);
 
     return obj;
 }
 
 inline bool
-JSONParser::finishObject(MutableHandleValue vp, PropertyVector &properties)
+JSONParserBase::finishObject(MutableHandleValue vp, PropertyVector &properties)
 {
     JS_ASSERT(&properties == &stack.back().properties());
 
@@ -584,7 +639,7 @@ JSONParser::finishObject(MutableHandleValue vp, PropertyVector &properties)
 }
 
 inline bool
-JSONParser::finishArray(MutableHandleValue vp, ElementVector &elements)
+JSONParserBase::finishArray(MutableHandleValue vp, ElementVector &elements)
 {
     JS_ASSERT(&elements == &stack.back().elements());
 
@@ -593,8 +648,7 @@ JSONParser::finishArray(MutableHandleValue vp, ElementVector &elements)
         return false;
 
     /* Try to assign a new type to the array according to its elements. */
-    if (cx->typeInferenceEnabled())
-        cx->compartment()->types.fixArrayType(cx, obj);
+    cx->compartment()->types.fixArrayType(cx, obj);
 
     vp.setObject(*obj);
     if (!freeElements.append(&elements))
@@ -603,8 +657,9 @@ JSONParser::finishArray(MutableHandleValue vp, ElementVector &elements)
     return true;
 }
 
+template <typename CharT>
 bool
-JSONParser::parse(MutableHandleValue vp)
+JSONParser<CharT>::parse(MutableHandleValue vp)
 {
     RootedValue value(cx);
     JS_ASSERT(stack.empty());
@@ -740,6 +795,9 @@ JSONParser::parse(MutableHandleValue vp)
               case ObjectClose:
               case Colon:
               case Comma:
+                // Move the current pointer backwards so that the position
+                // reported in the error message is correct.
+                --current;
                 error("unexpected character");
                 return errorReturn();
 
@@ -770,3 +828,6 @@ JSONParser::parse(MutableHandleValue vp)
     vp.set(value);
     return true;
 }
+
+template class js::JSONParser<Latin1Char>;
+template class js::JSONParser<jschar>;

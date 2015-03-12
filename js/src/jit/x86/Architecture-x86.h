@@ -11,8 +11,6 @@
 
 namespace js {
 namespace jit {
-static const ptrdiff_t STACK_SLOT_SIZE       = 4;
-static const uint32_t DOUBLE_STACK_ALIGNMENT   = 2;
 
 // In bytes: slots needed for potential memory->memory move spills.
 //   +8 for cycles
@@ -22,9 +20,6 @@ static const uint32_t ION_FRAME_SLACK_SIZE    = 20;
 
 // Only Win64 requires shadow stack space.
 static const uint32_t ShadowStackSpace = 0;
-
-// An offset that is illegal for a local variable's stack allocation.
-static const int32_t INVALID_STACK_SLOT       = -1;
 
 // These offsets are specific to nunboxing, and capture offsets into the
 // components of a js::Value.
@@ -41,17 +36,36 @@ static const uint32_t BAILOUT_TABLE_ENTRY_SIZE    = 5;
 class Registers {
   public:
     typedef JSC::X86Registers::RegisterID Code;
-
+    typedef uint8_t SetType;
+    static uint32_t SetSize(SetType x) {
+        static_assert(sizeof(SetType) == 1, "SetType must be 8 bits");
+        return mozilla::CountPopulation32(x);
+    }
+    static uint32_t FirstBit(SetType x) {
+        return mozilla::CountTrailingZeroes32(x);
+    }
+    static uint32_t LastBit(SetType x) {
+        return 31 - mozilla::CountLeadingZeroes32(x);
+    }
     static const char *GetName(Code code) {
         static const char * const Names[] = { "eax", "ecx", "edx", "ebx",
                                               "esp", "ebp", "esi", "edi" };
         return Names[code];
     }
 
+    static Code FromName(const char *name) {
+        for (size_t i = 0; i < Total; i++) {
+            if (strcmp(GetName(Code(i)), name) == 0)
+                return Code(i);
+        }
+        return Invalid;
+    }
+
     static const Code StackPointer = JSC::X86Registers::esp;
     static const Code Invalid = JSC::X86Registers::invalid_reg;
 
     static const uint32_t Total = 8;
+    static const uint32_t TotalPhys = 8;
     static const uint32_t Allocatable = 7;
 
     static const uint32_t AllMask = (1 << Total) - 1;
@@ -103,20 +117,29 @@ typedef uint8_t PackedRegisterMask;
 class FloatRegisters {
   public:
     typedef JSC::X86Registers::XMMRegisterID Code;
-
+    typedef uint32_t SetType;
     static const char *GetName(Code code) {
         static const char * const Names[] = { "xmm0", "xmm1", "xmm2", "xmm3",
                                               "xmm4", "xmm5", "xmm6", "xmm7" };
         return Names[code];
     }
 
+    static Code FromName(const char *name) {
+        for (size_t i = 0; i < Total; i++) {
+            if (strcmp(GetName(Code(i)), name) == 0)
+                return Code(i);
+        }
+        return Invalid;
+    }
+
     static const Code Invalid = JSC::X86Registers::invalid_xmm;
 
     static const uint32_t Total = 8;
+    static const uint32_t TotalPhys = 8;
     static const uint32_t Allocatable = 7;
 
     static const uint32_t AllMask = (1 << Total) - 1;
-
+    static const uint32_t AllDoubleMask = AllMask;
     static const uint32_t VolatileMask = AllMask;
     static const uint32_t NonVolatileMask = 0;
 
@@ -127,6 +150,100 @@ class FloatRegisters {
 
     static const uint32_t AllocatableMask = AllMask & ~NonAllocatableMask;
 };
+
+template <typename T>
+class TypedRegisterSet;
+
+struct FloatRegister {
+    typedef FloatRegisters Codes;
+    typedef Codes::Code Code;
+    typedef Codes::SetType SetType;
+    static uint32_t SetSize(SetType x) {
+        static_assert(sizeof(SetType) == 4, "SetType must be 32 bits");
+        return mozilla::CountPopulation32(x);
+    }
+    static uint32_t FirstBit(SetType x) {
+        return mozilla::CountTrailingZeroes32(x);
+    }
+    static uint32_t LastBit(SetType x) {
+        return 31 - mozilla::CountLeadingZeroes32(x);
+    }
+    Code code_;
+
+    static FloatRegister FromCode(uint32_t i) {
+        JS_ASSERT(i < FloatRegisters::Total);
+        FloatRegister r = { (FloatRegisters::Code)i };
+        return r;
+    }
+    Code code() const {
+        JS_ASSERT((uint32_t)code_ < FloatRegisters::Total);
+        return code_;
+    }
+    const char *name() const {
+        return FloatRegisters::GetName(code());
+    }
+    bool volatile_() const {
+        return !!((1 << code()) & FloatRegisters::VolatileMask);
+    }
+    bool operator != (FloatRegister other) const {
+        return other.code_ != code_;
+    }
+    bool operator == (FloatRegister other) const {
+        return other.code_ == code_;
+    }
+    bool aliases(FloatRegister other) const {
+        return other.code_ == code_;
+    }
+    uint32_t numAliased() const {
+        return 1;
+    }
+    // N.B. FloatRegister is an explicit outparam here because msvc-2010
+    // miscompiled it on win64 when the value was simply returned
+    void aliased(uint32_t aliasIdx, FloatRegister *ret) {
+        JS_ASSERT(aliasIdx == 0);
+        *ret = *this;
+    }
+    // This function mostly exists for the ARM backend.  It is to ensure that two
+    // floating point registers' types are equivalent.  e.g. S0 is not equivalent
+    // to D16, since S0 holds a float32, and D16 holds a Double.
+    // Since all floating point registers on x86 and x64 are equivalent, it is
+    // reasonable for this function to do the same.
+    bool equiv(FloatRegister other) const {
+        return true;
+    }
+    uint32_t size() const {
+        return sizeof(double);
+    }
+    uint32_t numAlignedAliased() const {
+        return 1;
+    }
+    void alignedAliased(uint32_t aliasIdx, FloatRegister *ret) {
+        JS_ASSERT(aliasIdx == 0);
+        *ret = *this;
+    }
+    static TypedRegisterSet<FloatRegister> ReduceSetForPush(const TypedRegisterSet<FloatRegister> &s);
+    static uint32_t GetSizeInBytes(const TypedRegisterSet<FloatRegister> &s);
+    static uint32_t GetPushSizeInBytes(const TypedRegisterSet<FloatRegister> &s);
+    uint32_t getRegisterDumpOffsetInBytes();
+
+
+};
+
+// Arm/D32 has double registers that can NOT be treated as float32
+// and this requires some dances in lowering.
+inline bool
+hasUnaliasedDouble()
+{
+    return false;
+}
+
+// On ARM, Dn aliases both S2n and S2n+1, so if you need to convert a float32
+// to a double as a temporary, you need a temporary double register.
+inline bool
+hasMultiAlias()
+{
+    return false;
+}
 
 } // namespace jit
 } // namespace js

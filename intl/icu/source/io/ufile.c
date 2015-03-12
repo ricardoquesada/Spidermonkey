@@ -1,7 +1,7 @@
 /*
 ******************************************************************************
 *
-*   Copyright (C) 1998-2012, International Business Machines
+*   Copyright (C) 1998-2013, International Business Machines
 *   Corporation and others.  All Rights Reserved.
 *
 ******************************************************************************
@@ -17,6 +17,13 @@
 *   07/19/99    stephen     Fixed to use ucnv's default codepage.
 ******************************************************************************
 */
+
+/*
+ * fileno is not declared when building with GCC in strict mode.
+ */
+#if defined(__GNUC__) && defined(__STRICT_ANSI__)
+#undef __STRICT_ANSI__
+#endif
 
 #include "locmap.h"
 #include "unicode/ustdio.h"
@@ -36,7 +43,7 @@ static UFILE*
 finit_owner(FILE         *f,
               const char *locale,
               const char *codepage,
-              UBool       takeOwnership
+              UBool       take
               )
 {
     UErrorCode status = U_ZERO_ERROR;
@@ -87,7 +94,7 @@ finit_owner(FILE         *f,
     /* else result->fConverter is already memset'd to NULL. */
 
     if(U_SUCCESS(status)) {
-        result->fOwnFile = takeOwnership;
+        result->fOwnFile = take;
     }
     else {
 #if !UCONFIG_NO_FORMATTING
@@ -298,4 +305,10 @@ u_fgetConverter(UFILE *file)
 {
     return file->fConverter;
 }
+#if !UCONFIG_NO_FORMATTING
+U_CAPI const UNumberFormat* U_EXPORT2 u_fgetNumberFormat(UFILE *file)
+{
+    return u_locbund_getNumberFormat(&file->str.fBundle, UNUM_DECIMAL);
+}
+#endif
 

@@ -9,9 +9,11 @@ import json
 import os
 import pkg_resources
 import sys
+import time
 
-from py.xml import html
-from py.xml import raw
+import mozversion
+from xmlgen import html
+from xmlgen import raw
 
 
 class HTMLReportingTestRunnerMixin(object):
@@ -41,26 +43,44 @@ class HTMLReportingTestRunnerMixin(object):
                 f.write(self.generate_html(self.results))
 
     def generate_html(self, results_list):
-
         tests = sum([results.testsRun for results in results_list])
         failures = sum([len(results.failures) for results in results_list])
         expected_failures = sum([len(results.expectedFailures) for results in results_list])
-        skips = sum([len(results.skipped) for results in results_list])
+        skips = sum([len(results.skipped) for results in results_list]) + len(self.manifest_skipped_tests)
         errors = sum([len(results.errors) for results in results_list])
         passes = sum([results.passed for results in results_list])
         unexpected_passes = sum([len(results.unexpectedSuccesses) for results in results_list])
         test_time = self.elapsedtime.total_seconds()
         test_logs = []
 
-        def _extract_html(test, class_name, duration=0, text='', result='passed', debug=None):
-            cls_name = class_name
-            tc_name = unicode(test)
-            tc_time = duration
+        def _extract_html_from_result(result):
+            _extract_html(
+                result=result.result,
+                test_name=result.name,
+                test_class=result.test_class,
+                duration=round(result.duration, 1),
+                debug=result.debug,
+                output='\n'.join(result.output))
+
+        def _extract_html_from_skipped_manifest_test(test):
+            _extract_html(
+                result='skipped',
+                test_name=test['name'],
+                output=test.get('disabled'))
+
+        def _extract_html(result, test_name, test_class='', duration=0,
+                          debug=None, output=''):
             additional_html = []
             debug = debug or {}
             links_html = []
 
-            if result in ['skipped', 'failure', 'expected failure', 'error']:
+            result_map = {
+                'KNOWN-FAIL': 'expected failure',
+                'PASS': 'passed',
+                'UNEXPECTED-FAIL': 'failure',
+                'UNEXPECTED-PASS': 'unexpected pass'}
+
+            if result.upper() in ['SKIPPED', 'UNEXPECTED-FAIL', 'KNOWN-FAIL', 'ERROR']:
                 if debug.get('screenshot'):
                     screenshot = 'data:image/png;base64,%s' % debug['screenshot']
                     additional_html.append(html.div(
@@ -85,7 +105,7 @@ class HTMLReportingTestRunnerMixin(object):
                         pass
 
                 log = html.div(class_='log')
-                for line in text.splitlines():
+                for line in output.splitlines():
                     separator = line.startswith(' ' * 10)
                     if separator:
                         log.append(line[:80])
@@ -98,29 +118,62 @@ class HTMLReportingTestRunnerMixin(object):
                 additional_html.append(log)
 
             test_logs.append(html.tr([
-                html.td(result.title(), class_='col-result'),
-                html.td(cls_name, class_='col-class'),
-                html.td(tc_name, class_='col-name'),
-                html.td(tc_time, class_='col-duration'),
+                html.td(result_map.get(result, result).title(), class_='col-result'),
+                html.td(test_class, class_='col-class'),
+                html.td(test_name, class_='col-name'),
+                html.td(str(duration), class_='col-duration'),
                 html.td(links_html, class_='col-links'),
                 html.td(additional_html, class_='debug')],
-                class_=result.lower() + ' results-table-row'))
+                class_=result_map.get(result, result).lower() + ' results-table-row'))
 
         for results in results_list:
-            for test in results.tests_passed:
-                _extract_html(test.name, test.test_class)
-            for result in results.skipped:
-                _extract_html(result.name, result.test_class, text='\n'.join(result.output), result='skipped')
-            for result in results.failures:
-                _extract_html(result.name, result.test_class, text='\n'.join(result.output), result='failure', debug=result.debug)
-            for result in results.expectedFailures:
-                _extract_html(result.name, result.test_class, text='\n'.join(result.output), result='expected failure', debug=result.debug)
-            for test in results.unexpectedSuccesses:
-                _extract_html(test.name, test.test_class, result='unexpected pass')
-            for result in results.errors:
-                _extract_html(result.name, result.test_class, text='\n'.join(result.output), result='error', debug=result.debug)
+            [_extract_html_from_result(test) for test in results.tests]
+
+        for test in self.manifest_skipped_tests:
+            _extract_html_from_skipped_manifest_test(test)
 
         generated = datetime.datetime.now()
+        date_format = '%d %b %Y %H:%M:%S'
+        version = {}
+
+        if self.capabilities:
+            version.update({
+                'application_buildid': self.capabilities.get('appBuildId'),
+                'application_version': self.capabilities.get('version'),
+                'device_id': self.capabilities.get('device')})
+
+        if self.bin or self.capabilities.get('device') != 'desktop':
+            version.update(mozversion.get_version(
+                binary=self.bin, sources=self.sources,
+                dm_type=os.environ.get('DM_TRANS', 'adb')))
+
+        configuration = {
+            'Gecko version': version.get('application_version'),
+            'Gecko build': version.get('application_buildid'),
+            'Gecko revision': version.get('application_revision'),
+            'Gaia date': version.get('gaia_date') and
+            time.strftime(date_format, time.localtime(
+                int(version.get('gaia_date')))),
+            'Device identifier': version.get('device_id'),
+            'Device firmware (date)': version.get('device_firmware_date') and
+            time.strftime(date_format, time.localtime(
+                int(version.get('device_firmware_date')))),
+            'Device firmware (incremental)': version.get('device_firmware_version_incremental'),
+            'Device firmware (release)': version.get('device_firmware_version_release')}
+
+        if version.get('application_changeset') and version.get('application_repository'):
+            configuration['Gecko revision'] = html.a(
+                version.get('application_changeset'),
+                href='/'.join([version.get('application_repository'),
+                               version.get('application_changeset')]),
+                target='_blank')
+
+        if version.get('gaia_changeset'):
+            configuration['Gaia revision'] = html.a(
+                version.get('gaia_changeset')[:12],
+                href='https://github.com/mozilla-b2g/gaia/commit/%s' % version.get('gaia_changeset'),
+                target='_blank')
+
         doc = html.html(
             html.head(
                 html.meta(charset='utf-8'),
@@ -136,10 +189,14 @@ class HTMLReportingTestRunnerMixin(object):
                 html.script(raw(pkg_resources.resource_string(
                     __name__, os.path.sep.join(['resources', 'htmlreport', 'main.js']))),
                     type='text/javascript'),
-                html.p('Report generated on %s at %s by %s %s' % (
+                html.p('Report generated on %s at %s by %s version %s' % (
                     generated.strftime('%d-%b-%Y'),
                     generated.strftime('%H:%M:%S'),
                     self.html_name, self.html_version)),
+                html.h2('Configuration'),
+                html.table(
+                    [html.tr(html.td(k), html.td(v)) for k, v in sorted(configuration.items()) if v],
+                    id='configuration'),
                 html.h2('Summary'),
                 html.p('%i tests ran in %i seconds.' % (tests, test_time),
                        html.br(),
@@ -184,6 +241,7 @@ class HTMLReportingTestResultMixin(object):
         test.debug = None
         if result_actual is not 'PASS':
             test.debug = self.gather_debug()
+        return result_expected, result_actual, output, context
 
     def gather_debug(self):
         debug = {}

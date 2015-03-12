@@ -5,7 +5,6 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 UNIFIED_SOURCES += [
-    'nsCharsetConverterManager.cpp',
     'nsConverterInputStream.cpp',
     'nsConverterOutputStream.cpp',
     'nsCP1252ToUnicode.cpp',
@@ -27,7 +26,6 @@ UNIFIED_SOURCES += [
     '../ucvcn/nsGBKConvUtil.cpp',
     '../ucvcn/nsGBKToUnicode.cpp',
     '../ucvcn/nsHZToUnicode.cpp',
-    '../ucvcn/nsISO2022CNToUnicode.cpp',
     '../ucvcn/nsUnicodeToGB2312V2.cpp',
     '../ucvcn/nsUnicodeToGBK.cpp',
     '../ucvcn/nsUnicodeToHZ.cpp',
@@ -58,10 +56,7 @@ UNIFIED_SOURCES += [
 
 UNIFIED_SOURCES += [
     '../ucvko/nsCP949ToUnicode.cpp',
-    '../ucvko/nsISO2022KRToUnicode.cpp',
-    '../ucvko/nsJohabToUnicode.cpp',
     '../ucvko/nsUnicodeToCP949.cpp',
-    '../ucvko/nsUnicodeToJohab.cpp',
 ]
 
 UNIFIED_SOURCES += [
@@ -111,11 +106,7 @@ UNIFIED_SOURCES += [
     '../ucvlatin/nsMacIcelandicToUnicode.cpp',
     '../ucvlatin/nsMacRomanianToUnicode.cpp',
     '../ucvlatin/nsMacTurkishToUnicode.cpp',
-    '../ucvlatin/nsMUTF7ToUnicode.cpp',
-    '../ucvlatin/nsT61ToUnicode.cpp',
-    '../ucvlatin/nsTCVN5712ToUnicode.cpp',
     '../ucvlatin/nsTIS620ToUnicode.cpp',
-    '../ucvlatin/nsUnicodeToAdobeEuro.cpp',
     '../ucvlatin/nsUnicodeToARMSCII8.cpp',
     '../ucvlatin/nsUnicodeToAscii.cpp',
     '../ucvlatin/nsUnicodeToCP1250.cpp',
@@ -162,23 +153,11 @@ UNIFIED_SOURCES += [
     '../ucvlatin/nsUnicodeToMacIcelandic.cpp',
     '../ucvlatin/nsUnicodeToMacRomanian.cpp',
     '../ucvlatin/nsUnicodeToMacTurkish.cpp',
-    '../ucvlatin/nsUnicodeToMUTF7.cpp',
-    '../ucvlatin/nsUnicodeToSymbol.cpp',
-    '../ucvlatin/nsUnicodeToT61.cpp',
-    '../ucvlatin/nsUnicodeToTCVN5712.cpp',
     '../ucvlatin/nsUnicodeToTIS620.cpp',
-    '../ucvlatin/nsUnicodeToTSCII.cpp',
     '../ucvlatin/nsUnicodeToUserDefined.cpp',
     '../ucvlatin/nsUnicodeToUTF16.cpp',
-    '../ucvlatin/nsUnicodeToUTF7.cpp',
-    '../ucvlatin/nsUnicodeToVISCII.cpp',
-    '../ucvlatin/nsUnicodeToVPS.cpp',
-    '../ucvlatin/nsUnicodeToZapfDingbat.cpp',
     '../ucvlatin/nsUserDefinedToUnicode.cpp',
     '../ucvlatin/nsUTF16ToUnicode.cpp',
-    '../ucvlatin/nsUTF7ToUnicode.cpp',
-    '../ucvlatin/nsVISCIIToUnicode.cpp',
-    '../ucvlatin/nsVPSToUnicode.cpp',
 ]
 
 UNIFIED_SOURCES += [
@@ -187,11 +166,6 @@ UNIFIED_SOURCES += [
     '../ucvtw/nsUnicodeToBIG5.cpp',
     '../ucvtw/nsUnicodeToBIG5HKSCS.cpp',
     '../ucvtw/nsUnicodeToHKSCS.cpp',
-]
-
-UNIFIED_SOURCES += [
-    '../ucvtw2/nsEUCTWToUnicode.cpp',
-    '../ucvtw2/nsUnicodeToEUCTW.cpp',
 ]
 
 UNIFIED_SOURCES += [
@@ -204,20 +178,9 @@ UNIFIED_SOURCES += [
     '../util/uscan.c',
 ]
 
-if CONFIG['OS_ARCH'] == 'OS2':
-    UNIFIED_SOURCES += [
-        '../ucvibm/nsCP1125ToUnicode.cpp',
-        '../ucvibm/nsCP1131ToUnicode.cpp',
-        '../ucvibm/nsCP869ToUnicode.cpp',
-        '../ucvibm/nsUnicodeToCP1125.cpp',
-        '../ucvibm/nsUnicodeToCP1131.cpp',
-        '../ucvibm/nsUnicodeToCP869.cpp',
-    ]
-
 if CONFIG['INTEL_ARCHITECTURE']:
-    SOURCES += [
-        'nsUTF8ToUnicodeSSE2.cpp',
-    ]
+    SOURCES += ['nsUTF8ToUnicodeSSE2.cpp']
+    SOURCES['nsUTF8ToUnicodeSSE2.cpp'].flags += CONFIG['SSE2_FLAGS']
 
 MSVC_ENABLE_PGO = True
 
@@ -228,8 +191,8 @@ LOCAL_INCLUDES += [
     '../ucvko',
     '../ucvlatin',
     '../ucvtw',
-    '../ucvtw2',
     '../util',
 ]
 
 FINAL_LIBRARY = 'xul'
+

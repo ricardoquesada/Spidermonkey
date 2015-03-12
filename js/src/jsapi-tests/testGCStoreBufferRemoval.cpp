@@ -13,15 +13,26 @@
 using namespace JS;
 using namespace js;
 
+struct AutoIgnoreRootingHazards {
+    // Force a nontrivial destructor so the compiler sees the whole RAII scope
+    static volatile int depth;
+    AutoIgnoreRootingHazards() { depth++; }
+    ~AutoIgnoreRootingHazards() { depth--; }
+};
+volatile int AutoIgnoreRootingHazards::depth = 0;
+
 BEGIN_TEST(testGCStoreBufferRemoval)
 {
     // Sanity check - objects start in the nursery and then become tenured.
     JS_GC(cx->runtime());
     JS::RootedObject obj(cx, NurseryObject());
-    CHECK(js::gc::IsInsideNursery(rt, obj.get()));
+    CHECK(js::gc::IsInsideNursery(obj.get()));
     JS_GC(cx->runtime());
-    CHECK(!js::gc::IsInsideNursery(rt, obj.get()));
+    CHECK(!js::gc::IsInsideNursery(obj.get()));
     JS::RootedObject tenuredObject(cx, obj);
+
+    // Hide the horrors herein from the static rooting analysis.
+    AutoIgnoreRootingHazards ignore;
 
     // Test removal of store buffer entries added by RelocatablePtr<T>.
     {
@@ -107,7 +118,7 @@ BEGIN_TEST(testGCStoreBufferRemoval)
 
 JSObject *NurseryObject()
 {
-    return JS_NewObject(cx, nullptr, nullptr, nullptr);
+    return JS_NewObject(cx, nullptr, JS::NullPtr(), JS::NullPtr());
 }
 END_TEST(testGCStoreBufferRemoval)
 

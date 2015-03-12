@@ -63,19 +63,15 @@ class Handle(Common):
 class MutableHandle(Common):
     handle = True
 
-@template_pretty_printer("js::EncapsulatedPtr")
-class EncapsulatedPtr(Common):
-    member = 'value'
-
-@pretty_printer("js::EncapsulatedValue")
-class EncapsulatedValue(Common):
+@template_pretty_printer("js::BarrieredBase")
+class PreBarriered(Common):
     member = 'value'
 
 # Return the referent of a HeapPtr, Rooted, or Handle.
 def deref(root):
     tag = root.type.strip_typedefs().tag
     if not tag:
-        raise TypeError, "Can't dereference type with no structure tag: %s" % (root.type,)
+        raise TypeError("Can't dereference type with no structure tag: %s" % (root.type,))
     elif tag.startswith('js::HeapPtr<'):
         return root['value']
     elif tag.startswith('JS::Rooted<'):

@@ -9,8 +9,8 @@
 
 #include "jstypes.h"
 
-#include "jit/IonFrameIterator.h"
 #include "jit/IonFrames.h"
+#include "jit/JitFrameIterator.h"
 #include "vm/Stack.h"
 
 namespace js {
@@ -91,9 +91,6 @@ namespace jit {
 
 static const BailoutId INVALID_BAILOUT_ID = BailoutId(-1);
 
-static const uint32_t BAILOUT_KIND_BITS = 3;
-static const uint32_t BAILOUT_RESUME_BITS = 1;
-
 // Keep this arbitrarily small for now, for testing.
 static const uint32_t BAILOUT_TABLE_SIZE = 16;
 
@@ -102,6 +99,10 @@ static const uint32_t BAILOUT_TABLE_SIZE = 16;
 static const uint32_t BAILOUT_RETURN_OK = 0;
 static const uint32_t BAILOUT_RETURN_FATAL_ERROR = 1;
 static const uint32_t BAILOUT_RETURN_OVERRECURSED = 2;
+
+// This address is a magic number made to cause crashes while indicating that we
+// are making an attempt to mark the stack during a bailout.
+static uint8_t * const FAKE_JIT_TOP_FOR_BAILOUT = reinterpret_cast<uint8_t *>(0xba1);
 
 class JitCompartment;
 
@@ -114,8 +115,8 @@ class InvalidationBailoutStack;
 
 // This iterator is constructed at a time where there is no exit frame at the
 // moment. They must be initialized to the first JS frame instead of the exit
-// frame as usually done with IonFrameIterator.
-class IonBailoutIterator : public IonFrameIterator
+// frame as usually done with JitFrameIterator.
+class IonBailoutIterator : public JitFrameIterator
 {
     MachineState machine_;
     uint32_t snapshotOffset_;
@@ -125,14 +126,17 @@ class IonBailoutIterator : public IonFrameIterator
   public:
     IonBailoutIterator(const JitActivationIterator &activations, BailoutStack *sp);
     IonBailoutIterator(const JitActivationIterator &activations, InvalidationBailoutStack *sp);
-    IonBailoutIterator(const JitActivationIterator &activations, const IonFrameIterator &frame);
+    IonBailoutIterator(const JitActivationIterator &activations, const JitFrameIterator &frame);
 
     SnapshotOffset snapshotOffset() const {
-        JS_ASSERT(topIonScript_);
-        return snapshotOffset_;
+        if (topIonScript_)
+            return snapshotOffset_;
+        return osiIndex()->snapshotOffset();
     }
-    const MachineState &machineState() const {
-        return machine_;
+    const MachineState machineState() const {
+        if (topIonScript_)
+            return machine_;
+        return JitFrameIterator::machineState();
     }
     size_t topFrameSize() const {
         JS_ASSERT(topIonScript_);
@@ -141,7 +145,15 @@ class IonBailoutIterator : public IonFrameIterator
     IonScript *ionScript() const {
         if (topIonScript_)
             return topIonScript_;
-        return IonFrameIterator::ionScript();
+        return JitFrameIterator::ionScript();
+    }
+
+    IonBailoutIterator &operator++() {
+        JitFrameIterator::operator++();
+        // Clear topIonScript_ now that we've advanced past it, so that
+        // snapshotOffset() and machineState() reflect the current script.
+        topIonScript_ = nullptr;
+        return *this;
     }
 
     void dump() const;
@@ -158,18 +170,52 @@ uint32_t Bailout(BailoutStack *sp, BaselineBailoutInfo **info);
 uint32_t InvalidationBailout(InvalidationBailoutStack *sp, size_t *frameSizeOut,
                              BaselineBailoutInfo **info);
 
-struct ExceptionBailoutInfo
+class ExceptionBailoutInfo
 {
-    size_t frameNo;
-    jsbytecode *resumePC;
-    size_t numExprSlots;
+    size_t frameNo_;
+    jsbytecode *resumePC_;
+    size_t numExprSlots_;
+
+  public:
+    ExceptionBailoutInfo(size_t frameNo, jsbytecode *resumePC, size_t numExprSlots)
+      : frameNo_(frameNo),
+        resumePC_(resumePC),
+        numExprSlots_(numExprSlots)
+    { }
+
+    ExceptionBailoutInfo()
+      : frameNo_(0),
+        resumePC_(nullptr),
+        numExprSlots_(0)
+    { }
+
+    bool catchingException() const {
+        return !!resumePC_;
+    }
+    bool propagatingIonExceptionForDebugMode() const {
+        return !resumePC_;
+    }
+
+    size_t frameNo() const {
+        MOZ_ASSERT(catchingException());
+        return frameNo_;
+    }
+    jsbytecode *resumePC() const {
+        MOZ_ASSERT(catchingException());
+        return resumePC_;
+    }
+    size_t numExprSlots() const {
+        MOZ_ASSERT(catchingException());
+        return numExprSlots_;
+    }
 };
 
 // Called from the exception handler to enter a catch or finally block.
 // Returns a BAILOUT_* error code.
 uint32_t ExceptionHandlerBailout(JSContext *cx, const InlineFrameIterator &frame,
+                                 ResumeFromException *rfe,
                                  const ExceptionBailoutInfo &excInfo,
-                                 BaselineBailoutInfo **bailoutInfo);
+                                 bool *overrecursed);
 
 uint32_t FinishBailoutToBaseline(BaselineBailoutInfo *bailoutInfo);
 

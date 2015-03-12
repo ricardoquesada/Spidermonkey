@@ -24,7 +24,7 @@ using namespace js::gc;
 static void
 CopyStackFrameArguments(const AbstractFramePtr frame, HeapValue *dst, unsigned totalArgs)
 {
-    JS_ASSERT_IF(frame.isStackFrame(), !frame.asStackFrame()->runningInJit());
+    JS_ASSERT_IF(frame.isInterpreterFrame(), !frame.asInterpreterFrame()->runningInJit());
 
     JS_ASSERT(Max(frame.numActualArgs(), frame.numFormalArgs()) == totalArgs);
 
@@ -43,7 +43,7 @@ ArgumentsObject::MaybeForwardToCallObject(AbstractFramePtr frame, JSObject *obj,
     if (frame.fun()->isHeavyweight() && script->argsObjAliasesFormals()) {
         obj->initFixedSlot(MAYBE_CALL_SLOT, ObjectValue(frame.callObj()));
         for (AliasedFormalIter fi(script); fi; fi++)
-            data->args[fi.frameIndex()] = MagicValue(JS_FORWARD_TO_CALL_OBJECT);
+            data->args[fi.frameIndex()] = JS::MagicValueUint32(fi.scopeSlot());
     }
 }
 
@@ -58,7 +58,7 @@ ArgumentsObject::MaybeForwardToCallObject(jit::IonJSFrameLayout *frame, HandleOb
         JS_ASSERT(callObj && callObj->is<CallObject>());
         obj->initFixedSlot(MAYBE_CALL_SLOT, ObjectValue(*callObj.get()));
         for (AliasedFormalIter fi(script); fi; fi++)
-            data->args[fi.frameIndex()] = MagicValue(JS_FORWARD_TO_CALL_OBJECT);
+            data->args[fi.frameIndex()] = JS::MagicValueUint32(fi.scopeSlot());
     }
 }
 #endif
@@ -67,7 +67,7 @@ struct CopyFrameArgs
 {
     AbstractFramePtr frame_;
 
-    CopyFrameArgs(AbstractFramePtr frame)
+    explicit CopyFrameArgs(AbstractFramePtr frame)
       : frame_(frame)
     { }
 
@@ -96,7 +96,7 @@ struct CopyIonJSFrameArgs
 
     void copyArgs(JSContext *, HeapValue *dstBase, unsigned totalArgs) const {
         unsigned numActuals = frame_->numActualArgs();
-        unsigned numFormals = jit::CalleeTokenToFunction(frame_->calleeToken())->nargs;
+        unsigned numFormals = jit::CalleeTokenToFunction(frame_->calleeToken())->nargs();
         JS_ASSERT(numActuals <= totalArgs);
         JS_ASSERT(numFormals <= totalArgs);
         JS_ASSERT(Max(numActuals, numFormals) == totalArgs);
@@ -129,22 +129,17 @@ struct CopyScriptFrameIterArgs
 {
     ScriptFrameIter &iter_;
 
-    CopyScriptFrameIterArgs(ScriptFrameIter &iter)
+    explicit CopyScriptFrameIterArgs(ScriptFrameIter &iter)
       : iter_(iter)
     { }
 
     void copyArgs(JSContext *cx, HeapValue *dstBase, unsigned totalArgs) const {
-        if (!iter_.isJit()) {
-            CopyStackFrameArguments(iter_.abstractFramePtr(), dstBase, totalArgs);
-            return;
-        }
-
         /* Copy actual arguments. */
-        iter_.ionForEachCanonicalActualArg(cx, CopyToHeap(dstBase));
+        iter_.unaliasedForEachActual(cx, CopyToHeap(dstBase));
 
         /* Define formals which are not part of the actuals. */
         unsigned numActuals = iter_.numActualArgs();
-        unsigned numFormals = iter_.callee()->nargs;
+        unsigned numFormals = iter_.callee()->nargs();
         JS_ASSERT(numActuals <= totalArgs);
         JS_ASSERT(numFormals <= totalArgs);
         JS_ASSERT(Max(numActuals, numFormals) == totalArgs);
@@ -161,7 +156,7 @@ struct CopyScriptFrameIterArgs
      * invalid.
      */
     void maybeForwardToCallObject(JSObject *obj, ArgumentsData *data) {
-        if (!iter_.isJit())
+        if (!iter_.isIon())
             ArgumentsObject::MaybeForwardToCallObject(iter_.abstractFramePtr(), obj, data);
     }
 };
@@ -178,7 +173,7 @@ ArgumentsObject::create(JSContext *cx, HandleScript script, HandleFunction calle
     bool strict = callee->strict();
     const Class *clasp = strict ? &StrictArgumentsObject::class_ : &NormalArgumentsObject::class_;
 
-    RootedTypeObject type(cx, cx->getNewType(clasp, proto.get()));
+    RootedTypeObject type(cx, cx->getNewType(clasp, TaggedProto(proto.get())));
     if (!type)
         return nullptr;
 
@@ -192,7 +187,7 @@ ArgumentsObject::create(JSContext *cx, HandleScript script, HandleFunction calle
     if (!shape)
         return nullptr;
 
-    unsigned numFormals = callee->nargs;
+    unsigned numFormals = callee->nargs();
     unsigned numDeletedWords = NumWordsForBitArrayOfLength(numActuals);
     unsigned numArgs = Max(numActuals, numFormals);
     unsigned numBytes = offsetof(ArgumentsData, args) +
@@ -202,6 +197,13 @@ ArgumentsObject::create(JSContext *cx, HandleScript script, HandleFunction calle
     ArgumentsData *data = (ArgumentsData *)cx->malloc_(numBytes);
     if (!data)
         return nullptr;
+
+    JSObject *obj = JSObject::create(cx, FINALIZE_KIND, GetInitialHeap(GenericObject, clasp),
+                                     shape, type);
+    if (!obj) {
+        js_free(data);
+        return nullptr;
+    }
 
     data->numArgs = numArgs;
     data->callee.init(ObjectValue(*callee.get()));
@@ -213,13 +215,6 @@ ArgumentsObject::create(JSContext *cx, HandleScript script, HandleFunction calle
 
     data->deletedBits = reinterpret_cast<size_t *>(dstEnd);
     ClearAllBitArrayElements(data->deletedBits, numDeletedWords);
-
-    JSObject *obj = JSObject::create(cx, FINALIZE_KIND, GetInitialHeap(GenericObject, clasp),
-                                     shape, type);
-    if (!obj) {
-        js_free(data);
-        return nullptr;
-    }
 
     obj->initFixedSlot(INITIAL_LENGTH_SLOT, Int32Value(numActuals << PACKED_BITS_COUNT));
     obj->initFixedSlot(DATA_SLOT, PrivateValue(data));
@@ -341,7 +336,7 @@ ArgSetter(JSContext *cx, HandleObject obj, HandleId id, bool strict, MutableHand
         unsigned arg = unsigned(JSID_TO_INT(id));
         if (arg < argsobj.initialLength() && !argsobj.isElementDeleted(arg)) {
             argsobj.setElement(cx, arg, vp);
-            if (arg < script->function()->nargs)
+            if (arg < script->functionNonDelazifying()->nargs())
                 types::TypeScript::SetArgument(cx, script, arg, vp);
             return true;
         }
@@ -363,8 +358,7 @@ ArgSetter(JSContext *cx, HandleObject obj, HandleId id, bool strict, MutableHand
 }
 
 static bool
-args_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
-             MutableHandleObject objp)
+args_resolve(JSContext *cx, HandleObject obj, HandleId id, MutableHandleObject objp)
 {
     objp.set(nullptr);
 
@@ -388,8 +382,7 @@ args_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
             return true;
     }
 
-    RootedValue undef(cx, UndefinedValue());
-    if (!baseops::DefineGeneric(cx, argsobj, id, undef, ArgGetter, ArgSetter, attrs))
+    if (!baseops::DefineGeneric(cx, argsobj, id, UndefinedHandleValue, ArgGetter, ArgSetter, attrs))
         return false;
 
     objp.set(argsobj);
@@ -482,8 +475,7 @@ StrictArgSetter(JSContext *cx, HandleObject obj, HandleId id, bool strict, Mutab
 }
 
 static bool
-strictargs_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
-                   MutableHandleObject objp)
+strictargs_resolve(JSContext *cx, HandleObject obj, HandleId id, MutableHandleObject objp)
 {
     objp.set(nullptr);
 
@@ -511,8 +503,7 @@ strictargs_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
         setter = CastAsStrictPropertyOp(argsobj->global().getThrowTypeError());
     }
 
-    RootedValue undef(cx, UndefinedValue());
-    if (!baseops::DefineGeneric(cx, argsobj, id, undef, getter, setter, attrs))
+    if (!baseops::DefineGeneric(cx, argsobj, id, UndefinedHandleValue, getter, setter, attrs))
         return false;
 
     objp.set(argsobj);
@@ -575,7 +566,7 @@ ArgumentsObject::trace(JSTracer *trc, JSObject *obj)
 /*
  * The classes below collaborate to lazily reflect and synchronize actual
  * argument values, argument count, and callee function object stored in a
- * StackFrame with their corresponding property values in the frame's
+ * stack frame with their corresponding property values in the frame's
  * arguments object.
  */
 const Class NormalArgumentsObject::class_ = {
@@ -591,17 +582,10 @@ const Class NormalArgumentsObject::class_ = {
     reinterpret_cast<JSResolveOp>(args_resolve),
     JS_ConvertStub,
     ArgumentsObject::finalize,
-    nullptr,                 /* checkAccess */
     nullptr,                 /* call        */
     nullptr,                 /* hasInstance */
     nullptr,                 /* construct   */
-    ArgumentsObject::trace,
-    {
-        nullptr,    /* outerObject */
-        nullptr,    /* innerObject */
-        nullptr,    /* iteratorObject  */
-        false,      /* isWrappedNative */
-    }
+    ArgumentsObject::trace
 };
 
 /*
@@ -622,15 +606,8 @@ const Class StrictArgumentsObject::class_ = {
     reinterpret_cast<JSResolveOp>(strictargs_resolve),
     JS_ConvertStub,
     ArgumentsObject::finalize,
-    nullptr,                 /* checkAccess */
     nullptr,                 /* call        */
     nullptr,                 /* hasInstance */
     nullptr,                 /* construct   */
-    ArgumentsObject::trace,
-    {
-        nullptr,    /* outerObject */
-        nullptr,    /* innerObject */
-        nullptr,    /* iteratorObject  */
-        false,      /* isWrappedNative */
-    }
+    ArgumentsObject::trace
 };

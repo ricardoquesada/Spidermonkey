@@ -1,6 +1,6 @@
 // We still get onNewScript notifications for code compiled off the main thread.
 
-if (workerThreadCount() === 0)
+if (helperThreadCount() === 0)
   quit(0);
 
 var g = newGlobal();
@@ -14,5 +14,5 @@ dbg.onNewScript = function (s) {
 
 log = '';
 g.offThreadCompileScript('"t" + "wine"');
-assertEq(runOffThreadScript(), 'twine');
+assertEq(g.runOffThreadScript(), 'twine');
 assertEq(log, 's');

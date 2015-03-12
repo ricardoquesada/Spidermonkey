@@ -16,7 +16,7 @@ import re
 # object can't carry the 'enabled' flags for two different printers.)
 def check_for_reused_pretty_printer(fn):
     if hasattr(fn, 'enabled'):
-        raise RuntimeError, ("pretty-printer function %r registered more than once" % fn)
+        raise RuntimeError("pretty-printer function %r registered more than once" % fn)
 
 # a dictionary mapping gdb.Type tags to pretty-printer functions.
 printers_by_tag = {}
@@ -107,7 +107,7 @@ def clear_module_printers(module_name):
         # should remove. (It's not safe to delete entries from a dictionary
         # while we're iterating over it.)
         to_delete = []
-        for (k, v) in d.iteritems():
+        for (k, v) in d.items():
             if v.__module__ == module_name:
                 to_delete.append(k)
                 remove_from_subprinter_list(v)
@@ -174,6 +174,7 @@ class TypeCache(object):
         self.void_ptr_t = self.void_t.pointer()
         try:
             self.JSString_ptr_t = gdb.lookup_type('JSString').pointer()
+            self.JSSymbol_ptr_t = gdb.lookup_type('JS::Symbol').pointer()
             self.JSObject_ptr_t = gdb.lookup_type('JSObject').pointer()
         except gdb.error:
             raise NotSpiderMonkeyObjfileError

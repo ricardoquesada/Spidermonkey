@@ -19,10 +19,10 @@ from marionette import Marionette
 
 class B2GXPCShellTestThread(RemoteXPCShellTestThread):
     # Overridden
-    def launchProcess(self, cmd, stdout, stderr, env, cwd):
+    def launchProcess(self, cmd, stdout, stderr, env, cwd, timeout=None):
         try:
             # This returns 1 even when tests pass - hardcode returncode to 0 (bug 773703)
-            outputFile = RemoteXPCShellTestThread.launchProcess(self, cmd, stdout, stderr, env, cwd)
+            outputFile = RemoteXPCShellTestThread.launchProcess(self, cmd, stdout, stderr, env, cwd, timeout=timeout)
             self.shellReturnCode = 0
         except DMError:
             self.shellReturnCode = -1
@@ -126,10 +126,10 @@ class B2GOptions(RemoteXPCShellOptions):
                         help="the path to a gecko distribution that should "
                         "be installed on the emulator prior to test")
         defaults["geckoPath"] = None
-        self.add_option("--logcat-dir", action="store",
-                        type="string", dest="logcat_dir",
-                        help="directory to store logcat dump files")
-        defaults["logcat_dir"] = None
+        self.add_option("--logdir", action="store",
+                        type="string", dest="logdir",
+                        help="directory to store log files")
+        defaults["logdir"] = None
         self.add_option('--busybox', action='store',
                         type='string', dest='busybox',
                         help="Path to busybox binary to install on device")
@@ -149,13 +149,11 @@ class B2GOptions(RemoteXPCShellOptions):
         if options.geckoPath and not options.emulator:
             self.error("You must specify --emulator if you specify --gecko-path")
 
-        if options.logcat_dir and not options.emulator:
-            self.error("You must specify --emulator if you specify --logcat-dir")
+        if options.logdir and not options.emulator:
+            self.error("You must specify --emulator if you specify --logdir")
         return RemoteXPCShellOptions.verifyRemoteOptions(self, options)
 
-def main():
-    parser = B2GOptions()
-    options, args = parser.parse_args()
+def run_remote_xpcshell(parser, options, args):
     options = parser.verifyRemoteOptions(options)
 
     # Create the Marionette instance
@@ -166,8 +164,8 @@ def main():
             kwargs['noWindow'] = True
         if options.geckoPath:
             kwargs['gecko_path'] = options.geckoPath
-        if options.logcat_dir:
-            kwargs['logcat_dir'] = options.logcat_dir
+        if options.logdir:
+            kwargs['logdir'] = options.logdir
         if options.busybox:
             kwargs['busybox'] = options.busybox
         if options.symbolsPath:
@@ -183,16 +181,19 @@ def main():
             kwargs['connectToRunningEmulator'] = True
     marionette = Marionette(**kwargs)
 
-    # Create the DeviceManager instance
-    kwargs = {'adbPath': options.adb_path}
-    if options.deviceIP:
-        kwargs['host'] = options.deviceIP
-        kwargs['port'] = options.devicePort
-    kwargs['deviceRoot'] = options.remoteTestRoot
-    dm = devicemanagerADB.DeviceManagerADB(**kwargs)
+    if options.emulator:
+        dm = marionette.emulator.dm
+    else:
+        # Create the DeviceManager instance
+        kwargs = {'adbPath': options.adb_path}
+        if options.deviceIP:
+            kwargs['host'] = options.deviceIP
+            kwargs['port'] = options.devicePort
+        kwargs['deviceRoot'] = options.remoteTestRoot
+        dm = devicemanagerADB.DeviceManagerADB(**kwargs)
 
     if not options.remoteTestRoot:
-        options.remoteTestRoot = dm.getDeviceRoot()
+        options.remoteTestRoot = dm.deviceRoot
     xpcsh = B2GXPCShellRemote(dm, options, args)
 
     # we don't run concurrent tests on mobile
@@ -209,6 +210,11 @@ def main():
         traceback.print_exc()
         sys.exit(1)
 
+def main():
+    parser = B2GOptions()
+    options, args = parser.parse_args()
+
+    run_remote_xpcshell(parser, options, args)
 
 # You usually run this like :
 # python runtestsb2g.py --emulator arm --b2gpath $B2GPATH --manifest $MANIFEST [--xre-path $MOZ_HOST_BIN

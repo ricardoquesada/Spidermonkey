@@ -11,11 +11,12 @@ assertEqArray([1,, ...[2]], [1,, 2]);
 assertEqArray([1,, ...[2],, 3,, 4,], [1,, 2,, 3,, 4,]);
 assertEqArray([...[1, 2, 3],,,,], [1, 2, 3,,,,]);
 assertEqArray([,,...[1, 2, 3],,,,], [,,1,2,3,,,,]);
+assertEqArray([...[1, 2, 3],,,,...[]], [1,2,3,,,,]);
 
 assertEqArray([...[undefined]], [undefined]);
 
 // other iterable objects
-assertEqArray([...Int32Array([1, 2, 3])], [1, 2, 3]);
+assertEqArray([...new Int32Array([1, 2, 3])], [1, 2, 3]);
 assertEqArray([..."abc"], ["a", "b", "c"]);
 assertEqArray([...[1, 2, 3][std_iterator]()], [1, 2, 3]);
 assertEqArray([...Set([1, 2, 3])], [1, 2, 3]);
@@ -42,11 +43,8 @@ assertEqArray([...gen()], [1, 2, 3]);
 let a, b = [1, 2, 3];
 assertEqArray([...a=b], [1, 2, 3]);
 
-// According to the draft spec, null and undefined are to be treated as empty
-// arrays. However, they are not iterable. If the spec is not changed to be in
-// terms of iterables, these tests should be fixed.
-//assertEqArray([1, ...null, 2], [1, 2]);
-//assertEqArray([1, ...undefined, 2], [1, 2]);
+// 12.2.4.1.2 Runtime Semantics: ArrayAccumulation
+// If Type(spreadObj) is not Object, then throw a TypeError exception.
 assertThrowsInstanceOf(() => [...null], TypeError);
 assertThrowsInstanceOf(() => [...undefined], TypeError);
 

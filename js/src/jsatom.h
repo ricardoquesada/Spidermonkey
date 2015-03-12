@@ -13,6 +13,7 @@
 
 #include "gc/Barrier.h"
 #include "gc/Rooting.h"
+#include "js/GCAPI.h"
 #include "vm/CommonPropertyNames.h"
 
 class JSAtom;
@@ -27,7 +28,7 @@ namespace js {
 
 JS_STATIC_ASSERT(sizeof(HashNumber) == 4);
 
-static JS_ALWAYS_INLINE js::HashNumber
+static MOZ_ALWAYS_INLINE js::HashNumber
 HashId(jsid id)
 {
     return mozilla::HashGeneric(JSID_BITS(id));
@@ -85,15 +86,31 @@ struct AtomHasher
 {
     struct Lookup
     {
-        const jschar    *chars;
-        size_t          length;
-        const JSAtom    *atom; /* Optional. */
+        union {
+            const JS::Latin1Char *latin1Chars;
+            const jschar *twoByteChars;
+        };
+        bool isLatin1;
+        size_t length;
+        const JSAtom *atom; /* Optional. */
+        JS::AutoCheckCannotGC nogc;
 
-        Lookup(const jschar *chars, size_t length) : chars(chars), length(length), atom(nullptr) {}
-        inline Lookup(const JSAtom *atom);
+        HashNumber hash;
+
+        Lookup(const jschar *chars, size_t length)
+          : twoByteChars(chars), isLatin1(false), length(length), atom(nullptr)
+        {
+            hash = mozilla::HashString(chars, length);
+        }
+        Lookup(const JS::Latin1Char *chars, size_t length)
+          : latin1Chars(chars), isLatin1(true), length(length), atom(nullptr)
+        {
+            hash = mozilla::HashString(chars, length);
+        }
+        inline explicit Lookup(const JSAtom *atom);
     };
 
-    static HashNumber hash(const Lookup &l) { return mozilla::HashString(l.chars, l.length); }
+    static HashNumber hash(const Lookup &l) { return l.hash; }
     static inline bool match(const AtomStateEntry &entry, const Lookup &lookup);
     static void rekey(AtomStateEntry &k, const AtomStateEntry& newKey) { k = newKey; }
 };
@@ -140,7 +157,6 @@ extern const char js_import_str[];
 extern const char js_in_str[];
 extern const char js_instanceof_str[];
 extern const char js_interface_str[];
-extern const char js_let_str[];
 extern const char js_new_str[];
 extern const char js_package_str[];
 extern const char js_private_str[];
@@ -163,34 +179,16 @@ namespace js {
 extern const char * const TypeStrings[];
 
 /*
- * Initialize atom state. Return true on success, false on failure to allocate
- * memory. The caller must zero rt->atomState before calling this function and
- * only call it after js_InitGC successfully returns.
- */
-extern bool
-InitAtoms(JSRuntime *rt);
-
-/*
- * Free and clear atom state including any interned string atoms. This
- * function must be called before js_FinishGC.
- */
-extern void
-FinishAtoms(JSRuntime *rt);
-
-/*
  * Atom tracing and garbage collection hooks.
  */
-extern void
+void
 MarkAtoms(JSTracer *trc);
 
-extern void
-SweepAtoms(JSRuntime *rt);
+void
+MarkPermanentAtoms(JSTracer *trc);
 
-extern bool
-InitCommonNames(JSContext *cx);
-
-extern void
-FinishCommonNames(JSRuntime *rt);
+void
+MarkWellKnownSymbols(JSTracer *trc);
 
 /* N.B. must correspond to boolean tagging behavior. */
 enum InternBehavior
@@ -203,12 +201,17 @@ extern JSAtom *
 Atomize(ExclusiveContext *cx, const char *bytes, size_t length,
         js::InternBehavior ib = js::DoNotInternAtom);
 
+template <typename CharT>
 extern JSAtom *
-AtomizeChars(ExclusiveContext *cx, const jschar *chars, size_t length,
+AtomizeChars(ExclusiveContext *cx, const CharT *chars, size_t length,
              js::InternBehavior ib = js::DoNotInternAtom);
 
 extern JSAtom *
 AtomizeString(ExclusiveContext *cx, JSString *str, js::InternBehavior ib = js::DoNotInternAtom);
+
+extern JSAtom *
+AtomizeSubstring(ExclusiveContext *cx, JSString *str, size_t start, size_t length,
+                 InternBehavior ib = DoNotInternAtom);
 
 template <AllowGC allowGC>
 extern JSAtom *

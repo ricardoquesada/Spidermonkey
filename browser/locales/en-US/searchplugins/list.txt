@@ -1,0 +1,7 @@
+amazondotcom
+bing
+eBay
+google
+twitter
+wikipedia
+yahoo

@@ -1,6 +1,6 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -46,18 +46,13 @@ char*
 xpc_PrintJSStack(JSContext* cx, bool showArgs, bool showLocals,
                  bool showThisProps)
 {
-    char* buf;
-    JSExceptionState *state = JS_SaveExceptionState(cx);
-    if (!state)
-        DebugDump("%s", "Call to a debug function modifying state!\n");
+    JS::AutoSaveExceptionState state(cx);
 
-    JS_ClearPendingException(cx);
-
-    buf = JS::FormatStackDump(cx, nullptr, showArgs, showLocals, showThisProps);
+    char *buf = JS::FormatStackDump(cx, nullptr, showArgs, showLocals, showThisProps);
     if (!buf)
         DebugDump("%s", "Failed to format JavaScript stack for dump\n");
 
-    JS_RestoreExceptionState(cx, state);
+    state.restore();
     return buf;
 }
 
@@ -99,7 +94,7 @@ xpc_DumpEvalInJSStackFrame(JSContext* cx, uint32_t frameno, const char* text)
         return false;
     }
 
-    JSExceptionState* exceptionState = JS_SaveExceptionState(cx);
+    JS::AutoSaveExceptionState exceptionState(cx);
     JSErrorReporter older = JS_SetErrorReporter(cx, xpcDumpEvalErrorReporter);
 
     JS::RootedValue rval(cx);
@@ -109,10 +104,12 @@ xpc_DumpEvalInJSStackFrame(JSContext* cx, uint32_t frameno, const char* text)
         nullptr != (str = ToString(cx, rval)) &&
         bytes.encodeLatin1(cx, str)) {
         DebugDump("%s\n", bytes.ptr());
-    } else
+    } else {
         DebugDump("%s", "eval failed!\n");
+    }
+
     JS_SetErrorReporter(cx, older);
-    JS_RestoreExceptionState(cx, exceptionState);
+    exceptionState.restore();
     return true;
 }
 

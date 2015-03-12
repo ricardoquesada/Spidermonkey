@@ -10,6 +10,8 @@
 // This file declares the data structures used to build a control-flow graph
 // containing MIR.
 
+#include "mozilla/Atomics.h"
+
 #include <stdarg.h>
 
 #include "jscntxt.h"
@@ -29,11 +31,14 @@ namespace jit {
 class MBasicBlock;
 class MIRGraph;
 class MStart;
+class OptimizationInfo;
 
 class MIRGenerator
 {
   public:
-    MIRGenerator(CompileCompartment *compartment, TempAllocator *alloc, MIRGraph *graph, CompileInfo *info);
+    MIRGenerator(CompileCompartment *compartment, const JitCompileOptions &options,
+                 TempAllocator *alloc, MIRGraph *graph,
+                 CompileInfo *info, const OptimizationInfo *optimizationInfo);
 
     TempAllocator &alloc() {
         return *alloc_;
@@ -49,6 +54,9 @@ class MIRGenerator
     }
     CompileInfo &info() {
         return *info_;
+    }
+    const OptimizationInfo &optimizationInfo() const {
+        return *optimizationInfo_;
     }
 
     template <typename T>
@@ -73,14 +81,30 @@ class MIRGenerator
 
     // Whether the main thread is trying to cancel this build.
     bool shouldCancel(const char *why) {
+        maybePause();
         return cancelBuild_;
     }
     void cancel() {
-        cancelBuild_ = 1;
+        cancelBuild_ = true;
+    }
+
+    void maybePause() {
+        if (pauseBuild_ && *pauseBuild_)
+            PauseCurrentHelperThread();
+    }
+    void setPauseFlag(mozilla::Atomic<bool, mozilla::Relaxed> *pauseBuild) {
+        pauseBuild_ = pauseBuild;
+    }
+
+    void disable() {
+        abortReason_ = AbortReason_Disable;
+    }
+    AbortReason abortReason() {
+        return abortReason_;
     }
 
     bool compilingAsmJS() const {
-        return info_->script() == nullptr;
+        return info_->compilingAsmJS();
     }
 
     uint32_t maxAsmJSStackArgBytes() const {
@@ -97,31 +121,29 @@ class MIRGenerator
         JS_ASSERT(compilingAsmJS());
         maxAsmJSStackArgBytes_ = n;
     }
+    void setPerformsCall() {
+        performsCall_ = true;
+    }
+    bool performsCall() const {
+        return performsCall_;
+    }
+    void setNeedsInitialStackAlignment() {
+        needsInitialStackAlignment_ = true;
+    }
+    bool needsInitialStackAlignment() const {
+        JS_ASSERT(compilingAsmJS());
+        return needsInitialStackAlignment_;
+    }
     void setPerformsAsmJSCall() {
         JS_ASSERT(compilingAsmJS());
-        performsAsmJSCall_ = true;
-    }
-    bool performsAsmJSCall() const {
-        JS_ASSERT(compilingAsmJS());
-        return performsAsmJSCall_;
-    }
-    bool noteHeapAccess(AsmJSHeapAccess heapAccess) {
-        return asmJSHeapAccesses_.append(heapAccess);
-    }
-    const Vector<AsmJSHeapAccess, 0, IonAllocPolicy> &heapAccesses() const {
-        return asmJSHeapAccesses_;
+        setPerformsCall();
+        setNeedsInitialStackAlignment();
     }
     void noteMinAsmJSHeapLength(uint32_t len) {
         minAsmJSHeapLength_ = len;
     }
     uint32_t minAsmJSHeapLength() const {
         return minAsmJSHeapLength_;
-    }
-    bool noteGlobalAccess(unsigned offset, unsigned globalDataOffset) {
-        return asmJSGlobalAccesses_.append(AsmJSGlobalAccess(offset, globalDataOffset));
-    }
-    const Vector<AsmJSGlobalAccess, 0, IonAllocPolicy> &globalAccesses() const {
-        return asmJSGlobalAccesses_;
     }
 
     bool modifiesFrameArguments() const {
@@ -133,17 +155,19 @@ class MIRGenerator
 
   protected:
     CompileInfo *info_;
+    const OptimizationInfo *optimizationInfo_;
     TempAllocator *alloc_;
     JSFunction *fun_;
     uint32_t nslots_;
     MIRGraph *graph_;
+    AbortReason abortReason_;
     bool error_;
-    size_t cancelBuild_;
+    mozilla::Atomic<bool, mozilla::Relaxed> *pauseBuild_;
+    mozilla::Atomic<bool, mozilla::Relaxed> cancelBuild_;
 
     uint32_t maxAsmJSStackArgBytes_;
-    bool performsAsmJSCall_;
-    AsmJSHeapAccessVector asmJSHeapAccesses_;
-    AsmJSGlobalAccessVector asmJSGlobalAccesses_;
+    bool performsCall_;
+    bool needsInitialStackAlignment_;
     uint32_t minAsmJSHeapLength_;
 
     // Keep track of whether frame arguments are modified during execution.
@@ -157,6 +181,9 @@ class MIRGenerator
   public:
     AsmJSPerfSpewer &perfSpewer() { return asmJSPerfSpewer_; }
 #endif
+
+  public:
+    const JitCompileOptions options;
 };
 
 } // namespace jit

@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=8 et :
- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,17 +10,19 @@
 
 #include "nsCollationCID.h"
 #include "nsJSUtils.h"
-#include "nsICharsetConverterManager.h"
 #include "nsIPlatformCharset.h"
 #include "nsILocaleService.h"
 #include "nsICollation.h"
 #include "nsUnicharUtils.h"
 #include "nsComponentManagerUtils.h"
 #include "nsServiceManagerUtils.h"
+#include "mozilla/dom/EncodingUtils.h"
+#include "nsIUnicodeDecoder.h"
 
 #include "xpcpublic.h"
 
 using namespace JS;
+using mozilla::dom::EncodingUtils;
 
 /**
  * JS locale callbacks implemented by XPCOM modules.  These are theoretically
@@ -42,7 +43,6 @@ struct XPCLocaleCallbacks : public JSLocaleCallbacks
     localeToLowerCase = LocaleToLowerCase;
     localeCompare = LocaleCompare;
     localeToUnicode = LocaleToUnicode;
-    localeGetErrorMessage = nullptr;
   }
 
   ~XPCLocaleCallbacks()
@@ -101,13 +101,13 @@ private:
   ChangeCase(JSContext* cx, HandleString src, MutableHandleValue rval,
              void(*changeCaseFnc)(const nsAString&, nsAString&))
   {
-    nsDependentJSString depStr;
-    if (!depStr.init(cx, src)) {
+    nsAutoJSString autoStr;
+    if (!autoStr.init(cx, src)) {
       return false;
     }
 
     nsAutoString result;
-    changeCaseFnc(depStr, result);
+    changeCaseFnc(autoStr, result);
 
     JSString *ucstr =
       JS_NewUCStringCopyN(cx, result.get(), result.Length());
@@ -148,14 +148,14 @@ private:
       }
     }
 
-    nsDependentJSString depStr1, depStr2;
-    if (!depStr1.init(cx, src1) || !depStr2.init(cx, src2)) {
+    nsAutoJSString autoStr1, autoStr2;
+    if (!autoStr1.init(cx, src1) || !autoStr2.init(cx, src2)) {
       return false;
     }
 
     int32_t result;
     rv = mCollation->CompareString(nsICollation::kCollationStrengthDefault,
-                                   depStr1, depStr2, &result);
+                                   autoStr1, autoStr2, &result);
 
     if (NS_FAILED(rv)) {
       xpc::Throw(cx, rv);
@@ -191,11 +191,7 @@ private:
             nsAutoCString charset;
             rv = platformCharset->GetDefaultCharsetForLocale(localeStr, charset);
             if (NS_SUCCEEDED(rv)) {
-              // get/create unicode decoder for charset
-              nsCOMPtr<nsICharsetConverterManager> ccm =
-                do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv);
-              if (NS_SUCCEEDED(rv))
-                ccm->GetUnicodeDecoder(charset.get(), getter_AddRefs(mDecoder));
+              mDecoder = EncodingUtils::DecoderForEncoding(charset);
             }
           }
         }
@@ -206,8 +202,8 @@ private:
 
     if (mDecoder) {
       int32_t unicharLength = srcLength;
-      PRUnichar *unichars =
-        (PRUnichar *)JS_malloc(cx, (srcLength + 1) * sizeof(PRUnichar));
+      char16_t *unichars =
+        (char16_t *)JS_malloc(cx, (srcLength + 1) * sizeof(char16_t));
       if (unichars) {
         rv = mDecoder->Convert(src, &srcLength, unichars, &unicharLength);
         if (NS_SUCCEEDED(rv)) {
@@ -216,9 +212,9 @@ private:
 
           // nsIUnicodeDecoder::Convert may use fewer than srcLength PRUnichars
           if (unicharLength + 1 < srcLength + 1) {
-            PRUnichar *shrunkUnichars =
-              (PRUnichar *)JS_realloc(cx, unichars,
-                                      (unicharLength + 1) * sizeof(PRUnichar));
+            char16_t *shrunkUnichars =
+              (char16_t *)JS_realloc(cx, unichars,
+                                      (unicharLength + 1) * sizeof(char16_t));
             if (shrunkUnichars)
               unichars = shrunkUnichars;
           }
@@ -249,7 +245,7 @@ private:
 #endif
 };
 
-NS_EXPORT_(bool)
+bool
 xpc_LocalizeRuntime(JSRuntime *rt)
 {
   JS_SetLocaleCallbacks(rt, new XPCLocaleCallbacks());
@@ -273,7 +269,7 @@ xpc_LocalizeRuntime(JSRuntime *rt)
   return !!JS_SetDefaultLocale(rt, locale.get());
 }
 
-NS_EXPORT_(void)
+void
 xpc_DelocalizeRuntime(JSRuntime *rt)
 {
   XPCLocaleCallbacks* lc = XPCLocaleCallbacks::This(rt);

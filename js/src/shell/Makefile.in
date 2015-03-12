@@ -4,22 +4,13 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-ifdef _MSC_VER
-# unnecessary PGO for js shell.  But gcc cannot turn off pgo because it is
-# necessary to link PGO lib on gcc when a object/static lib are compiled
-# for PGO.
-NO_PROFILE_GUIDED_OPTIMIZE := 1
-endif
-
-LIBS      = $(NSPR_LIBS) $(EDITLINE_LIBS) $(DEPTH)/$(LIB_PREFIX)js_static.$(LIB_SUFFIX) $(MOZ_ZLIB_LIBS)
+LIBS      = $(NSPR_LIBS) $(EDITLINE_LIBS) ../$(LIB_PREFIX)js_static.$(LIB_SUFFIX) $(MOZ_ZLIB_LIBS)
 ifdef MOZ_NATIVE_FFI
 EXTRA_LIBS += $(MOZ_FFI_LIBS)
 endif
 ifdef MOZ_SHARED_ICU
 EXTRA_LIBS += $(MOZ_ICU_LIBS)
 endif
-
-LOCAL_INCLUDES += -I$(topsrcdir) -I..
 
 ifeq ($(OS_ARCH),Darwin)
 ifeq ($(TARGET_CPU),x86_64)
@@ -35,7 +26,7 @@ endif
 # the build directory and in the dist/bin directory.
 PP_TARGETS += SHELL_AUTOLOAD
 SHELL_AUTOLOAD := js-gdb.py.in
-SHELL_AUTOLOAD_FLAGS := -Dtopsrcdir=$(abspath $(topsrcdir))
+SHELL_AUTOLOAD_FLAGS := -Dtopsrcdir=$(abspath $(srcdir)/..)
 
 INSTALL_TARGETS += SHELL_INSTALL_AUTOLOAD
 SHELL_INSTALL_AUTOLOAD_FILES := $(CURDIR)/js-gdb.py
@@ -49,9 +40,9 @@ include $(topsrcdir)/config/rules.mk
 
 # People expect the js shell to wind up in the top-level JS dir.
 libs::
-	$(INSTALL) $(IFLAGS2) $(PROGRAM) $(DEPTH)
+	$(INSTALL) $(IFLAGS2) $(PROGRAM) ..
 
-GARBAGE += $(DEPTH)/$(PROGRAM)
+GARBAGE += ../$(PROGRAM)
 
 install:: $(PROGRAM)
 	$(SYSINSTALL) $^ $(DESTDIR)$(bindir)

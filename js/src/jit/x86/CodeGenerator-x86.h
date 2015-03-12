@@ -13,7 +13,6 @@
 namespace js {
 namespace jit {
 
-class OutOfLineLoadTypedArrayOutOfBounds;
 class OutOfLineTruncate;
 class OutOfLineTruncateFloat32;
 
@@ -30,20 +29,17 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
     ValueOperand ToTempValue(LInstruction *ins, size_t pos);
 
     template<typename T>
-    bool loadViewTypeElement(ArrayBufferView::ViewType vt, const T &srcAddr,
+    bool loadAndNoteViewTypeElement(Scalar::Type vt, const T &srcAddr,
                              const LDefinition *out);
     template<typename T>
-    void loadNonFloat32ViewTypeElement(ArrayBufferView::ViewType vt, const T &srcAddr,
+    void loadViewTypeElement(Scalar::Type vt, const T &srcAddr,
                                        const LDefinition *out);
     template<typename T>
-    bool storeViewTypeElement(ArrayBufferView::ViewType vt, const LAllocation *value,
-                              const T &dstAddr);
+    void storeAndNoteViewTypeElement(Scalar::Type vt, const LAllocation *value,
+                                     const T &dstAddr);
     template<typename T>
-    void storeNonFloat32ViewTypeElement(ArrayBufferView::ViewType vt, const LAllocation *value,
-                                        const T &dstAddr);
-    void storeElementTyped(const LAllocation *value, MIRType valueType, MIRType elementType,
-                           const Register &elements, const LAllocation *index);
-
+    void storeViewTypeElement(Scalar::Type vt, const LAllocation *value,
+                              const T &dstAddr);
   public:
     CodeGeneratorX86(MIRGenerator *gen, LIRGraph *graph, MacroAssembler *masm);
 
@@ -52,12 +48,6 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
     bool visitBoxFloatingPoint(LBoxFloatingPoint *box);
     bool visitUnbox(LUnbox *unbox);
     bool visitValue(LValue *value);
-    bool visitLoadSlotV(LLoadSlotV *load);
-    bool visitLoadSlotT(LLoadSlotT *load);
-    bool visitStoreSlotT(LStoreSlotT *store);
-    bool visitLoadElementT(LLoadElementT *load);
-    bool visitImplicitThis(LImplicitThis *lir);
-    bool visitInterruptCheck(LInterruptCheck *lir);
     bool visitCompareB(LCompareB *lir);
     bool visitCompareBAndBranch(LCompareBAndBranch *lir);
     bool visitCompareV(LCompareV *lir);
@@ -75,7 +65,6 @@ class CodeGeneratorX86 : public CodeGeneratorX86Shared
     bool visitAsmJSLoadFuncPtr(LAsmJSLoadFuncPtr *ins);
     bool visitAsmJSLoadFFIFunc(LAsmJSLoadFFIFunc *ins);
 
-    bool visitOutOfLineLoadTypedArrayOutOfBounds(OutOfLineLoadTypedArrayOutOfBounds *ool);
     bool visitOutOfLineTruncate(OutOfLineTruncate *ool);
     bool visitOutOfLineTruncateFloat32(OutOfLineTruncateFloat32 *ool);
 

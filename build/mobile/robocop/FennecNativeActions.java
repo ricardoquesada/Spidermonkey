@@ -4,33 +4,26 @@
 
 package org.mozilla.gecko;
 
-import org.mozilla.gecko.GeckoAppShell;
-import org.mozilla.gecko.gfx.GeckoLayerClient;
-import org.mozilla.gecko.gfx.GeckoLayerClient.DrawListener;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+
+import org.json.JSONObject;
+import org.mozilla.gecko.FennecNativeDriver.LogLevel;
+import org.mozilla.gecko.gfx.LayerView;
+import org.mozilla.gecko.gfx.LayerView.DrawListener;
 import org.mozilla.gecko.mozglue.GeckoLoader;
 import org.mozilla.gecko.sqlite.SQLiteBridge;
 import org.mozilla.gecko.util.GeckoEventListener;
 
 import android.app.Activity;
 import android.app.Instrumentation;
-import android.content.Context;
 import android.database.Cursor;
 import android.os.SystemClock;
 import android.text.TextUtils;
-import android.util.Log;
 import android.view.KeyEvent;
-import android.view.MotionEvent;
-import android.view.View;
-import android.view.ViewConfiguration;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.ArrayList;
-import org.json.JSONObject;
 
 import com.jayway.android.robotium.solo.Solo;
-
-import static org.mozilla.gecko.FennecNativeDriver.LogLevel;
 
 public class FennecNativeActions implements Actions {
     private static final String LOGTAG = "FennecNativeActions";
@@ -73,13 +66,13 @@ public class FennecNativeActions implements Actions {
                 public void handleMessage(final String event, final JSONObject message) {
                     FennecNativeDriver.log(FennecNativeDriver.LogLevel.DEBUG,
                             "handleMessage called for: " + event + "; expecting: " + mGeckoEvent);
-                    mAsserter.is(event, mGeckoEvent, "Given message occurred for registered event");
+                    mAsserter.is(event, mGeckoEvent, "Given message occurred for registered event: " + message);
 
                     expecter.notifyOfEvent(message);
                 }
             };
 
-            GeckoAppShell.registerEventListener(mGeckoEvent, mListener);
+            EventDispatcher.getInstance().registerGeckoThreadListener(mListener, mGeckoEvent);
             mIsRegistered = true;
         }
 
@@ -87,7 +80,7 @@ public class FennecNativeActions implements Actions {
             blockForEvent(MAX_WAIT_MS, true);
         }
 
-        private void blockForEvent(long millis, boolean failOnTimeout) {
+        public void blockForEvent(long millis, boolean failOnTimeout) {
             if (!mIsRegistered) {
                 throw new IllegalStateException("listener not registered");
             }
@@ -165,7 +158,7 @@ public class FennecNativeActions implements Actions {
             FennecNativeDriver.log(LogLevel.INFO,
                     "EventExpecter: no longer listening for " + mGeckoEvent);
 
-            GeckoAppShell.unregisterEventListener(mGeckoEvent, mListener);
+            EventDispatcher.getInstance().unregisterGeckoThreadListener(mListener, mGeckoEvent);
             mIsRegistered = false;
         }
 
@@ -215,19 +208,21 @@ public class FennecNativeActions implements Actions {
         private boolean mPaintDone;
         private boolean mListening;
 
-        private final GeckoLayerClient mLayerClient;
+        private final LayerView mLayerView;
+        private final DrawListener mDrawListener;
 
         PaintExpecter() {
             final PaintExpecter expecter = this;
-            mLayerClient = GeckoAppShell.getLayerView().getLayerClient();
-            mLayerClient.setDrawListener(new DrawListener() {
+            mLayerView = GeckoAppShell.getLayerView();
+            mDrawListener = new DrawListener() {
                 @Override
                 public void drawFinished() {
                     FennecNativeDriver.log(FennecNativeDriver.LogLevel.DEBUG,
                             "Received drawFinished notification");
                     expecter.notifyOfEvent();
                 }
-            });
+            };
+            mLayerView.addDrawListener(mDrawListener);
             mListening = true;
         }
 
@@ -236,7 +231,7 @@ public class FennecNativeActions implements Actions {
             this.notifyAll();
         }
 
-        private synchronized void blockForEvent(long millis, boolean failOnTimeout) {
+        public synchronized void blockForEvent(long millis, boolean failOnTimeout) {
             if (!mListening) {
                 throw new IllegalStateException("draw listener not registered");
             }
@@ -330,7 +325,7 @@ public class FennecNativeActions implements Actions {
 
             FennecNativeDriver.log(LogLevel.INFO,
                     "PaintExpecter: no longer listening for events");
-            mLayerClient.setDrawListener(null);
+            mLayerView.removeDrawListener(mDrawListener);
             mListening = false;
         }
     }

@@ -16,7 +16,7 @@ BEGIN_TEST(testRegExpInstanceProperties)
     jsval regexpProtoVal;
     EVAL("RegExp.prototype", &regexpProtoVal);
 
-    JSObject *regexpProto = JSVAL_TO_OBJECT(regexpProtoVal);
+    JSObject *regexpProto = regexpProtoVal.toObjectOrNull();
 
     if (!helper(regexpProto))
         return false;
@@ -27,7 +27,7 @@ BEGIN_TEST(testRegExpInstanceProperties)
 
     jsval regexp;
     EVAL("/foopy/", &regexp);
-    JSObject *robj = JSVAL_TO_OBJECT(regexp);
+    JSObject *robj = regexp.toObjectOrNull();
 
     CHECK(robj->lastProperty());
     CHECK_EQUAL(robj->compartment()->initialRegExpShape, robj->lastProperty());
@@ -39,7 +39,7 @@ BEGIN_TEST(testRegExpInstanceProperties)
  * Do this all in a nested function evaluation so as (hopefully) not to get
  * screwed up by the conservative stack scanner when GCing.
  */
-JS_NEVER_INLINE bool helper(JSObject *regexpProto)
+MOZ_NEVER_INLINE bool helper(JSObject *regexpProto)
 {
     CHECK(!regexpProto->inDictionaryMode());
 

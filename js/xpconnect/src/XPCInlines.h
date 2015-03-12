@@ -1,7 +1,6 @@
-/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=79:
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -82,22 +81,13 @@ XPCCallContext::GetPrevCallContext() const
     return mPrevCallContext;
 }
 
-inline JSObject*
-XPCCallContext::GetFlattenedJSObject() const
-{
-    CHECK_STATE(HAVE_OBJECT);
-    return mFlattenedJSObject;
-}
-
 inline nsISupports*
 XPCCallContext::GetIdentityObject() const
 {
     CHECK_STATE(HAVE_OBJECT);
     if (mWrapper)
         return mWrapper->GetIdentityObject();
-    return mFlattenedJSObject ?
-           static_cast<nsISupports*>(xpc_GetJSPrivate(mFlattenedJSObject)) :
-           nullptr;
+    return nullptr;
 }
 
 inline XPCWrappedNative*
@@ -545,9 +535,10 @@ XPCWrappedNative::SweepTearOffs()
 /***************************************************************************/
 
 inline bool
-xpc_ForcePropertyResolve(JSContext* cx, JSObject* obj, jsid id)
+xpc_ForcePropertyResolve(JSContext* cx, JS::HandleObject obj, jsid idArg)
 {
     JS::RootedValue prop(cx);
+    JS::RootedId id(cx, idArg);
 
     if (!JS_LookupPropertyById(cx, obj, id, &prop))
         return false;

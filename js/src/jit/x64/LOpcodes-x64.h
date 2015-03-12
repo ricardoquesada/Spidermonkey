@@ -13,10 +13,9 @@
     _(UnboxFloatingPoint)           \
     _(DivI)                         \
     _(DivPowTwoI)                   \
-    _(DivSelfI)                     \
+    _(DivOrModConstantI)            \
     _(ModI)                         \
     _(ModPowTwoI)                   \
-    _(ModSelfI)                     \
     _(PowHalfD)                     \
     _(AsmJSUInt32ToDouble)          \
     _(AsmJSUInt32ToFloat32)         \

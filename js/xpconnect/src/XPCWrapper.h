@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 sw=2 et tw=78: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -33,15 +33,6 @@ AttachNewConstructorObject(JSContext *aCx, JS::HandleObject aGlobalObject);
 // do so (the decision is based on the principals of the wrapper and wrapped
 // objects).
 namespace XPCWrapper {
-
-/**
- * Returns the script security manager used by XPConnect.
- */
-inline nsIScriptSecurityManager *
-GetSecurityManager()
-{
-  return nsXPConnect::gScriptSecurityManager;
-}
 
 inline bool
 IsSecurityWrapper(JSObject *wrapper)

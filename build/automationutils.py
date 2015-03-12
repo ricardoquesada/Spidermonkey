@@ -7,8 +7,10 @@ from __future__ import with_statement
 import glob, logging, os, platform, shutil, subprocess, sys, tempfile, urllib2, zipfile
 import base64
 import re
+import os
 from urlparse import urlparse
 from operator import itemgetter
+import signal
 
 try:
   import mozinfo
@@ -72,10 +74,17 @@ DEBUGGER_INFO = {
   },
 
   # valgrind doesn't explain much about leaks unless you set the
-  # '--leak-check=full' flag.
+  # '--leak-check=full' flag. But there are a lot of objects that are
+  # semi-deliberately leaked, so we set '--show-possibly-lost=no' to avoid
+  # uninteresting output from those objects. We set '--smc-check==all-non-file'
+  # and '--vex-iropt-register-updates=allregs-at-mem-access' so that valgrind
+  # deals properly with JIT'd JavaScript code.
   "valgrind": {
     "interactive": False,
-    "args": "--leak-check=full"
+    "args": " ".join(["--leak-check=full",
+                      "--show-possibly-lost=no",
+                      "--smc-check=all-non-file",
+                      "--vex-iropt-register-updates=allregs-at-mem-access"])
   }
 }
 
@@ -147,6 +156,43 @@ def isURL(thing):
   """Return True if |thing| looks like a URL."""
   # We want to download URLs like http://... but not Windows paths like c:\...
   return len(urlparse(thing).scheme) >= 2
+
+# Python does not provide strsignal() even in the very latest 3.x.
+# This is a reasonable fake.
+def strsig(n):
+  # Signal numbers run 0 through NSIG-1; an array with NSIG members
+  # has exactly that many slots
+  _sigtbl = [None]*signal.NSIG
+  for k in dir(signal):
+    if k.startswith("SIG") and not k.startswith("SIG_") and k != "SIGCLD" and k != "SIGPOLL":
+      _sigtbl[getattr(signal, k)] = k
+  # Realtime signals mostly have no names
+  if hasattr(signal, "SIGRTMIN") and hasattr(signal, "SIGRTMAX"):
+    for r in range(signal.SIGRTMIN+1, signal.SIGRTMAX+1):
+      _sigtbl[r] = "SIGRTMIN+" + str(r - signal.SIGRTMIN)
+  # Fill in any remaining gaps
+  for i in range(signal.NSIG):
+    if _sigtbl[i] is None:
+      _sigtbl[i] = "unrecognized signal, number " + str(i)
+  if n < 0 or n >= signal.NSIG:
+    return "out-of-range signal, number "+str(n)
+  return _sigtbl[n]
+
+def printstatus(status, name = ""):
+  # 'status' is the exit status
+  if os.name != 'posix':
+    # Windows error codes are easier to look up if printed in hexadecimal
+    if status < 0:
+      status += 2**32
+    print "TEST-INFO | %s: exit status %x\n" % (name, status)
+  elif os.WIFEXITED(status):
+    print "TEST-INFO | %s: exit %d\n" % (name, os.WEXITSTATUS(status))
+  elif os.WIFSIGNALED(status):
+    # The python stdlib doesn't appear to have strsignal(), alas
+    print "TEST-INFO | {}: killed by {}".format(name,strsig(os.WTERMSIG(status)))
+  else:
+    # This is probably a can't-happen condition on Unix, but let's be defensive
+    print "TEST-INFO | %s: undecodable exit status %04x\n" % (name, status)
 
 def addCommonOptions(parser, defaults={}):
   parser.add_option("--xre-path",
@@ -402,7 +448,7 @@ def systemMemory():
   """
   return int(os.popen("free").readlines()[1].split()[1])
 
-def environment(xrePath, env=None, crashreporter=True, debugger=False, dmdPath=None):
+def environment(xrePath, env=None, crashreporter=True, debugger=False, dmdPath=None, lsanPath=None):
   """populate OS environment variables for mochitest"""
 
   env = os.environ.copy() if env is None else env
@@ -448,14 +494,14 @@ def environment(xrePath, env=None, crashreporter=True, debugger=False, dmdPath=N
   else:
     env['MOZ_CRASHREPORTER_DISABLE'] = '1'
 
-  # Additional temporary logging while we try to debug some intermittent
-  # WebRTC conditions. This is necessary to troubleshoot bugs 841496,
-  # 841150, and 839677 (at least)
-  # Also (temporary) bug 870002 (mediastreamgraph)
-  env.setdefault('NSPR_LOG_MODULES', 'signaling:5,mtransport:3')
-  env['R_LOG_LEVEL'] = '5'
-  env['R_LOG_DESTINATION'] = 'stderr'
-  env['R_LOG_VERBOSE'] = '1'
+  # Crash on non-local network connections.
+  env['MOZ_DISABLE_NONLOCAL_CONNECTIONS'] = '1'
+
+  # Set WebRTC logging in case it is not set yet
+  env.setdefault('NSPR_LOG_MODULES', 'signaling:5,mtransport:5,datachannel:5')
+  env.setdefault('R_LOG_LEVEL', '6')
+  env.setdefault('R_LOG_DESTINATION', 'stderr')
+  env.setdefault('R_LOG_VERBOSE', '1')
 
   # ASan specific environment stuff
   asan = bool(mozinfo.info.get("asan"))
@@ -465,7 +511,9 @@ def environment(xrePath, env=None, crashreporter=True, debugger=False, dmdPath=N
       llvmsym = os.path.join(xrePath, "llvm-symbolizer")
       if os.path.isfile(llvmsym):
         env["ASAN_SYMBOLIZER_PATH"] = llvmsym
-        log.info("ASan using symbolizer at %s", llvmsym)
+        log.info("INFO | runtests.py | ASan using symbolizer at %s", llvmsym)
+      else:
+        log.info("TEST-UNEXPECTED-FAIL | runtests.py | Failed to find ASan symbolizer at %s", llvmsym)
 
       totalMemory = systemMemory()
 
@@ -473,11 +521,30 @@ def environment(xrePath, env=None, crashreporter=True, debugger=False, dmdPath=N
       # the amount of resources required to do the tests. Standard options
       # will otherwise lead to OOM conditions on the current test slaves.
       message = "INFO | runtests.py | ASan running in %s configuration"
+      asanOptions = []
       if totalMemory <= 1024 * 1024 * 4:
         message = message % 'low-memory'
-        env["ASAN_OPTIONS"] = "quarantine_size=50331648"
+        asanOptions = ['quarantine_size=50331648', 'malloc_context_size=5']
       else:
         message = message % 'default memory'
+
+      if lsanPath:
+        log.info("LSan enabled.")
+        asanOptions.append('detect_leaks=1')
+        lsanOptions = ["exitcode=0"]
+        suppressionsFile = os.path.join(lsanPath, 'lsan_suppressions.txt')
+        if os.path.exists(suppressionsFile):
+          log.info("LSan using suppression file " + suppressionsFile)
+          lsanOptions.append("suppressions=" + suppressionsFile)
+        else:
+          log.info("WARNING | runtests.py | LSan suppressions file does not exist! " + suppressionsFile)
+        env["LSAN_OPTIONS"] = ':'.join(lsanOptions)
+        # Run shutdown GCs and CCs to avoid spurious leaks.
+        env['MOZ_CC_RUN_DURING_SHUTDOWN'] = '1'
+
+      if len(asanOptions):
+        env['ASAN_OPTIONS'] = ':'.join(asanOptions)
+
     except OSError,err:
       log.info("Failed determine available memory, disabling ASan low-memory configuration: %s", err.strerror)
     except:
@@ -487,58 +554,38 @@ def environment(xrePath, env=None, crashreporter=True, debugger=False, dmdPath=N
 
   return env
 
-
 def dumpScreen(utilityPath):
-  """dumps the screen to the log file as a data URI"""
+  """dumps a screenshot of the entire screen to a directory specified by
+  the MOZ_UPLOAD_DIR environment variable"""
+  import mozfile
 
-  # Need to figure out what tool and whether it write to a file or stdout
+  # Need to figure out which OS-dependent tool to use
   if mozinfo.isUnix:
     utility = [os.path.join(utilityPath, "screentopng")]
-    imgoutput = 'stdout'
+    utilityname = "screentopng"
   elif mozinfo.isMac:
     utility = ['/usr/sbin/screencapture', '-C', '-x', '-t', 'png']
-    imgoutput = 'file'
+    utilityname = "screencapture"
   elif mozinfo.isWin:
     utility = [os.path.join(utilityPath, "screenshot.exe")]
-    imgoutput = 'file'
-  else:
-    log.warn("Unable to dump screen on platform '%s'", sys.platform)
+    utilityname = "screenshot"
 
-  # Run the capture correctly for the type of capture
-  kwargs = {'stdout': subprocess.PIPE}
-  if imgoutput == 'file':
-    tmpfd, imgfilename = tempfile.mkstemp(prefix='mozilla-test-fail_')
-    os.close(tmpfd)
-    utility.append(imgfilename)
-  elif imgoutput == 'stdout':
-    kwargs.update(dict(bufsize=-1, close_fds=True))
+  # Get dir where to write the screenshot file
+  parent_dir = os.environ.get('MOZ_UPLOAD_DIR', None)
+  if not parent_dir:
+    log.info('Failed to retrieve MOZ_UPLOAD_DIR env var')
+    return
+
+  # Run the capture
   try:
-    dumper = subprocess.Popen(utility, **kwargs)
+    tmpfd, imgfilename = tempfile.mkstemp(prefix='mozilla-test-fail-screenshot_', suffix='.png', dir=parent_dir)
+    os.close(tmpfd)
+    returncode = subprocess.call(utility + [imgfilename])
+    printstatus(returncode, utilityname)
   except OSError, err:
     log.info("Failed to start %s for screenshot: %s",
              utility[0], err.strerror)
     return
-
-  # Check whether the capture utility ran successfully
-  stdout, _ = dumper.communicate()
-  returncode = dumper.poll()
-  if returncode:
-    log.info("%s exited with code %d", utility, returncode)
-    return
-
-  try:
-    if imgoutput == 'stdout':
-      image = stdout
-    elif imgoutput == 'file':
-      with open(imgfilename, 'rb') as imgfile:
-        image = imgfile.read()
-  except IOError, err:
-    log.info("Failed to read image from %s", imgoutput)
-
-  encoded = base64.b64encode(image)
-  uri = "data:image/png;base64,%s" %  encoded
-  log.info("SCREENSHOT: %s", uri)
-  return uri
 
 class ShutdownLeaks(object):
   """
@@ -555,29 +602,34 @@ class ShutdownLeaks(object):
     self.currentTest = None
     self.seenShutdown = False
 
-  def log(self, line):
-    if line[2:11] == "DOMWINDOW":
-      self._logWindow(line)
-    elif line[2:10] == "DOCSHELL":
-      self._logDocShell(line)
-    elif line.startswith("TEST-START"):
-      fileName = line.split(" ")[-1].strip().replace("chrome://mochitests/content/browser/", "")
+  def log(self, message):
+    if message['action'] == 'log':
+        line = message['message']
+        if line[2:11] == "DOMWINDOW":
+          self._logWindow(line)
+        elif line[2:10] == "DOCSHELL":
+          self._logDocShell(line)
+        elif line.startswith("TEST-START | Shutdown"):
+          self.seenShutdown = True
+    elif message['action'] == 'test_start':
+      fileName = message['test'].replace("chrome://mochitests/content/browser/", "")
       self.currentTest = {"fileName": fileName, "windows": set(), "docShells": set()}
-    elif line.startswith("INFO TEST-END"):
+    elif message['action'] == 'test_end':
       # don't track a test if no windows or docShells leaked
       if self.currentTest and (self.currentTest["windows"] or self.currentTest["docShells"]):
         self.tests.append(self.currentTest)
       self.currentTest = None
-    elif line.startswith("INFO TEST-START | Shutdown"):
-      self.seenShutdown = True
 
   def process(self):
+    if not self.seenShutdown:
+      self.logger("TEST-UNEXPECTED-FAIL | ShutdownLeaks | process() called before end of test suite")
+
     for test in self._parseLeakingTests():
       for url, count in self._zipLeakedWindows(test["leakedWindows"]):
-        self.logger("TEST-UNEXPECTED-FAIL | %s | leaked %d window(s) until shutdown [url = %s]", test["fileName"], count, url)
+        self.logger("TEST-UNEXPECTED-FAIL | %s | leaked %d window(s) until shutdown [url = %s]" % (test["fileName"], count, url))
 
       if test["leakedDocShells"]:
-        self.logger("TEST-UNEXPECTED-FAIL | %s | leaked %d docShell(s) until shutdown", test["fileName"], len(test["leakedDocShells"]))
+        self.logger("TEST-UNEXPECTED-FAIL | %s | leaked %d docShell(s) until shutdown" % (test["fileName"], len(test["leakedDocShells"])))
 
   def _logWindow(self, line):
     created = line[:2] == "++"
@@ -586,7 +638,7 @@ class ShutdownLeaks(object):
 
     # log line has invalid format
     if not pid or not serial:
-      self.logger("TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line <%s>", line)
+      self.logger("TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line <%s>" % line)
       return
 
     key = pid + "." + serial
@@ -607,7 +659,7 @@ class ShutdownLeaks(object):
 
     # log line has invalid format
     if not pid or not id:
-      self.logger("TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line <%s>", line)
+      self.logger("TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line <%s>" % line)
       return
 
     key = pid + "." + id
@@ -650,3 +702,98 @@ class ShutdownLeaks(object):
         counted.add(url)
 
     return sorted(counts, key=itemgetter(1), reverse=True)
+
+
+class LSANLeaks(object):
+  """
+  Parses the log when running an LSAN build, looking for interesting stack frames
+  in allocation stacks, and prints out reports.
+  """
+
+  def __init__(self, logger):
+    self.logger = logger
+    self.inReport = False
+    self.foundFrames = set([])
+    self.recordMoreFrames = None
+    self.currStack = None
+    self.maxNumRecordedFrames = 4
+
+    # Don't various allocation-related stack frames, as they do not help much to
+    # distinguish different leaks.
+    unescapedSkipList = [
+      "malloc", "js_malloc", "malloc_", "__interceptor_malloc", "moz_malloc", "moz_xmalloc",
+      "calloc", "js_calloc", "calloc_", "__interceptor_calloc", "moz_calloc", "moz_xcalloc",
+      "realloc","js_realloc", "realloc_", "__interceptor_realloc", "moz_realloc", "moz_xrealloc",
+      "new",
+      "js::MallocProvider",
+    ]
+    self.skipListRegExp = re.compile("^" + "|".join([re.escape(f) for f in unescapedSkipList]) + "$")
+
+    self.startRegExp = re.compile("==\d+==ERROR: LeakSanitizer: detected memory leaks")
+    self.stackFrameRegExp = re.compile("    #\d+ 0x[0-9a-f]+ in ([^(</]+)")
+    self.sysLibStackFrameRegExp = re.compile("    #\d+ 0x[0-9a-f]+ \(([^+]+)\+0x[0-9a-f]+\)")
+
+
+  def log(self, line):
+    if re.match(self.startRegExp, line):
+      self.inReport = True
+      return
+
+    if not self.inReport:
+      return
+
+    if line.startswith("Direct leak"):
+      self._finishStack()
+      self.recordMoreFrames = True
+      self.currStack = []
+      return
+
+    if line.startswith("Indirect leak"):
+      self._finishStack()
+      # Only report direct leaks, in the hope that they are less flaky.
+      self.recordMoreFrames = False
+      return
+
+    if line.startswith("SUMMARY: AddressSanitizer"):
+      self._finishStack()
+      self.inReport = False
+      return
+
+    if not self.recordMoreFrames:
+      return
+
+    stackFrame = re.match(self.stackFrameRegExp, line)
+    if stackFrame:
+      # Split the frame to remove any return types.
+      frame = stackFrame.group(1).split()[-1]
+      if not re.match(self.skipListRegExp, frame):
+        self._recordFrame(frame)
+      return
+
+    sysLibStackFrame = re.match(self.sysLibStackFrameRegExp, line)
+    if sysLibStackFrame:
+      # System library stack frames will never match the skip list,
+      # so don't bother checking if they do.
+      self._recordFrame(sysLibStackFrame.group(1))
+
+    # If we don't match either of these, just ignore the frame.
+    # We'll end up with "unknown stack" if everything is ignored.
+
+  def process(self):
+    for f in self.foundFrames:
+      self.logger("TEST-UNEXPECTED-FAIL | LeakSanitizer | leak at " + f)
+
+  def _finishStack(self):
+    if self.recordMoreFrames and len(self.currStack) == 0:
+      self.currStack = ["unknown stack"]
+    if self.currStack:
+      self.foundFrames.add(", ".join(self.currStack))
+      self.currStack = None
+    self.recordMoreFrames = False
+    self.numRecordedFrames = 0
+
+  def _recordFrame(self, frame):
+    self.currStack.append(frame)
+    self.numRecordedFrames += 1
+    if self.numRecordedFrames >= self.maxNumRecordedFrames:
+      self.recordMoreFrames = False

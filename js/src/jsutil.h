@@ -11,18 +11,26 @@
 #ifndef jsutil_h
 #define jsutil_h
 
+#include "mozilla/Assertions.h"
 #include "mozilla/Compiler.h"
 #include "mozilla/GuardObjects.h"
 
 #include <limits.h>
 
-#ifdef USE_ZLIB
-#include <zlib.h>
-#endif
-
 #include "js/Utility.h"
 
-static JS_ALWAYS_INLINE void *
+#define JS_ALWAYS_TRUE(expr)      MOZ_ALWAYS_TRUE(expr)
+#define JS_ALWAYS_FALSE(expr)     MOZ_ALWAYS_FALSE(expr)
+
+#if defined(JS_DEBUG)
+# define JS_DIAGNOSTICS_ASSERT(expr) MOZ_ASSERT(expr)
+#elif defined(JS_CRASH_DIAGNOSTICS)
+# define JS_DIAGNOSTICS_ASSERT(expr) do { if (MOZ_UNLIKELY(!(expr))) MOZ_CRASH(); } while(0)
+#else
+# define JS_DIAGNOSTICS_ASSERT(expr) ((void) 0)
+#endif
+
+static MOZ_ALWAYS_INLINE void *
 js_memcpy(void *dst_, const void *src_, size_t len)
 {
     char *dst = (char *) dst_;
@@ -147,7 +155,7 @@ InitConst(const T &t)
 }
 
 template <class T, class U>
-JS_ALWAYS_INLINE T &
+MOZ_ALWAYS_INLINE T &
 ImplicitCast(U &u)
 {
     T &t = u;
@@ -196,7 +204,7 @@ AlignBytes(T bytes, U alignment)
     return bytes + ComputeByteAlignment(bytes, alignment);
 }
 
-static JS_ALWAYS_INLINE size_t
+static MOZ_ALWAYS_INLINE size_t
 UnsignedPtrDiff(const void *bigger, const void *smaller)
 {
     return size_t(bigger) - size_t(smaller);
@@ -264,52 +272,38 @@ ClearAllBitArrayElements(size_t *array, size_t length)
         array[i] = 0;
 }
 
-#ifdef USE_ZLIB
-class Compressor
-{
-    /* Number of bytes we should hand to zlib each compressMore() call. */
-    static const size_t CHUNKSIZE = 2048;
-    z_stream zs;
-    const unsigned char *inp;
-    size_t inplen;
-    size_t outbytes;
-
-  public:
-    enum Status {
-        MOREOUTPUT,
-        DONE,
-        CONTINUE,
-        OOM
-    };
-
-    Compressor(const unsigned char *inp, size_t inplen);
-    ~Compressor();
-    bool init();
-    void setOutput(unsigned char *out, size_t outlen);
-    size_t outWritten() const { return outbytes; }
-    /* Compress some of the input. Return true if it should be called again. */
-    Status compressMore();
-};
-
-/*
- * Decompress a string. The caller must know the length of the output and
- * allocate |out| to a string of that length.
- */
-bool DecompressString(const unsigned char *inp, size_t inplen,
-                      unsigned char *out, size_t outlen);
-#endif
-
 }  /* namespace js */
+
+static inline void *
+Poison(void *ptr, int value, size_t num)
+{
+    static bool inited = false;
+    static bool poison = true;
+    if (!inited) {
+        char *env = getenv("JSGC_DISABLE_POISONING");
+        if (env)
+            poison = false;
+        inited = true;
+    }
+
+    if (poison)
+        return memset(ptr, value, num);
+
+    return nullptr;
+}
 
 /* Crash diagnostics */
 #ifdef DEBUG
 # define JS_CRASH_DIAGNOSTICS 1
 #endif
-#ifdef JS_CRASH_DIAGNOSTICS
-# define JS_POISON(p, val, size) memset((p), (val), (size))
+#if defined(JS_CRASH_DIAGNOSTICS) || defined(JS_GC_ZEAL)
+# define JS_POISON(p, val, size) Poison(p, val, size)
 #else
 # define JS_POISON(p, val, size) ((void) 0)
 #endif
+
+/* Bug 984101: Disable labeled poisoning until we have poison checking. */
+#define JS_EXTRA_POISON(p, val, size) ((void) 0)
 
 /* Basic stats */
 #ifdef DEBUG

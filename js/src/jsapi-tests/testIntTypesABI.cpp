@@ -32,11 +32,13 @@
 #include "js/RootingAPI.h"
 #include "js/SliceBudget.h"
 #include "js/StructuredClone.h"
-#include "js/Tracer.h"
+#include "js/TracingAPI.h"
 #include "js/TypeDecls.h"
+#include "js/UbiNode.h"
 #include "js/Utility.h"
 #include "js/Value.h"
 #include "js/Vector.h"
+#include "js/WeakMapPtr.h"
 #include "jsapi-tests/tests.h"
 
 /*

@@ -1,10 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* nsIVariant implementation for xpconnect. */
+
+#include "mozilla/Range.h"
 
 #include "xpcprivate.h"
 #include "nsCxPusher.h"
@@ -23,7 +25,7 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(XPCVariant)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
   NS_IMPL_QUERY_CLASSINFO(XPCVariant)
 NS_INTERFACE_MAP_END
-NS_IMPL_CI_INTERFACE_GETTER2(XPCVariant, XPCVariant, nsIVariant)
+NS_IMPL_CI_INTERFACE_GETTER(XPCVariant, XPCVariant, nsIVariant)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(XPCVariant)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(XPCVariant)
@@ -32,7 +34,7 @@ XPCVariant::XPCVariant(JSContext* cx, jsval aJSVal)
     : mJSVal(aJSVal), mCCGeneration(0)
 {
     nsVariant::Initialize(&mData);
-    if (!JSVAL_IS_PRIMITIVE(mJSVal)) {
+    if (!mJSVal.isPrimitive()) {
         // XXXbholley - The innerization here was from bug 638026. Blake says
         // the basic problem was that we were storing the C++ inner but the JS
         // outer, which meant that, after navigation, the JS inner could be
@@ -42,8 +44,9 @@ XPCVariant::XPCVariant(JSContext* cx, jsval aJSVal)
         // thing, but I'm saving the cleanup here for another day. Blake thinks
         // that we should just not store the WN if we're creating a variant for
         // an outer window.
-        JSObject *obj = JS_ObjectToInnerObject(cx, JSVAL_TO_OBJECT(mJSVal));
-        mJSVal = OBJECT_TO_JSVAL(obj);
+        JS::RootedObject obj(cx, &mJSVal.toObject());
+        obj = JS_ObjectToInnerObject(cx, obj);
+        mJSVal = JS::ObjectValue(*obj);
 
         JSObject *unwrapped = js::CheckedUnwrap(obj, /* stopAtOuter = */ false);
         mReturnRawObject = !(unwrapped && IS_WN_REFLECTOR(unwrapped));
@@ -55,21 +58,18 @@ XPCTraceableVariant::~XPCTraceableVariant()
 {
     jsval val = GetJSValPreserveColor();
 
-    MOZ_ASSERT(JSVAL_IS_GCTHING(val), "Must be traceable or unlinked");
+    MOZ_ASSERT(val.isGCThing(), "Must be traceable or unlinked");
 
-    // If val is JSVAL_STRING, we don't need to clean anything up; simply
-    // removing the string from the root set is good.
-    if (!JSVAL_IS_STRING(val))
-        nsVariant::Cleanup(&mData);
+    nsVariant::Cleanup(&mData);
 
-    if (!JSVAL_IS_NULL(val))
+    if (!val.isNull())
         RemoveFromRootSet();
 }
 
 void XPCTraceableVariant::TraceJS(JSTracer* trc)
 {
-    MOZ_ASSERT(JSVAL_IS_TRACEABLE(mJSVal));
-    JS_SET_TRACING_DETAILS(trc, GetTraceName, this, 0);
+    MOZ_ASSERT(mJSVal.isMarkable());
+    trc->setTracingDetails(GetTraceName, this, 0);
     JS_CallHeapValueTracer(trc, &mJSVal, "XPCTraceableVariant::mJSVal");
 }
 
@@ -77,7 +77,7 @@ void XPCTraceableVariant::TraceJS(JSTracer* trc)
 void
 XPCTraceableVariant::GetTraceName(JSTracer* trc, char *buf, size_t bufsize)
 {
-    JS_snprintf(buf, bufsize, "XPCVariant[0x%p].mJSVal", trc->debugPrintArg);
+    JS_snprintf(buf, bufsize, "XPCVariant[0x%p].mJSVal", trc->debugPrintArg());
 }
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(XPCVariant)
@@ -86,7 +86,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(XPCVariant)
     JS::Value val = tmp->GetJSValPreserveColor();
     if (val.isObjectOrNull()) {
         NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mJSVal");
-        cb.NoteJSChild(JSVAL_TO_OBJECT(val));
+        cb.NoteJSChild(val.toObjectOrNull());
     }
 
     nsVariant::Traverse(tmp->mData, cb);
@@ -95,10 +95,6 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(XPCVariant)
     JS::Value val = tmp->GetJSValPreserveColor();
 
-    // We're sharing val's buffer, clear the pointer to it so Cleanup() won't
-    // try to delete it
-    if (val.isString())
-        tmp->mData.u.wstr.mWStringValue = nullptr;
     nsVariant::Cleanup(&tmp->mData);
 
     if (val.isMarkable()) {
@@ -109,23 +105,20 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(XPCVariant)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 // static
-XPCVariant* XPCVariant::newVariant(JSContext* cx, jsval aJSVal)
+already_AddRefed<XPCVariant>
+XPCVariant::newVariant(JSContext* cx, jsval aJSVal)
 {
-    XPCVariant* variant;
+    nsRefPtr<XPCVariant> variant;
 
-    if (!JSVAL_IS_TRACEABLE(aJSVal))
+    if (!aJSVal.isMarkable())
         variant = new XPCVariant(cx, aJSVal);
     else
         variant = new XPCTraceableVariant(cx, aJSVal);
 
-    if (!variant)
-        return nullptr;
-    NS_ADDREF(variant);
-
     if (!variant->InitializeData(cx))
-        NS_RELEASE(variant);     // Also sets variant to nullptr.
+        return nullptr;
 
-    return variant;
+    return variant.forget();
 }
 
 // Helper class to give us a namespace for the table based code below.
@@ -290,25 +283,18 @@ bool XPCVariant::InitializeData(JSContext* cx)
         if (!str)
             return false;
 
-        // Don't use nsVariant::SetFromWStringWithSize, because that will copy
-        // the data.  Just handle this ourselves.  Note that it's ok to not
-        // copy because we added mJSVal as a GC root.
         MOZ_ASSERT(mData.mType == nsIDataType::VTYPE_EMPTY,
                    "Why do we already have data?");
 
-        // Despite the fact that the variant holds the length, there are
-        // implicit assumptions that mWStringValue[mWStringLength] == 0
-        size_t length;
-        const jschar *chars = JS_GetStringCharsZAndLength(cx, str, &length);
-        if (!chars)
+        size_t length = JS_GetStringLength(str);
+        if (!NS_SUCCEEDED(nsVariant::AllocateWStringWithSize(&mData, length)))
             return false;
 
-        mData.u.wstr.mWStringValue = const_cast<jschar *>(chars);
-        // Use C-style cast, because reinterpret cast from size_t to
-        // uint32_t is not valid on some platforms.
-        mData.u.wstr.mWStringLength = (uint32_t)length;
-        mData.mType = nsIDataType::VTYPE_WSTRING_SIZE_IS;
+        mozilla::Range<jschar> destChars(mData.u.wstr.mWStringValue, length);
+        if (!JS_CopyStringChars(cx, destChars, str))
+            return false;
 
+        MOZ_ASSERT(mData.u.wstr.mWStringValue[length] == '\0');
         return true;
     }
 
@@ -365,10 +351,9 @@ bool XPCVariant::InitializeData(JSContext* cx)
 }
 
 NS_IMETHODIMP
-XPCVariant::GetAsJSVal(jsval* result)
+XPCVariant::GetAsJSVal(MutableHandleValue result)
 {
-  NS_PRECONDITION(result, "null result arg.");
-  *result = GetJSVal();
+  result.set(GetJSVal());
   return NS_OK;
 }
 
@@ -384,10 +369,10 @@ XPCVariant::VariantDataToJS(nsIVariant* variant,
 
     AutoJSContext cx;
     RootedValue realVal(cx);
-    nsresult rv = variant->GetAsJSVal(realVal.address());
+    nsresult rv = variant->GetAsJSVal(&realVal);
 
     if (NS_SUCCEEDED(rv) &&
-        (JSVAL_IS_PRIMITIVE(realVal) ||
+        (realVal.isPrimitive() ||
          type == nsIDataType::VTYPE_ARRAY ||
          type == nsIDataType::VTYPE_EMPTY_ARRAY ||
          type == nsIDataType::VTYPE_ID)) {
@@ -456,7 +441,7 @@ XPCVariant::VariantDataToJS(nsIVariant* variant,
         }
         case nsIDataType::VTYPE_WCHAR:
         {
-            PRUnichar wc;
+            char16_t wc;
             if (NS_FAILED(variant->GetAsWChar(&wc)))
                 return false;
             return XPCConvert::NativeData2JS(pJSVal, (const void*)&wc, TD_WCHAR, &iid, pErr);
@@ -526,7 +511,7 @@ XPCVariant::VariantDataToJS(nsIVariant* variant,
         }
         case nsIDataType::VTYPE_WCHAR_STR:
         {
-            PRUnichar *pwc;
+            char16_t *pwc;
             if (NS_FAILED(variant->GetAsWString(&pwc)))
                 return false;
             bool success = XPCConvert::NativeData2JS(pJSVal, (const void*)&pwc,
@@ -536,7 +521,7 @@ XPCVariant::VariantDataToJS(nsIVariant* variant,
         }
         case nsIDataType::VTYPE_WSTRING_SIZE_IS:
         {
-            PRUnichar *pwc;
+            char16_t *pwc;
             uint32_t size;
             if (NS_FAILED(variant->GetAsWStringWithSize(&size, &pwc)))
                 return false;
@@ -644,7 +629,7 @@ VARIANT_DONE:
         }
         case nsIDataType::VTYPE_EMPTY_ARRAY:
         {
-            JSObject* array = JS_NewArrayObject(cx, 0, nullptr);
+            JSObject* array = JS_NewArrayObject(cx, 0);
             if (!array)
                 return false;
             pJSVal.setObject(*array);
@@ -748,7 +733,7 @@ NS_IMETHODIMP XPCVariant::GetAsChar(char *_retval)
 }
 
 /* wchar getAsWChar (); */
-NS_IMETHODIMP XPCVariant::GetAsWChar(PRUnichar *_retval)
+NS_IMETHODIMP XPCVariant::GetAsWChar(char16_t *_retval)
 {
     return nsVariant::ConvertToWChar(mData, _retval);
 }
@@ -792,7 +777,7 @@ NS_IMETHODIMP XPCVariant::GetAsString(char **_retval)
 }
 
 /* wstring getAsWString (); */
-NS_IMETHODIMP XPCVariant::GetAsWString(PRUnichar **_retval)
+NS_IMETHODIMP XPCVariant::GetAsWString(char16_t **_retval)
 {
     return nsVariant::ConvertToWString(mData, _retval);
 }
@@ -823,7 +808,7 @@ NS_IMETHODIMP XPCVariant::GetAsStringWithSize(uint32_t *size, char **str)
 }
 
 /* void getAsWStringWithSize (out uint32_t size, [size_is (size), retval] out wstring str); */
-NS_IMETHODIMP XPCVariant::GetAsWStringWithSize(uint32_t *size, PRUnichar **str)
+NS_IMETHODIMP XPCVariant::GetAsWStringWithSize(uint32_t *size, char16_t **str)
 {
     return nsVariant::ConvertToWStringWithSize(mData, size, str);
 }

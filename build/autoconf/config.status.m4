@@ -11,24 +11,39 @@ dnl can mess around with things like:
 dnl    AC_SOMETHING(foo,AC_SUBST(),bar)
 define([AC_SUBST],
 [ifdef([AC_SUBST_SET_$1], [m4_fatal([Cannot use AC_SUBST and AC_SUBST_SET on the same variable ($1)])],
+[ifdef([AC_SUBST_LIST_$1], [m4_fatal([Cannot use AC_SUBST and AC_SUBST_LIST on the same variable ($1)])],
 [ifdef([AC_SUBST_$1], ,
 [define([AC_SUBST_$1], )dnl
 AC_DIVERT_PUSH(MOZ_DIVERSION_SUBST)dnl
     (''' $1 ''', r''' [$]$1 ''')
 AC_DIVERT_POP()dnl
-])])])
+])])])])
 
 dnl Like AC_SUBST, but makes the value available as a set in python,
 dnl with values got from the value of the environment variable, split on
 dnl whitespaces.
 define([AC_SUBST_SET],
 [ifdef([AC_SUBST_$1], [m4_fatal([Cannot use AC_SUBST and AC_SUBST_SET on the same variable ($1)])],
+[ifdef([AC_SUBST_LIST$1], [m4_fatal([Cannot use AC_SUBST_LIST and AC_SUBST_SET on the same variable ($1)])],
 [ifdef([AC_SUBST_SET_$1], ,
 [define([AC_SUBST_SET_$1], )dnl
 AC_DIVERT_PUSH(MOZ_DIVERSION_SUBST)dnl
     (''' $1 ''', set(r''' [$]$1 '''.split()))
 AC_DIVERT_POP()dnl
-])])])
+])])])])
+
+dnl Like AC_SUBST, but makes the value available as a list in python,
+dnl with values got from the value of the environment variable, split on
+dnl whitespaces.
+define([AC_SUBST_LIST],
+[ifdef([AC_SUBST_$1], [m4_fatal([Cannot use AC_SUBST and AC_SUBST_LIST on the same variable ($1)])],
+[ifdef([AC_SUBST_SET_$1], [m4_fatal([Cannot use AC_SUBST_SET and AC_SUBST_LIST on the same variable ($1)])],
+[ifdef([AC_SUBST_LIST_$1], ,
+[define([AC_SUBST_LIST_$1], )dnl
+AC_DIVERT_PUSH(MOZ_DIVERSION_SUBST)dnl
+    (''' $1 ''', list(r''' [$]$1 '''.split()))
+AC_DIVERT_POP()dnl
+])])])])
 
 dnl Wrap AC_DEFINE to store values in a format suitable for python.
 dnl autoconf's AC_DEFINE still needs to be used to fill confdefs.h,
@@ -55,7 +70,7 @@ ifelse($#, 2, _MOZ_AC_DEFINE_UNQUOTED($1, $2), $#, 3, _MOZ_AC_DEFINE_UNQUOTED($1
 ])
 
 dnl Replace AC_OUTPUT to create and call a python config.status
-define([_MOZ_AC_OUTPUT],
+define([MOZ_CREATE_CONFIG_STATUS],
 [dnl Top source directory in Windows format (as opposed to msys format).
 WIN_TOP_SRC=
 encoding=utf-8
@@ -99,7 +114,8 @@ dnl form suitable for make.
 topsrcdir = '''${WIN_TOP_SRC:-$srcdir}'''
 if not os.path.isabs(topsrcdir):
     rel = os.path.join(os.path.dirname(<<<__file__>>>), topsrcdir)
-    topsrcdir = os.path.normpath(os.path.abspath(rel))
+    topsrcdir = os.path.abspath(rel)
+topsrcdir = os.path.normpath(topsrcdir)
 
 topobjdir = os.path.abspath(os.path.dirname(<<<__file__>>>))
 
@@ -149,18 +165,28 @@ cat >> $CONFIG_STATUS <<EOF
 ]
 
 __all__ = ['topobjdir', 'topsrcdir', 'defines', 'non_global_defines', 'substs']
+EOF
 
+# We don't want js/src/config.status to do anything in gecko builds.
+if test -z "$BUILDING_JS" -o -n "$JS_STANDALONE"; then
+
+    cat >> $CONFIG_STATUS <<EOF
 dnl Do the actual work
 if __name__ == '__main__':
     args = dict([(name, globals()[name]) for name in __all__])
-    import sys
-dnl Don't rely on virtualenv here. Standalone js doesn't use it.
-    sys.path.append(os.path.join(topsrcdir, ${extra_python_path}'build'))
-    from ConfigStatus import config_status
+    from mozbuild.config_status import config_status
     config_status(**args)
 EOF
+
+fi
+
 changequote([, ])
+
 chmod +x $CONFIG_STATUS
+])
+
+define([MOZ_RUN_CONFIG_STATUS],
+[
 rm -fr confdefs* $ac_clean_files
 dnl Execute config.status, unless --no-create was passed to configure.
 if test "$no_create" != yes && ! ${PYTHON} $CONFIG_STATUS; then
@@ -175,12 +201,11 @@ errprint([$1
 m4exit(1)
 ])
 
-define([AC_OUTPUT], [ifelse($#_$1, 1_, [_MOZ_AC_OUTPUT()],
+define([AC_OUTPUT], [ifelse($#_$1, 1_, [MOZ_CREATE_CONFIG_STATUS()
+MOZ_RUN_CONFIG_STATUS()],
 [m4_fatal([Use CONFIGURE_SUBST_FILES in moz.build files to create substituted files.])]
 )])
 
 define([AC_CONFIG_HEADER],
 [m4_fatal([Use CONFIGURE_DEFINE_FILES in moz.build files to produce header files.])
 ])
-
-AC_SUBST([MOZ_PSEUDO_DERECURSE])

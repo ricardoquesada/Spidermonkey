@@ -32,7 +32,7 @@ struct PcScriptCache
     uint64_t gcNumber;
 
     // List of cache entries.
-    PcScriptCacheEntry entries[Length];
+    mozilla::Array<PcScriptCacheEntry, Length> entries;
 
     void clear(uint64_t gcNumber) {
         for (uint32_t i = 0; i < Length; i++)
@@ -45,8 +45,8 @@ struct PcScriptCache
              JSScript **scriptRes, jsbytecode **pcRes)
     {
         // If a GC occurred, lazily clear the cache now.
-        if (gcNumber != rt->gcNumber) {
-            clear(rt->gcNumber);
+        if (gcNumber != rt->gc.gcNumber()) {
+            clear(rt->gc.gcNumber());
             return false;
         }
 

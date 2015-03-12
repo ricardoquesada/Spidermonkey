@@ -33,37 +33,35 @@ BaselineFrame::popOffScopeChain()
     scopeChain_ = &scopeChain_->as<ScopeObject>().enclosingScope();
 }
 
+inline void
+BaselineFrame::popWith(JSContext *cx)
+{
+    if (MOZ_UNLIKELY(cx->compartment()->debugMode()))
+        DebugScopes::onPopWith(this);
+
+    JS_ASSERT(scopeChain()->is<DynamicWithObject>());
+    popOffScopeChain();
+}
+
 inline bool
 BaselineFrame::pushBlock(JSContext *cx, Handle<StaticBlockObject *> block)
 {
-    JS_ASSERT_IF(hasBlockChain(), blockChain() == *block->enclosingBlock());
+    JS_ASSERT(block->needsClone());
 
-    if (block->needsClone()) {
-        ClonedBlockObject *clone = ClonedBlockObject::create(cx, block, this);
-        if (!clone)
-            return false;
+    ClonedBlockObject *clone = ClonedBlockObject::create(cx, block, this);
+    if (!clone)
+        return false;
+    pushOnScopeChain(*clone);
 
-        pushOnScopeChain(*clone);
-    }
-
-    setBlockChain(*block);
     return true;
 }
 
 inline void
 BaselineFrame::popBlock(JSContext *cx)
 {
-    JS_ASSERT(hasBlockChain());
+    JS_ASSERT(scopeChain_->is<ClonedBlockObject>());
 
-    if (cx->compartment()->debugMode())
-        DebugScopes::onPopBlock(cx, this);
-
-    if (blockChain_->needsClone()) {
-        JS_ASSERT(scopeChain_->as<ClonedBlockObject>().staticBlock() == *blockChain_);
-        popOffScopeChain();
-    }
-
-    setBlockChain(*blockChain_->enclosingBlock());
+    popOffScopeChain();
 }
 
 inline CallObject &

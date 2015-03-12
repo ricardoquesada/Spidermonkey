@@ -119,31 +119,19 @@ uint32_t GetLowercase(uint32_t aCh);
 uint32_t GetTitlecaseForLower(uint32_t aCh); // maps LC to titlecase, UC unchanged
 uint32_t GetTitlecaseForAll(uint32_t aCh); // maps both UC and LC to titlecase
 
-enum ShapingType {
-  SHAPING_DEFAULT   = 0x0001,
-  SHAPING_ARABIC    = 0x0002,
-  SHAPING_HEBREW    = 0x0004,
-  SHAPING_HANGUL    = 0x0008,
-  SHAPING_MONGOLIAN = 0x0010,
-  SHAPING_INDIC     = 0x0020,
-  SHAPING_THAI      = 0x0040
-};
-
-int32_t ScriptShapingType(int32_t aScriptCode);
-
-// A simple iterator for a string of PRUnichar codepoints that advances
+// A simple iterator for a string of char16_t codepoints that advances
 // by Unicode grapheme clusters
 class ClusterIterator
 {
 public:
-    ClusterIterator(const PRUnichar* aText, uint32_t aLength)
+    ClusterIterator(const char16_t* aText, uint32_t aLength)
         : mPos(aText), mLimit(aText + aLength)
 #ifdef DEBUG
         , mText(aText)
 #endif
     { }
 
-    operator const PRUnichar* () const {
+    operator const char16_t* () const {
         return mPos;
     }
 
@@ -154,10 +142,10 @@ public:
     void Next();
 
 private:
-    const PRUnichar* mPos;
-    const PRUnichar* mLimit;
+    const char16_t* mPos;
+    const char16_t* mLimit;
 #ifdef DEBUG
-    const PRUnichar* mText;
+    const char16_t* mText;
 #endif
 };
 

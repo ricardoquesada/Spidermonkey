@@ -17,23 +17,30 @@ static const JSClass global_class = {
     JS_StrictPropertyStub,
     JS_EnumerateStub,
     JS_ResolveStub,
-    JS_ConvertStub
+    JS_ConvertStub,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    JS_GlobalObjectTraceHook
 };
 
-static JSObject *trusted_glob = nullptr;
-static JSObject *trusted_fun = nullptr;
+static JS::Heap<JSObject *> trusted_glob;
+static JS::Heap<JSObject *> trusted_fun;
 
 static bool
 CallTrusted(JSContext *cx, unsigned argc, jsval *vp)
 {
+    JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+
     if (!JS_SaveFrameChain(cx))
         return false;
 
     bool ok = false;
     {
         JSAutoCompartment ac(cx, trusted_glob);
-        ok = JS_CallFunctionValue(cx, nullptr, JS::ObjectValue(*trusted_fun),
-                                  0, nullptr, vp);
+        JS::RootedValue funVal(cx, JS::ObjectValue(*trusted_fun));
+        ok = JS_CallFunctionValue(cx, JS::NullPtr(), funVal, JS::HandleValueArray::empty(), args.rval());
     }
     JS_RestoreFrameChain(cx);
     return ok;
@@ -46,10 +53,10 @@ BEGIN_TEST(testChromeBuffer)
     trusted_glob = JS_NewGlobalObject(cx, &global_class, &system_principals, JS::FireOnNewGlobalHook);
     CHECK(trusted_glob);
 
-    if (!JS_AddNamedObjectRoot(cx, &trusted_glob, "trusted-global"))
+    if (!JS::AddNamedObjectRoot(cx, &trusted_glob, "trusted-global"))
         return false;
 
-    JSFunction *fun;
+    JS::RootedFunction fun(cx);
 
     /*
      * Check that, even after untrusted content has exhausted the stack, code
@@ -61,14 +68,13 @@ BEGIN_TEST(testChromeBuffer)
             JSAutoCompartment ac(cx, trusted_glob);
             const char *paramName = "x";
             const char *bytes = "return x ? 1 + trusted(x-1) : 0";
-            JS::HandleObject global = JS::HandleObject::fromMarkedLocation(&trusted_glob);
+            JS::HandleObject global = JS::HandleObject::fromMarkedLocation(trusted_glob.unsafeGet());
             JS::CompileOptions options(cx);
-            options.setFileAndLine("", 0)
-                   .setPrincipals(&system_principals);
-            CHECK(fun = JS_CompileFunction(cx, global, "trusted", 1, &paramName,
-                                           bytes, strlen(bytes), options));
+            options.setFileAndLine("", 0);
+            CHECK(JS_CompileFunction(cx, global, "trusted", 1, &paramName,
+                                     bytes, strlen(bytes), options, &fun));
             trusted_fun = JS_GetFunctionObject(fun);
-            if (!JS_AddNamedObjectRoot(cx, &trusted_fun, "trusted-function"))
+            if (!JS::AddNamedObjectRoot(cx, &trusted_fun, "trusted-function"))
                 return false;
         }
 
@@ -87,12 +93,12 @@ BEGIN_TEST(testChromeBuffer)
                             "}                                          ";
         JS::CompileOptions options(cx);
         options.setFileAndLine("", 0);
-        CHECK(fun = JS_CompileFunction(cx, global, "untrusted", 1, &paramName,
-                                       bytes, strlen(bytes), options));
+        CHECK(JS_CompileFunction(cx, global, "untrusted", 1, &paramName,
+                                 bytes, strlen(bytes), options, &fun));
 
         JS::RootedValue rval(cx);
-        CHECK(JS_CallFunction(cx, nullptr, fun, 1, v.address(), rval.address()));
-        CHECK(JSVAL_TO_INT(rval) == 100);
+        CHECK(JS_CallFunction(cx, JS::NullPtr(), fun, JS::HandleValueArray(v), &rval));
+        CHECK(rval.toInt32() == 100);
     }
 
     /*
@@ -108,12 +114,11 @@ BEGIN_TEST(testChromeBuffer)
                                 "} catch (e) {                          "
                                 "  return 'From trusted: ' + e;         "
                                 "}                                      ";
-            JS::HandleObject global = JS::HandleObject::fromMarkedLocation(&trusted_glob);
+            JS::HandleObject global = JS::HandleObject::fromMarkedLocation(trusted_glob.unsafeGet());
             JS::CompileOptions options(cx);
-            options.setFileAndLine("", 0)
-                   .setPrincipals(&system_principals);
-            CHECK(fun = JS_CompileFunction(cx, global, "trusted", 1, &paramName,
-                                           bytes, strlen(bytes), options));
+            options.setFileAndLine("", 0);
+            CHECK(JS_CompileFunction(cx, global, "trusted", 1, &paramName,
+                                     bytes, strlen(bytes), options, &fun));
             trusted_fun = JS_GetFunctionObject(fun);
         }
 
@@ -128,13 +133,13 @@ BEGIN_TEST(testChromeBuffer)
                             "}                                          ";
         JS::CompileOptions options(cx);
         options.setFileAndLine("", 0);
-        CHECK(fun = JS_CompileFunction(cx, global, "untrusted", 1, &paramName,
-                                       bytes, strlen(bytes), options));
+        CHECK(JS_CompileFunction(cx, global, "untrusted", 1, &paramName,
+                                 bytes, strlen(bytes), options, &fun));
 
         JS::RootedValue rval(cx);
-        CHECK(JS_CallFunction(cx, nullptr, fun, 1, v.address(), rval.address()));
+        CHECK(JS_CallFunction(cx, JS::NullPtr(), fun, JS::HandleValueArray(v), &rval));
         bool match;
-        CHECK(JS_StringEqualsAscii(cx, JSVAL_TO_STRING(rval), "From trusted: InternalError: too much recursion", &match));
+        CHECK(JS_StringEqualsAscii(cx, rval.toString(), "From trusted: InternalError: too much recursion", &match));
         CHECK(match);
     }
 
@@ -146,12 +151,11 @@ BEGIN_TEST(testChromeBuffer)
         {
             JSAutoCompartment ac(cx, trusted_glob);
             const char *bytes = "return 42";
-            JS::HandleObject global = JS::HandleObject::fromMarkedLocation(&trusted_glob);
+            JS::HandleObject global = JS::HandleObject::fromMarkedLocation(trusted_glob.unsafeGet());
             JS::CompileOptions options(cx);
-            options.setFileAndLine("", 0)
-                   .setPrincipals(&system_principals);
-            CHECK(fun = JS_CompileFunction(cx, global, "trusted", 0, nullptr,
-                                           bytes, strlen(bytes), options));
+            options.setFileAndLine("", 0);
+            CHECK(JS_CompileFunction(cx, global, "trusted", 0, nullptr,
+                                     bytes, strlen(bytes), options, &fun));
             trusted_fun = JS_GetFunctionObject(fun);
         }
 
@@ -166,20 +170,22 @@ BEGIN_TEST(testChromeBuffer)
                             "}                                          ";
         JS::CompileOptions options(cx);
         options.setFileAndLine("", 0);
-        CHECK(fun = JS_CompileFunction(cx, global, "untrusted", 1, &paramName,
-                                       bytes, strlen(bytes), options));
+        CHECK(JS_CompileFunction(cx, global, "untrusted", 1, &paramName,
+                                 bytes, strlen(bytes), options, &fun));
 
         JS::RootedValue arg(cx, JS::ObjectValue(*callTrusted));
         JS::RootedValue rval(cx);
-        CHECK(JS_CallFunction(cx, nullptr, fun, 1, arg.address(), rval.address()));
-        CHECK(JSVAL_TO_INT(rval) == 42);
+        CHECK(JS_CallFunction(cx, JS::NullPtr(), fun, JS::HandleValueArray(arg), &rval));
+        CHECK(rval.toInt32() == 42);
     }
 
     return true;
 }
 virtual void uninit() {
-    JS_RemoveObjectRoot(cx, &trusted_glob);
-    JS_RemoveObjectRoot(cx, &trusted_fun);
+    trusted_glob = nullptr;
+    trusted_fun = nullptr;
+    JS::RemoveObjectRoot(cx, &trusted_glob);
+    JS::RemoveObjectRoot(cx, &trusted_fun);
     JSAPITest::uninit();
 }
 END_TEST(testChromeBuffer)

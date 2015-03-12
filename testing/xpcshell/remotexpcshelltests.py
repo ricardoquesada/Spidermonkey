@@ -10,9 +10,9 @@ import subprocess
 import runxpcshelltests as xpcshell
 import tempfile
 from automationutils import replaceBackSlashes
-from mozdevice import devicemanagerADB, devicemanagerSUT, devicemanager
 from zipfile import ZipFile
 import shutil
+import mozdevice
 import mozfile
 import mozinfo
 
@@ -120,12 +120,28 @@ class RemoteXPCShellTestThread(xpcshell.XPCShellTestThread):
               self.remoteDebuggerArgs,
               self.xpcsCmd]
 
-    def launchProcess(self, cmd, stdout, stderr, env, cwd):
+    def testTimeout(self, test_file, proc):
+        self.timedout = True
+        if not self.retry:
+            self.log.error("TEST-UNEXPECTED-FAIL | %s | Test timed out" % test_file)
+        self.kill(proc)
+
+    def launchProcess(self, cmd, stdout, stderr, env, cwd, timeout=None):
+        self.timedout = False
         cmd.insert(1, self.remoteHere)
         outputFile = "xpcshelloutput"
-        f = open(outputFile, "w+")
-        self.shellReturnCode = self.device.shell(cmd, f)
-        f.close()
+        with open(outputFile, 'w+') as f:
+            try:
+                self.shellReturnCode = self.device.shell(cmd, f, timeout=timeout+10)
+            except mozdevice.DMError as e:
+                if self.timedout:
+                    # If the test timed out, there is a good chance the SUTagent also
+                    # timed out and failed to return a return code, generating a
+                    # DMError. Ignore the DMError to simplify the error report.
+                    self.shellReturnCode = None
+                    pass
+                else:
+                    raise e
         # The device manager may have timed out waiting for xpcshell.
         # Guard against an accumulation of hung processes by killing
         # them here. Note also that IPC tests may spawn new instances
@@ -138,6 +154,13 @@ class RemoteXPCShellTestThread(xpcshell.XPCShellTestThread):
                         dump_directory,
                         symbols_path,
                         test_name=None):
+        if not self.device.dirExists(self.remoteMinidumpDir):
+            # The minidumps directory is automatically created when Fennec
+            # (first) starts, so its lack of presence is a hint that
+            # something went wrong.
+            print "Automation Error: No crash directory (%s) found on remote device" % self.remoteMinidumpDir
+            # Whilst no crash was found, the run should still display as a failure
+            return True
         with mozfile.TemporaryDirectory() as dumpDir:
             self.device.getDirectory(self.remoteMinidumpDir, dumpDir)
             crashed = xpcshell.XPCShellTestThread.checkForCrashes(self, dumpDir, symbols_path, test_name)
@@ -188,14 +211,20 @@ class RemoteXPCShellTestThread(xpcshell.XPCShellTestThread):
 # via devicemanager.
 class XPCShellRemote(xpcshell.XPCShellTests, object):
 
-    def __init__(self, devmgr, options, args):
-        xpcshell.XPCShellTests.__init__(self)
+    def __init__(self, devmgr, options, args, log=None):
+        xpcshell.XPCShellTests.__init__(self, log)
+
+        # Add Android version (SDK level) to mozinfo so that manifest entries
+        # can be conditional on android_version.
+        androidVersion = devmgr.shellCheckOutput(['getprop', 'ro.build.version.sdk'])
+        mozinfo.info['android_version'] = androidVersion
+
         self.localLib = options.localLib
         self.localBin = options.localBin
         self.options = options
         self.device = devmgr
         self.pathMapping = []
-        self.remoteTestRoot = self.device.getTestRoot("xpcshell")
+        self.remoteTestRoot = "%s/xpcshell" % self.device.deviceRoot
         # remoteBinDir contains xpcshell and its wrapper script, both of which must
         # be executable. Since +x permissions cannot usually be set on /mnt/sdcard,
         # and the test root may be on /mnt/sdcard, remoteBinDir is set to be on
@@ -314,7 +343,7 @@ class XPCShellRemote(xpcshell.XPCShellTests, object):
             # device.mkDir may fail here where shellCheckOutput may succeed -- see bug 817235
             try:
                 self.device.shellCheckOutput(["mkdir", self.remoteBinDir]);
-            except devicemanager.DMError:
+            except mozdevice.DMError:
                 # Might get a permission error; try again as root, if available
                 self.device.shellCheckOutput(["mkdir", self.remoteBinDir], root=True);
                 self.device.shellCheckOutput(["chmod", "777", self.remoteBinDir], root=True);
@@ -334,9 +363,24 @@ class XPCShellRemote(xpcshell.XPCShellTests, object):
         remoteFile = remoteJoin(self.remoteScriptsDir, "head.js")
         self.device.pushFile(local, remoteFile)
 
-        local = os.path.join(self.localBin, "xpcshell")
-        remoteFile = remoteJoin(self.remoteBinDir, "xpcshell")
-        self.device.pushFile(local, remoteFile)
+        # The xpcshell binary is required for all tests. Additional binaries
+        # are required for some tests. This list should be similar to
+        # TEST_HARNESS_BINS in testing/mochitest/Makefile.in.
+        binaries = ["xpcshell",
+                    "ssltunnel",
+                    "certutil",
+                    "pk12util",
+                    "BadCertServer",
+                    "OCSPStaplingServer",
+                    "GenerateOCSPResponse"]
+        for fname in binaries:
+            local = os.path.join(self.localBin, fname)
+            if os.path.isfile(local):
+                print >> sys.stderr, "Pushing %s.." % fname
+                remoteFile = remoteJoin(self.remoteBinDir, fname)
+                self.device.pushFile(local, remoteFile)
+            else:
+                print >> sys.stderr, "*** Expected binary %s not found in %s!" % (fname, self.localBin)
 
         local = os.path.join(self.localBin, "components/httpd.js")
         remoteFile = remoteJoin(self.remoteComponentsDir, "httpd.js")
@@ -549,25 +593,20 @@ def main():
              or: %s --manifest=test.manifest """ % (sys.argv[0], sys.argv[0])
         sys.exit(1)
 
-    if (options.dm_trans == "adb"):
-        if (options.deviceIP):
-            dm = devicemanagerADB.DeviceManagerADB(options.deviceIP, options.devicePort, packageName=None, deviceRoot=options.remoteTestRoot)
+    if options.dm_trans == "adb":
+        if options.deviceIP:
+            dm = mozdevice.DroidADB(options.deviceIP, options.devicePort, packageName=None, deviceRoot=options.remoteTestRoot)
         else:
-            dm = devicemanagerADB.DeviceManagerADB(packageName=None, deviceRoot=options.remoteTestRoot)
+            dm = mozdevice.DroidADB(packageName=None, deviceRoot=options.remoteTestRoot)
     else:
-        dm = devicemanagerSUT.DeviceManagerSUT(options.deviceIP, options.devicePort, deviceRoot=options.remoteTestRoot)
-        if (options.deviceIP == None):
+        if not options.deviceIP:
             print "Error: you must provide a device IP to connect to via the --device option"
             sys.exit(1)
+        dm = mozdevice.DroidSUT(options.deviceIP, options.devicePort, deviceRoot=options.remoteTestRoot)
 
     if options.interactive and not options.testPath:
         print >>sys.stderr, "Error: You must specify a test filename in interactive mode!"
         sys.exit(1)
-
-    # Add Android version (SDK level) to mozinfo so that manifest entries
-    # can be conditional on android_version.
-    androidVersion = dm.shellCheckOutput(['getprop', 'ro.build.version.sdk'])
-    mozinfo.info['android_version'] = androidVersion
 
     xpcsh = XPCShellRemote(dm, options, args)
 

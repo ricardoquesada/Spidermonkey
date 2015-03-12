@@ -1,4 +1,4 @@
-/* -*- js-indent-level: 4; tab-width: 4; indent-tabs-mode: nil -*- */
+/* -*- js-indent-level: 4; indent-tabs-mode: nil -*- */
 /* vim:set ts=4 sw=4 sts=4 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -35,7 +35,25 @@ MemoryStats._getService = function (className, interfaceName) {
     return service;
 }
 
-MemoryStats.dump = function (dumpFn,
+MemoryStats._nsIFile = function (pathname) {
+    var f;
+    var contractID = "@mozilla.org/file/local;1";
+    try {
+        f = Cc[contractID].createInstance(Ci.nsIFile);
+    } catch(e) {
+        f = SpecialPowers.Cc[contractID].createInstance(SpecialPowers.Ci.nsIFile);
+    }
+    f.initWithPath(pathname);
+    return f;
+}
+
+MemoryStats.constructPathname = function (directory, basename) {
+    var d = MemoryStats._nsIFile(directory);
+    d.append(basename);
+    return d.path;
+}
+
+MemoryStats.dump = function (logger,
                              testNumber,
                              testURL,
                              dumpOutputDirectory,
@@ -57,26 +75,29 @@ MemoryStats.dump = function (dumpFn,
             MemoryStats._hasMemoryStatistics[stat] = supported;
         }
         if (supported == MEM_STAT_SUPPORTED) {
-            dumpFn("TEST-INFO | MEMORY STAT " + stat + " after test: " + mrm[stat]);
+            logger.info("MEMORY STAT " + stat + " after test: " + mrm[stat]);
         } else if (firstAccess) {
-            dumpFn("TEST-INFO | MEMORY STAT " + stat + " not supported in this build configuration.");
+            logger.info("MEMORY STAT " + stat + " not supported in this build configuration.");
         }
     }
 
     if (dumpAboutMemory) {
-        var dumpfile = dumpOutputDirectory + "/about-memory-" + testNumber + ".json.gz";
-        dumpFn("TEST-INFO | " + testURL + " | MEMDUMP-START " + dumpfile);
+        var basename = "about-memory-" + testNumber + ".json.gz";
+        var dumpfile = MemoryStats.constructPathname(dumpOutputDirectory,
+                                                     basename);
+        logger.info(testURL + " | MEMDUMP-START " + dumpfile);
         var md = MemoryStats._getService("@mozilla.org/memory-info-dumper;1",
                                          "nsIMemoryInfoDumper");
         md.dumpMemoryReportsToNamedFile(dumpfile, function () {
-            dumpFn("TEST-INFO | " + testURL + " | MEMDUMP-END");
-        }, null);
-
+            logger.info("TEST-INFO | " + testURL + " | MEMDUMP-END");
+        }, null, /* anonymize = */ false);
     }
 
     if (dumpDMD && typeof(DMDReportAndDump) != undefined) {
-        var dumpfile = dumpOutputDirectory + "/dmd-" + testNumber + ".txt";
-        dumpFn("TEST-INFO | " + testURL + " | DMD-DUMP " + dumpfile);
+        var basename = "dmd-" + testNumber + ".txt";
+        var dumpfile = MemoryStats.constructPathname(dumpOutputDirectory,
+                                                     basename);
+        logger.info(testURL + " | DMD-DUMP " + dumpfile);
         DMDReportAndDump(dumpfile);
     }
 };

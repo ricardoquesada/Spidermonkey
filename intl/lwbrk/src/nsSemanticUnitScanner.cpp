@@ -5,7 +5,7 @@
 
 #include "nsSemanticUnitScanner.h"
 
-NS_IMPL_ISUPPORTS1(nsSemanticUnitScanner, nsISemanticUnitScanner)
+NS_IMPL_ISUPPORTS_INHERITED(nsSemanticUnitScanner, nsSampleWordBreaker, nsISemanticUnitScanner)
 
 nsSemanticUnitScanner::nsSemanticUnitScanner() : nsSampleWordBreaker()
 {
@@ -26,7 +26,7 @@ NS_IMETHODIMP nsSemanticUnitScanner::Start(const char *characterSet)
 }
 
 /* void next (in wstring text, in long length, in long pos, out boolean hasMoreUnits, out long begin, out long end); */
-NS_IMETHODIMP nsSemanticUnitScanner::Next(const PRUnichar *text, int32_t length, int32_t pos, bool isLastBuffer, int32_t *begin, int32_t *end, bool *_retval)
+NS_IMETHODIMP nsSemanticUnitScanner::Next(const char16_t *text, int32_t length, int32_t pos, bool isLastBuffer, int32_t *begin, int32_t *end, bool *_retval)
 {
     // xxx need to bullet proff and check input pointer 
     //  make sure begin, end and _retval is not nullptr here

@@ -18,12 +18,13 @@ from distutils.version import StrictVersion
 
 from mozboot.base import BaseBootstrapper
 
-HOMEBREW_BOOTSTRAP = 'http://raw.github.com/mxcl/homebrew/go'
+HOMEBREW_BOOTSTRAP = 'https://raw.github.com/Homebrew/homebrew/go/install'
 XCODE_APP_STORE = 'macappstore://itunes.apple.com/app/id497799835?mt=12'
 XCODE_LEGACY = 'https://developer.apple.com/downloads/download.action?path=Developer_Tools/xcode_3.2.6_and_ios_sdk_4.3__final/xcode_3.2.6_and_ios_sdk_4.3.dmg'
 HOMEBREW_AUTOCONF213 = 'https://raw.github.com/Homebrew/homebrew-versions/master/autoconf213.rb'
 
-MACPORTS_URL = {'8': 'https://distfiles.macports.org/MacPorts/MacPorts-2.1.3-10.8-MountainLion.pkg',
+MACPORTS_URL = {'9': 'https://distfiles.macports.org/MacPorts/MacPorts-2.2.1-10.9-Mavericks.pkg',
+                '8': 'https://distfiles.macports.org/MacPorts/MacPorts-2.1.3-10.8-MountainLion.pkg',
                 '7': 'https://distfiles.macports.org/MacPorts/MacPorts-2.1.3-10.7-Lion.pkg',
                 '6': 'https://distfiles.macports.org/MacPorts/MacPorts-2.1.3-10.6-SnowLeopard.pkg',}
 
@@ -302,7 +303,6 @@ class OSXBootstrapper(BaseBootstrapper):
         packages = ['python27',
                     'mercurial',
                     'yasm',
-                    'libidl',
                     'autoconf213']
 
         missing = [package for package in packages if package not in installed]
@@ -313,9 +313,9 @@ class OSXBootstrapper(BaseBootstrapper):
         if self.os_version < StrictVersion('10.7') and MACPORTS_CLANG_PACKAGE not in installed:
             print(PACKAGE_MANAGER_OLD_CLANG % ('MacPorts',))
             self.run_as_root([self.port, '-v', 'install', MACPORTS_CLANG_PACKAGE])
+            self.run_as_root([self.port, 'select', '--set', 'clang', 'mp-' + MACPORTS_CLANG_PACKAGE])
 
         self.run_as_root([self.port, 'select', '--set', 'python', 'python27'])
-        self.run_as_root([self.port, 'select', '--set', 'clang', 'mp-' + MACPORTS_CLANG_PACKAGE])
 
     def ensure_package_manager(self):
         '''

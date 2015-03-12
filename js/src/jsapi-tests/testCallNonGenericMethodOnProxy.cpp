@@ -47,15 +47,17 @@ BEGIN_TEST(test_CallNonGenericMethodOnProxy)
   JS::RootedObject globalA(cx, JS_NewGlobalObject(cx, getGlobalClass(), nullptr, JS::FireOnNewGlobalHook));
   CHECK(globalA);
 
-  JS::RootedObject customA(cx, JS_NewObject(cx, &CustomClass, nullptr, nullptr));
+  JS::RootedObject customA(cx, JS_NewObject(cx, &CustomClass, JS::NullPtr(), JS::NullPtr()));
   CHECK(customA);
   JS_SetReservedSlot(customA, CUSTOM_SLOT, Int32Value(17));
 
-  JSFunction *customMethodA = JS_NewFunction(cx, CustomMethod, 0, 0, customA, "customMethodA");
+  JS::RootedFunction customMethodA(cx, JS_NewFunction(cx, CustomMethod, 0, 0,
+                                                      customA, "customMethodA"));
   CHECK(customMethodA);
 
   JS::RootedValue rval(cx);
-  CHECK(JS_CallFunction(cx, customA, customMethodA, 0, nullptr, rval.address()));
+  CHECK(JS_CallFunction(cx, customA, customMethodA, JS::HandleValueArray::empty(),
+                        &rval));
   CHECK_SAME(rval, Int32Value(17));
 
   // Now create the second global object and compartment...
@@ -65,7 +67,7 @@ BEGIN_TEST(test_CallNonGenericMethodOnProxy)
 
     // ...and enter it.
     JSAutoCompartment enter(cx, globalB);
-    JS::RootedObject customB(cx, JS_NewObject(cx, &CustomClass, nullptr, nullptr));
+    JS::RootedObject customB(cx, JS_NewObject(cx, &CustomClass, JS::NullPtr(), JS::NullPtr()));
     CHECK(customB);
     JS_SetReservedSlot(customB, CUSTOM_SLOT, Int32Value(42));
 
@@ -73,14 +75,16 @@ BEGIN_TEST(test_CallNonGenericMethodOnProxy)
     CHECK(customMethodB);
 
     JS::RootedValue rval(cx);
-    CHECK(JS_CallFunction(cx, customB, customMethodB, 0, nullptr, rval.address()));
+    CHECK(JS_CallFunction(cx, customB, customMethodB, JS::HandleValueArray::empty(),
+                          &rval));
     CHECK_SAME(rval, Int32Value(42));
 
     JS::RootedObject wrappedCustomA(cx, customA);
     CHECK(JS_WrapObject(cx, &wrappedCustomA));
 
     JS::RootedValue rval2(cx);
-    CHECK(JS_CallFunction(cx, wrappedCustomA, customMethodB, 0, nullptr, rval2.address()));
+    CHECK(JS_CallFunction(cx, wrappedCustomA, customMethodB, JS::HandleValueArray::empty(),
+                          &rval2));
     CHECK_SAME(rval, Int32Value(42));
   }
 

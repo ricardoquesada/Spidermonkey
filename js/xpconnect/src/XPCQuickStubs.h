@@ -1,6 +1,6 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -12,7 +12,7 @@
 class qsObjectHelper;
 namespace mozilla {
 namespace dom {
-class NativeProperties;
+struct NativePropertiesHolder;
 }
 }
 
@@ -41,7 +41,7 @@ struct xpc_qsHashEntry {
     uint16_t n_props;
     uint16_t func_index;
     uint16_t n_funcs;
-    const mozilla::dom::NativeProperties* newBindingProperties;
+    const mozilla::dom::NativePropertiesHolder* newBindingProperties;
     // These last two fields index to other entries in the same table.
     // XPC_QS_NULL_ENTRY indicates there are no more entries in the chain.
     uint16_t parentInterface;
@@ -224,7 +224,7 @@ protected:
      * without doing anything else. Otherwise, the JSString* created
      * from |v| will be returned.  It'll be rooted, as needed, in
      * *pval.  nullBehavior and undefinedBehavior control what happens
-     * when |v| is JSVAL_IS_NULL and JSVAL_IS_VOID respectively.
+     * when v.isNull() and v.isUndefined() are respectively true.
      */
     template<class traits>
     JSString* InitOrStringify(JSContext* cx, JS::HandleValue v,
@@ -233,13 +233,13 @@ protected:
                               StringificationBehavior nullBehavior,
                               StringificationBehavior undefinedBehavior) {
         JSString *s;
-        if (JSVAL_IS_STRING(v)) {
-            s = JSVAL_TO_STRING(v);
+        if (v.isString()) {
+            s = v.toString();
         } else {
             StringificationBehavior behavior = eStringify;
-            if (JSVAL_IS_NULL(v)) {
+            if (v.isNull()) {
                 behavior = nullBehavior;
-            } else if (JSVAL_IS_VOID(v)) {
+            } else if (v.isUndefined()) {
                 behavior = undefinedBehavior;
             }
 
@@ -281,7 +281,7 @@ protected:
  * the string from garbage collection. The caller must leave the jsval alone
  * for the lifetime of the xpc_qsDOMString.
  */
-class xpc_qsDOMString : public xpc_qsBasicString<nsAString, nsDependentString>
+class xpc_qsDOMString : public xpc_qsBasicString<nsAString, nsAutoString>
 {
 public:
     xpc_qsDOMString(JSContext *cx, JS::HandleValue v,
@@ -312,8 +312,8 @@ class xpc_qsACString : public xpc_qsBasicString<nsACString, nsCString>
 public:
     xpc_qsACString(JSContext *cx, JS::HandleValue v,
                    JS::MutableHandleValue pval, bool notpassed,
-                   StringificationBehavior nullBehavior,
-                   StringificationBehavior undefinedBehavior);
+                   StringificationBehavior nullBehavior = eNull,
+                   StringificationBehavior undefinedBehavior = eNull);
 };
 
 /**
@@ -351,7 +351,7 @@ bool
 xpc_qsJsvalToCharStr(JSContext *cx, jsval v, JSAutoByteString *bytes);
 
 bool
-xpc_qsJsvalToWcharStr(JSContext *cx, jsval v, JS::MutableHandleValue pval, const PRUnichar **pstr);
+xpc_qsJsvalToWcharStr(JSContext *cx, jsval v, JS::MutableHandleValue pval, const char16_t **pstr);
 
 
 nsresult
@@ -422,31 +422,6 @@ castNativeFromWrapper(JSContext *cx,
                       JS::MutableHandleValue pVal,
                       nsresult *rv);
 
-bool
-xpc_qsUnwrapThisFromCcxImpl(XPCCallContext &ccx,
-                            const nsIID &iid,
-                            void **ppThis,
-                            nsISupports **pThisRef,
-                            JS::MutableHandleValue vp);
-
-/**
- * Alternate implementation of xpc_qsUnwrapThis using information already
- * present in the given XPCCallContext.
- */
-template <class T>
-inline bool
-xpc_qsUnwrapThisFromCcx(XPCCallContext &ccx,
-                        T **ppThis,
-                        nsISupports **pThisRef,
-                        JS::MutableHandleValue pThisVal)
-{
-    return xpc_qsUnwrapThisFromCcxImpl(ccx,
-                                       NS_GET_TEMPLATE_IID(T),
-                                       reinterpret_cast<void **>(ppThis),
-                                       pThisRef,
-                                       pThisVal);
-}
-
 MOZ_ALWAYS_INLINE JSObject*
 xpc_qsUnwrapObj(jsval v, nsISupports **ppArgRef, nsresult *rv)
 {
@@ -505,12 +480,6 @@ xpc_qsGetWrapperCache(nsWrapperCache *cache)
 {
     return cache;
 }
-
-// nsGlobalWindow implements nsWrapperCache, but doesn't always use it. Don't
-// try to use it without fixing that first.
-class nsGlobalWindow;
-inline nsWrapperCache*
-xpc_qsGetWrapperCache(nsGlobalWindow *not_allowed);
 
 inline nsWrapperCache*
 xpc_qsGetWrapperCache(void *p)
@@ -601,16 +570,16 @@ PropertyOpForwarder(JSContext *cx, unsigned argc, jsval *vp)
     if (!obj)
         return false;
 
-    jsval v = js::GetFunctionNativeReserved(callee, 0);
+    JS::RootedValue v(cx, js::GetFunctionNativeReserved(callee, 0));
 
-    JSObject *ptrobj = JSVAL_TO_OBJECT(v);
+    JSObject *ptrobj = v.toObjectOrNull();
     Op *popp = static_cast<Op *>(JS_GetPrivate(ptrobj));
 
     v = js::GetFunctionNativeReserved(callee, 1);
 
-    JS::RootedValue argval(cx, (argc > 0) ? args.get(0) : JSVAL_VOID);
+    JS::RootedValue argval(cx, args.get(0));
     JS::RootedId id(cx);
-    if (!JS_ValueToId(cx, v, id.address()))
+    if (!JS_ValueToId(cx, v, &id))
         return false;
     args.rval().set(argval);
     return ApplyPropertyOp<Op>(cx, *popp, obj, id, args.rval());
@@ -633,7 +602,7 @@ GeneratePropertyOp(JSContext *cx, JS::HandleObject obj, JS::HandleId id, unsigne
 
     // Unfortunately, we cannot guarantee that Op is aligned. Use a
     // second object to work around this.
-    JSObject *ptrobj = JS_NewObject(cx, &PointerHolderClass, nullptr, funobj);
+    JSObject *ptrobj = JS_NewObject(cx, &PointerHolderClass, JS::NullPtr(), funobj);
     if (!ptrobj)
         return nullptr;
     Op *popp = new Op;
@@ -643,7 +612,7 @@ GeneratePropertyOp(JSContext *cx, JS::HandleObject obj, JS::HandleId id, unsigne
     JS_SetPrivate(ptrobj, popp);
 
     js::SetFunctionNativeReserved(funobj, 0, OBJECT_TO_JSVAL(ptrobj));
-    js::SetFunctionNativeReserved(funobj, 1, js::IdToJsval(id));
+    js::SetFunctionNativeReserved(funobj, 1, js::IdToValue(id));
     return funobj;
 }
 

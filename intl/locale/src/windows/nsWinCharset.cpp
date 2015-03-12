@@ -11,7 +11,6 @@
 #include "nsWin32Locale.h"
 #include "nsCOMPtr.h"
 #include "nsReadableUtils.h"
-#include "nsLocaleCID.h"
 #include "nsServiceManagerUtils.h"
 #include "nsPlatformCharset.h"
 #include "nsEncoderDecoderUtils.h"
@@ -22,7 +21,7 @@ static const char* kWinCharsets[][3] = {
 #include "wincharset.properties.h"
 };
 
-NS_IMPL_ISUPPORTS1(nsPlatformCharset, nsIPlatformCharset)
+NS_IMPL_ISUPPORTS(nsPlatformCharset, nsIPlatformCharset)
 
 nsPlatformCharset::nsPlatformCharset()
 {

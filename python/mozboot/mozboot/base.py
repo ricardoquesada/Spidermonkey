@@ -73,7 +73,7 @@ We recommend the following tools for installing Python:
 
 
 # Upgrade Mercurial older than this.
-MODERN_MERCURIAL_VERSION = StrictVersion('2.5')
+MODERN_MERCURIAL_VERSION = StrictVersion('3.0')
 
 # Upgrade Python older than this.
 MODERN_PYTHON_VERSION = StrictVersion('2.7.3')
@@ -133,6 +133,17 @@ class BaseBootstrapper(object):
     def apt_install(self, *packages):
         command = ['apt-get', 'install']
         command.extend(packages)
+
+        self.run_as_root(command)
+
+    def apt_update(self):
+        command = ['apt-get', 'update']
+
+        self.run_as_root(command)
+
+    def apt_add_architecture(self, arch):
+        command = ['dpkg', '--add-architecture']
+        command.extend(arch)
 
         self.run_as_root(command)
 

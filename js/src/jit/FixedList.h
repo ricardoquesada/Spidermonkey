@@ -19,8 +19,8 @@ namespace jit {
 template <typename T>
 class FixedList
 {
-    size_t length_;
     T *list_;
+    size_t length_;
 
   private:
     FixedList(const FixedList&); // no copy definition.
@@ -28,7 +28,7 @@ class FixedList
 
   public:
     FixedList()
-      : length_(0), list_(nullptr)
+      : list_(nullptr), length_(0)
     { }
 
     // Dynamic memory allocation requires the ability to report failure.

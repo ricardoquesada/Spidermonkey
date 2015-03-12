@@ -14,37 +14,37 @@
 using namespace js;
 
 /* static */ ProxyObject *
-ProxyObject::New(JSContext *cx, BaseProxyHandler *handler, HandleValue priv, TaggedProto proto_,
+ProxyObject::New(JSContext *cx, const BaseProxyHandler *handler, HandleValue priv, TaggedProto proto_,
                  JSObject *parent_, const ProxyOptions &options)
 {
     Rooted<TaggedProto> proto(cx, proto_);
     RootedObject parent(cx, parent_);
 
+    const Class *clasp = options.clasp();
+
+    JS_ASSERT(isValidProxyClass(clasp));
     JS_ASSERT_IF(proto.isObject(), cx->compartment() == proto.toObject()->compartment());
     JS_ASSERT_IF(parent, cx->compartment() == parent->compartment());
-    const Class *clasp;
-    if (handler->isOuterWindow())
-        clasp = &OuterWindowProxyObject::class_;
-    else
-        clasp = options.callable() ? &ProxyObject::callableClass_
-                                   : &ProxyObject::uncallableClass_;
 
     /*
      * Eagerly mark properties unknown for proxies, so we don't try to track
      * their properties and so that we don't need to walk the compartment if
-     * their prototype changes later.
+     * their prototype changes later.  But don't do this for DOM proxies,
+     * because we want to be able to keep track of them in typesets in useful
+     * ways.
      */
-    if (proto.isObject() && !options.singleton()) {
+    if (proto.isObject() && !options.singleton() && !clasp->isDOMClass()) {
         RootedObject protoObj(cx, proto.toObject());
         if (!JSObject::setNewTypeUnknown(cx, clasp, protoObj))
             return nullptr;
     }
 
-    NewObjectKind newKind =
-        (clasp == &OuterWindowProxyObject::class_ || options.singleton()) ? SingletonObject : GenericObject;
+    NewObjectKind newKind = options.singleton() ? SingletonObject : GenericObject;
     gc::AllocKind allocKind = gc::GetGCObjectKind(clasp);
+
     if (handler->finalizeInBackground(priv))
         allocKind = GetBackgroundAllocKind(allocKind);
+
     RootedObject obj(cx, NewObjectWithGivenProto(cx, clasp, proto, parent, allocKind, newKind));
     if (!obj)
         return nullptr;
@@ -53,8 +53,8 @@ ProxyObject::New(JSContext *cx, BaseProxyHandler *handler, HandleValue priv, Tag
     proxy->initHandler(handler);
     proxy->initCrossCompartmentPrivate(priv);
 
-    /* Don't track types of properties of proxies. */
-    if (newKind != SingletonObject)
+    /* Don't track types of properties of non-DOM and non-singleton proxies. */
+    if (newKind != SingletonObject && !clasp->isDOMClass())
         MarkTypeObjectUnknownProperties(cx, proxy->type());
 
     return proxy;
@@ -67,9 +67,9 @@ ProxyObject::initCrossCompartmentPrivate(HandleValue priv)
 }
 
 void
-ProxyObject::initHandler(BaseProxyHandler *handler)
+ProxyObject::initHandler(const BaseProxyHandler *handler)
 {
-    initSlot(HANDLER_SLOT, PrivateValue(handler));
+    initSlot(HANDLER_SLOT, PrivateValue(const_cast<BaseProxyHandler*>(handler)));
 }
 
 static void
@@ -86,11 +86,12 @@ NukeSlot(ProxyObject *proxy, uint32_t slot)
 }
 
 void
-ProxyObject::nuke(BaseProxyHandler *handler)
+ProxyObject::nuke(const BaseProxyHandler *handler)
 {
-    NukeSlot(this, PRIVATE_SLOT);
+    /* Allow people to add their own number of reserved slots beyond the expected 4 */
+    unsigned numSlots = JSCLASS_RESERVED_SLOTS(getClass());
+    for (unsigned i = 0; i < numSlots; i++)
+        NukeSlot(this, i);
+    /* Restore the handler as requested after nuking. */
     setHandler(handler);
-
-    NukeSlot(this, EXTRA_SLOT + 0);
-    NukeSlot(this, EXTRA_SLOT + 1);
 }

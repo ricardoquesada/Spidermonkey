@@ -1,4 +1,4 @@
-/* -*- Mode: JavaScript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -18,6 +18,23 @@ var _todoChecks = 0;
 var _cleanupFunctions = [];
 var _pendingTimers = [];
 var _profileInitialized = false;
+
+// Register the testing-common resource protocol early, to have access to its
+// modules.
+_register_modules_protocol_handler();
+
+let _Promise = Components.utils.import("resource://gre/modules/Promise.jsm", this).Promise;
+
+// Support a common assertion library, Assert.jsm.
+let AssertCls = Components.utils.import("resource://testing-common/Assert.jsm", null).Assert;
+// Pass a custom report function for xpcshell-test style reporting.
+let Assert = new AssertCls(function(err, message, stack) {
+  if (err) {
+    do_report_result(false, err.message, err.stack);
+  } else {
+    do_report_result(true, message, stack);
+  }
+});
 
 let _log = function (action, params) {
   if (typeof _XPCSHELL_PROCESS != "undefined") {
@@ -93,6 +110,7 @@ try {
     let (crashReporter =
           Components.classes["@mozilla.org/toolkit/crash-reporter;1"]
           .getService(Components.interfaces.nsICrashReporter)) {
+      crashReporter.UpdateCrashEventsDir();
       crashReporter.minidumpPath = do_get_minidumpdir();
     }
   }
@@ -179,7 +197,7 @@ function _do_main() {
 function _do_quit() {
   _log("test_info",
        {_message: "TEST-INFO | (xpcshell/head.js) | exiting test\n"});
-
+  _Promise.Debugging.flushUncaughtErrors();
   _quit = true;
 }
 
@@ -310,34 +328,48 @@ function do_get_idle() {
 // Map resource://test/ to current working directory and
 // resource://testing-common/ to the shared test modules directory.
 function _register_protocol_handlers() {
-  let (ios = Components.classes["@mozilla.org/network/io-service;1"]
-             .getService(Components.interfaces.nsIIOService)) {
-    let protocolHandler =
-      ios.getProtocolHandler("resource")
-         .QueryInterface(Components.interfaces.nsIResProtocolHandler);
-    let curDirURI = ios.newFileURI(do_get_cwd());
-    protocolHandler.setSubstitution("test", curDirURI);
+  let ios = Components.classes["@mozilla.org/network/io-service;1"]
+                      .getService(Components.interfaces.nsIIOService);
+  let protocolHandler =
+    ios.getProtocolHandler("resource")
+       .QueryInterface(Components.interfaces.nsIResProtocolHandler);
 
-    if (this._TESTING_MODULES_DIR) {
-      let modulesFile = Components.classes["@mozilla.org/file/local;1"].
-                        createInstance(Components.interfaces.nsILocalFile);
-      modulesFile.initWithPath(_TESTING_MODULES_DIR);
+  let curDirURI = ios.newFileURI(do_get_cwd());
+  protocolHandler.setSubstitution("test", curDirURI);
 
-      if (!modulesFile.exists()) {
-        throw new Error("Specified modules directory does not exist: " +
-                        _TESTING_MODULES_DIR);
-      }
+  _register_modules_protocol_handler();
+}
 
-      if (!modulesFile.isDirectory()) {
-        throw new Error("Specified modules directory is not a directory: " +
-                        _TESTING_MODULES_DIR);
-      }
-
-      let modulesURI = ios.newFileURI(modulesFile);
-
-      protocolHandler.setSubstitution("testing-common", modulesURI);
-    }
+function _register_modules_protocol_handler() {
+  if (!this._TESTING_MODULES_DIR) {
+    throw new Error("Please define a path where the testing modules can be " +
+                    "found in a variable called '_TESTING_MODULES_DIR' before " +
+                    "head.js is included.");
   }
+
+  let ios = Components.classes["@mozilla.org/network/io-service;1"]
+                      .getService(Components.interfaces.nsIIOService);
+  let protocolHandler =
+    ios.getProtocolHandler("resource")
+       .QueryInterface(Components.interfaces.nsIResProtocolHandler);
+
+  let modulesFile = Components.classes["@mozilla.org/file/local;1"].
+                    createInstance(Components.interfaces.nsILocalFile);
+  modulesFile.initWithPath(_TESTING_MODULES_DIR);
+
+  if (!modulesFile.exists()) {
+    throw new Error("Specified modules directory does not exist: " +
+                    _TESTING_MODULES_DIR);
+  }
+
+  if (!modulesFile.isDirectory()) {
+    throw new Error("Specified modules directory is not a directory: " +
+                    _TESTING_MODULES_DIR);
+  }
+
+  let modulesURI = ios.newFileURI(modulesFile);
+
+  protocolHandler.setSubstitution("testing-common", modulesURI);
 }
 
 function _execute_test() {
@@ -347,28 +379,24 @@ function _execute_test() {
   // Call do_get_idle() to restore the factory and get the service.
   _fakeIdleService.activate();
 
+  _Promise.Debugging.clearUncaughtErrorObservers();
+  _Promise.Debugging.addUncaughtErrorObserver(function observer({message, date, fileName, stack, lineNumber}) {
+    let text = " A promise chain failed to handle a rejection: " +
+        message + " - rejection date: " + date;
+    _log_message_with_stack("test_unexpected_fail",
+                            text, stack, fileName);
+  });
+
   // _HEAD_FILES is dynamically defined by <runxpcshelltests.py>.
   _load_files(_HEAD_FILES);
   // _TEST_FILE is dynamically defined by <runxpcshelltests.py>.
   _load_files(_TEST_FILE);
 
-  // Support a common assertion library, Assert.jsm.
-  let Assert = Components.utils.import("resource://testing-common/Assert.jsm", null).Assert;
-  // Pass a custom report function for xpcshell-test style reporting.
-  let assertImpl = new Assert(function(err, message, stack) {
-    if (err) {
-      do_report_result(false, err.message, err.stack);
-    } else {
-      do_report_result(true, message, stack);
-    }
-  });
-  // Allow Assert.jsm methods to be tacked to the current scope.
-  this.export_assertions = function() {
-    for (let func in assertImpl) {
-      this[func] = assertImpl[func].bind(assertImpl);
-    }
-  };
-  this.Assert = assertImpl;
+  // Tack Assert.jsm methods to the current scope.
+  this.Assert = Assert;
+  for (let func in Assert) {
+    this[func] = Assert[func].bind(Assert);
+  }
 
   try {
     do_test_pending("MAIN run_test");
@@ -405,9 +433,44 @@ function _execute_test() {
   _load_files(_TAIL_FILES);
 
   // Execute all of our cleanup functions.
-  var func;
-  while ((func = _cleanupFunctions.pop()))
-    func();
+  let reportCleanupError = function(ex) {
+    let stack, filename;
+    if (ex && typeof ex == "object" && "stack" in ex) {
+      stack = ex.stack;
+    } else {
+      stack = Components.stack.caller;
+    }
+    if (stack instanceof Components.interfaces.nsIStackFrame) {
+      filename = stack.filename;
+    } else if (ex.fileName) {
+      filename = ex.fileName;
+    }
+    _log_message_with_stack("test_unexpected_fail",
+                            ex, stack, filename);
+  };
+
+  let func;
+  while ((func = _cleanupFunctions.pop())) {
+    let result;
+    try {
+      result = func();
+    } catch (ex) {
+      reportCleanupError(ex);
+      continue;
+    }
+    if (result && typeof result == "object"
+        && "then" in result && typeof result.then == "function") {
+      // This is a promise, wait until it is satisfied before proceeding
+      let complete = false;
+      let promise = result.then(null, reportCleanupError);
+      promise = promise.then(() => complete = true);
+      let thr = Components.classes["@mozilla.org/thread-manager;1"]
+                  .getService().currentThread;
+      while (!complete) {
+        thr.processNextEvent(true);
+      }
+    }
+  }
 
   // Restore idle service to avoid leaks.
   _fakeIdleService.deactivate();
@@ -456,7 +519,7 @@ function _load_files(aFiles) {
            {_message: "TEST-UNEXPECTED-FAIL | (xpcshell/head.js) | Source file " + element + " contains an error",
             diagnostic: _exception_message(e),
             source_file: element,
-            stack: _format_exception_stack(e.stack)});
+            stack: e.stack ? _format_exception_stack(e.stack) : null});
     }
   }
 
@@ -559,16 +622,17 @@ function do_throw(error, stack) {
 }
 
 function _format_stack(stack) {
+  let normalized;
   if (stack instanceof Components.interfaces.nsIStackFrame) {
-    let stack_msg = "";
-    let frame = stack;
-    while (frame != null) {
-      stack_msg += frame + "\n";
-      frame = frame.caller;
+    let frames = [];
+    for (let frame = stack; frame; frame = frame.caller) {
+      frames.push(frame.filename + ":" + frame.name + ":" + frame.lineNumber);
     }
-    return stack_msg;
+    normalized = frames.join("\n");
+  } else {
+    normalized = "" + stack;
   }
-  return "" + stack;
+  return _Task.Debugging.generateReadableStack(normalized, "    ");
 }
 
 function do_throw_todo(text, stack) {
@@ -626,7 +690,7 @@ function do_report_unexpected_exception(ex, text) {
   text = text ? text + " - " : "";
 
   _passed = false;
-  _log_message_with_stack("test_unexpected_fail", ex, ex.stack,
+  _log_message_with_stack("test_unexpected_fail", ex, ex.stack || "",
                           caller_stack.filename, text + "Unexpected exception ");
   _do_quit();
   throw Components.results.NS_ERROR_ABORT;
@@ -641,12 +705,7 @@ function do_note_exception(ex, text) {
 }
 
 function _do_check_neq(left, right, stack, todo) {
-  if (!stack)
-    stack = Components.stack.caller;
-
-  var text = _wrap_with_quotes_if_necessary(left) + " != " +
-             _wrap_with_quotes_if_necessary(right);
-  do_report_result(left != right, text, stack, todo);
+  Assert.notEqual(left, right);
 }
 
 function do_check_neq(left, right, stack) {
@@ -664,6 +723,9 @@ function todo_check_neq(left, right, stack) {
 }
 
 function do_report_result(passed, text, stack, todo) {
+  while (stack.filename.contains("head.js") && stack.caller) {
+    stack = stack.caller;
+  }
   if (passed) {
     if (todo) {
       do_throw_todo(text, stack);
@@ -701,10 +763,7 @@ function _do_check_eq(left, right, stack, todo) {
 }
 
 function do_check_eq(left, right, stack) {
-  if (!stack)
-    stack = Components.stack.caller;
-
-  _do_check_eq(left, right, stack, false);
+  Assert.equal(left, right);
 }
 
 function todo_check_eq(left, right, stack) {
@@ -715,10 +774,7 @@ function todo_check_eq(left, right, stack) {
 }
 
 function do_check_true(condition, stack) {
-  if (!stack)
-    stack = Components.stack.caller;
-
-  do_check_eq(condition, true, stack);
+  Assert.ok(condition);
 }
 
 function todo_check_true(condition, stack) {
@@ -729,10 +785,7 @@ function todo_check_true(condition, stack) {
 }
 
 function do_check_false(condition, stack) {
-  if (!stack)
-    stack = Components.stack.caller;
-
-  do_check_eq(condition, false, stack);
+  Assert.ok(!condition, stack);
 }
 
 function todo_check_false(condition, stack) {
@@ -742,163 +795,15 @@ function todo_check_false(condition, stack) {
   todo_check_eq(condition, false, stack);
 }
 
-function do_check_null(condition, stack=Components.stack.caller) {
-  do_check_eq(condition, null, stack);
+function do_check_null(condition, stack) {
+  Assert.equal(condition, null);
 }
 
 function todo_check_null(condition, stack=Components.stack.caller) {
   todo_check_eq(condition, null, stack);
 }
-
-/**
- * Check that |value| matches |pattern|.
- *
- * A |value| matches a pattern |pattern| if any one of the following is true:
- *
- * - |value| and |pattern| are both objects; |pattern|'s enumerable
- *   properties' values are valid patterns; and for each enumerable
- *   property |p| of |pattern|, plus 'length' if present at all, |value|
- *   has a property |p| whose value matches |pattern.p|. Note that if |j|
- *   has other properties not present in |p|, |j| may still match |p|.
- *
- * - |value| and |pattern| are equal string, numeric, or boolean literals
- *
- * - |pattern| is |undefined| (this is a wildcard pattern)
- *
- * - typeof |pattern| == "function", and |pattern(value)| is true.
- *
- * For example:
- *
- * do_check_matches({x:1}, {x:1})       // pass
- * do_check_matches({x:1}, {})          // fail: all pattern props required
- * do_check_matches({x:1}, {x:2})       // fail: values must match
- * do_check_matches({x:1}, {x:1, y:2})  // pass: extra props tolerated
- *
- * // Property order is irrelevant.
- * do_check_matches({x:"foo", y:"bar"}, {y:"bar", x:"foo"}) // pass
- *
- * do_check_matches({x:undefined}, {x:1}) // pass: 'undefined' is wildcard
- * do_check_matches({x:undefined}, {x:2})
- * do_check_matches({x:undefined}, {y:2}) // fail: 'x' must still be there
- *
- * // Patterns nest.
- * do_check_matches({a:1, b:{c:2,d:undefined}}, {a:1, b:{c:2,d:3}})
- *
- * // 'length' property counts, even if non-enumerable.
- * do_check_matches([3,4,5], [3,4,5])     // pass
- * do_check_matches([3,4,5], [3,5,5])     // fail; value doesn't match
- * do_check_matches([3,4,5], [3,4,5,6])   // fail; length doesn't match
- *
- * // functions in patterns get applied.
- * do_check_matches({foo:function (v) v.length == 2}, {foo:"hi"}) // pass
- * do_check_matches({foo:function (v) v.length == 2}, {bar:"hi"}) // fail
- * do_check_matches({foo:function (v) v.length == 2}, {foo:"hello"}) // fail
- *
- * // We don't check constructors, prototypes, or classes. However, if
- * // pattern has a 'length' property, we require values to match that as
- * // well, even if 'length' is non-enumerable in the pattern. So arrays
- * // are useful as patterns.
- * do_check_matches({0:0, 1:1, length:2}, [0,1])  // pass
- * do_check_matches({0:1}, [1,2])                 // pass
- * do_check_matches([0], {0:0, length:1})         // pass
- *
- * Notes:
- *
- * The 'length' hack gives us reasonably intuitive handling of arrays.
- *
- * This is not a tight pattern-matcher; it's only good for checking data
- * from well-behaved sources. For example:
- * - By default, we don't mind values having extra properties.
- * - We don't check for proxies or getters.
- * - We don't check the prototype chain.
- * However, if you know the values are, say, JSON, which is pretty
- * well-behaved, and if you want to tolerate additional properties
- * appearing on the JSON for backward-compatibility, then do_check_matches
- * is ideal. If you do want to be more careful, you can use function
- * patterns to implement more stringent checks.
- */
-function do_check_matches(pattern, value, stack=Components.stack.caller, todo=false) {
-  var matcher = pattern_matcher(pattern);
-  var text = "VALUE: " + uneval(value) + "\nPATTERN: " + uneval(pattern) + "\n";
-  var diagnosis = []
-  if (matcher(value, diagnosis)) {
-    do_report_result(true, "value matches pattern:\n" + text, stack, todo);
-  } else {
-    text = ("value doesn't match pattern:\n" +
-            text +
-            "DIAGNOSIS: " +
-            format_pattern_match_failure(diagnosis[0]) + "\n");
-    do_report_result(false, text, stack, todo);
-  }
-}
-
-function todo_check_matches(pattern, value, stack=Components.stack.caller) {
-  do_check_matches(pattern, value, stack, true);
-}
-
-// Return a pattern-matching function of one argument, |value|, that
-// returns true if |value| matches |pattern|.
-//
-// If the pattern doesn't match, and the pattern-matching function was
-// passed its optional |diagnosis| argument, the pattern-matching function
-// sets |diagnosis|'s '0' property to a JSON-ish description of the portion
-// of the pattern that didn't match, which can be formatted legibly by
-// format_pattern_match_failure.
-function pattern_matcher(pattern) {
-  function explain(diagnosis, reason) {
-    if (diagnosis) {
-      diagnosis[0] = reason;
-    }
-    return false;
-  }
-  if (typeof pattern == "function") {
-    return pattern;
-  } else if (typeof pattern == "object" && pattern) {
-    var matchers = [[p, pattern_matcher(pattern[p])] for (p in pattern)];
-    // Kludge: include 'length', if not enumerable. (If it is enumerable,
-    // we picked it up in the array comprehension, above.
-    ld = Object.getOwnPropertyDescriptor(pattern, 'length');
-    if (ld && !ld.enumerable) {
-      matchers.push(['length', pattern_matcher(pattern.length)])
-    }
-    return function (value, diagnosis) {
-      if (!(value && typeof value == "object")) {
-        return explain(diagnosis, "value not object");
-      }
-      for (let [p, m] of matchers) {
-        var element_diagnosis = [];
-        if (!(p in value && m(value[p], element_diagnosis))) {
-          return explain(diagnosis, { property:p,
-                                      diagnosis:element_diagnosis[0] });
-        }
-      }
-      return true;
-    };
-  } else if (pattern === undefined) {
-    return function(value) { return true; };
-  } else {
-    return function (value, diagnosis) {
-      if (value !== pattern) {
-        return explain(diagnosis, "pattern " + uneval(pattern) + " not === to value " + uneval(value));
-      }
-      return true;
-    };
-  }
-}
-
-// Format an explanation for a pattern match failure, as stored in the
-// second argument to a matching function.
-function format_pattern_match_failure(diagnosis, indent="") {
-  var a;
-  if (!diagnosis) {
-    a = "Matcher did not explain reason for mismatch.";
-  } else if (typeof diagnosis == "string") {
-    a = diagnosis;
-  } else if (diagnosis.property) {
-    a = "Property " + uneval(diagnosis.property) + " of object didn't match:\n";
-    a += format_pattern_match_failure(diagnosis.diagnosis, indent + "  ");
-  }
-  return indent + a;
+function do_check_matches(pattern, value) {
+  Assert.deepEqual(pattern, value);
 }
 
 // Check that |func| throws an nsIException that has
@@ -1184,6 +1089,15 @@ function do_get_profile() {
   let obsSvc = Components.classes["@mozilla.org/observer-service;1"].
         getService(Components.interfaces.nsIObserverService);
 
+  // We need to update the crash events directory when the profile changes.
+  if (runningInParent &&
+      "@mozilla.org/toolkit/crash-reporter;1" in Components.classes) {
+    let crashReporter =
+        Components.classes["@mozilla.org/toolkit/crash-reporter;1"]
+                          .getService(Components.interfaces.nsICrashReporter);
+    crashReporter.UpdateCrashEventsDir();
+  }
+
   if (!_profileInitialized) {
     obsSvc.notifyObservers(null, "profile-do-change", "xpcshell-do-get-profile");
     _profileInitialized = true;
@@ -1321,9 +1235,6 @@ function add_test(func) {
   return func;
 }
 
-// We lazy import Task.jsm so we don't incur a run-time penalty for all tests.
-let _Task;
-
 /**
  * Add a test function which is a Task function.
  *
@@ -1362,32 +1273,42 @@ let _Task;
  * });
  */
 function add_task(func) {
-  if (!_Task) {
-    let ns = {};
-    _Task = Components.utils.import("resource://gre/modules/Task.jsm", ns).Task;
-  }
-
   _gTests.push([true, func]);
 }
+let _Task = Components.utils.import("resource://gre/modules/Task.jsm", {}).Task;
+_Task.Debugging.maintainStack = true;
+
 
 /**
  * Runs the next test function from the list of async tests.
  */
 let _gRunningTest = null;
 let _gTestIndex = 0; // The index of the currently running test.
+let _gTaskRunning = false;
 function run_next_test()
 {
+  if (_gTaskRunning) {
+    throw new Error("run_next_test() called from an add_task() test function. " +
+                    "run_next_test() should not be called from inside add_task() " +
+                    "under any circumstances!");
+  }
+ 
   function _run_next_test()
   {
     if (_gTestIndex < _gTests.length) {
+      // Flush uncaught errors as early and often as possible.
+      _Promise.Debugging.flushUncaughtErrors();
       let _isTask;
       [_isTask, _gRunningTest] = _gTests[_gTestIndex++];
       print("TEST-INFO | " + _TEST_FILE + " | Starting " + _gRunningTest.name);
       do_test_pending(_gRunningTest.name);
 
       if (_isTask) {
-        _Task.spawn(_gRunningTest)
-             .then(run_next_test, do_report_unexpected_exception);
+        _gTaskRunning = true;
+        _Task.spawn(_gRunningTest).then(
+          () => { _gTaskRunning = false; run_next_test(); },
+          (ex) => { _gTaskRunning = false; do_report_unexpected_exception(ex); }
+        );
       } else {
         // Exceptions do not kill asynchronous tests, so they'll time out.
         try {
@@ -1419,5 +1340,15 @@ try {
       .getService(Components.interfaces.nsIPrefBranch);
 
     prefs.setBoolPref("geo.provider.testing", true);
+  }
+} catch (e) { }
+
+// We need to avoid hitting the network with certain components.
+try {
+  if (runningInParent) {
+    let prefs = Components.classes["@mozilla.org/preferences-service;1"]
+      .getService(Components.interfaces.nsIPrefBranch);
+
+    prefs.setCharPref("media.gmp-manager.url.override", "http://%(server)s/dummy-gmp-manager.xml");
   }
 } catch (e) { }

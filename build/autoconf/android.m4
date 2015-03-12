@@ -64,7 +64,7 @@ case "$target" in
 
         kernel_name=`uname -s | tr "[[:upper:]]" "[[:lower:]]"`
 
-        for version in $android_gnu_compiler_version 4.7 4.6 4.4.3 ; do
+        for version in $android_gnu_compiler_version 4.8 4.7 4.6 4.4.3; do
             case "$target_cpu" in
             arm)
                 target_name=arm-linux-androideabi-$version
@@ -191,7 +191,6 @@ case "$target" in
     ANDROID_PLATFORM="${android_platform}"
 
     AC_DEFINE(ANDROID)
-    CROSS_COMPILE=1
     AC_SUBST(ANDROID_NDK)
     AC_SUBST(ANDROID_TOOLCHAIN)
     AC_SUBST(ANDROID_PLATFORM)
@@ -259,7 +258,7 @@ MOZ_ARG_WITH_STRING(android-sdk,
                           location where the Android SDK can be found (base directory, e.g. .../android/platforms/android-6)],
     android_sdk=$withval)
 
-android_sdk_root=$withval/../../
+android_sdk_root=${withval%/platforms/android-*}
 
 case "$target" in
 *-android*|*-linuxandroid*)
@@ -271,18 +270,21 @@ case "$target" in
         fi
 
         # Get the api level from "$android_sdk"/source.properties.
-        android_api_level=`$AWK -F = changequote(<<, >>)'<<$>>1 == "AndroidVersion.ApiLevel" {print <<$>>2}'changequote([, ]) "$android_sdk"/source.properties`
+        ANDROID_TARGET_SDK=`$AWK -F = changequote(<<, >>)'<<$>>1 == "AndroidVersion.ApiLevel" {print <<$>>2}'changequote([, ]) "$android_sdk"/source.properties`
 
-        if test -z "$android_api_level" ; then
+        if test -z "$ANDROID_TARGET_SDK" ; then
             AC_MSG_ERROR([Unexpected error: no AndroidVersion.ApiLevel field has been found in source.properties.])
         fi
 
-        if ! test "$android_api_level" -eq "$android_api_level" ; then
-            AC_MSG_ERROR([Unexpected error: the found android api value isn't a number! (found $android_api_level)])
+	AC_DEFINE_UNQUOTED(ANDROID_TARGET_SDK,$ANDROID_TARGET_SDK)
+	AC_SUBST(ANDROID_TARGET_SDK)
+
+        if ! test "$ANDROID_TARGET_SDK" -eq "$ANDROID_TARGET_SDK" ; then
+            AC_MSG_ERROR([Unexpected error: the found android api value isn't a number! (found $ANDROID_TARGET_SDK)])
         fi
 
-        if test $android_api_level -lt $1 ; then
-            AC_MSG_ERROR([The given Android SDK provides API level $android_api_level ($1 or higher required).])
+        if test $ANDROID_TARGET_SDK -lt $1 ; then
+            AC_MSG_ERROR([The given Android SDK provides API level $ANDROID_TARGET_SDK ($1 or higher required).])
         fi
     fi
 
@@ -291,12 +293,21 @@ case "$target" in
     if test ! -d "$android_platform_tools" ; then
         android_platform_tools="$android_sdk"/tools # SDK Tools < r8
     fi
-    # The build tools got moved around to different directories in
-    # SDK Tools r22.  Try to locate them.
+
+    dnl The build tools got moved around to different directories in SDK
+    dnl Tools r22. Try to locate them. This is awful, but, from
+    dnl http://stackoverflow.com/a/4495368, the following sorts versions
+    dnl of the form x.y.z.a.b from newest to oldest:
+    dnl sort -t. -k 1,1nr -k 2,2nr -k 3,3nr -k 4,4nr -k 5,5nr
+    dnl We want to favour the newer versions that start with 'android-';
+    dnl that's what the sed is about.
+    dnl We might iterate over directories that aren't build-tools at all;
+    dnl we use the presence of aapt as a marker.
+    AC_MSG_CHECKING([for android build-tools directory])
     android_build_tools=""
-    for suffix in android-4.3 19.0.0 18.1.0 18.0.1 18.0.0 17.0.0 android-4.2.2; do
-        tools_directory="$android_sdk_root/build-tools/$suffix"
-        if test -d "$tools_directory" ; then
+    for suffix in `ls "$android_sdk_root/build-tools" | sed -e "s,android-,999.," | sort -t. -k 1,1nr -k 2,2nr -k 3,3nr -k 4,4nr -k 5,5nr`; do
+        tools_directory=`echo "$android_sdk_root/build-tools/$suffix" | sed -e "s,999.,android-,"`
+        if test -d "$tools_directory" -a -f "$tools_directory/aapt"; then
             android_build_tools="$tools_directory"
             break
         fi
@@ -304,28 +315,80 @@ case "$target" in
     if test -z "$android_build_tools" ; then
         android_build_tools="$android_platform_tools" # SDK Tools < r22
     fi
+
+    if test -d "$android_build_tools" -a -f "$android_build_tools/aapt"; then
+        AC_MSG_RESULT([$android_build_tools])
+    else
+        AC_MSG_ERROR([not found. Please check your SDK for the subdirectory of build-tools. With the current configuration, it should be in $android_sdk_root/build_tools])
+    fi
+
     ANDROID_SDK="${android_sdk}"
     ANDROID_SDK_ROOT="${android_sdk_root}"
-    if test -e "${ANDROID_SDK_ROOT}/extras/android/compatibility/v4/android-support-v4.jar" ; then
-        ANDROID_COMPAT_LIB="${ANDROID_SDK_ROOT}/extras/android/compatibility/v4/android-support-v4.jar"
+
+    AC_MSG_CHECKING([for compat library dirs])
+    if test -e "${android_sdk_root}/extras/android/compatibility/v4/android-support-v4.jar" ; then
+        ANDROID_COMPAT_DIR_BASE="${android_sdk_root}/extras/android/compatibility";
     else
-        ANDROID_COMPAT_LIB="${ANDROID_SDK_ROOT}/extras/android/support/v4/android-support-v4.jar";
+        ANDROID_COMPAT_DIR_BASE="${android_sdk_root}/extras/android/support";
     fi
+    AC_MSG_RESULT([$ANDROID_COMPAT_DIR_BASE])
+
     ANDROID_TOOLS="${android_tools}"
     ANDROID_PLATFORM_TOOLS="${android_platform_tools}"
     ANDROID_BUILD_TOOLS="${android_build_tools}"
     AC_SUBST(ANDROID_SDK_ROOT)
     AC_SUBST(ANDROID_SDK)
+
+    ANDROID_COMPAT_LIB=$ANDROID_COMPAT_DIR_BASE/v4/android-support-v4.jar
+    AC_MSG_CHECKING([for v4 compat library])
     AC_SUBST(ANDROID_COMPAT_LIB)
     if ! test -e $ANDROID_COMPAT_LIB ; then
-        AC_MSG_ERROR([You must download the Android support library when targeting Android.   Run the Android SDK tool and install Android Support Library under Extras.  See https://developer.android.com/tools/extras/support-library.html for more info. (looked for $ANDROID_COMPAT_LIB)])
+        AC_MSG_ERROR([You must download the Android v4 support library when targeting Android.  Run the Android SDK tool and install Android Support Library under Extras.  See https://developer.android.com/tools/extras/support-library.html for more info. (looked for $ANDROID_COMPAT_LIB)])
+    fi
+    AC_MSG_RESULT([$ANDROID_COMPAT_LIB])
+
+    if test -n "$MOZ_NATIVE_DEVICES" ; then
+        AC_SUBST(MOZ_NATIVE_DEVICES)
+
+        AC_MSG_CHECKING([for google play services])
+        GOOGLE_PLAY_SERVICES_LIB="${ANDROID_SDK_ROOT}/extras/google/google_play_services/libproject/google-play-services_lib/libs/google-play-services.jar"
+        GOOGLE_PLAY_SERVICES_RES="${ANDROID_SDK_ROOT}/extras/google/google_play_services/libproject/google-play-services_lib/res"
+        AC_SUBST(GOOGLE_PLAY_SERVICES_LIB)
+        AC_SUBST(GOOGLE_PLAY_SERVICES_RES)
+        if ! test -e $GOOGLE_PLAY_SERVICES_LIB ; then
+            AC_MSG_ERROR([You must download Google Play Services to build with native video casting support enabled.  Run the Android SDK tool and install Google Play Services under Extras.  See http://developer.android.com/google/play-services/setup.html for more info. (looked for $GOOGLE_PLAY_SERVICES_LIB) ])
+        fi
+        AC_MSG_RESULT([$GOOGLE_PLAY_SERVICES_LIB])
+
+        ANDROID_APPCOMPAT_LIB="$ANDROID_COMPAT_DIR_BASE/v7/appcompat/libs/android-support-v7-appcompat.jar"
+        ANDROID_APPCOMPAT_RES="$ANDROID_COMPAT_DIR_BASE/v7/appcompat/res"
+        AC_MSG_CHECKING([for v7 appcompat library])
+        if ! test -e $ANDROID_APPCOMPAT_LIB ; then
+            AC_MSG_ERROR([You must download the v7 app compat Android support library when targeting Android with native video casting support enabled.  Run the Android SDK tool and install Android Support Library under Extras.  See https://developer.android.com/tools/extras/support-library.html for more info. (looked for $ANDROID_APPCOMPAT_LIB)])
+        fi
+        AC_MSG_RESULT([$ANDROID_APPCOMPAT_LIB])
+        AC_SUBST(ANDROID_APPCOMPAT_LIB)
+        AC_SUBST(ANDROID_APPCOMPAT_RES)
+
+        ANDROID_MEDIAROUTER_LIB="$ANDROID_COMPAT_DIR_BASE/v7/mediarouter/libs/android-support-v7-mediarouter.jar"
+        ANDROID_MEDIAROUTER_RES="$ANDROID_COMPAT_DIR_BASE/v7/mediarouter/res"
+        AC_MSG_CHECKING([for v7 mediarouter library])
+        if ! test -e $ANDROID_MEDIAROUTER_LIB ; then
+            AC_MSG_ERROR([You must download the v7 media router Android support library when targeting Android with native video casting support enabled.  Run the Android SDK tool and install Android Support Library under Extras.  See https://developer.android.com/tools/extras/support-library.html for more info. (looked for $ANDROID_MEDIAROUTER_LIB)])
+        fi
+        AC_MSG_RESULT([$ANDROID_MEDIAROUTER_LIB])
+        AC_SUBST(ANDROID_MEDIAROUTER_LIB)
+        AC_SUBST(ANDROID_MEDIAROUTER_RES)
     fi
 
-    MOZ_PATH_PROG(ZIPALIGN, zipalign, :, [$ANDROID_TOOLS])
-    MOZ_PATH_PROG(DX, dx, :, [$ANDROID_BUILD_TOOLS])
-    MOZ_PATH_PROG(AAPT, aapt, :, [$ANDROID_BUILD_TOOLS])
-    MOZ_PATH_PROG(AIDL, aidl, :, [$ANDROID_BUILD_TOOLS])
-    MOZ_PATH_PROG(ADB, adb, :, [$ANDROID_PLATFORM_TOOLS])
+    dnl Google has a history of moving the Android tools around.  We don't
+    dnl care where they are, so let's try to find them anywhere we can.
+    ALL_ANDROID_TOOLS_PATHS="$ANDROID_TOOLS:$ANDROID_BUILD_TOOLS:$ANDROID_PLATFORM_TOOLS"
+    MOZ_PATH_PROG(ZIPALIGN, zipalign, :, [$ALL_ANDROID_TOOLS_PATHS])
+    MOZ_PATH_PROG(DX, dx, :, [$ALL_ANDROID_TOOLS_PATHS])
+    MOZ_PATH_PROG(AAPT, aapt, :, [$ALL_ANDROID_TOOLS_PATHS])
+    MOZ_PATH_PROG(AIDL, aidl, :, [$ALL_ANDROID_TOOLS_PATHS])
+    MOZ_PATH_PROG(ADB, adb, :, [$ALL_ANDROID_TOOLS_PATHS])
 
     if test -z "$ZIPALIGN" -o "$ZIPALIGN" = ":"; then
       AC_MSG_ERROR([The program zipalign was not found.  Use --with-android-sdk={android-sdk-dir}.])

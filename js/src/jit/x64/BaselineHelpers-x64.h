@@ -71,7 +71,7 @@ EmitChangeICReturnAddress(MacroAssembler &masm, Register reg)
 }
 
 inline void
-EmitTailCallVM(IonCode *target, MacroAssembler &masm, uint32_t argSize)
+EmitTailCallVM(JitCode *target, MacroAssembler &masm, uint32_t argSize)
 {
     // We an assume during this that R0 and R1 have been pushed.
     masm.movq(BaselineFrameReg, ScratchReg);
@@ -84,7 +84,7 @@ EmitTailCallVM(IonCode *target, MacroAssembler &masm, uint32_t argSize)
     masm.store32(rdx, Address(BaselineFrameReg, BaselineFrame::reverseOffsetOfFrameSize()));
 
     // Push frame descriptor and perform the tail call.
-    masm.makeFrameDescriptor(ScratchReg, IonFrame_BaselineJS);
+    masm.makeFrameDescriptor(ScratchReg, JitFrame_BaselineJS);
     masm.push(ScratchReg);
     masm.push(BaselineTailCallReg);
     masm.jmp(target);
@@ -99,11 +99,11 @@ EmitCreateStubFrameDescriptor(MacroAssembler &masm, Register reg)
     masm.addq(Imm32(sizeof(void *) * 2), reg);
     masm.subq(BaselineStackReg, reg);
 
-    masm.makeFrameDescriptor(reg, IonFrame_BaselineStub);
+    masm.makeFrameDescriptor(reg, JitFrame_BaselineStub);
 }
 
 inline void
-EmitCallVM(IonCode *target, MacroAssembler &masm)
+EmitCallVM(JitCode *target, MacroAssembler &masm)
 {
     EmitCreateStubFrameDescriptor(masm, ScratchReg);
     masm.push(ScratchReg);
@@ -130,7 +130,7 @@ EmitEnterStubFrame(MacroAssembler &masm, Register)
     // if needed.
 
     // Push frame descriptor and return address.
-    masm.makeFrameDescriptor(ScratchReg, IonFrame_BaselineJS);
+    masm.makeFrameDescriptor(ScratchReg, JitFrame_BaselineJS);
     masm.push(ScratchReg);
     masm.push(BaselineTailCallReg);
 
@@ -216,7 +216,7 @@ EmitUnstowICValues(MacroAssembler &masm, int values, bool discard = false)
 }
 
 inline void
-EmitCallTypeUpdateIC(MacroAssembler &masm, IonCode *code, uint32_t objectOffset)
+EmitCallTypeUpdateIC(MacroAssembler &masm, JitCode *code, uint32_t objectOffset)
 {
     // R0 contains the value that needs to be typechecked.
     // The object we're updating is a boxed Value on the stack, at offset

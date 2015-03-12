@@ -7,6 +7,7 @@
 
 DEHYDRA_SCRIPT = $(topsrcdir)/config/static-checking.js
 
+ifndef JS_STANDALONE
 DEHYDRA_MODULES = \
   $(topsrcdir)/xpcom/analysis/final.js \
   $(topsrcdir)/xpcom/analysis/must-override.js \
@@ -17,8 +18,12 @@ TREEHYDRA_MODULES = \
   $(topsrcdir)/xpcom/analysis/stack.js \
   $(topsrcdir)/xpcom/analysis/flow.js \
   $(topsrcdir)/xpcom/analysis/static-init.js \
-  $(topsrcdir)/js/src/jsstack.js \
   $(topsrcdir)/layout/generic/frame-verify.js \
+  $(NULL)
+endif
+
+TREEHYDRA_MODULES += \
+  $(topsrcdir)/js/src/jsstack.js \
   $(NULL)
 
 DEHYDRA_ARG_PREFIX=-fplugin-arg-gcc_treehydra-

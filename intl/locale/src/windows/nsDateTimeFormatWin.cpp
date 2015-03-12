@@ -6,7 +6,6 @@
 #include "nsDateTimeFormatWin.h"
 #include "nsIServiceManager.h"
 #include "nsIComponentManager.h"
-#include "nsLocaleCID.h"
 #include "nsILocaleService.h"
 #include "nsWin32Locale.h"
 #include "nsUnicharUtils.h"
@@ -16,7 +15,7 @@
 
 #define NSDATETIMEFORMAT_BUFFER_LEN  80
 
-NS_IMPL_ISUPPORTS1(nsDateTimeFormatWin, nsIDateTimeFormat)
+NS_IMPL_ISUPPORTS(nsDateTimeFormatWin, nsIDateTimeFormat)
 
 
 // init this interface to a specified locale
@@ -94,7 +93,7 @@ nsresult nsDateTimeFormatWin::FormatTMTime(nsILocale* locale,
   SYSTEMTIME system_time;
   DWORD dwFlags_Date = 0, dwFlags_Time = 0;
   int dateLen, timeLen;
-  PRUnichar dateBuffer[NSDATETIMEFORMAT_BUFFER_LEN], timeBuffer[NSDATETIMEFORMAT_BUFFER_LEN];
+  char16_t dateBuffer[NSDATETIMEFORMAT_BUFFER_LEN], timeBuffer[NSDATETIMEFORMAT_BUFFER_LEN];
 
   // set up locale data
   (void) Initialize(locale);
@@ -182,7 +181,7 @@ nsresult nsDateTimeFormatWin::FormatTMTime(nsILocale* locale,
   stringOut.Truncate();
   if (dateLen != 0 && timeLen != 0) {
     stringOut.Assign(dateBuffer, dateLen);
-    stringOut.Append((PRUnichar *)(L" "), 1);
+    stringOut.Append((char16_t *)(L" "), 1);
     stringOut.Append(timeBuffer, timeLen);
   }
   else if (dateLen != 0 && timeLen == 0) {
@@ -232,7 +231,7 @@ nsresult nsDateTimeFormatWin::FormatPRExplodedTime(nsILocale* locale,
 }
 
 int nsDateTimeFormatWin::nsGetTimeFormatW(DWORD dwFlags, const SYSTEMTIME *lpTime,
-                                          const char* format, PRUnichar *timeStr, int cchTime)
+                                          const char* format, char16_t *timeStr, int cchTime)
 {
   int len = 0;
   len = GetTimeFormatW(mLCID, dwFlags, lpTime, 
@@ -244,7 +243,7 @@ int nsDateTimeFormatWin::nsGetTimeFormatW(DWORD dwFlags, const SYSTEMTIME *lpTim
 }
 
 int nsDateTimeFormatWin::nsGetDateFormatW(DWORD dwFlags, const SYSTEMTIME *lpDate,
-                                          const char* format, PRUnichar *dateStr, int cchDate)
+                                          const char* format, char16_t *dateStr, int cchDate)
 {
   int len = 0;
   len = GetDateFormatW(mLCID, dwFlags, lpDate, 

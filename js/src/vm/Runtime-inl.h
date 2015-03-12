@@ -37,6 +37,7 @@ NewObjectCache::fillGlobal(EntryIndex entry, const Class *clasp, js::GlobalObjec
     return fill(entry, clasp, global, kind, obj);
 }
 
+template <AllowGC allowGC>
 inline JSObject *
 NewObjectCache::newObjectFromHit(JSContext *cx, EntryIndex entry_, js::gc::InitialHeap heap)
 {
@@ -47,13 +48,32 @@ NewObjectCache::newObjectFromHit(JSContext *cx, EntryIndex entry_, js::gc::Initi
     Entry *entry = &entries[entry_];
 
     JSObject *templateObj = reinterpret_cast<JSObject *>(&entry->templateObject);
-    if (templateObj->type()->shouldPreTenure())
+
+    // Do an end run around JSObject::type() to avoid doing AutoUnprotectCell
+    // on the templateObj, which is not a GC thing and can't use runtimeFromAnyThread.
+    types::TypeObject *type = templateObj->type_;
+
+    if (type->shouldPreTenure())
         heap = gc::TenuredHeap;
 
-    JSObject *obj = js_NewGCObject<NoGC>(cx, entry->kind, heap);
+    if (cx->runtime()->gc.upcomingZealousGC())
+        return nullptr;
+
+    // Trigger an identical allocation to the one that notified us of OOM
+    // so that we trigger the right kind of GC automatically.
+    if (allowGC) {
+        mozilla::DebugOnly<JSObject *> obj =
+            js::gc::AllocateObjectForCacheHit<allowGC>(cx, entry->kind, heap);
+        JS_ASSERT(!obj);
+        return nullptr;
+    }
+
+    JS_ASSERT(allowGC == NoGC);
+    JSObject *obj = js::gc::AllocateObjectForCacheHit<NoGC>(cx, entry->kind, heap);
     if (obj) {
         copyCachedToObject(obj, templateObj, entry->kind);
         probes::CreateObject(cx, obj);
+        js::gc::TraceCreateObject(obj);
         return obj;
     }
 

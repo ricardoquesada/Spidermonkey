@@ -37,14 +37,14 @@ const Class BooleanObject::class_ = {
     JS_ConvertStub
 };
 
-JS_ALWAYS_INLINE bool
+MOZ_ALWAYS_INLINE bool
 IsBoolean(HandleValue v)
 {
     return v.isBoolean() || (v.isObject() && v.toObject().is<BooleanObject>());
 }
 
 #if JS_HAS_TOSOURCE
-JS_ALWAYS_INLINE bool
+MOZ_ALWAYS_INLINE bool
 bool_toSource_impl(JSContext *cx, CallArgs args)
 {
     HandleValue thisv = args.thisv();
@@ -53,7 +53,7 @@ bool_toSource_impl(JSContext *cx, CallArgs args)
     bool b = thisv.isBoolean() ? thisv.toBoolean() : thisv.toObject().as<BooleanObject>().unbox();
 
     StringBuffer sb(cx);
-    if (!sb.append("(new Boolean(") || !BooleanToStringBuffer(cx, b, sb) || !sb.append("))"))
+    if (!sb.append("(new Boolean(") || !BooleanToStringBuffer(b, sb) || !sb.append("))"))
         return false;
 
     JSString *str = sb.finishString();
@@ -71,7 +71,7 @@ bool_toSource(JSContext *cx, unsigned argc, Value *vp)
 }
 #endif
 
-JS_ALWAYS_INLINE bool
+MOZ_ALWAYS_INLINE bool
 bool_toString_impl(JSContext *cx, CallArgs args)
 {
     HandleValue thisv = args.thisv();
@@ -89,7 +89,7 @@ bool_toString(JSContext *cx, unsigned argc, Value *vp)
     return CallNonGenericMethod<IsBoolean, bool_toString_impl>(cx, args);
 }
 
-JS_ALWAYS_INLINE bool
+MOZ_ALWAYS_INLINE bool
 bool_valueOf_impl(JSContext *cx, CallArgs args)
 {
     HandleValue thisv = args.thisv();
@@ -152,7 +152,7 @@ js_InitBooleanClass(JSContext *cx, HandleObject obj)
     if (!LinkConstructorAndPrototype(cx, ctor, booleanProto))
         return nullptr;
 
-    if (!DefinePropertiesAndBrand(cx, booleanProto, nullptr, boolean_methods))
+    if (!DefinePropertiesAndFunctions(cx, booleanProto, nullptr, boolean_methods))
         return nullptr;
 
     Handle<PropertyName*> valueOfName = cx->names().valueOf;
@@ -169,7 +169,7 @@ js_InitBooleanClass(JSContext *cx, HandleObject obj)
         return nullptr;
     }
 
-    if (!DefineConstructorAndPrototype(cx, global, JSProto_Boolean, ctor, booleanProto))
+    if (!GlobalObject::initBuiltinConstructor(cx, global, JSProto_Boolean, ctor, booleanProto))
         return nullptr;
 
     return booleanProto;
@@ -196,7 +196,7 @@ js::ToBooleanSlow(HandleValue v)
  * The only caller of the fast path, JSON's PreprocessValue, ensures that.
  */
 bool
-js::BooleanGetPrimitiveValueSlow(HandleObject wrappedBool, JSContext *cx)
+js::BooleanGetPrimitiveValueSlow(HandleObject wrappedBool)
 {
     JSObject *obj = wrappedBool->as<ProxyObject>().target();
     JS_ASSERT(obj);

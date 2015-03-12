@@ -23,9 +23,11 @@ namespace js {
 
 class ErrorObject : public JSObject
 {
-    static ErrorObject *
-    createProto(JSContext *cx, JS::Handle<GlobalObject*> global, JSExnType type,
-                JS::HandleObject proto);
+    static JSObject *
+    createProto(JSContext *cx, JSProtoKey key);
+
+    static JSObject *
+    createConstructor(JSContext *cx, JSProtoKey key);
 
     /* For access to createProto. */
     friend JSObject *
@@ -77,9 +79,13 @@ class ErrorObject : public JSObject
     }
 
     JSErrorReport * getErrorReport() const {
-        void *priv = getReservedSlot(ERROR_REPORT_SLOT).toPrivate();
-        return static_cast<JSErrorReport*>(priv);
+        const Value &slot = getReservedSlot(ERROR_REPORT_SLOT);
+        if (slot.isUndefined())
+            return nullptr;
+        return static_cast<JSErrorReport*>(slot.toPrivate());
     }
+
+    JSErrorReport * getOrCreateErrorReport(JSContext *cx);
 
     inline JSString * fileName(JSContext *cx) const;
     inline uint32_t lineNumber() const;

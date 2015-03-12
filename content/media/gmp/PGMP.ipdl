@@ -1,0 +1,32 @@
+/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+include protocol PGMPVideoDecoder;
+include protocol PGMPVideoEncoder;
+include protocol PCrashReporter;
+
+using mozilla::dom::NativeThreadId from "mozilla/dom/TabMessageUtils.h";
+
+namespace mozilla {
+namespace gmp {
+
+intr protocol PGMP
+{
+  manages PGMPVideoDecoder;
+  manages PGMPVideoEncoder;
+  manages PCrashReporter;
+
+parent:
+  async PCrashReporter(NativeThreadId tid);
+
+child:
+  async PGMPVideoDecoder();
+  async PGMPVideoEncoder();
+
+  async CrashPluginNow();
+};
+
+} // namespace gmp
+} // namespace mozilla

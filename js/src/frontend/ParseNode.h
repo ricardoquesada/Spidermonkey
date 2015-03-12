@@ -31,33 +31,30 @@ class ObjectBox;
  */
 class UpvarCookie
 {
-    uint16_t level_;
-    uint16_t slot_;
+    uint32_t level_ : SCOPECOORD_HOPS_BITS;
+    uint32_t slot_ : SCOPECOORD_SLOT_BITS;
 
     void checkInvariants() {
-        JS_STATIC_ASSERT(sizeof(UpvarCookie) == sizeof(uint32_t));
+        static_assert(sizeof(UpvarCookie) == sizeof(uint32_t),
+                      "Not necessary for correctness, but good for ParseNode memory use");
     }
 
   public:
-    // FREE_LEVEL is a distinguished value used to indicate the cookie is free.
-    static const uint16_t FREE_LEVEL = 0xffff;
-
-    static const uint16_t CALLEE_SLOT = 0xffff;
-
-    static bool isLevelReserved(uint16_t level) { return level == FREE_LEVEL; }
-
+    // Steal one value to represent the sentinel value for UpvarCookie.
+    static const uint32_t FREE_LEVEL = SCOPECOORD_HOPS_LIMIT - 1;
     bool isFree() const { return level_ == FREE_LEVEL; }
-    uint16_t level() const { JS_ASSERT(!isFree()); return level_; }
-    uint16_t slot()  const { JS_ASSERT(!isFree()); return slot_; }
 
-    // This fails and issues an error message if newLevel is too large.
-    bool set(TokenStream &ts, unsigned newLevel, uint16_t newSlot) {
-        // This is an unsigned-to-uint16_t conversion, test for too-high
-        // values.  In practice, recursion in Parser and/or BytecodeEmitter
-        // will blow the stack if we nest functions more than a few hundred
-        // deep, so this will never trigger.  Oh well.
+    uint32_t level() const { JS_ASSERT(!isFree()); return level_; }
+    uint32_t slot()  const { JS_ASSERT(!isFree()); return slot_; }
+
+    // This fails and issues an error message if newLevel or newSlot are too large.
+    bool set(TokenStream &ts, unsigned newLevel, uint32_t newSlot) {
         if (newLevel >= FREE_LEVEL)
-            return ts.reportError(JSMSG_TOO_DEEP);
+            return ts.reportError(JSMSG_TOO_DEEP, js_function_str);
+
+        if (newSlot >= SCOPECOORD_SLOT_LIMIT)
+            return ts.reportError(JSMSG_TOO_MANY_LOCALS);
+
         level_ = newLevel;
         slot_ = newSlot;
         return true;
@@ -76,6 +73,7 @@ class UpvarCookie
     F(COMMA) \
     F(CONDITIONAL) \
     F(COLON) \
+    F(SHORTHAND) \
     F(POS) \
     F(NEG) \
     F(PREINCREMENT) \
@@ -93,6 +91,8 @@ class UpvarCookie
     F(NAME) \
     F(NUMBER) \
     F(STRING) \
+    F(TEMPLATE_STRING_LIST) \
+    F(TEMPLATE_STRING) \
     F(REGEXP) \
     F(TRUE) \
     F(FALSE) \
@@ -291,7 +291,7 @@ enum ParseNodeKind
  *                          pn_kid3: catch block statements
  * PNK_BREAK    name        pn_atom: label or null
  * PNK_CONTINUE name        pn_atom: label or null
- * PNK_WITH     binary      pn_left: head expr, pn_right: body
+ * PNK_WITH     binary-obj  pn_left: head expr; pn_right: body; pn_binary_obj: StaticWithObject
  * PNK_VAR,     list        pn_head: list of PNK_NAME or PNK_ASSIGN nodes
  * PNK_CONST                         each name node has either
  *                                     pn_used: false
@@ -389,9 +389,8 @@ enum ParseNodeKind
  * PNK_COLON    binary      key-value pair in object initializer or
  *                          destructuring lhs
  *                          pn_left: property id, pn_right: value
- *                          var {x} = object destructuring shorthand shares
- *                          PN_NAME node for x on left and right of PNK_COLON
- *                          node in PNK_OBJECT's list, has PNX_DESTRUCT flag
+ * PNK_SHORTHAND binary     Same fields as PNK_COLON. This is used for object
+ *                          literal properties using shorthand ({x}).
  * PNK_NAME,    name        pn_atom: name, string, or object atom
  * PNK_STRING               pn_op: JSOP_NAME, JSOP_STRING, or JSOP_OBJECT
  *                          If JSOP_NAME, pn_op may be JSOP_*ARG or JSOP_*VAR
@@ -407,8 +406,7 @@ enum ParseNodeKind
  * PNK_NULL,
  * PNK_THIS
  *
- * PNK_LEXICALSCOPE name    pn_op: JSOP_LEAVEBLOCK or JSOP_LEAVEBLOCKEXPR
- *                          pn_objbox: block object in ObjectBox holder
+ * PNK_LEXICALSCOPE name    pn_objbox: block object in ObjectBox holder
  *                          pn_expr: block body
  * PNK_ARRAYCOMP    list    pn_count: 1
  *                          pn_head: list of 1 element, which is block
@@ -423,6 +421,7 @@ enum ParseNodeArity
     PN_NULLARY,                         /* 0 kids, only pn_atom/pn_dval/etc. */
     PN_UNARY,                           /* one kid, plus a couple of scalars */
     PN_BINARY,                          /* two kids, plus a couple of scalars */
+    PN_BINARY_OBJ,                      /* two kids, plus an objbox */
     PN_TERNARY,                         /* three kids */
     PN_CODE,                            /* module or function definition node */
     PN_LIST,                            /* generic singly linked list */
@@ -498,6 +497,14 @@ class ParseNode
     bool isDefn() const                    { return pn_defn; }
     void setDefn(bool enabled)             { pn_defn = enabled; }
 
+    static const unsigned NumDefinitionFlagBits = 10;
+    static const unsigned NumListFlagBits = 10;
+    static const unsigned NumBlockIdBits = 22;
+    static_assert(NumDefinitionFlagBits == NumListFlagBits,
+                  "Assumed below to achieve consistent blockid offset");
+    static_assert(NumDefinitionFlagBits + NumBlockIdBits <= 32,
+                  "This is supposed to fit in a single uint32_t");
+
     TokenPos            pn_pos;         /* two 16-bit pairs here, for 64 bits */
     int32_t             pn_offset;      /* first generated bytecode offset */
     ParseNode           *pn_next;       /* intrinsic link in parent PN_LIST */
@@ -508,8 +515,8 @@ class ParseNode
             ParseNode   *head;          /* first node in list */
             ParseNode   **tail;         /* ptr to ptr to last node in list */
             uint32_t    count;          /* number of nodes in list */
-            uint32_t    xflags:12,      /* extra flags, see below */
-                        blockid:20;     /* see name variant below */
+            uint32_t    xflags:NumListFlagBits, /* see PNX_* below */
+                        blockid:NumBlockIdBits; /* see name variant below */
         } list;
         struct {                        /* ternary: if, for(;;), ?: */
             ParseNode   *kid1;          /* condition, discriminant, etc. */
@@ -519,7 +526,10 @@ class ParseNode
         struct {                        /* two kids if binary */
             ParseNode   *left;
             ParseNode   *right;
-            unsigned    iflags;         /* JSITER_* flags for PNK_FOR node */
+            union {
+                unsigned iflags;        /* JSITER_* flags for PNK_FOR node */
+                ObjectBox *objbox;      /* Only for PN_BINARY_OBJ */
+            };
         } binary;
         struct {                        /* one kid if unary */
             ParseNode   *kid;
@@ -541,9 +551,9 @@ class ParseNode
             UpvarCookie cookie;         /* upvar cookie with absolute frame
                                            level (not relative skip), possibly
                                            in current frame */
-            uint32_t    dflags:12,      /* definition/use flags, see below */
-                        blockid:20;     /* block number, for subset dominance
-                                           computation */
+            uint32_t    dflags:NumDefinitionFlagBits, /* see PND_* below */
+                        blockid:NumBlockIdBits;  /* block number, for subset dominance
+                                                    computation */
         } name;
         struct {
             double      value;          /* aligned numeric literal value */
@@ -573,6 +583,7 @@ class ParseNode
 #define pn_right        pn_u.binary.right
 #define pn_pval         pn_u.binary.pval
 #define pn_iflags       pn_u.binary.iflags
+#define pn_binary_obj   pn_u.binary.objbox
 #define pn_kid          pn_u.unary.kid
 #define pn_prologue     pn_u.unary.prologue
 #define pn_atom         pn_u.name.atom
@@ -642,59 +653,58 @@ class ParseNode
 #define PND_LET                 0x01    /* let (block-scoped) binding */
 #define PND_CONST               0x02    /* const binding (orthogonal to let) */
 #define PND_ASSIGNED            0x04    /* set if ever LHS of assignment */
-#define PND_PLACEHOLDER         0x10    /* placeholder definition for lexdep */
-#define PND_BOUND               0x20    /* bound to a stack or global slot */
-#define PND_DEOPTIMIZED         0x40    /* former pn_used name node, pn_lexdef
+#define PND_PLACEHOLDER         0x08    /* placeholder definition for lexdep */
+#define PND_BOUND               0x10    /* bound to a stack or global slot */
+#define PND_DEOPTIMIZED         0x20    /* former pn_used name node, pn_lexdef
                                            still valid, but this use no longer
                                            optimizable via an upvar opcode */
-#define PND_CLOSED              0x80    /* variable is closed over */
-#define PND_DEFAULT            0x100    /* definition is an arg with a default */
-#define PND_IMPLICITARGUMENTS  0x200    /* the definition is a placeholder for
+#define PND_CLOSED              0x40    /* variable is closed over */
+#define PND_DEFAULT             0x80    /* definition is an arg with a default */
+#define PND_IMPLICITARGUMENTS  0x100    /* the definition is a placeholder for
                                            'arguments' that has been converted
                                            into a definition after the function
                                            body has been parsed. */
-#define PND_EMITTEDFUNCTION    0x400    /* hoisted function that was emitted */
+#define PND_EMITTEDFUNCTION    0x200    /* hoisted function that was emitted */
+
+    static_assert(PND_EMITTEDFUNCTION < (1 << NumDefinitionFlagBits), "Not enough bits");
 
 /* Flags to propagate from uses to definition. */
 #define PND_USE2DEF_FLAGS (PND_ASSIGNED | PND_CLOSED)
 
 /* PN_LIST pn_xflags bits. */
-#define PNX_STRCAT      0x01            /* PNK_ADD list has string term */
-#define PNX_CANTFOLD    0x02            /* PNK_ADD list has unfoldable term */
-#define PNX_POPVAR      0x04            /* PNK_VAR or PNK_CONST last result
+#define PNX_POPVAR      0x01            /* PNK_VAR or PNK_CONST last result
                                            needs popping */
-#define PNX_GROUPINIT   0x08            /* var [a, b] = [c, d]; unit list */
-#define PNX_FUNCDEFS    0x10            /* contains top-level function statements */
-#define PNX_SETCALL     0x20            /* call expression in lvalue context */
-#define PNX_DESTRUCT    0x40            /* destructuring special cases:
-                                           1. shorthand syntax used, at present
-                                              object destructuring ({x,y}) only;
-                                           2. code evaluating destructuring
-                                              arguments occurs before function
-                                              body */
-#define PNX_SPECIALARRAYINIT 0x80       /* one or more of
+#define PNX_GROUPINIT   0x02            /* var [a, b] = [c, d]; unit list */
+#define PNX_FUNCDEFS    0x04            /* contains top-level function statements */
+#define PNX_SETCALL     0x08            /* call expression in lvalue context */
+#define PNX_DESTRUCT    0x10            /* code evaluating destructuring
+                                           arguments occurs before function body */
+#define PNX_SPECIALARRAYINIT 0x20       /* one or more of
                                            1. array initialiser has holes
                                            2. array initializer has spread node */
-#define PNX_NONCONST   0x100            /* initialiser has non-constants */
+#define PNX_NONCONST    0x40            /* initialiser has non-constants */
+
+    static_assert(PNX_NONCONST < (1 << NumListFlagBits), "Not enough bits");
 
     unsigned frameLevel() const {
         JS_ASSERT(pn_arity == PN_CODE || pn_arity == PN_NAME);
         return pn_cookie.level();
     }
 
-    unsigned frameSlot() const {
+    uint32_t frameSlot() const {
         JS_ASSERT(pn_arity == PN_CODE || pn_arity == PN_NAME);
         return pn_cookie.slot();
     }
 
     bool functionIsHoisted() const {
         JS_ASSERT(pn_arity == PN_CODE && getKind() == PNK_FUNCTION);
-        JS_ASSERT(isOp(JSOP_LAMBDA) ||    // lambda, genexpr
-                  isOp(JSOP_DEFFUN) ||    // non-body-level function statement
-                  isOp(JSOP_NOP) ||       // body-level function stmt in global code
-                  isOp(JSOP_GETLOCAL) ||  // body-level function stmt in function code
-                  isOp(JSOP_GETARG));     // body-level function redeclaring formal
-        return !(isOp(JSOP_LAMBDA) || isOp(JSOP_DEFFUN));
+        JS_ASSERT(isOp(JSOP_LAMBDA) ||        // lambda, genexpr
+                  isOp(JSOP_LAMBDA_ARROW) ||  // arrow function
+                  isOp(JSOP_DEFFUN) ||        // non-body-level function statement
+                  isOp(JSOP_NOP) ||           // body-level function stmt in global code
+                  isOp(JSOP_GETLOCAL) ||      // body-level function stmt in function code
+                  isOp(JSOP_GETARG));         // body-level function redeclaring formal
+        return !isOp(JSOP_LAMBDA) && !isOp(JSOP_LAMBDA_ARROW) && !isOp(JSOP_DEFFUN);
     }
 
     /*
@@ -910,6 +920,30 @@ struct BinaryNode : public ParseNode
 #endif
 };
 
+struct BinaryObjNode : public ParseNode
+{
+    BinaryObjNode(ParseNodeKind kind, JSOp op, const TokenPos &pos, ParseNode *left, ParseNode *right,
+                  ObjectBox *objbox)
+      : ParseNode(kind, op, PN_BINARY_OBJ, pos)
+    {
+        pn_left = left;
+        pn_right = right;
+        pn_binary_obj = objbox;
+    }
+
+    static inline BinaryObjNode *create(ParseNodeKind kind, FullParseHandler *handler) {
+        return (BinaryObjNode *) ParseNode::create(kind, PN_BINARY_OBJ, handler);
+    }
+
+    static bool test(const ParseNode &node) {
+        return node.isArity(PN_BINARY_OBJ);
+    }
+
+#ifdef DEBUG
+    void dump(int indent);
+#endif
+};
+
 struct TernaryNode : public ParseNode
 {
     TernaryNode(ParseNodeKind kind, JSOp op, ParseNode *kid1, ParseNode *kid2, ParseNode *kid3)
@@ -1099,7 +1133,7 @@ class ContinueStatement : public LoopControlStatement
 class DebuggerStatement : public ParseNode
 {
   public:
-    DebuggerStatement(const TokenPos &pos)
+    explicit DebuggerStatement(const TokenPos &pos)
       : ParseNode(PNK_DEBUGGER, JSOP_NOP, PN_NULLARY, pos)
     { }
 };
@@ -1142,13 +1176,13 @@ class ConditionalExpression : public ParseNode
 class ThisLiteral : public ParseNode
 {
   public:
-    ThisLiteral(const TokenPos &pos) : ParseNode(PNK_THIS, JSOP_THIS, PN_NULLARY, pos) { }
+    explicit ThisLiteral(const TokenPos &pos) : ParseNode(PNK_THIS, JSOP_THIS, PN_NULLARY, pos) { }
 };
 
 class NullLiteral : public ParseNode
 {
   public:
-    NullLiteral(const TokenPos &pos) : ParseNode(PNK_NULL, JSOP_NULL, PN_NULLARY, pos) { }
+    explicit NullLiteral(const TokenPos &pos) : ParseNode(PNK_NULL, JSOP_NULL, PN_NULLARY, pos) { }
 };
 
 class BooleanLiteral : public ParseNode

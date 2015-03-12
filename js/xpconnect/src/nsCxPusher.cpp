@@ -10,12 +10,10 @@
 #include "mozilla/dom/EventTarget.h"
 #include "nsDOMJSUtils.h"
 #include "xpcprivate.h"
+#include "WorkerPrivate.h"
 
 using mozilla::dom::EventTarget;
 using mozilla::DebugOnly;
-
-NS_EXPORT
-nsCxPusher::~nsCxPusher() {}
 
 bool
 nsCxPusher::Push(EventTarget *aCurrentTarget)
@@ -77,7 +75,7 @@ nsCxPusher::RePush(EventTarget *aCurrentTarget)
   return Push(aCurrentTarget);
 }
 
-NS_EXPORT_(void)
+void
 nsCxPusher::Push(JSContext *cx)
 {
   mPusher.construct(cx);
@@ -91,7 +89,7 @@ nsCxPusher::PushNull()
   mPusher.construct(static_cast<JSContext*>(nullptr), /* aAllowNull = */ true);
 }
 
-NS_EXPORT_(void)
+void
 nsCxPusher::Pop()
 {
   if (!mPusher.empty())
@@ -114,6 +112,7 @@ AutoCxPusher::AutoCxPusher(JSContext* cx, bool allowNull)
   if (!stack->Push(cx)) {
     MOZ_CRASH();
   }
+  mStackDepthAfterPush = stack->Count();
 
 #ifdef DEBUG
   mPushedContext = cx;
@@ -133,7 +132,6 @@ AutoCxPusher::AutoCxPusher(JSContext* cx, bool allowNull)
   }
 }
 
-NS_EXPORT
 AutoCxPusher::~AutoCxPusher()
 {
   // GC when we pop a script entry point. This is a useful heuristic that helps
@@ -162,6 +160,14 @@ AutoCxPusher::~AutoCxPusher()
   mScx = nullptr;
 }
 
+bool
+AutoCxPusher::IsStackTop() const
+{
+  uint32_t currentDepth = XPCJSRuntime::Get()->GetJSContextStack()->Count();
+  MOZ_ASSERT(currentDepth >= mStackDepthAfterPush);
+  return currentDepth == mStackDepthAfterPush;
+}
+
 AutoJSContext::AutoJSContext(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_IN_IMPL)
   : mCx(nullptr)
 {
@@ -177,7 +183,7 @@ AutoJSContext::AutoJSContext(bool aSafe MOZ_GUARD_OBJECT_NOTIFIER_PARAM_IN_IMPL)
 void
 AutoJSContext::Init(bool aSafe MOZ_GUARD_OBJECT_NOTIFIER_PARAM_IN_IMPL)
 {
-  JS::AutoAssertNoGC nogc;
+  JS::AutoSuppressGCAnalysis nogc;
   MOZ_ASSERT(!mCx, "mCx should not be initialized!");
 
   MOZ_GUARD_OBJECT_NOTIFIER_INIT;
@@ -198,9 +204,54 @@ AutoJSContext::operator JSContext*() const
   return mCx;
 }
 
+ThreadsafeAutoJSContext::ThreadsafeAutoJSContext(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_IN_IMPL)
+{
+  MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+
+  if (NS_IsMainThread()) {
+    mCx = nullptr;
+    mAutoJSContext.construct();
+  } else {
+    mCx = mozilla::dom::workers::GetCurrentThreadJSContext();
+    mRequest.construct(mCx);
+  }
+}
+
+ThreadsafeAutoJSContext::operator JSContext*() const
+{
+  if (mCx) {
+    return mCx;
+  } else {
+    return mAutoJSContext.ref();
+  }
+}
+
 AutoSafeJSContext::AutoSafeJSContext(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_IN_IMPL)
   : AutoJSContext(true MOZ_GUARD_OBJECT_NOTIFIER_PARAM_TO_PARENT)
+  , mAc(mCx, XPCJSRuntime::Get()->GetJSContextStack()->GetSafeJSContextGlobal())
 {
+}
+
+ThreadsafeAutoSafeJSContext::ThreadsafeAutoSafeJSContext(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_IN_IMPL)
+{
+  MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+
+  if (NS_IsMainThread()) {
+    mCx = nullptr;
+    mAutoSafeJSContext.construct();
+  } else {
+    mCx = mozilla::dom::workers::GetCurrentThreadJSContext();
+    mRequest.construct(mCx);
+  }
+}
+
+ThreadsafeAutoSafeJSContext::operator JSContext*() const
+{
+  if (mCx) {
+    return mCx;
+  } else {
+    return mAutoSafeJSContext.ref();
+  }
 }
 
 AutoPushJSContext::AutoPushJSContext(JSContext *aCx) : mCx(aCx)

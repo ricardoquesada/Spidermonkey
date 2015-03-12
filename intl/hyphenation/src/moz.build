@@ -5,15 +5,23 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 UNIFIED_SOURCES += [
-    'hnjstdio.cpp',
     'nsHyphenationManager.cpp',
     'nsHyphenator.cpp',
 ]
 
+# These files cannot be built in unified mode because they include hnjalloc.h.
 SOURCES += [
+    'hnjstdio.cpp',
     'hyphen.c',
 ]
 
 MSVC_ENABLE_PGO = True
 
 FINAL_LIBRARY = 'i18n'
+
+# Suppress warnings in third-party code.
+if CONFIG['GNU_CC']:
+    CFLAGS += [
+        '-Wno-sign-compare',
+        '-Wno-type-limits',
+    ]

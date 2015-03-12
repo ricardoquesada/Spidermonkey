@@ -27,11 +27,11 @@ if CONFIG['MOZ_OPUS']:
 if CONFIG['MOZ_WEBM']:
     external_dirs += ['media/libnestegg']
 
-if CONFIG['MOZ_VP8'] and not CONFIG['MOZ_NATIVE_LIBVPX']:
-    external_dirs += ['media/libvpx']
+if CONFIG['MOZ_WEBM_ENCODER']:
+    external_dirs += ['media/libmkv']
 
-if CONFIG['MOZ_OGG']:
-    external_dirs += ['media/libogg', 'media/libtheora']
+if CONFIG['MOZ_VPX'] and not CONFIG['MOZ_NATIVE_LIBVPX']:
+    external_dirs += ['media/libvpx']
 
 if not CONFIG['MOZ_NATIVE_PNG']:
     external_dirs += ['media/libpng']
@@ -39,7 +39,10 @@ if not CONFIG['MOZ_NATIVE_PNG']:
 external_dirs += [
     'media/kiss_fft',
     'media/libcubeb',
+    'media/libogg',
+    'media/libtheora',
     'media/libspeex_resampler',
+    'media/libstagefright',
     'media/libsoundtouch',
 ]
 

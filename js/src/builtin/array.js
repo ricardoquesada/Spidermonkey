@@ -489,6 +489,103 @@ function ArrayFindIndex(predicate/*, thisArg*/) {
     return -1;
 }
 
+/* ES6 draft 2013-09-27 22.1.3.3. */
+function ArrayCopyWithin(target, start, end = undefined) {
+    /* Steps 1-2. */
+    var O = ToObject(this);
+
+    /* Steps 3-5. */
+    var len = ToInteger(O.length);
+
+    /* Steps 6-8. */
+    var relativeTarget = ToInteger(target);
+
+    var to = relativeTarget < 0 ? std_Math_max(len + relativeTarget, 0)
+                                : std_Math_min(relativeTarget, len);
+
+    /* Steps 9-11. */
+    var relativeStart = ToInteger(start);
+
+    var from = relativeStart < 0 ? std_Math_max(len + relativeStart, 0)
+                                 : std_Math_min(relativeStart, len);
+
+    /* Steps 12-14. */
+    var relativeEnd = end === undefined ? len
+                                        : ToInteger(end);
+
+    var final = relativeEnd < 0 ? std_Math_max(len + relativeEnd, 0)
+                                : std_Math_min(relativeEnd, len);
+
+    /* Step 15. */
+    var count = std_Math_min(final - from, len - to);
+
+    /* Steps 16-17. */
+    if (from < to && to < (from + count)) {
+        from = from + count - 1;
+        to = to + count - 1;
+        /* Step 18. */
+        while (count > 0) {
+            if (from in O)
+                O[to] = O[from];
+            else
+                delete O[to];
+
+            from--;
+            to--;
+            count--;
+        }
+    } else {
+        /* Step 18. */
+        while (count > 0) {
+            if (from in O)
+                O[to] = O[from];
+            else
+                delete O[to];
+
+            from++;
+            to++;
+            count--;
+        }
+    }
+
+    /* Step 19. */
+    return O;
+}
+
+// ES6 draft 2014-04-05 22.1.3.6
+function ArrayFill(value, start = 0, end = undefined) {
+    // Steps 1-2.
+    var O = ToObject(this);
+
+    // Steps 3-5.
+    // FIXME: Array operations should use ToLength (bug 924058).
+    var len = ToInteger(O.length);
+
+    // Steps 6-7.
+    var relativeStart = ToInteger(start);
+
+    // Step 8.
+    var k = relativeStart < 0
+            ? std_Math_max(len + relativeStart, 0)
+            : std_Math_min(relativeStart, len);
+
+    // Steps 9-10.
+    var relativeEnd = end === undefined ? len : ToInteger(end);
+
+    // Step 11.
+    var final = relativeEnd < 0
+                ? std_Math_max(len + relativeEnd, 0)
+                : std_Math_min(relativeEnd, len);
+
+    // Step 12.
+    for (; k < final; k++) {
+        O[k] = value;
+    }
+
+    // Step 13.
+    return O;
+}
+
 #define ARRAY_ITERATOR_SLOT_ITERATED_OBJECT 0
 #define ARRAY_ITERATOR_SLOT_NEXT_INDEX 1
 #define ARRAY_ITERATOR_SLOT_ITEM_KIND 2
@@ -498,13 +595,16 @@ function ArrayFindIndex(predicate/*, thisArg*/) {
 #define ITEM_KIND_KEY 2
 
 // ES6 draft specification, section 22.1.5.1, version 2013-09-05.
-function CreateArrayIterator(obj, kind) {
+function CreateArrayIteratorAt(obj, kind, n) {
     var iteratedObject = ToObject(obj);
     var iterator = NewArrayIterator();
     UnsafeSetReservedSlot(iterator, ARRAY_ITERATOR_SLOT_ITERATED_OBJECT, iteratedObject);
-    UnsafeSetReservedSlot(iterator, ARRAY_ITERATOR_SLOT_NEXT_INDEX, 0);
+    UnsafeSetReservedSlot(iterator, ARRAY_ITERATOR_SLOT_NEXT_INDEX, n);
     UnsafeSetReservedSlot(iterator, ARRAY_ITERATOR_SLOT_ITEM_KIND, kind);
     return iterator;
+}
+function CreateArrayIterator(obj, kind) {
+    return CreateArrayIteratorAt(obj, kind, 0);
 }
 
 function ArrayIteratorIdentity() {
@@ -544,6 +644,10 @@ function ArrayIteratorNext() {
     return { value: index, done: false };
 }
 
+function ArrayValuesAt(n) {
+    return CreateArrayIteratorAt(this, ITEM_KIND_VALUE, n);
+}
+
 function ArrayValues() {
     return CreateArrayIterator(this, ITEM_KIND_VALUE);
 }
@@ -556,100 +660,88 @@ function ArrayKeys() {
     return CreateArrayIterator(this, ITEM_KIND_KEY);
 }
 
+/* ES6 rev 25 (2014 May 22) 22.1.2.1 */
+function ArrayFrom(arrayLike, mapfn=undefined, thisArg=undefined) {
+    // Step 1.
+    var C = this;
+
+    // Steps 2-3.
+    var items = ToObject(arrayLike);
+
+    // Steps 4-5.
+    var mapping = (mapfn !== undefined);
+    if (mapping && !IsCallable(mapfn))
+        ThrowError(JSMSG_NOT_FUNCTION, DecompileArg(1, mapfn));
+
+    // All elements defined by this algorithm have the same attrs:
+    var attrs = ATTR_CONFIGURABLE | ATTR_ENUMERABLE | ATTR_WRITABLE;
+
+    // Steps 6-8.
+    var usingIterator = items["@@iterator"];
+    if (usingIterator !== undefined) {
+        // Steps 8.a-c.
+        var A = IsConstructor(C) ? new C() : [];
+
+        // Steps 8.d-e.
+        var iterator = callFunction(usingIterator, items);
+
+        // Step 8.f.
+        var k = 0;
+
+        // Steps 8.g.i-vi.
+        // These steps cannot be implemented using a for-of loop.
+        // See <https://bugs.ecmascript.org/show_bug.cgi?id=2883>.
+        var next;
+        while (true) {
+            // Steps 8.g.ii-vi.
+            next = iterator.next();
+            if (!IsObject(next))
+                ThrowError(JSMSG_NEXT_RETURNED_PRIMITIVE);
+            if (next.done)
+                break;  // Substeps of 8.g.iv are implemented below.
+            var nextValue = next.value;
+
+            // Steps 8.g.vii-viii.
+            var mappedValue = mapping ? callFunction(mapfn, thisArg, nextValue, k) : nextValue;
+
+            // Steps 8.g.ix-xi.
+            _DefineDataProperty(A, k++, mappedValue, attrs);
+        }
+    } else {
+        // Step 9 is an assertion: items is not an Iterator. Testing this is
+        // literally the very last thing we did, so we don't assert here.
+
+        // Steps 10-12.
+        // FIXME: Array operations should use ToLength (bug 924058).
+        var len = ToInteger(items.length);
+
+        // Steps 13-15.
+        var A = IsConstructor(C) ? new C(len) : NewDenseArray(len);
+
+        // Steps 16-17.
+        for (var k = 0; k < len; k++) {
+            // Steps 17.a-c.
+            var kValue = items[k];
+
+            // Steps 17.d-e.
+            var mappedValue = mapping ? callFunction(mapfn, thisArg, kValue, k) : kValue;
+
+            // Steps 17.f-g.
+            _DefineDataProperty(A, k, mappedValue, attrs);
+        }
+    }
+
+    // Steps 8.g.iv.1-3 and 18-20 are the same.
+    A.length = k;
+    return A;
+}
+
+#ifdef ENABLE_PARALLEL_JS
+
 /*
  * Strawman spec:
  *   http://wiki.ecmascript.org/doku.php?id=strawman:data_parallelism
  */
-
-/* The mode asserts options object. */
-#define TRY_PARALLEL(MODE) \
-  ((!MODE || MODE.mode !== "seq"))
-#define ASSERT_SEQUENTIAL_IS_OK(MODE) \
-  do { if (MODE) AssertSequentialIsOK(MODE) } while(false)
-
-/* Slice array: see ComputeAllSliceBounds() */
-#define SLICE_INFO(START, END) START, END, START, 0
-#define SLICE_START(ID) ((ID << 2) + 0)
-#define SLICE_END(ID)   ((ID << 2) + 1)
-#define SLICE_POS(ID)   ((ID << 2) + 2)
-
-/*
- * How many items at a time do we do recomp. for parallel execution.
- * Note that filter currently assumes that this is no greater than 32
- * in order to make use of a bitset.
- */
-#define CHUNK_SHIFT 5
-#define CHUNK_SIZE 32
-
-/* Safe versions of ARRAY.push(ELEMENT) */
-#define ARRAY_PUSH(ARRAY, ELEMENT) \
-  callFunction(std_Array_push, ARRAY, ELEMENT);
-#define ARRAY_SLICE(ARRAY, ELEMENT) \
-  callFunction(std_Array_slice, ARRAY, ELEMENT);
-
-/**
- * The ParallelSpew intrinsic is only defined in debug mode, so define a dummy
- * if debug is not on.
- */
-#ifndef DEBUG
-#define ParallelSpew(args)
-#endif
-
-/**
- * Determine the number of chunks of size CHUNK_SIZE;
- * note that the final chunk may be smaller than CHUNK_SIZE.
- */
-function ComputeNumChunks(length) {
-  var chunks = length >>> CHUNK_SHIFT;
-  if (chunks << CHUNK_SHIFT === length)
-    return chunks;
-  return chunks + 1;
-}
-
-/**
- * Computes the bounds for slice |sliceIndex| of |numItems| items,
- * assuming |numSlices| total slices. If numItems is not evenly
- * divisible by numSlices, then the final thread may have a bit of
- * extra work.
- */
-function ComputeSliceBounds(numItems, sliceIndex, numSlices) {
-  var sliceWidth = (numItems / numSlices) | 0;
-  var extraChunks = (numItems % numSlices) | 0;
-
-  var startIndex = sliceWidth * sliceIndex + std_Math_min(extraChunks, sliceIndex);
-  var endIndex = startIndex + sliceWidth;
-  if (sliceIndex < extraChunks)
-    endIndex += 1;
-  return [startIndex, endIndex];
-}
-
-/**
- * Divides |numItems| items amongst |numSlices| slices. The result
- * is an array containing multiple values per slice: the start
- * index, end index, current position, and some padding. The
- * current position is initially the same as the start index. To
- * access the values for a particular slice, use the macros
- * SLICE_START() and so forth.
- */
-function ComputeAllSliceBounds(numItems, numSlices) {
-  // FIXME(bug 844890): Use typed arrays here.
-  var sliceWidth = (numItems / numSlices) | 0;
-  var extraChunks = (numItems % numSlices) | 0;
-  var counter = 0;
-  var info = [];
-  var i = 0;
-  for (; i < extraChunks; i++) {
-    ARRAY_PUSH(info, SLICE_INFO(counter, counter + sliceWidth + 1));
-    counter += sliceWidth + 1;
-  }
-  for (; i < numSlices; i++) {
-    ARRAY_PUSH(info, SLICE_INFO(counter, counter + sliceWidth));
-    counter += sliceWidth;
-  }
-  return info;
-}
-
-#ifdef ENABLE_PARALLEL_JS
 
 /**
  * Creates a new array by applying |func(e, i, self)| for each element |e|
@@ -675,40 +767,27 @@ function ArrayMapPar(func, mode) {
     if (!TRY_PARALLEL(mode))
       break parallel;
 
-    var chunks = ComputeNumChunks(length);
-    var numSlices = ForkJoinSlices();
-    var info = ComputeAllSliceBounds(chunks, numSlices);
-    ForkJoin(mapSlice, ForkJoinMode(mode));
+    var slicesInfo = ComputeSlicesInfo(length);
+    ForkJoin(mapThread, 0, slicesInfo.count, ForkJoinMode(mode), buffer);
     return buffer;
   }
 
   // Sequential fallback:
   ASSERT_SEQUENTIAL_IS_OK(mode);
-  for (var i = 0; i < length; i++) {
-    // Note: Unlike JS arrays, parallel arrays cannot have holes.
-    var v = func(self[i], i, self);
-    UnsafePutElements(buffer, i, v);
-  }
+  for (var i = 0; i < length; i++)
+    UnsafePutElements(buffer, i, func(self[i], i, self));
   return buffer;
 
-  function mapSlice(sliceId, numSlices, warmup) {
-    var chunkPos = info[SLICE_POS(sliceId)];
-    var chunkEnd = info[SLICE_END(sliceId)];
-
-    if (warmup && chunkEnd > chunkPos + 1)
-      chunkEnd = chunkPos + 1;
-
-    while (chunkPos < chunkEnd) {
-      var indexStart = chunkPos << CHUNK_SHIFT;
-      var indexEnd = std_Math_min(indexStart + CHUNK_SIZE, length);
-
+  function mapThread(workerId, sliceStart, sliceEnd) {
+    var sliceShift = slicesInfo.shift;
+    var sliceId;
+    while (GET_SLICE(sliceStart, sliceEnd, sliceId)) {
+      var indexStart = SLICE_START_INDEX(sliceShift, sliceId);
+      var indexEnd = SLICE_END_INDEX(sliceShift, indexStart, length);
       for (var i = indexStart; i < indexEnd; i++)
         UnsafePutElements(buffer, i, func(self[i], i, self));
-
-      UnsafePutElements(info, SLICE_POS(sliceId), ++chunkPos);
     }
-
-    return chunkEnd === info[SLICE_END(sliceId)];
+    return sliceId;
   }
 
   return undefined;
@@ -734,14 +813,12 @@ function ArrayReducePar(func, mode) {
     if (!TRY_PARALLEL(mode))
       break parallel;
 
-    var chunks = ComputeNumChunks(length);
-    var numSlices = ForkJoinSlices();
-    if (chunks < numSlices)
-      break parallel;
-
-    var info = ComputeAllSliceBounds(chunks, numSlices);
+    var slicesInfo = ComputeSlicesInfo(length);
+    var numSlices = slicesInfo.count;
     var subreductions = NewDenseArray(numSlices);
-    ForkJoin(reduceSlice, ForkJoinMode(mode));
+
+    ForkJoin(reduceThread, 0, numSlices, ForkJoinMode(mode), subreductions);
+
     var accumulator = subreductions[0];
     for (var i = 1; i < numSlices; i++)
       accumulator = func(accumulator, subreductions[i]);
@@ -755,46 +832,18 @@ function ArrayReducePar(func, mode) {
     accumulator = func(accumulator, self[i]);
   return accumulator;
 
-  function reduceSlice(sliceId, numSlices, warmup) {
-    var chunkStart = info[SLICE_START(sliceId)];
-    var chunkPos = info[SLICE_POS(sliceId)];
-    var chunkEnd = info[SLICE_END(sliceId)];
-
-    // (*) This function is carefully designed so that the warmup
-    // (which executes with chunkStart === chunkPos) will execute all
-    // potential loads and stores. In particular, the warmup run
-    // processes two chunks rather than one. Moreover, it stores
-    // accumulator into subreductions and then loads it again to
-    // ensure that the load is executed during the warmup, as it will
-    // certainly be executed during subsequent runs.
-
-    if (warmup && chunkEnd > chunkPos + 2)
-      chunkEnd = chunkPos + 2;
-
-    if (chunkStart === chunkPos) {
-      var indexPos = chunkStart << CHUNK_SHIFT;
-      var accumulator = reduceChunk(self[indexPos], indexPos + 1, indexPos + CHUNK_SIZE);
-
-      UnsafePutElements(subreductions, sliceId, accumulator, // see (*) above
-                        info, SLICE_POS(sliceId), ++chunkPos);
+  function reduceThread(workerId, sliceStart, sliceEnd) {
+    var sliceShift = slicesInfo.shift;
+    var sliceId;
+    while (GET_SLICE(sliceStart, sliceEnd, sliceId)) {
+      var indexStart = SLICE_START_INDEX(sliceShift, sliceId);
+      var indexEnd = SLICE_END_INDEX(sliceShift, indexStart, length);
+      var accumulator = self[indexStart];
+      for (var i = indexStart + 1; i < indexEnd; i++)
+        accumulator = func(accumulator, self[i]);
+      UnsafePutElements(subreductions, sliceId, accumulator);
     }
-
-    var accumulator = subreductions[sliceId]; // see (*) above
-
-    while (chunkPos < chunkEnd) {
-      var indexPos = chunkPos << CHUNK_SHIFT;
-      accumulator = reduceChunk(accumulator, indexPos, indexPos + CHUNK_SIZE);
-      UnsafePutElements(subreductions, sliceId, accumulator, info, SLICE_POS(sliceId), ++chunkPos);
-    }
-
-    return chunkEnd === info[SLICE_END(sliceId)];
-  }
-
-  function reduceChunk(accumulator, from, to) {
-    to = std_Math_min(to, length);
-    for (var i = from; i < to; i++)
-      accumulator = func(accumulator, self[i]);
-    return accumulator;
+    return sliceId;
   }
 
   return undefined;
@@ -815,7 +864,12 @@ function ArrayScanPar(func, mode) {
   if (length === 0)
     ThrowError(JSMSG_EMPTY_ARRAY_REDUCE);
 
+  // We need two buffers because phase2() will read an intermediate result and
+  // write a final result; that is safe against bailout-and-restart only if
+  // the intermediate and final buffers are distinct.  (Bug 1023755)
+  // Obviously paying for a second buffer is undesirable.
   var buffer = NewDenseArray(length);
+  var buffer2 = NewDenseArray(length);
 
   parallel: for (;;) { // see ArrayMapPar() to explain why for(;;) etc
     if (ShouldForceSequential())
@@ -823,14 +877,11 @@ function ArrayScanPar(func, mode) {
     if (!TRY_PARALLEL(mode))
       break parallel;
 
-    var chunks = ComputeNumChunks(length);
-    var numSlices = ForkJoinSlices();
-    if (chunks < numSlices)
-      break parallel;
-    var info = ComputeAllSliceBounds(chunks, numSlices);
+    var slicesInfo = ComputeSlicesInfo(length);
+    var numSlices = slicesInfo.count;
 
     // Scan slices individually (see comment on phase1()).
-    ForkJoin(phase1, ForkJoinMode(mode));
+    ForkJoin(phase1, 0, numSlices, ForkJoinMode(mode), buffer);
 
     // Compute intermediates array (see comment on phase2()).
     var intermediates = [];
@@ -841,17 +892,14 @@ function ArrayScanPar(func, mode) {
       ARRAY_PUSH(intermediates, accumulator);
     }
 
-    // Reset the current position information for each slice, but
-    // convert from chunks to indices (see comment on phase2()).
-    for (var i = 0; i < numSlices; i++) {
-      info[SLICE_POS(i)] = info[SLICE_START(i)] << CHUNK_SHIFT;
-      info[SLICE_END(i)] = info[SLICE_END(i)] << CHUNK_SHIFT;
-    }
-    info[SLICE_END(numSlices - 1)] = std_Math_min(info[SLICE_END(numSlices - 1)], length);
-
     // Complete each slice using intermediates array (see comment on phase2()).
-    ForkJoin(phase2, ForkJoinMode(mode));
-    return buffer;
+    //
+    // Slice 0 must be handled specially - it's just a copy - since we don't
+    // have an identity value for the operation.
+    for ( var k=0, limit=finalElement(0) ; k <= limit ; k++ )
+      buffer2[k] = buffer[k];
+    ForkJoin(phase2, 1, numSlices, ForkJoinMode(mode), buffer2);
+    return buffer2;
   }
 
   // Sequential fallback:
@@ -884,46 +932,23 @@ function ArrayScanPar(func, mode) {
    *
    * Read on in phase2 to see what we do next!
    */
-  function phase1(sliceId, numSlices, warmup) {
-    var chunkStart = info[SLICE_START(sliceId)];
-    var chunkPos = info[SLICE_POS(sliceId)];
-    var chunkEnd = info[SLICE_END(sliceId)];
-
-    if (warmup && chunkEnd > chunkPos + 2)
-      chunkEnd = chunkPos + 2;
-
-    if (chunkPos === chunkStart) {
-      // For the first chunk, the accumulator begins as the value in
-      // the input at the start of the chunk.
-      var indexStart = chunkPos << CHUNK_SHIFT;
-      var indexEnd = std_Math_min(indexStart + CHUNK_SIZE, length);
+  function phase1(workerId, sliceStart, sliceEnd) {
+    var sliceShift = slicesInfo.shift;
+    var sliceId;
+    while (GET_SLICE(sliceStart, sliceEnd, sliceId)) {
+      var indexStart = SLICE_START_INDEX(sliceShift, sliceId);
+      var indexEnd = SLICE_END_INDEX(sliceShift, indexStart, length);
       scan(self[indexStart], indexStart, indexEnd);
-      UnsafePutElements(info, SLICE_POS(sliceId), ++chunkPos);
     }
-
-    while (chunkPos < chunkEnd) {
-      // For each subsequent chunk, the accumulator begins as the
-      // combination of the final value of prev chunk and the value in
-      // the input at the start of this chunk. Note that this loop is
-      // written as simple as possible, at the cost of an extra read
-      // from the buffer per iteration.
-      var indexStart = chunkPos << CHUNK_SHIFT;
-      var indexEnd = std_Math_min(indexStart + CHUNK_SIZE, length);
-      var accumulator = func(buffer[indexStart - 1], self[indexStart]);
-      scan(accumulator, indexStart, indexEnd);
-      UnsafePutElements(info, SLICE_POS(sliceId), ++chunkPos);
-    }
-
-    return chunkEnd === info[SLICE_END(sliceId)];
+    return sliceId;
   }
 
   /**
    * Computes the index of the final element computed by the slice |sliceId|.
    */
   function finalElement(sliceId) {
-    var chunkEnd = info[SLICE_END(sliceId)]; // last chunk written by |sliceId| is endChunk - 1
-    var indexStart = std_Math_min(chunkEnd << CHUNK_SHIFT, length);
-    return indexStart - 1;
+    var sliceShift = slicesInfo.shift;
+    return SLICE_END_INDEX(sliceShift, SLICE_START_INDEX(sliceShift, sliceId), length) - 1;
   }
 
   /**
@@ -958,32 +983,18 @@ function ArrayScanPar(func, mode) {
    * |intermediates[1-1]|, which is |A+B+C|, so that the final
    * result is [(A+B+C)+D, (A+B+C)+(D+E), (A+B+C)+(D+E+F)]. Again I
    * am using parentheses to clarify how these results were reduced.
-   *
-   * SUBTLE: Because we are mutating |buffer| in place, we have to
-   * be very careful about bailouts!  We cannot checkpoint a chunk
-   * at a time as we do elsewhere because that assumes it is safe to
-   * replay the portion of a chunk which was already processed.
-   * Therefore, in this phase, we track the current position at an
-   * index granularity, although this requires two memory writes per
-   * index.
    */
-  function phase2(sliceId, numSlices, warmup) {
-    if (sliceId === 0)
-      return true; // No work to do for the 0th slice.
-
-    var indexPos = info[SLICE_POS(sliceId)];
-    var indexEnd = info[SLICE_END(sliceId)];
-
-    if (warmup)
-      indexEnd = std_Math_min(indexEnd, indexPos + CHUNK_SIZE);
-
-    var intermediate = intermediates[sliceId - 1];
-    for (; indexPos < indexEnd; indexPos++) {
-      UnsafePutElements(buffer, indexPos, func(intermediate, buffer[indexPos]),
-                        info, SLICE_POS(sliceId), indexPos + 1);
+  function phase2(workerId, sliceStart, sliceEnd) {
+    var sliceShift = slicesInfo.shift;
+    var sliceId;
+    while (GET_SLICE(sliceStart, sliceEnd, sliceId)) {
+      var indexPos = SLICE_START_INDEX(sliceShift, sliceId);
+      var indexEnd = SLICE_END_INDEX(sliceShift, indexPos, length);
+      var intermediate = intermediates[sliceId - 1];
+      for (; indexPos < indexEnd; indexPos++)
+        UnsafePutElements(buffer2, indexPos, func(intermediate, buffer[indexPos]));
     }
-
-    return indexEnd === info[SLICE_END(sliceId)];
+    return sliceId;
   }
 
   return undefined;
@@ -1019,209 +1030,16 @@ function ArrayScatterPar(targets, defaultValue, conflictFunc, length, mode) {
   if (length === undefined)
     length = self.length;
 
-  // The Divide-Scatter-Vector strategy:
-  // 1. Slice |targets| array of indices ("scatter-vector") into N
-  //    parts.
-  // 2. Each of the N threads prepares an output buffer and a
-  //    write-log.
-  // 3. Each thread scatters according to one of the N parts into its
-  //    own output buffer, tracking written indices in the write-log
-  //    and resolving any resulting local collisions in parallel.
-  // 4. Merge the parts (either in parallel or sequentially), using
-  //    the write-logs as both the basis for finding merge-inputs and
-  //    for detecting collisions.
-
-  // The Divide-Output-Range strategy:
-  // 1. Slice the range of indices [0..|length|-1] into N parts.
-  //    Allocate a single shared output buffer of length |length|.
-  // 2. Each of the N threads scans (the entirety of) the |targets|
-  //    array, seeking occurrences of indices from that thread's part
-  //    of the range, and writing the results into the shared output
-  //    buffer.
-  // 3. Since each thread has its own portion of the output range,
-  //    every collision that occurs can be handled thread-locally.
-
-  // SO:
-  //
-  // If |targets.length| >> |length|, Divide-Scatter-Vector seems like
-  // a clear win over Divide-Output-Range, since for the latter, the
-  // expense of redundantly scanning the |targets| will diminish the
-  // gain from processing |length| in parallel, while for the former,
-  // the total expense of building separate output buffers and the
-  // merging post-process is small compared to the gain from
-  // processing |targets| in parallel.
-  //
-  // If |targets.length| << |length|, then Divide-Output-Range seems
-  // like it *could* win over Divide-Scatter-Vector. (But when is
-  // |targets.length| << |length| or even |targets.length| < |length|?
-  // Seems like an odd situation and an uncommon case at best.)
-  //
-  // The unanswered question is which strategy performs better when
-  // |targets.length| approximately equals |length|, especially for
-  // special cases like collision-free scatters and permutations.
-
   var targetsLength = std_Math_min(targets.length, self.length);
 
   if (!IS_UINT32(targetsLength) || !IS_UINT32(length))
     ThrowError(JSMSG_BAD_ARRAY_LENGTH);
 
-  parallel: for (;;) { // see ArrayMapPar() to explain why for(;;) etc
-    if (ShouldForceSequential())
-      break parallel;
-    if (!TRY_PARALLEL(mode))
-      break parallel;
-
-    if (forceDivideScatterVector())
-      return parDivideScatterVector();
-    else if (forceDivideOutputRange())
-      return parDivideOutputRange();
-    else if (conflictFunc === undefined && targetsLength < length)
-      return parDivideOutputRange();
-    return parDivideScatterVector();
-  }
+  // FIXME: Bug 965609: Find a better parallel startegy for scatter.
 
   // Sequential fallback:
   ASSERT_SEQUENTIAL_IS_OK(mode);
   return seq();
-
-  function forceDivideScatterVector() {
-    return mode && mode.strategy && mode.strategy === "divide-scatter-vector";
-  }
-
-  function forceDivideOutputRange() {
-    return mode && mode.strategy && mode.strategy === "divide-output-range";
-  }
-
-  function collide(elem1, elem2) {
-    if (conflictFunc === undefined)
-      ThrowError(JSMSG_PAR_ARRAY_SCATTER_CONFLICT);
-
-    return conflictFunc(elem1, elem2);
-  }
-
-
-  function parDivideOutputRange() {
-    var chunks = ComputeNumChunks(targetsLength);
-    var numSlices = ForkJoinSlices();
-    var checkpoints = NewDenseArray(numSlices);
-    for (var i = 0; i < numSlices; i++)
-      UnsafePutElements(checkpoints, i, 0);
-
-    var buffer = NewDenseArray(length);
-    var conflicts = NewDenseArray(length);
-
-    for (var i = 0; i < length; i++) {
-      UnsafePutElements(buffer, i, defaultValue);
-      UnsafePutElements(conflicts, i, false);
-    }
-
-    ForkJoin(fill, ForkJoinMode(mode));
-    return buffer;
-
-    function fill(sliceId, numSlices, warmup) {
-      var indexPos = checkpoints[sliceId];
-      var indexEnd = targetsLength;
-      if (warmup)
-        indexEnd = std_Math_min(indexEnd, indexPos + CHUNK_SIZE);
-
-      // Range in the output for which we are responsible:
-      var [outputStart, outputEnd] = ComputeSliceBounds(length, sliceId, numSlices);
-
-      for (; indexPos < indexEnd; indexPos++) {
-        var x = self[indexPos];
-        var t = checkTarget(indexPos, targets[indexPos]);
-        if (t < outputStart || t >= outputEnd)
-          continue;
-        if (conflicts[t])
-          x = collide(x, buffer[t]);
-        UnsafePutElements(buffer, t, x, conflicts, t, true, checkpoints, sliceId, indexPos + 1);
-      }
-
-      return indexEnd === targetsLength;
-    }
-
-    return undefined;
-  }
-
-  function parDivideScatterVector() {
-    // Subtle: because we will be mutating the localBuffers and
-    // conflict arrays in place, we can never replay an entry in the
-    // target array for fear of inducing a conflict where none existed
-    // before. Therefore, we must proceed not by chunks but rather by
-    // individual indices.
-    var numSlices = ForkJoinSlices();
-    var info = ComputeAllSliceBounds(targetsLength, numSlices);
-
-    // FIXME(bug 844890): Use typed arrays here.
-    var localBuffers = NewDenseArray(numSlices);
-    for (var i = 0; i < numSlices; i++)
-      UnsafePutElements(localBuffers, i, NewDenseArray(length));
-    var localConflicts = NewDenseArray(numSlices);
-    for (var i = 0; i < numSlices; i++) {
-      var conflicts_i = NewDenseArray(length);
-      for (var j = 0; j < length; j++)
-        UnsafePutElements(conflicts_i, j, false);
-      UnsafePutElements(localConflicts, i, conflicts_i);
-    }
-
-    // Initialize the 0th buffer, which will become the output. For
-    // the other buffers, we track which parts have been written to
-    // using the conflict buffer so they do not need to be
-    // initialized.
-    var outputBuffer = localBuffers[0];
-    for (var i = 0; i < length; i++)
-      UnsafePutElements(outputBuffer, i, defaultValue);
-
-    ForkJoin(fill, ForkJoinMode(mode));
-    mergeBuffers();
-    return outputBuffer;
-
-    function fill(sliceId, numSlices, warmup) {
-      var indexPos = info[SLICE_POS(sliceId)];
-      var indexEnd = info[SLICE_END(sliceId)];
-      if (warmup)
-        indexEnd = std_Math_min(indexEnd, indexPos + CHUNK_SIZE);
-
-      var localbuffer = localBuffers[sliceId];
-      var conflicts = localConflicts[sliceId];
-      while (indexPos < indexEnd) {
-        var x = self[indexPos];
-        var t = checkTarget(indexPos, targets[indexPos]);
-        if (conflicts[t])
-          x = collide(x, localbuffer[t]);
-        UnsafePutElements(localbuffer, t, x, conflicts, t, true,
-                          info, SLICE_POS(sliceId), ++indexPos);
-      }
-
-      return indexEnd === info[SLICE_END(sliceId)];
-    }
-
-    /**
-     * Merge buffers 1..NUMSLICES into buffer 0. In principle, we could
-     * parallelize the merge work as well. But for this first cut,
-     * just do the merge sequentially.
-     */
-    function mergeBuffers() {
-      var buffer = localBuffers[0];
-      var conflicts = localConflicts[0];
-      for (var i = 1; i < numSlices; i++) {
-        var otherbuffer = localBuffers[i];
-        var otherconflicts = localConflicts[i];
-        for (var j = 0; j < length; j++) {
-          if (otherconflicts[j]) {
-            if (conflicts[j]) {
-              buffer[j] = collide(otherbuffer[j], buffer[j]);
-            } else {
-              buffer[j] = otherbuffer[j];
-              conflicts[j] = true;
-            }
-          }
-        }
-      }
-    }
-
-    return undefined;
-  }
 
   function seq() {
     var buffer = NewDenseArray(length);
@@ -1242,6 +1060,13 @@ function ArrayScatterPar(targets, defaultValue, conflictFunc, length, mode) {
     }
 
     return buffer;
+  }
+
+  function collide(elem1, elem2) {
+    if (conflictFunc === undefined)
+      ThrowError(JSMSG_PAR_ARRAY_SCATTER_CONFLICT);
+
+    return conflictFunc(elem1, elem2);
   }
 
   function checkTarget(i, t) {
@@ -1274,26 +1099,20 @@ function ArrayFilterPar(func, mode) {
     if (!TRY_PARALLEL(mode))
       break parallel;
 
-    var chunks = ComputeNumChunks(length);
-    var numSlices = ForkJoinSlices();
-    if (chunks < numSlices * 2)
-      break parallel;
+    var slicesInfo = ComputeSlicesInfo(length);
 
-    var info = ComputeAllSliceBounds(chunks, numSlices);
-
-    // Step 1. Compute which items from each slice of the result
-    // buffer should be preserved. When we're done, we have an array
-    // |survivors| containing a bitset for each chunk, indicating
-    // which members of the chunk survived. We also keep an array
-    // |counts| containing the total number of items that are being
-    // preserved from within one slice.
-    //
-    // FIXME(bug 844890): Use typed arrays here.
+    // Step 1. Compute which items from each slice of the result buffer should
+    // be preserved. When we're done, we have a uint8 array |survivors|
+    // containing 0 or 1 for each source element, indicating which members of
+    // the chunk survived. We also keep an array |counts| containing the total
+    // number of items that are being preserved from within one slice.
+    var numSlices = slicesInfo.count;
     var counts = NewDenseArray(numSlices);
     for (var i = 0; i < numSlices; i++)
       UnsafePutElements(counts, i, 0);
-    var survivors = NewDenseArray(chunks);
-    ForkJoin(findSurvivorsInSlice, ForkJoinMode(mode));
+
+    var survivors = new Uint8Array(length);
+    ForkJoin(findSurvivorsThread, 0, numSlices, ForkJoinMode(mode), survivors);
 
     // Step 2. Compress the slices into one contiguous set.
     var count = 0;
@@ -1301,7 +1120,7 @@ function ArrayFilterPar(func, mode) {
       count += counts[i];
     var buffer = NewDenseArray(count);
     if (count > 0)
-      ForkJoin(copySurvivorsInSlice, ForkJoinMode(mode));
+      ForkJoin(copySurvivorsThread, 0, numSlices, ForkJoinMode(mode), buffer);
 
     return buffer;
   }
@@ -1317,79 +1136,58 @@ function ArrayFilterPar(func, mode) {
   return buffer;
 
   /**
-   * As described above, our goal is to determine which items we
-   * will preserve from a given slice. We do this one chunk at a
-   * time. When we finish a chunk, we record our current count and
-   * the next chunk sliceId, lest we should bail.
+   * As described above, our goal is to determine which items we will preserve
+   * from a given slice, storing "to-keep" bits into 32-bit chunks.
    */
-  function findSurvivorsInSlice(sliceId, numSlices, warmup) {
-    var chunkPos = info[SLICE_POS(sliceId)];
-    var chunkEnd = info[SLICE_END(sliceId)];
-
-    if (warmup && chunkEnd > chunkPos)
-      chunkEnd = chunkPos + 1;
-
-    var count = counts[sliceId];
-    while (chunkPos < chunkEnd) {
-      var indexStart = chunkPos << CHUNK_SHIFT;
-      var indexEnd = std_Math_min(indexStart + CHUNK_SIZE, length);
-      var chunkBits = 0;
-
-      for (var bit = 0; indexStart + bit < indexEnd; bit++) {
-        var keep = !!func(self[indexStart + bit], indexStart + bit, self);
-        chunkBits |= keep << bit;
+  function findSurvivorsThread(workerId, sliceStart, sliceEnd) {
+    var sliceShift = slicesInfo.shift;
+    var sliceId;
+    while (GET_SLICE(sliceStart, sliceEnd, sliceId)) {
+      var count = 0;
+      var indexStart = SLICE_START_INDEX(sliceShift, sliceId);
+      var indexEnd = SLICE_END_INDEX(sliceShift, indexStart, length);
+      for (var indexPos = indexStart; indexPos < indexEnd; indexPos++) {
+        var keep = !!func(self[indexPos], indexPos, self);
+        UnsafePutElements(survivors, indexPos, keep);
         count += keep;
       }
-
-      UnsafePutElements(survivors, chunkPos, chunkBits,
-                        counts, sliceId, count,
-                        info, SLICE_POS(sliceId), ++chunkPos);
+      UnsafePutElements(counts, sliceId, count);
     }
-
-    return chunkEnd === info[SLICE_END(sliceId)];
+    return sliceId;
   }
 
-  function copySurvivorsInSlice(sliceId, numSlices, warmup) {
-    // Copies the survivors from this slice into the correct position.
-    // Note that this is an idempotent operation that does not invoke
-    // user code. Therefore, we don't expect bailouts and make an
-    // effort to proceed chunk by chunk or avoid duplicating work.
+  /**
+   * Copies the survivors from this slice into the correct position. Note
+   * that this is an idempotent operation that does not invoke user
+   * code. Therefore, we don't expect bailouts and make an effort to proceed
+   * chunk by chunk or avoid duplicating work.
+   */
+  function copySurvivorsThread(workerId, sliceStart, sliceEnd) {
+    var sliceShift = slicesInfo.shift;
+    var sliceId;
+    while (GET_SLICE(sliceStart, sliceEnd, sliceId)) {
+      // Total up the items preserved by previous slices.
+      var total = 0;
+      for (var i = 0; i < sliceId + 1; i++)
+        total += counts[i];
 
-    // Total up the items preserved by previous slices.
-    var count = 0;
-    if (sliceId > 0) { // FIXME(#819219)---work around a bug in Ion's range checks
-      for (var i = 0; i < sliceId; i++)
-        count += counts[i];
-    }
-
-    // Compute the final index we expect to write.
-    var total = count + counts[sliceId];
-    if (count === total)
-      return true;
-
-    // Iterate over the chunks assigned to us. Read the bitset for
-    // each chunk. Copy values where a 1 appears until we have
-    // written all the values that we expect to. We can just iterate
-    // from 0...CHUNK_SIZE without fear of a truncated final chunk
-    // because we are already checking for when count==total.
-    var chunkStart = info[SLICE_START(sliceId)];
-    var chunkEnd = info[SLICE_END(sliceId)];
-    for (var chunk = chunkStart; chunk < chunkEnd; chunk++) {
-      var chunkBits = survivors[chunk];
-      if (!chunkBits)
+      // Are we done?
+      var count = total - counts[sliceId];
+      if (count === total)
         continue;
 
-      var indexStart = chunk << CHUNK_SHIFT;
-      for (var i = 0; i < CHUNK_SIZE; i++) {
-        if (chunkBits & (1 << i)) {
-          UnsafePutElements(buffer, count++, self[indexStart + i]);
-          if (count === total)
+      var indexStart = SLICE_START_INDEX(sliceShift, sliceId);
+      var indexEnd = SLICE_END_INDEX(sliceShift, indexStart, length);
+      for (var indexPos = indexStart; indexPos < indexEnd; indexPos++) {
+        if (survivors[indexPos]) {
+          UnsafePutElements(buffer, count++, self[indexPos]);
+          if (count == total)
             break;
         }
       }
     }
 
-    return true;
+    return sliceId;
   }
 
   return undefined;
@@ -1431,38 +1229,27 @@ function ArrayStaticBuildPar(length, func, mode) {
     if (!TRY_PARALLEL(mode))
       break parallel;
 
-    var chunks = ComputeNumChunks(length);
-    var numSlices = ForkJoinSlices();
-    var info = ComputeAllSliceBounds(chunks, numSlices);
-    ForkJoin(constructSlice, ForkJoinMode(mode));
+    var slicesInfo = ComputeSlicesInfo(length);
+    ForkJoin(constructThread, 0, slicesInfo.count, ForkJoinMode(mode), buffer);
     return buffer;
   }
 
   // Sequential fallback:
   ASSERT_SEQUENTIAL_IS_OK(mode);
-  fill(0, length);
+  for (var i = 0; i < length; i++)
+    UnsafePutElements(buffer, i, func(i));
   return buffer;
 
-  function constructSlice(sliceId, numSlices, warmup) {
-    var chunkPos = info[SLICE_POS(sliceId)];
-    var chunkEnd = info[SLICE_END(sliceId)];
-
-    if (warmup && chunkEnd > chunkPos)
-      chunkEnd = chunkPos + 1;
-
-    while (chunkPos < chunkEnd) {
-      var indexStart = chunkPos << CHUNK_SHIFT;
-      var indexEnd = std_Math_min(indexStart + CHUNK_SIZE, length);
-      fill(indexStart, indexEnd);
-      UnsafePutElements(info, SLICE_POS(sliceId), ++chunkPos);
+  function constructThread(workerId, sliceStart, sliceEnd) {
+    var sliceShift = slicesInfo.shift;
+    var sliceId;
+    while (GET_SLICE(sliceStart, sliceEnd, sliceId)) {
+      var indexStart = SLICE_START_INDEX(sliceShift, sliceId);
+      var indexEnd = SLICE_END_INDEX(sliceShift, indexStart, length);
+      for (var i = indexStart; i < indexEnd; i++)
+        UnsafePutElements(buffer, i, func(i));
     }
-
-    return chunkEnd === info[SLICE_END(sliceId)];
-  }
-
-  function fill(indexStart, indexEnd) {
-    for (var i = indexStart; i < indexEnd; i++)
-      UnsafePutElements(buffer, i, func(i));
+    return sliceId;
   }
 
   return undefined;

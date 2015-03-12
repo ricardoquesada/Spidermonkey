@@ -4,6 +4,7 @@
 
 from __future__ import unicode_literals
 
+import filecmp
 import os
 import re
 import subprocess
@@ -64,7 +65,11 @@ class MozconfigLoader(ProcessExecutionMixin):
     DEPRECATED_TOPSRCDIR_PATHS = ('mozconfig.sh', 'myconfig.sh')
     DEPRECATED_HOME_PATHS = ('.mozconfig', '.mozconfig.sh', '.mozmyconfig.sh')
 
-    IGNORE_SHELL_VARIABLES = ('_')
+    IGNORE_SHELL_VARIABLES = {'_'}
+
+    ENVIRONMENT_VARIABLES = {
+        'CC', 'CXX', 'CFLAGS', 'CXXFLAGS', 'LDFLAGS', 'MOZ_OBJDIR',
+    }
 
     def __init__(self, topsrcdir):
         self.topsrcdir = topsrcdir
@@ -75,7 +80,7 @@ class MozconfigLoader(ProcessExecutionMixin):
 
         return os.path.join(our_dir, 'mozconfig_loader')
 
-    def find_mozconfig(self):
+    def find_mozconfig(self, env=os.environ):
         """Find the active mozconfig file for the current environment.
 
         This emulates the logic in mozconfig-find.
@@ -91,12 +96,45 @@ class MozconfigLoader(ProcessExecutionMixin):
         """
         # Check for legacy methods first.
 
-        if 'MOZ_MYCONFIG' in os.environ:
+        if 'MOZ_MYCONFIG' in env:
             raise MozconfigFindException(MOZ_MYCONFIG_ERROR)
 
-        env_path = os.environ.get('MOZCONFIG', None)
+        env_path = env.get('MOZCONFIG', None)
         if env_path is not None:
-            if not os.path.exists(env_path):
+            if not os.path.isabs(env_path):
+                potential_roots = [self.topsrcdir, os.getcwd()]
+                # Attempt to eliminate duplicates for e.g.
+                # self.topsrcdir == os.curdir.
+                potential_roots = set(os.path.abspath(p) for p in potential_roots)
+                existing = [root for root in potential_roots
+                            if os.path.exists(os.path.join(root, env_path))]
+                if len(existing) > 1:
+                    # There are multiple files, but we might have a setup like:
+                    #
+                    # somedirectory/
+                    #   srcdir/
+                    #   objdir/
+                    #
+                    # MOZCONFIG=../srcdir/some/path/to/mozconfig
+                    #
+                    # and be configuring from the objdir.  So even though we
+                    # have multiple existing files, they are actually the same
+                    # file.
+                    mozconfigs = [os.path.join(root, env_path)
+                                  for root in existing]
+                    if not all(map(lambda p1, p2: filecmp.cmp(p1, p2, shallow=False),
+                                   mozconfigs[:-1], mozconfigs[1:])):
+                        raise MozconfigFindException(
+                            'MOZCONFIG environment variable refers to a path that ' +
+                            'exists in more than one of ' + ', '.join(potential_roots) +
+                            '. Remove all but one.')
+                elif not existing:
+                    raise MozconfigFindException(
+                        'MOZCONFIG environment variable refers to a path that ' +
+                        'does not exist in any of ' + ', '.join(potential_roots))
+
+                env_path = os.path.join(existing[0], env_path)
+            elif not os.path.exists(env_path): # non-relative path
                 raise MozconfigFindException(
                     'MOZCONFIG environment variable refers to a path that '
                     'does not exist: ' + env_path)
@@ -128,7 +166,7 @@ class MozconfigLoader(ProcessExecutionMixin):
         deprecated_paths = [os.path.join(self.topsrcdir, s) for s in
             self.DEPRECATED_TOPSRCDIR_PATHS]
 
-        home = os.environ.get('HOME', None)
+        home = env.get('HOME', None)
         if home is not None:
             deprecated_paths.extend([os.path.join(home, s) for s in
             self.DEPRECATED_HOME_PATHS])
@@ -162,6 +200,7 @@ class MozconfigLoader(ProcessExecutionMixin):
             'make_flags': None,
             'make_extra': None,
             'env': None,
+            'vars': None,
         }
 
         if path is None:
@@ -197,42 +236,58 @@ class MozconfigLoader(ProcessExecutionMixin):
 
         parsed = self._parse_loader_output(output)
 
-        all_variables = set(parsed['vars_before'].keys())
-        all_variables |= set(parsed['vars_after'].keys())
+        def diff_vars(vars_before, vars_after):
+            set1 = set(vars_before.keys()) - self.IGNORE_SHELL_VARIABLES
+            set2 = set(vars_after.keys()) - self.IGNORE_SHELL_VARIABLES
+            added = set2 - set1
+            removed = set1 - set2
+            maybe_modified = set1 & set2
+            changed = {
+                'added': {},
+                'removed': {},
+                'modified': {},
+                'unmodified': {},
+            }
 
-        changed = {
-            'added': {},
-            'removed': {},
-            'modified': {},
-            'unmodified': {},
-        }
+            for key in added:
+                changed['added'][key] = vars_after[key]
 
-        for key in all_variables:
-            if key in self.IGNORE_SHELL_VARIABLES:
-                continue
+            for key in removed:
+                changed['removed'][key] = vars_before[key]
 
-            if key not in parsed['vars_before']:
-                changed['added'][key] = parsed['vars_after'][key]
-                continue
+            for key in maybe_modified:
+                if vars_before[key] != vars_after[key]:
+                    changed['modified'][key] = (
+                        vars_before[key], vars_after[key])
+                elif key in self.ENVIRONMENT_VARIABLES:
+                    # In order for irrelevant environment variable changes not
+                    # to incur in re-running configure, only a set of
+                    # environment variables are stored when they are
+                    # unmodified. Otherwise, changes such as using a different
+                    # terminal window, or even rebooting, would trigger
+                    # reconfigures.
+                    changed['unmodified'][key] = vars_after[key]
 
-            if key not in parsed['vars_after']:
-                changed['removed'][key] = parsed['vars_before'][key]
-                continue
+            return changed
 
-            if parsed['vars_before'][key] != parsed['vars_after'][key]:
-                changed['modified'][key] = (
-                    parsed['vars_before'][key], parsed['vars_after'][key])
-                continue
+        result['env'] = diff_vars(parsed['env_before'], parsed['env_after'])
 
-            changed['unmodified'][key] = parsed['vars_after'][key]
-
-        result['env'] = changed
+        # Environment variables also appear as shell variables, but that's
+        # uninteresting duplication of information. Filter them out.
+        filt = lambda x, y: {k: v for k, v in x.items() if k not in y}
+        result['vars'] = diff_vars(
+            filt(parsed['vars_before'], parsed['env_before']),
+            filt(parsed['vars_after'], parsed['env_after'])
+        )
 
         result['configure_args'] = [self._expand(o) for o in parsed['ac']]
 
         if moz_build_app is not None:
             result['configure_args'].extend(self._expand(o) for o in
                 parsed['ac_app'][moz_build_app])
+
+        if 'MOZ_OBJDIR' in parsed['env_before']:
+            result['topobjdir'] = parsed['env_before']['MOZ_OBJDIR']
 
         mk = [self._expand(o) for o in parsed['mk']]
 
@@ -263,6 +318,8 @@ class MozconfigLoader(ProcessExecutionMixin):
         ac_app_options = defaultdict(list)
         before_source = {}
         after_source = {}
+        env_before_source = {}
+        env_after_source = {}
 
         current = None
         current_type = None
@@ -305,7 +362,14 @@ class MozconfigLoader(ProcessExecutionMixin):
 
             assert current_type is not None
 
-            if current_type in ('BEFORE_SOURCE', 'AFTER_SOURCE'):
+            vars_mapping = {
+                'BEFORE_SOURCE': before_source,
+                'AFTER_SOURCE': after_source,
+                'ENV_BEFORE_SOURCE': env_before_source,
+                'ENV_AFTER_SOURCE': env_after_source,
+            }
+
+            if current_type in vars_mapping:
                 # mozconfigs are sourced using the Bourne shell (or at least
                 # in Bourne shell mode). This means |set| simply lists
                 # variables from the current shell (not functions). (Note that
@@ -366,10 +430,7 @@ class MozconfigLoader(ProcessExecutionMixin):
 
                 assert name is not None
 
-                if current_type == 'BEFORE_SOURCE':
-                    before_source[name] = value
-                else:
-                    after_source[name] = value
+                vars_mapping[current_type][name] = value
 
                 current = []
 
@@ -383,6 +444,8 @@ class MozconfigLoader(ProcessExecutionMixin):
             'ac_app': ac_app_options,
             'vars_before': before_source,
             'vars_after': after_source,
+            'env_before': env_before_source,
+            'env_after': env_after_source,
         }
 
     def _expand(self, s):

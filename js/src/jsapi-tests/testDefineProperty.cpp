@@ -13,11 +13,11 @@ BEGIN_TEST(testDefineProperty_bug564344)
     EVAL("function f() {}\n"
          "var x = {p: f};\n"
          "x.p();  // brand x's scope\n"
-         "x;", x.address());
+         "x;", &x);
 
-    JS::RootedObject obj(cx, JSVAL_TO_OBJECT(x));
+    JS::RootedObject obj(cx, x.toObjectOrNull());
     for (int i = 0; i < 2; i++)
-        CHECK(JS_DefineProperty(cx, obj, "q", JSVAL_VOID, nullptr, nullptr, JSPROP_SHARED));
+        CHECK(JS_DefineProperty(cx, obj, "q", JS::UndefinedHandleValue, JSPROP_SHARED));
     return true;
 }
 END_TEST(testDefineProperty_bug564344)

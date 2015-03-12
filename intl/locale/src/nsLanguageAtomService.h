@@ -4,7 +4,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsCOMPtr.h"
-#include "nsICharsetConverterManager.h"
 #include "nsILanguageAtomService.h"
 #include "nsIStringBundle.h"
 #include "nsInterfaceHashtable.h"
@@ -20,26 +19,25 @@ public:
   NS_DECL_ISUPPORTS
 
   // nsILanguageAtomService
-  virtual NS_HIDDEN_(nsIAtom*)
+  virtual nsIAtom*
     LookupLanguage(const nsACString &aLanguage, nsresult *aError);
 
-  virtual NS_HIDDEN_(already_AddRefed<nsIAtom>)
-    LookupCharSet(const char *aCharSet, nsresult *aError);
+  virtual already_AddRefed<nsIAtom>
+    LookupCharSet(const nsACString& aCharSet);
 
-  virtual NS_HIDDEN_(nsIAtom*) GetLocaleLanguage(nsresult *aError);
+  virtual nsIAtom* GetLocaleLanguage(nsresult *aError);
 
-  virtual NS_HIDDEN_(nsIAtom*) GetLanguageGroup(nsIAtom *aLanguage,
+  virtual nsIAtom* GetLanguageGroup(nsIAtom *aLanguage,
                                                 nsresult *aError);
 
-  nsLanguageAtomService() NS_HIDDEN;
+  nsLanguageAtomService();
 
 private:
-  NS_HIDDEN ~nsLanguageAtomService() { }
+  ~nsLanguageAtomService() { }
 
 protected:
-  NS_HIDDEN_(nsresult) InitLangGroupTable();
+  nsresult InitLangGroupTable();
 
-  nsCOMPtr<nsICharsetConverterManager> mCharSets;
   nsInterfaceHashtable<nsISupportsHashKey, nsIAtom> mLangToGroup;
   nsCOMPtr<nsIStringBundle> mLangGroups;
   nsCOMPtr<nsIAtom> mLocaleLanguage;

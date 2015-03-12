@@ -9,11 +9,11 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/TemplateLib.h"
 
-#include "jsautooplen.h"
 #include "jslibmath.h"
 #include "jstypes.h"
 
 #include "builtin/Eval.h"
+#include "jit/BaselineDebugModeOSR.h"
 #include "jit/BaselineHelpers.h"
 #include "jit/BaselineJIT.h"
 #include "jit/IonLinker.h"
@@ -23,6 +23,7 @@
 # include "jit/PerfSpewer.h"
 #endif
 #include "jit/VMFunctions.h"
+#include "vm/Opcodes.h"
 
 #include "jsboolinlines.h"
 #include "jsscriptinlines.h"
@@ -54,7 +55,7 @@ FallbackICSpew(JSContext *cx, ICFallbackStub *stub, const char *fmt, ...)
         IonSpew(IonSpew_BaselineICFallback,
                 "Fallback hit for (%s:%d) (pc=%d,line=%d,uses=%d,stubs=%d): %s",
                 script->filename(),
-                script->lineno,
+                script->lineno(),
                 (int) script->pcToOffset(pc),
                 PCToLineNumber(script, pc),
                 script->getUseCount(),
@@ -79,7 +80,7 @@ TypeFallbackICSpew(JSContext *cx, ICTypeMonitor_Fallback *stub, const char *fmt,
         IonSpew(IonSpew_BaselineICFallback,
                 "Type monitor fallback hit for (%s:%d) (pc=%d,line=%d,uses=%d,stubs=%d): %s",
                 script->filename(),
-                script->lineno,
+                script->lineno(),
                 (int) script->pcToOffset(pc),
                 PCToLineNumber(script, pc),
                 script->getUseCount(),
@@ -130,12 +131,13 @@ ICStubIterator::operator++()
 }
 
 void
-ICStubIterator::unlink(Zone *zone)
+ICStubIterator::unlink(JSContext *cx)
 {
     JS_ASSERT(currentStub_->next() != nullptr);
     JS_ASSERT(currentStub_ != fallbackStub_);
     JS_ASSERT(!unlinked_);
-    fallbackStub_->unlinkStub(zone, previousStub_, currentStub_);
+
+    fallbackStub_->unlinkStub(cx->zone(), previousStub_, currentStub_);
 
     // Mark the current iterator position as unlinked, so operator++ works properly.
     unlinked_ = true;
@@ -145,16 +147,16 @@ ICStubIterator::unlink(Zone *zone)
 void
 ICStub::markCode(JSTracer *trc, const char *name)
 {
-    IonCode *stubIonCode = ionCode();
-    MarkIonCodeUnbarriered(trc, &stubIonCode, name);
+    JitCode *stubJitCode = jitCode();
+    MarkJitCodeUnbarriered(trc, &stubJitCode, name);
 }
 
 void
-ICStub::updateCode(IonCode *code)
+ICStub::updateCode(JitCode *code)
 {
     // Write barrier on the old code.
 #ifdef JSGC_INCREMENTAL
-    IonCode::writeBarrierPre(ionCode());
+    JitCode::writeBarrierPre(jitCode());
 #endif
     stubCode_ = code->raw();
 }
@@ -162,7 +164,7 @@ ICStub::updateCode(IonCode *code)
 /* static */ void
 ICStub::trace(JSTracer *trc)
 {
-    markCode(trc, "baseline-stub-ioncode");
+    markCode(trc, "baseline-stub-jitcode");
 
     // If the stub is a monitored fallback stub, then mark the monitor ICs hanging
     // off of that stub.  We don't need to worry about the regular monitored stubs,
@@ -170,16 +172,16 @@ ICStub::trace(JSTracer *trc)
     // that references the same stub chain.
     if (isMonitoredFallback()) {
         ICTypeMonitor_Fallback *lastMonStub = toMonitoredFallbackStub()->fallbackMonitorStub();
-        for (ICStubConstIterator iter = lastMonStub->firstMonitorStub(); !iter.atEnd(); iter++) {
+        for (ICStubConstIterator iter(lastMonStub->firstMonitorStub()); !iter.atEnd(); iter++) {
             JS_ASSERT_IF(iter->next() == nullptr, *iter == lastMonStub);
-            iter->markCode(trc, "baseline-monitor-stub-ioncode");
+            iter->trace(trc);
         }
     }
 
     if (isUpdated()) {
-        for (ICStubConstIterator iter = toUpdatedStub()->firstUpdateStub(); !iter.atEnd(); iter++) {
+        for (ICStubConstIterator iter(toUpdatedStub()->firstUpdateStub()); !iter.atEnd(); iter++) {
             JS_ASSERT_IF(iter->next() == nullptr, iter->isTypeUpdate_Fallback());
-            iter->markCode(trc, "baseline-update-stub-ioncode");
+            iter->trace(trc);
         }
     }
 
@@ -333,6 +335,23 @@ ICStub::trace(JSTracer *trc)
         MarkShape(trc, &propStub->holderShape(), "baseline-getpropnativeproto-stub-holdershape");
         break;
       }
+      case ICStub::GetProp_NativeDoesNotExist: {
+        ICGetProp_NativeDoesNotExist *propStub = toGetProp_NativeDoesNotExist();
+        JS_STATIC_ASSERT(ICGetProp_NativeDoesNotExist::MAX_PROTO_CHAIN_DEPTH == 8);
+        switch (propStub->protoChainDepth()) {
+          case 0: propStub->toImpl<0>()->traceShapes(trc); break;
+          case 1: propStub->toImpl<1>()->traceShapes(trc); break;
+          case 2: propStub->toImpl<2>()->traceShapes(trc); break;
+          case 3: propStub->toImpl<3>()->traceShapes(trc); break;
+          case 4: propStub->toImpl<4>()->traceShapes(trc); break;
+          case 5: propStub->toImpl<5>()->traceShapes(trc); break;
+          case 6: propStub->toImpl<6>()->traceShapes(trc); break;
+          case 7: propStub->toImpl<7>()->traceShapes(trc); break;
+          case 8: propStub->toImpl<8>()->traceShapes(trc); break;
+          default: MOZ_ASSUME_UNREACHABLE("Invalid proto stub.");
+        }
+        break;
+      }
       case ICStub::GetProp_CallDOMProxyNative:
       case ICStub::GetProp_CallDOMProxyWithGenerationNative: {
         ICGetPropCallDOMProxyNativeStub *propStub;
@@ -358,7 +377,7 @@ ICStub::trace(JSTracer *trc)
       }
       case ICStub::GetProp_CallScripted: {
         ICGetProp_CallScripted *callStub = toGetProp_CallScripted();
-        MarkShape(trc, &callStub->shape(), "baseline-getpropcallscripted-stub-shape");
+        MarkShape(trc, &callStub->receiverShape(), "baseline-getpropcallscripted-stub-receivershape");
         MarkObject(trc, &callStub->holder(), "baseline-getpropcallscripted-stub-holder");
         MarkShape(trc, &callStub->holderShape(), "baseline-getpropcallscripted-stub-holdershape");
         MarkObject(trc, &callStub->getter(), "baseline-getpropcallscripted-stub-getter");
@@ -366,10 +385,17 @@ ICStub::trace(JSTracer *trc)
       }
       case ICStub::GetProp_CallNative: {
         ICGetProp_CallNative *callStub = toGetProp_CallNative();
-        MarkShape(trc, &callStub->shape(), "baseline-getpropcallnative-stub-shape");
         MarkObject(trc, &callStub->holder(), "baseline-getpropcallnative-stub-holder");
         MarkShape(trc, &callStub->holderShape(), "baseline-getpropcallnative-stub-holdershape");
         MarkObject(trc, &callStub->getter(), "baseline-getpropcallnative-stub-getter");
+        break;
+      }
+      case ICStub::GetProp_CallNativePrototype: {
+        ICGetProp_CallNativePrototype *callStub = toGetProp_CallNativePrototype();
+        MarkShape(trc, &callStub->receiverShape(), "baseline-getpropcallnativeproto-stub-receivershape");
+        MarkObject(trc, &callStub->holder(), "baseline-getpropcallnativeproto-stub-holder");
+        MarkShape(trc, &callStub->holderShape(), "baseline-getpropcallnativeproto-stub-holdershape");
+        MarkObject(trc, &callStub->getter(), "baseline-getpropcallnativeproto-stub-getter");
         break;
       }
       case ICStub::SetProp_Native: {
@@ -485,7 +511,7 @@ ICFallbackStub::unlinkStubsWithKind(JSContext *cx, ICStub::Kind kind)
 {
     for (ICStubIterator iter = beginChain(); !iter.atEnd(); iter++) {
         if (iter->kind() == kind)
-            iter.unlink(cx->zone());
+            iter.unlink(cx);
     }
 }
 
@@ -493,7 +519,7 @@ void
 ICTypeMonitor_Fallback::resetMonitorStubChain(Zone *zone)
 {
     if (zone->needsBarrier()) {
-        // We are removing edges from monitored stubs to gcthings (IonCode).
+        // We are removing edges from monitored stubs to gcthings (JitCode).
         // Perform one final trace of all monitor stubs for incremental GC,
         // as it must know about those edges.
         for (ICStub *s = firstMonitorStub_; !s->isTypeMonitor_Fallback(); s = s->next())
@@ -520,7 +546,7 @@ ICTypeMonitor_Fallback::resetMonitorStubChain(Zone *zone)
     }
 }
 
-ICMonitoredStub::ICMonitoredStub(Kind kind, IonCode *stubCode, ICStub *firstMonitorStub)
+ICMonitoredStub::ICMonitoredStub(Kind kind, JitCode *stubCode, ICStub *firstMonitorStub)
   : ICStub(kind, ICStub::Monitored, stubCode),
     firstMonitorStub_(firstMonitorStub)
 {
@@ -545,7 +571,7 @@ ICMonitoredFallbackStub::initMonitoringChain(JSContext *cx, ICStubSpace *space)
 }
 
 bool
-ICMonitoredFallbackStub::addMonitorStubForValue(JSContext *cx, HandleScript script, HandleValue val)
+ICMonitoredFallbackStub::addMonitorStubForValue(JSContext *cx, JSScript *script, HandleValue val)
 {
     return fallbackMonitorStub_->addMonitorStubForValue(cx, script, val);
 }
@@ -564,28 +590,29 @@ ICUpdatedStub::initUpdatingChain(JSContext *cx, ICStubSpace *space)
     return true;
 }
 
-IonCode *
+JitCode *
 ICStubCompiler::getStubCode()
 {
     JitCompartment *comp = cx->compartment()->jitCompartment();
 
     // Check for existing cached stubcode.
     uint32_t stubKey = getKey();
-    IonCode *stubCode = comp->getStubCode(stubKey);
+    JitCode *stubCode = comp->getStubCode(stubKey);
     if (stubCode)
         return stubCode;
 
     // Compile new stubcode.
+    IonContext ictx(cx, nullptr);
     MacroAssembler masm;
-#ifdef JS_CPU_ARM
+#ifdef JS_CODEGEN_ARM
     masm.setSecondScratchReg(BaselineSecondScratchReg);
 #endif
 
-    AutoFlushCache afc("ICStubCompiler::getStubCode", cx->runtime()->jitRuntime());
     if (!generateStubCode(masm))
         return nullptr;
     Linker linker(masm);
-    Rooted<IonCode *> newStubCode(cx, linker.newCode<CanGC>(cx, JSC::BASELINE_CODE));
+    AutoFlushICache afc("getStubCode");
+    Rooted<JitCode *> newStubCode(cx, linker.newCode<CanGC>(cx, JSC::BASELINE_CODE));
     if (!newStubCode)
         return nullptr;
 
@@ -604,7 +631,7 @@ ICStubCompiler::getStubCode()
     JS_ASSERT(entersStubFrame_ == ICStub::CanMakeCalls(kind));
 
 #ifdef JS_ION_PERF
-    writePerfSpewerIonCodeProfile(newStubCode, "BaselineIC");
+    writePerfSpewerJitCodeProfile(newStubCode, "BaselineIC");
 #endif
 
     return newStubCode;
@@ -613,7 +640,7 @@ ICStubCompiler::getStubCode()
 bool
 ICStubCompiler::tailCallVM(const VMFunction &fun, MacroAssembler &masm)
 {
-    IonCode *code = cx->runtime()->jitRuntime()->getVMWrapper(fun);
+    JitCode *code = cx->runtime()->jitRuntime()->getVMWrapper(fun);
     if (!code)
         return false;
 
@@ -625,7 +652,7 @@ ICStubCompiler::tailCallVM(const VMFunction &fun, MacroAssembler &masm)
 bool
 ICStubCompiler::callVM(const VMFunction &fun, MacroAssembler &masm)
 {
-    IonCode *code = cx->runtime()->jitRuntime()->getVMWrapper(fun);
+    JitCode *code = cx->runtime()->jitRuntime()->getVMWrapper(fun);
     if (!code)
         return false;
 
@@ -636,7 +663,7 @@ ICStubCompiler::callVM(const VMFunction &fun, MacroAssembler &masm)
 bool
 ICStubCompiler::callTypeUpdateIC(MacroAssembler &masm, uint32_t objectOffset)
 {
-    IonCode *code = cx->runtime()->jitRuntime()->getVMWrapper(DoTypeUpdateFallbackInfo);
+    JitCode *code = cx->runtime()->jitRuntime()->getVMWrapper(DoTypeUpdateFallbackInfo);
     if (!code)
         return false;
 
@@ -669,8 +696,10 @@ ICStubCompiler::guardProfilingEnabled(MacroAssembler &masm, Register scratch, La
               kind == ICStub::Call_Native                               ||
               kind == ICStub::Call_ScriptedApplyArray                   ||
               kind == ICStub::Call_ScriptedApplyArguments               ||
+              kind == ICStub::Call_ScriptedFunCall                      ||
               kind == ICStub::GetProp_CallScripted                      ||
               kind == ICStub::GetProp_CallNative                        ||
+              kind == ICStub::GetProp_CallNativePrototype               ||
               kind == ICStub::GetProp_CallDOMProxyNative                ||
               kind == ICStub::GetElem_NativePrototypeCallNative         ||
               kind == ICStub::GetElem_NativePrototypeCallScripted       ||
@@ -694,21 +723,40 @@ ICStubCompiler::guardProfilingEnabled(MacroAssembler &masm, Register scratch, La
     masm.branch32(Assembler::Equal, AbsoluteAddress(enabledAddr), Imm32(0), skip);
 }
 
+void
+ICStubCompiler::emitProfilingUpdate(MacroAssembler &masm, Register pcIdx, Register scratch,
+                                    uint32_t stubPcOffset)
+{
+    Label skipProfilerUpdate;
+
+    // Check if profiling is enabled.
+    guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
+
+    // Update profiling entry before leaving function.
+    masm.load32(Address(BaselineStubReg, stubPcOffset), pcIdx);
+    masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
+
+    masm.bind(&skipProfilerUpdate);
+}
+
+void
+ICStubCompiler::emitProfilingUpdate(MacroAssembler &masm, GeneralRegisterSet regs,
+                                    uint32_t stubPcOffset)
+{
+    emitProfilingUpdate(masm, regs.takeAny(), regs.takeAny(), stubPcOffset);
+}
+
 #ifdef JSGC_GENERATIONAL
 inline bool
-ICStubCompiler::emitPostWriteBarrierSlot(MacroAssembler &masm, Register obj, Register scratch,
-                                         GeneralRegisterSet saveRegs)
+ICStubCompiler::emitPostWriteBarrierSlot(MacroAssembler &masm, Register obj, ValueOperand val,
+                                         Register scratch, GeneralRegisterSet saveRegs)
 {
-    Nursery &nursery = cx->runtime()->gcNursery;
-
     Label skipBarrier;
-    Label isTenured;
-    masm.branchPtr(Assembler::Below, obj, ImmWord(nursery.start()), &isTenured);
-    masm.branchPtr(Assembler::Below, obj, ImmWord(nursery.heapEnd()), &skipBarrier);
-    masm.bind(&isTenured);
+    masm.branchPtrInNurseryRange(Assembler::Equal, obj, scratch, &skipBarrier);
+    masm.branchValueIsNurseryObject(Assembler::NotEqual, val, scratch, &skipBarrier);
 
     // void PostWriteBarrier(JSRuntime *rt, JSObject *obj);
-#ifdef JS_CPU_ARM
+#if defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_MIPS)
     saveRegs.add(BaselineTailCallReg);
 #endif
     saveRegs = GeneralRegisterSet::Intersect(saveRegs, GeneralRegisterSet::Volatile());
@@ -733,11 +781,11 @@ IsTopFrameConstructing(JSContext *cx)
 {
     JS_ASSERT(cx->currentlyRunningInJit());
     JitActivationIterator activations(cx->runtime());
-    IonFrameIterator iter(activations);
-    JS_ASSERT(iter.type() == IonFrame_Exit);
+    JitFrameIterator iter(activations);
+    JS_ASSERT(iter.type() == JitFrame_Exit);
 
     ++iter;
-    JS_ASSERT(iter.type() == IonFrame_BaselineStub);
+    JS_ASSERT(iter.type() == JitFrame_BaselineStub);
 
     ++iter;
     JS_ASSERT(iter.isBaselineJS());
@@ -757,6 +805,7 @@ EnsureCanEnterIon(JSContext *cx, ICUseCount_Fallback *stub, BaselineFrame *frame
     bool isConstructing = IsTopFrameConstructing(cx);
     MethodStatus stat;
     if (isLoopEntry) {
+        JS_ASSERT(LoopEntryCanIonOsr(pc));
         IonSpew(IonSpew_BaselineOSR, "  Compile at loop entry!");
         stat = CanEnterAtBranch(cx, script, frame, pc, isConstructing);
     } else if (frame->isFunctionFrame()) {
@@ -797,6 +846,7 @@ EnsureCanEnterIon(JSContext *cx, ICUseCount_Fallback *stub, BaselineFrame *frame
     if (isLoopEntry) {
         IonScript *ion = script->ionScript();
         JS_ASSERT(cx->runtime()->spsProfiler.enabled() == ion->hasSPSInstrumentation());
+        JS_ASSERT(ion->osrPc() == pc);
 
         // If the baseline frame's SPS handling doesn't match up with the Ion code's SPS
         // handling, don't OSR.
@@ -899,6 +949,8 @@ DoUseCountFallback(JSContext *cx, ICUseCount_Fallback *stub, BaselineFrame *fram
     jsbytecode *pc = stub->icEntry()->pc(script);
     bool isLoopEntry = JSOp(*pc) == JSOP_LOOPENTRY;
 
+    JS_ASSERT(!isLoopEntry || LoopEntryCanIonOsr(pc));
+
     FallbackICSpew(cx, stub, "UseCount(%d)", isLoopEntry ? int(script->pcToOffset(pc)) : int(-1));
 
     if (!script->canIonCompile()) {
@@ -924,7 +976,7 @@ DoUseCountFallback(JSContext *cx, ICUseCount_Fallback *stub, BaselineFrame *fram
     // Ensure that Ion-compiled code is available.
     IonSpew(IonSpew_BaselineOSR,
             "UseCount for %s:%d reached %d at pc %p, trying to switch to Ion!",
-            script->filename(), script->lineno, (int) script->getUseCount(), (void *) pc);
+            script->filename(), script->lineno(), (int) script->getUseCount(), (void *) pc);
     void *jitcode = nullptr;
     if (!EnsureCanEnterIon(cx, stub, frame, script, pc, &jitcode))
         return false;
@@ -934,7 +986,7 @@ DoUseCountFallback(JSContext *cx, ICUseCount_Fallback *stub, BaselineFrame *fram
     if (!jitcode)
         return true;
 
-    // Prepare the temporary heap copy of the fake StackFrame and actual args list.
+    // Prepare the temporary heap copy of the fake InterpreterFrame and actual args list.
     IonSpew(IonSpew_BaselineOSR, "Got jitcode.  Preparing for OSR into ion.");
     IonOsrTempData *info = PrepareOsrTempData(cx, stub, frame, script, pc, jitcode);
     if (!info)
@@ -981,7 +1033,7 @@ ICUseCount_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
 
         leaveStubFrame(masm);
 
-        // If no IonCode was found, then skip just exit the IC.
+        // If no JitCode was found, then skip just exit the IC.
         masm.branchPtr(Assembler::Equal, R0.scratchReg(), ImmPtr(nullptr), &noCompiledCode);
     }
 
@@ -1036,7 +1088,7 @@ DoProfilerFallback(JSContext *cx, BaselineFrame *frame, ICProfiler_Fallback *stu
 
     // Manually enter SPS this time.
     JS_ASSERT(profiler->enabled());
-    if (!cx->runtime()->spsProfiler.enter(cx, script, func))
+    if (!cx->runtime()->spsProfiler.enter(script, func))
         return false;
     frame->setPushedSPSFrame();
 
@@ -1049,12 +1101,12 @@ DoProfilerFallback(JSContext *cx, BaselineFrame *frame, ICProfiler_Fallback *stu
     JS_ASSERT(icEntry->firstStub() == stub);
 
     // Generate the string to use to identify this stack frame.
-    const char *string = profiler->profileString(cx, script, func);
+    const char *string = profiler->profileString(script, func);
     if (string == nullptr)
         return false;
 
     IonSpew(IonSpew_BaselineIC, "  Generating Profiler_PushFunction stub for %s:%d",
-            script->filename(), script->lineno);
+            script->filename(), script->lineno());
 
     // Create a new optimized stub.
     ICProfiler_PushFunction::Compiler compiler(cx, string, script);
@@ -1093,7 +1145,7 @@ ICProfiler_PushFunction::Compiler::generateStubCode(MacroAssembler &masm)
     Label spsEnabled;
     uint32_t *enabledAddr = cx->runtime()->spsProfiler.addressOfEnabled();
     masm.branch32(Assembler::NotEqual, AbsoluteAddress(enabledAddr), Imm32(0), &spsEnabled);
-    masm.assume_unreachable("Profiling should have been enabled.");
+    masm.assumeUnreachable("Profiling should have been enabled.");
     masm.bind(&spsEnabled);
 #endif
 
@@ -1118,7 +1170,7 @@ ICProfiler_PushFunction::Compiler::generateStubCode(MacroAssembler &masm)
 //
 
 bool
-ICTypeMonitor_Fallback::addMonitorStubForValue(JSContext *cx, HandleScript script, HandleValue val)
+ICTypeMonitor_Fallback::addMonitorStubForValue(JSContext *cx, JSScript *script, HandleValue val)
 {
     bool wasDetachedMonitorChain = lastMonitorStubPtrAddr_ == nullptr;
     JS_ASSERT_IF(wasDetachedMonitorChain, numOptimizedMonitorStubs_ == 0);
@@ -1135,7 +1187,7 @@ ICTypeMonitor_Fallback::addMonitorStubForValue(JSContext *cx, HandleScript scrip
 
         // Check for existing TypeMonitor stub.
         ICTypeMonitor_PrimitiveSet *existingStub = nullptr;
-        for (ICStubConstIterator iter = firstMonitorStub(); !iter.atEnd(); iter++) {
+        for (ICStubConstIterator iter(firstMonitorStub()); !iter.atEnd(); iter++) {
             if (iter->isTypeMonitor_PrimitiveSet()) {
                 existingStub = iter->toTypeMonitor_PrimitiveSet();
                 if (existingStub->containsType(type))
@@ -1146,8 +1198,10 @@ ICTypeMonitor_Fallback::addMonitorStubForValue(JSContext *cx, HandleScript scrip
         ICTypeMonitor_PrimitiveSet::Compiler compiler(cx, existingStub, type);
         ICStub *stub = existingStub ? compiler.updateStub()
                                     : compiler.getStub(compiler.getStubSpace(script));
-        if (!stub)
+        if (!stub) {
+            js_ReportOutOfMemory(cx);
             return false;
+        }
 
         IonSpew(IonSpew_BaselineIC, "  %s TypeMonitor stub %p for primitive type %d",
                 existingStub ? "Modified existing" : "Created new", stub, type);
@@ -1161,7 +1215,7 @@ ICTypeMonitor_Fallback::addMonitorStubForValue(JSContext *cx, HandleScript scrip
         RootedObject obj(cx, &val.toObject());
 
         // Check for existing TypeMonitor stub.
-        for (ICStubConstIterator iter = firstMonitorStub(); !iter.atEnd(); iter++) {
+        for (ICStubConstIterator iter(firstMonitorStub()); !iter.atEnd(); iter++) {
             if (iter->isTypeMonitor_SingleObject() &&
                 iter->toTypeMonitor_SingleObject()->object() == obj)
             {
@@ -1171,8 +1225,10 @@ ICTypeMonitor_Fallback::addMonitorStubForValue(JSContext *cx, HandleScript scrip
 
         ICTypeMonitor_SingleObject::Compiler compiler(cx, obj);
         ICStub *stub = compiler.getStub(compiler.getStubSpace(script));
-        if (!stub)
+        if (!stub) {
+            js_ReportOutOfMemory(cx);
             return false;
+        }
 
         IonSpew(IonSpew_BaselineIC, "  Added TypeMonitor stub %p for singleton %p",
                 stub, obj.get());
@@ -1183,7 +1239,7 @@ ICTypeMonitor_Fallback::addMonitorStubForValue(JSContext *cx, HandleScript scrip
         RootedTypeObject type(cx, val.toObject().type());
 
         // Check for existing TypeMonitor stub.
-        for (ICStubConstIterator iter = firstMonitorStub(); !iter.atEnd(); iter++) {
+        for (ICStubConstIterator iter(firstMonitorStub()); !iter.atEnd(); iter++) {
             if (iter->isTypeMonitor_TypeObject() &&
                 iter->toTypeMonitor_TypeObject()->type() == type)
             {
@@ -1193,8 +1249,10 @@ ICTypeMonitor_Fallback::addMonitorStubForValue(JSContext *cx, HandleScript scrip
 
         ICTypeMonitor_TypeObject::Compiler compiler(cx, type);
         ICStub *stub = compiler.getStub(compiler.getStubSpace(script));
-        if (!stub)
+        if (!stub) {
+            js_ReportOutOfMemory(cx);
             return false;
+        }
 
         IonSpew(IonSpew_BaselineIC, "  Added TypeMonitor stub %p for TypeObject %p",
                 stub, type.get());
@@ -1209,7 +1267,7 @@ ICTypeMonitor_Fallback::addMonitorStubForValue(JSContext *cx, HandleScript scrip
         // only time that any main stubs' firstMonitorStub fields need to be updated to
         // refer to the newly added monitor stub.
         ICStub *firstStub = mainFallbackStub_->icEntry()->firstStub();
-        for (ICStubConstIterator iter = firstStub; !iter.atEnd(); iter++) {
+        for (ICStubConstIterator iter(firstStub); !iter.atEnd(); iter++) {
             // Non-monitored stubs are used if the result has always the same type,
             // e.g. a StringLength stub will always return int32.
             if (!iter->isMonitored())
@@ -1230,6 +1288,14 @@ static bool
 DoTypeMonitorFallback(JSContext *cx, BaselineFrame *frame, ICTypeMonitor_Fallback *stub,
                       HandleValue value, MutableHandleValue res)
 {
+    // It's possible that we arrived here from bailing out of Ion, and that
+    // Ion proved that the value is dead and optimized out. In such cases, do
+    // nothing.
+    if (value.isMagic(JS_OPTIMIZED_OUT)) {
+        res.set(value);
+        return true;
+    }
+
     RootedScript script(cx, frame->script());
     jsbytecode *pc = stub->icEntry()->pc(script);
     TypeFallbackICSpew(cx, stub, "TypeMonitor");
@@ -1291,6 +1357,9 @@ ICTypeMonitor_PrimitiveSet::Compiler::generateStubCode(MacroAssembler &masm)
 
     if (flags_ & TypeToFlag(JSVAL_TYPE_STRING))
         masm.branchTestString(Assembler::Equal, R0, &success);
+
+    if (flags_ & TypeToFlag(JSVAL_TYPE_SYMBOL))
+        masm.branchTestSymbol(Assembler::Equal, R0, &success);
 
     // Currently, we will never generate primitive stub checks for object.  However,
     // when we do get to the point where we want to collapse our monitor chains of
@@ -1373,7 +1442,7 @@ ICUpdatedStub::addUpdateStubForValue(JSContext *cx, HandleScript script, HandleO
 
         // Check for existing TypeUpdate stub.
         ICTypeUpdate_PrimitiveSet *existingStub = nullptr;
-        for (ICStubConstIterator iter = firstUpdateStub_; !iter.atEnd(); iter++) {
+        for (ICStubConstIterator iter(firstUpdateStub_); !iter.atEnd(); iter++) {
             if (iter->isTypeUpdate_PrimitiveSet()) {
                 existingStub = iter->toTypeUpdate_PrimitiveSet();
                 if (existingStub->containsType(type))
@@ -1398,7 +1467,7 @@ ICUpdatedStub::addUpdateStubForValue(JSContext *cx, HandleScript script, HandleO
         RootedObject obj(cx, &val.toObject());
 
         // Check for existing TypeUpdate stub.
-        for (ICStubConstIterator iter = firstUpdateStub_; !iter.atEnd(); iter++) {
+        for (ICStubConstIterator iter(firstUpdateStub_); !iter.atEnd(); iter++) {
             if (iter->isTypeUpdate_SingleObject() &&
                 iter->toTypeUpdate_SingleObject()->object() == obj)
             {
@@ -1419,7 +1488,7 @@ ICUpdatedStub::addUpdateStubForValue(JSContext *cx, HandleScript script, HandleO
         RootedTypeObject type(cx, val.toObject().type());
 
         // Check for existing TypeUpdate stub.
-        for (ICStubConstIterator iter = firstUpdateStub_; !iter.atEnd(); iter++) {
+        for (ICStubConstIterator iter(firstUpdateStub_); !iter.atEnd(); iter++) {
             if (iter->isTypeUpdate_TypeObject() &&
                 iter->toTypeUpdate_TypeObject()->type() == type)
             {
@@ -1514,6 +1583,9 @@ ICTypeUpdate_PrimitiveSet::Compiler::generateStubCode(MacroAssembler &masm)
     if (flags_ & TypeToFlag(JSVAL_TYPE_STRING))
         masm.branchTestString(Assembler::Equal, R0, &success);
 
+    if (flags_ & TypeToFlag(JSVAL_TYPE_SYMBOL))
+        masm.branchTestSymbol(Assembler::Equal, R0, &success);
+
     // Currently, we will never generate primitive stub checks for object.  However,
     // when we do get to the point where we want to collapse our monitor chains of
     // objects and singletons down (when they get too long) to a generic "any object"
@@ -1591,10 +1663,11 @@ DoCallNativeGetter(JSContext *cx, HandleFunction callee, HandleObject obj,
     JS_ASSERT(callee->isNative());
     JSNative natfun = callee->native();
 
-    Value vp[2] = { ObjectValue(*callee.get()), ObjectValue(*obj.get()) };
-    AutoValueArray rootVp(cx, vp, 2);
+    JS::AutoValueArray<2> vp(cx);
+    vp[0].setObject(*callee.get());
+    vp[1].setObject(*obj.get());
 
-    if (!natfun(cx, 0, vp))
+    if (!natfun(cx, 0, vp.begin()))
         return false;
 
     result.set(vp[0]);
@@ -1709,9 +1782,12 @@ ICNewObject_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
 //
 
 static bool
-DoCompareFallback(JSContext *cx, BaselineFrame *frame, ICCompare_Fallback *stub, HandleValue lhs,
+DoCompareFallback(JSContext *cx, BaselineFrame *frame, ICCompare_Fallback *stub_, HandleValue lhs,
                   HandleValue rhs, MutableHandleValue ret)
 {
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICCompare_Fallback *> stub(frame, stub_);
+
     jsbytecode *pc = stub->icEntry()->pc(frame->script());
     JSOp op = JSOp(*pc);
 
@@ -1767,6 +1843,10 @@ DoCompareFallback(JSContext *cx, BaselineFrame *frame, ICCompare_Fallback *stub,
     }
 
     ret.setBoolean(out);
+
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
 
     // Check to see if a new stub should be generated.
     if (stub->numOptimizedStubs() >= ICCompare_Fallback::MAX_OPTIMIZED_STUBS) {
@@ -1889,6 +1969,8 @@ DoCompareFallback(JSContext *cx, BaselineFrame *frame, ICCompare_Fallback *stub,
         }
     }
 
+    stub->noteUnoptimizableAccess();
+
     return true;
 }
 
@@ -1914,7 +1996,6 @@ ICCompare_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
     masm.pushValue(R0);
     masm.push(BaselineStubReg);
     masm.pushBaselineFramePtr(BaselineFrameReg, R0.scratchReg());
-
     return tailCallVM(DoCompareFallbackInfo, masm);
 }
 
@@ -1936,26 +2017,11 @@ ICCompare_String::Compiler::generateStubCode(MacroAssembler &masm)
 
     GeneralRegisterSet regs(availableGeneralRegs(2));
     Register scratchReg = regs.takeAny();
-    // x86 doesn't have the luxury of a second scratch.
-    Register scratchReg2;
-    if (regs.empty()) {
-        scratchReg2 = BaselineStubReg;
-        masm.push(BaselineStubReg);
-    } else {
-        scratchReg2 = regs.takeAny();
-    }
-    JS_ASSERT(scratchReg2 != scratchReg);
 
-    Label inlineCompareFailed;
-    masm.compareStrings(op, left, right, scratchReg2, scratchReg, &inlineCompareFailed);
-    masm.tagValue(JSVAL_TYPE_BOOLEAN, scratchReg2, R0);
-    if (scratchReg2 == BaselineStubReg)
-        masm.pop(BaselineStubReg);
+    masm.compareStrings(op, left, right, scratchReg, &failure);
+    masm.tagValue(JSVAL_TYPE_BOOLEAN, scratchReg, R0);
     EmitReturnFromIC(masm);
 
-    masm.bind(&inlineCompareFailed);
-    if (scratchReg2 == BaselineStubReg)
-        masm.pop(BaselineStubReg);
     masm.bind(&failure);
     EmitStubGuardFailure(masm);
     return true;
@@ -1977,8 +2043,7 @@ ICCompare_Boolean::Compiler::generateStubCode(MacroAssembler &masm)
 
     // Compare payload regs of R0 and R1.
     Assembler::Condition cond = JSOpToCondition(op, /* signed = */true);
-    masm.cmp32(left, right);
-    masm.emitSet(cond, left);
+    masm.cmp32Set(cond, left, right, left);
 
     // Box the result and return
     masm.tagValue(JSVAL_TYPE_BOOLEAN, left, R0);
@@ -2090,7 +2155,7 @@ ICCompare_ObjectWithUndefined::Compiler::generateStubCode(MacroAssembler &masm)
         Label emulatesUndefined;
         Register obj = masm.extractObject(objectOperand, ExtractTemp0);
         masm.loadPtr(Address(obj, JSObject::offsetOfType()), obj);
-        masm.loadPtr(Address(obj, offsetof(types::TypeObject, clasp)), obj);
+        masm.loadPtr(Address(obj, types::TypeObject::offsetOfClasp()), obj);
         masm.branchTest32(Assembler::NonZero,
                           Address(obj, Class::offsetOfFlags()),
                           Imm32(JSCLASS_EMULATES_UNDEFINED),
@@ -2149,9 +2214,8 @@ ICCompare_Int32WithBoolean::Compiler::generateStubCode(MacroAssembler &masm)
 
         // Compare payload regs of R0 and R1.
         Assembler::Condition cond = JSOpToCondition(op_, /* signed = */true);
-        masm.cmp32(lhsIsInt32_ ? int32Reg : boolReg,
-                   lhsIsInt32_ ? boolReg : int32Reg);
-        masm.emitSet(cond, R0.scratchReg());
+        masm.cmp32Set(cond, (lhsIsInt32_ ? int32Reg : boolReg),
+                      (lhsIsInt32_ ? boolReg : int32Reg), R0.scratchReg());
 
         // Box the result and return
         masm.tagValue(JSVAL_TYPE_BOOLEAN, R0.scratchReg(), R0);
@@ -2277,8 +2341,7 @@ ICToBool_Int32::Compiler::generateStubCode(MacroAssembler &masm)
     masm.branchTestInt32(Assembler::NotEqual, R0, &failure);
 
     Label ifFalse;
-    Assembler::Condition cond = masm.testInt32Truthy(false, R0);
-    masm.j(cond, &ifFalse);
+    masm.branchTestInt32Truthy(false, R0, &ifFalse);
 
     masm.moveValue(BooleanValue(true), R0);
     EmitReturnFromIC(masm);
@@ -2304,8 +2367,7 @@ ICToBool_String::Compiler::generateStubCode(MacroAssembler &masm)
     masm.branchTestString(Assembler::NotEqual, R0, &failure);
 
     Label ifFalse;
-    Assembler::Condition cond = masm.testStringTruthy(false, R0);
-    masm.j(cond, &ifFalse);
+    masm.branchTestStringTruthy(false, R0, &ifFalse);
 
     masm.moveValue(BooleanValue(true), R0);
     EmitReturnFromIC(masm);
@@ -2351,8 +2413,7 @@ ICToBool_Double::Compiler::generateStubCode(MacroAssembler &masm)
     Label failure, ifTrue;
     masm.branchTestDouble(Assembler::NotEqual, R0, &failure);
     masm.unboxDouble(R0, FloatReg0);
-    Assembler::Condition cond = masm.testDoubleTruthy(true, FloatReg0);
-    masm.j(cond, &ifTrue);
+    masm.branchTestDoubleTruthy(true, FloatReg0, &ifTrue);
 
     masm.moveValue(BooleanValue(false), R0);
     EmitReturnFromIC(masm);
@@ -2379,8 +2440,7 @@ ICToBool_Object::Compiler::generateStubCode(MacroAssembler &masm)
 
     Register objReg = masm.extractObject(R0, ExtractTemp0);
     Register scratch = R1.scratchReg();
-    Assembler::Condition cond = masm.branchTestObjectTruthy(false, objReg, scratch, &slowPath);
-    masm.j(cond, &ifFalse);
+    masm.branchTestObjectTruthy(false, objReg, scratch, &slowPath, &ifFalse);
 
     // If object doesn't emulate undefined, it evaulates to true.
     masm.moveValue(BooleanValue(true), R0);
@@ -2448,9 +2508,12 @@ ICToNumber_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
 # pragma optimize("g", off)
 #endif
 static bool
-DoBinaryArithFallback(JSContext *cx, BaselineFrame *frame, ICBinaryArith_Fallback *stub,
+DoBinaryArithFallback(JSContext *cx, BaselineFrame *frame, ICBinaryArith_Fallback *stub_,
                       HandleValue lhs, HandleValue rhs, MutableHandleValue ret)
 {
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICBinaryArith_Fallback *> stub(frame, stub_);
+
     RootedScript script(cx, frame->script());
     jsbytecode *pc = stub->icEntry()->pc(script);
     JSOp op = JSOp(*pc);
@@ -2467,23 +2530,23 @@ DoBinaryArithFallback(JSContext *cx, BaselineFrame *frame, ICBinaryArith_Fallbac
     switch(op) {
       case JSOP_ADD:
         // Do an add.
-        if (!AddValues(cx, &lhsCopy, &rhsCopy, ret.address()))
+        if (!AddValues(cx, &lhsCopy, &rhsCopy, ret))
             return false;
         break;
       case JSOP_SUB:
-        if (!SubValues(cx, &lhsCopy, &rhsCopy, ret.address()))
+        if (!SubValues(cx, &lhsCopy, &rhsCopy, ret))
             return false;
         break;
       case JSOP_MUL:
-        if (!MulValues(cx, &lhsCopy, &rhsCopy, ret.address()))
+        if (!MulValues(cx, &lhsCopy, &rhsCopy, ret))
             return false;
         break;
       case JSOP_DIV:
-        if (!DivValues(cx, &lhsCopy, &rhsCopy, ret.address()))
+        if (!DivValues(cx, &lhsCopy, &rhsCopy, ret))
             return false;
         break;
       case JSOP_MOD:
-        if (!ModValues(cx, &lhsCopy, &rhsCopy, ret.address()))
+        if (!ModValues(cx, &lhsCopy, &rhsCopy, ret))
             return false;
         break;
       case JSOP_BITOR: {
@@ -2522,13 +2585,17 @@ DoBinaryArithFallback(JSContext *cx, BaselineFrame *frame, ICBinaryArith_Fallbac
         break;
       }
       case JSOP_URSH: {
-        if (!UrshOperation(cx, lhs, rhs, ret.address()))
+        if (!UrshOperation(cx, lhs, rhs, ret))
             return false;
         break;
       }
       default:
         MOZ_ASSUME_UNREACHABLE("Unhandled baseline arith op");
     }
+
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
 
     if (ret.isDouble())
         stub->setSawDoubleResult();
@@ -2841,10 +2908,10 @@ ICBinaryArith_Double::Compiler::generateStubCode(MacroAssembler &masm)
         break;
       case JSOP_MOD:
         masm.setupUnalignedABICall(2, R0.scratchReg());
-        masm.passABIArg(FloatReg0);
-        masm.passABIArg(FloatReg1);
-        masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, NumberMod), MacroAssembler::DOUBLE);
-        JS_ASSERT(ReturnFloatReg == FloatReg0);
+        masm.passABIArg(FloatReg0, MoveOp::DOUBLE);
+        masm.passABIArg(FloatReg1, MoveOp::DOUBLE);
+        masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, NumberMod), MoveOp::DOUBLE);
+        JS_ASSERT(ReturnDoubleReg == FloatReg0);
         break;
       default:
         MOZ_ASSUME_UNREACHABLE("Unexpected op");
@@ -2885,8 +2952,7 @@ ICBinaryArith_BooleanWithInt32::Compiler::generateStubCode(MacroAssembler &masm)
       case JSOP_ADD: {
         Label fixOverflow;
 
-        masm.add32(rhsReg, lhsReg);
-        masm.j(Assembler::Overflow, &fixOverflow);
+        masm.branchAdd32(Assembler::Overflow, rhsReg, lhsReg, &fixOverflow);
         masm.tagValue(JSVAL_TYPE_INT32, lhsReg, R0);
         EmitReturnFromIC(masm);
 
@@ -2898,8 +2964,7 @@ ICBinaryArith_BooleanWithInt32::Compiler::generateStubCode(MacroAssembler &masm)
       case JSOP_SUB: {
         Label fixOverflow;
 
-        masm.sub32(rhsReg, lhsReg);
-        masm.j(Assembler::Overflow, &fixOverflow);
+        masm.branchSub32(Assembler::Overflow, rhsReg, lhsReg, &fixOverflow);
         masm.tagValue(JSVAL_TYPE_INT32, lhsReg, R0);
         EmitReturnFromIC(masm);
 
@@ -2968,7 +3033,7 @@ ICBinaryArith_DoubleWithInt32::Compiler::generateStubCode(MacroAssembler &masm)
         masm.bind(&truncateABICall);
         masm.push(intReg);
         masm.setupUnalignedABICall(1, scratchReg);
-        masm.passABIArg(FloatReg0);
+        masm.passABIArg(FloatReg0, MoveOp::DOUBLE);
         masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, js::ToInt32));
         masm.storeCallResult(scratchReg);
         masm.pop(intReg);
@@ -3009,9 +3074,12 @@ ICBinaryArith_DoubleWithInt32::Compiler::generateStubCode(MacroAssembler &masm)
 # pragma optimize("g", off)
 #endif
 static bool
-DoUnaryArithFallback(JSContext *cx, BaselineFrame *frame, ICUnaryArith_Fallback *stub,
+DoUnaryArithFallback(JSContext *cx, BaselineFrame *frame, ICUnaryArith_Fallback *stub_,
                      HandleValue val, MutableHandleValue res)
 {
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICUnaryArith_Fallback *> stub(frame, stub_);
+
     RootedScript script(cx, frame->script());
     jsbytecode *pc = stub->icEntry()->pc(script);
     JSOp op = JSOp(*pc);
@@ -3033,6 +3101,10 @@ DoUnaryArithFallback(JSContext *cx, BaselineFrame *frame, ICUnaryArith_Fallback 
         MOZ_ASSUME_UNREACHABLE("Unexpected op");
     }
 
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
+
     if (res.isDouble())
         stub->setSawDoubleResult();
 
@@ -3051,11 +3123,9 @@ DoUnaryArithFallback(JSContext *cx, BaselineFrame *frame, ICUnaryArith_Fallback 
         return true;
     }
 
-    if (val.isNumber() && res.isNumber() &&
-        op == JSOP_NEG &&
-        cx->runtime()->jitSupportsFloatingPoint)
-    {
+    if (val.isNumber() && res.isNumber() && cx->runtime()->jitSupportsFloatingPoint) {
         IonSpew(IonSpew_BaselineIC, "  Generating %s(Number => Number) stub", js_CodeName[op]);
+
         // Unlink int32 stubs, the double stub handles both cases and TI specializes for both.
         stub->unlinkStubsWithKind(cx, ICStub::UnaryArith_Int32);
 
@@ -3103,9 +3173,30 @@ ICUnaryArith_Double::Compiler::generateStubCode(MacroAssembler &masm)
     Label failure;
     masm.ensureDouble(R0, FloatReg0, &failure);
 
-    JS_ASSERT(op == JSOP_NEG);
-    masm.negateDouble(FloatReg0);
-    masm.boxDouble(FloatReg0, R0);
+    JS_ASSERT(op == JSOP_NEG || op == JSOP_BITNOT);
+
+    if (op == JSOP_NEG) {
+        masm.negateDouble(FloatReg0);
+        masm.boxDouble(FloatReg0, R0);
+    } else {
+        // Truncate the double to an int32.
+        Register scratchReg = R1.scratchReg();
+
+        Label doneTruncate;
+        Label truncateABICall;
+        masm.branchTruncateDouble(FloatReg0, scratchReg, &truncateABICall);
+        masm.jump(&doneTruncate);
+
+        masm.bind(&truncateABICall);
+        masm.setupUnalignedABICall(1, scratchReg);
+        masm.passABIArg(FloatReg0, MoveOp::DOUBLE);
+        masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, js::ToInt32));
+        masm.storeCallResult(scratchReg);
+
+        masm.bind(&doneTruncate);
+        masm.not32(scratchReg);
+        masm.tagValue(JSVAL_TYPE_INT32, scratchReg, R0);
+    }
 
     EmitReturnFromIC(masm);
 
@@ -3127,23 +3218,6 @@ static void GetFixedOrDynamicSlotOffset(HandleObject obj, uint32_t slot,
     *isFixed = obj->isFixedSlot(slot);
     *offset = *isFixed ? JSObject::getFixedSlotOffset(slot)
                        : obj->dynamicSlotIndex(slot) * sizeof(Value);
-}
-
-static bool
-IsCacheableDOMProxy(JSObject *obj)
-{
-    if (!obj->is<ProxyObject>())
-        return false;
-
-    BaseProxyHandler *handler = obj->as<ProxyObject>().handler();
-
-    if (handler->family() != GetDOMProxyHandlerFamily())
-        return false;
-
-    if (obj->numFixedSlots() <= GetDOMProxyExpandoSlot())
-        return false;
-
-    return true;
 }
 
 static JSObject *
@@ -3242,7 +3316,6 @@ EffectlesslyLookupProperty(JSContext *cx, HandleObject obj, HandlePropertyName n
     shape.set(nullptr);
     holder.set(nullptr);
 
-    bool isDOMProxy = false;
     if (checkDOMProxy)
         *checkDOMProxy = false;
 
@@ -3252,7 +3325,7 @@ EffectlesslyLookupProperty(JSContext *cx, HandleObject obj, HandlePropertyName n
         JS_ASSERT(domProxyHasGeneration);
         JS_ASSERT(shadowsResult);
 
-        *checkDOMProxy = isDOMProxy = true;
+        *checkDOMProxy = true;
         if (obj->hasUncacheableProto())
             return true;
 
@@ -3269,11 +3342,8 @@ EffectlesslyLookupProperty(JSContext *cx, HandleObject obj, HandlePropertyName n
         *domProxyHasGeneration = (*shadowsResult == DoesntShadowUnique);
 
         checkObj = GetDOMProxyProto(obj);
-    } else if (obj->is<TypedArrayObject>() && obj->getProto()) {
-        // Typed array objects are non-native, but don't have any named
-        // properties. Just forward the lookup to the prototype, to allow
-        // inlining common getters like byteOffset.
-        checkObj = obj->getProto();
+        if (!checkObj)
+            return true;
     } else if (!obj->isNative()) {
         return true;
     }
@@ -3290,10 +3360,39 @@ EffectlesslyLookupProperty(JSContext *cx, HandleObject obj, HandlePropertyName n
 }
 
 static bool
+CheckHasNoSuchProperty(JSContext *cx, HandleObject obj, HandlePropertyName name,
+                       MutableHandleObject lastProto, size_t *protoChainDepthOut)
+{
+    MOZ_ASSERT(protoChainDepthOut != nullptr);
+
+    size_t depth = 0;
+    RootedObject curObj(cx, obj);
+    while (curObj) {
+        if (!curObj->isNative())
+            return false;
+
+        Shape *shape = curObj->nativeLookup(cx, NameToId(name));
+        if (shape)
+            return false;
+
+        JSObject *proto = curObj->getTaggedProto().toObjectOrNull();
+        if (!proto)
+            break;
+
+        curObj = proto;
+        depth++;
+    }
+
+    lastProto.set(curObj);
+    *protoChainDepthOut = depth;
+    return true;
+}
+
+static bool
 IsCacheableProtoChain(JSObject *obj, JSObject *holder, bool isDOMProxy=false)
 {
     JS_ASSERT_IF(isDOMProxy, IsCacheableDOMProxy(obj));
-    JS_ASSERT_IF(!isDOMProxy, obj->isNative() || obj->is<TypedArrayObject>());
+    JS_ASSERT_IF(!isDOMProxy, obj->isNative());
 
     // Don't handle objects which require a prototype guard. This should
     // be uncommon so handling it is likely not worth the complexity.
@@ -3340,10 +3439,6 @@ IsCacheableGetPropCall(JSContext *cx, JSObject *obj, JSObject *holder, Shape *sh
 {
     JS_ASSERT(isScripted);
 
-    // Currently we only optimize getter calls for getters bound on prototypes.
-    if (obj == holder)
-        return false;
-
     if (!shape || !IsCacheableProtoChain(obj, holder, isDOMProxy))
         return false;
 
@@ -3361,7 +3456,7 @@ IsCacheableGetPropCall(JSContext *cx, JSObject *obj, JSObject *holder, Shape *sh
 #ifdef JSGC_GENERATIONAL
     // Information from get prop call ICs may be used directly from Ion code,
     // and should not be nursery allocated.
-    if (cx->runtime()->gcNursery.isInside(holder) || cx->runtime()->gcNursery.isInside(func))
+    if (IsInsideNursery(holder) || IsInsideNursery(func))
         return false;
 #endif
 
@@ -3480,7 +3575,7 @@ IsCacheableSetPropCall(JSContext *cx, JSObject *obj, JSObject *holder, Shape *sh
 #ifdef JSGC_GENERATIONAL
     // Information from set prop call ICs may be used directly from Ion code,
     // and should not be nursery allocated.
-    if (cx->runtime()->gcNursery.isInside(holder) || cx->runtime()->gcNursery.isInside(func))
+    if (IsInsideNursery(holder) || IsInsideNursery(func))
         return false;
 #endif
 
@@ -3610,7 +3705,7 @@ RemoveExistingGetElemNativeStubs(JSContext *cx, ICGetElem_Fallback *stub, Handle
                 // If the holder matches, but the holder's lastProperty doesn't match, then
                 // this stub is invalid anyway.  Unlink it.
                 if (holder->lastProperty() != protoStub->holderShape()) {
-                    iter.unlink(cx->zone());
+                    iter.unlink(cx);
                     continue;
                 }
             } else {
@@ -3626,7 +3721,7 @@ RemoveExistingGetElemNativeStubs(JSContext *cx, ICGetElem_Fallback *stub, Handle
                 // If the holder matches, but the holder's lastProperty doesn't match, then
                 // this stub is invalid anyway.  Unlink it.
                 if (holder->lastProperty() != protoStub->holderShape()) {
-                    iter.unlink(cx->zone());
+                    iter.unlink(cx);
                     continue;
                 }
             }
@@ -3635,7 +3730,7 @@ RemoveExistingGetElemNativeStubs(JSContext *cx, ICGetElem_Fallback *stub, Handle
         // If the new stub needs atomization, and the old stub doesn't atomize, then
         // remove the old stub.
         if (needsAtomize && !getElemNativeStub->needsAtomize()) {
-            iter.unlink(cx->zone());
+            iter.unlink(cx);
             continue;
         }
 
@@ -3741,6 +3836,10 @@ static bool TryAttachNativeGetElemStub(JSContext *cx, HandleScript script, jsbyt
             return true;
 #endif
 
+        // For now, we do not handle own property getters
+        if (obj == holder)
+            return true;
+
         // If a suitable stub already exists, nothing else to do.
         if (GetElemNativeStubExists(stub, obj, holder, propName, needsAtomize))
             return true;
@@ -3758,7 +3857,7 @@ static bool TryAttachNativeGetElemStub(JSContext *cx, HandleScript script, jsbyt
                     "(obj=%p, shape=%p, holder=%p, holderShape=%p)",
                         (obj == holder) ? "direct" : "prototype",
                         needsAtomize ? " atomizing" : "",
-                        getter->nonLazyScript()->filename(), getter->nonLazyScript()->lineno,
+                        getter->nonLazyScript()->filename(), getter->nonLazyScript()->lineno(),
                         obj.get(), obj->lastProperty(), holder.get(), holder->lastProperty());
         } else {
             IonSpew(IonSpew_BaselineIC,
@@ -3789,13 +3888,13 @@ static bool
 TypedArrayRequiresFloatingPoint(TypedArrayObject *tarr)
 {
     uint32_t type = tarr->type();
-    return (type == ScalarTypeRepresentation::TYPE_UINT32 ||
-            type == ScalarTypeRepresentation::TYPE_FLOAT32 ||
-            type == ScalarTypeRepresentation::TYPE_FLOAT64);
+    return (type == Scalar::Uint32 ||
+            type == Scalar::Float32 ||
+            type == Scalar::Float64);
 }
 
 static bool
-TryAttachGetElemStub(JSContext *cx, HandleScript script, jsbytecode *pc, ICGetElem_Fallback *stub,
+TryAttachGetElemStub(JSContext *cx, JSScript *script, jsbytecode *pc, ICGetElem_Fallback *stub,
                      HandleValue lhs, HandleValue rhs, HandleValue res)
 {
     bool isCallElem = (JSOp(*pc) == JSOP_CALLELEM);
@@ -3859,7 +3958,7 @@ TryAttachGetElemStub(JSContext *cx, HandleScript script, jsbytecode *pc, ICGetEl
 
     if (obj->isNative()) {
         // Check for NativeObject[int] dense accesses.
-        if (rhs.isInt32() && rhs.toInt32() >= 0) {
+        if (rhs.isInt32() && rhs.toInt32() >= 0 && !obj->is<TypedArrayObject>()) {
             IonSpew(IonSpew_BaselineIC, "  Generating GetElem(Native[Int32] dense) stub");
             ICGetElem_Dense::Compiler compiler(cx, stub->fallbackMonitorStub()->firstMonitorStub(),
                                                obj->lastProperty(), isCallElem);
@@ -3873,8 +3972,10 @@ TryAttachGetElemStub(JSContext *cx, HandleScript script, jsbytecode *pc, ICGetEl
 
         // Check for NativeObject[id] shape-optimizable accesses.
         if (rhs.isString()) {
-            if (!TryAttachNativeGetElemStub(cx, script, pc, stub, obj, rhs))
+            RootedScript rootedScript(cx, script);
+            if (!TryAttachNativeGetElemStub(cx, rootedScript, pc, stub, obj, rhs))
                 return false;
+            script = rootedScript;
         }
     }
 
@@ -3888,7 +3989,7 @@ TryAttachGetElemStub(JSContext *cx, HandleScript script, jsbytecode *pc, ICGetEl
             return true;
 #endif
 
-        Rooted<TypedArrayObject*> tarr(cx, &obj->as<TypedArrayObject>());
+        TypedArrayObject *tarr = &obj->as<TypedArrayObject>();
         if (!cx->runtime()->jitSupportsFloatingPoint &&
             (TypedArrayRequiresFloatingPoint(tarr) || rhs.isDouble()))
         {
@@ -3905,10 +4006,10 @@ TryAttachGetElemStub(JSContext *cx, HandleScript script, jsbytecode *pc, ICGetEl
         return true;
     }
 
-    // GetElem operations on non-native objects other than typed arrays cannot
-    // be cached by either Baseline or Ion. Indicate this in the cache so that
-    // Ion does not generate a cache for this op.
-    if (!obj->isNative() && !obj->is<TypedArrayObject>())
+    // GetElem operations on non-native objects cannot be cached by either
+    // Baseline or Ion. Indicate this in the cache so that Ion does not
+    // generate a cache for this op.
+    if (!obj->isNative())
         stub->noteNonNativeAccess();
 
     // GetElem operations which could access negative indexes generally can't
@@ -3921,11 +4022,14 @@ TryAttachGetElemStub(JSContext *cx, HandleScript script, jsbytecode *pc, ICGetEl
 }
 
 static bool
-DoGetElemFallback(JSContext *cx, BaselineFrame *frame, ICGetElem_Fallback *stub, HandleValue lhs,
+DoGetElemFallback(JSContext *cx, BaselineFrame *frame, ICGetElem_Fallback *stub_, HandleValue lhs,
                   HandleValue rhs, MutableHandleValue res)
 {
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICGetElem_Fallback *> stub(frame, stub_);
+
     RootedScript script(cx, frame->script());
-    jsbytecode *pc = stub->icEntry()->pc(script);
+    jsbytecode *pc = stub->icEntry()->pc(frame->script());
     JSOp op = JSOp(*pc);
     FallbackICSpew(cx, stub, "GetElem(%s)", js_CodeName[op]);
 
@@ -3940,17 +4044,21 @@ DoGetElemFallback(JSContext *cx, BaselineFrame *frame, ICGetElem_Fallback *stub,
         if (!GetElemOptimizedArguments(cx, frame, &lhsCopy, rhs, res, &isOptimizedArgs))
             return false;
         if (isOptimizedArgs)
-            types::TypeScript::Monitor(cx, script, pc, res);
+            types::TypeScript::Monitor(cx, frame->script(), pc, res);
     }
 
     if (!isOptimizedArgs) {
         if (!GetElementOperation(cx, op, &lhsCopy, rhs, res))
             return false;
-        types::TypeScript::Monitor(cx, script, pc, res);
+        types::TypeScript::Monitor(cx, frame->script(), pc, res);
     }
 
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
+
     // Add a type monitor stub for the resulting value.
-    if (!stub->addMonitorStubForValue(cx, script, res))
+    if (!stub->addMonitorStubForValue(cx, frame->script(), res))
         return false;
 
     if (stub->numOptimizedStubs() >= ICGetElem_Fallback::MAX_OPTIMIZED_STUBS) {
@@ -3960,7 +4068,7 @@ DoGetElemFallback(JSContext *cx, BaselineFrame *frame, ICGetElem_Fallback *stub,
     }
 
     // Try to attach an optimized stub.
-    if (!TryAttachGetElemStub(cx, script, pc, stub, lhs, rhs, res))
+    if (!TryAttachGetElemStub(cx, frame->script(), pc, stub, lhs, rhs, res))
         return false;
 
     return true;
@@ -4039,22 +4147,7 @@ ICGetElemNativeCompiler::emitCallNative(MacroAssembler &masm, Register objReg)
     regs.add(objReg);
 
     // Profiler hook.
-    {
-        Label skipProfilerUpdate;
-        Register scratch = regs.takeAny();
-        Register pcIdx = regs.takeAny();
-
-        // Check if profiling is enabled.
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
-
-        // Update profiling entry before leaving function.
-        masm.load32(Address(BaselineStubReg, ICGetElemNativeGetterStub::offsetOfPCOffset()), pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
-        regs.add(scratch);
-        regs.add(pcIdx);
-    }
+    emitProfilingUpdate(masm, regs, ICGetElemNativeGetterStub::offsetOfPCOffset());
 
     // Call helper.
     if (!callVM(DoCallNativeGetterInfo, masm))
@@ -4106,17 +4199,17 @@ ICGetElemNativeCompiler::emitCallScripted(MacroAssembler &masm, Register objReg)
 
     // Handle arguments underflow.
     Label noUnderflow;
-    masm.load16ZeroExtend(Address(callee, offsetof(JSFunction, nargs)), scratch);
+    masm.load16ZeroExtend(Address(callee, JSFunction::offsetOfNargs()), scratch);
     masm.branch32(Assembler::Equal, scratch, Imm32(0), &noUnderflow);
     {
         // Call the arguments rectifier.
         JS_ASSERT(ArgumentsRectifierReg != code);
 
-        IonCode *argumentsRectifier =
+        JitCode *argumentsRectifier =
             cx->runtime()->jitRuntime()->getArgumentsRectifier(SequentialExecution);
 
         masm.movePtr(ImmGCPtr(argumentsRectifier), code);
-        masm.loadPtr(Address(code, IonCode::offsetOfCode()), code);
+        masm.loadPtr(Address(code, JitCode::offsetOfCode()), code);
         masm.mov(ImmWord(0), ArgumentsRectifierReg);
     }
 
@@ -4125,25 +4218,12 @@ ICGetElemNativeCompiler::emitCallScripted(MacroAssembler &masm, Register objReg)
     // If needed, update SPS Profiler frame entry.  At this point, callee and scratch can
     // be clobbered.
     {
-        Label skipProfilerUpdate;
-
-        // Need to avoid using ArgumentsRectifierReg and code register.
         GeneralRegisterSet availRegs = availableGeneralRegs(0);
         availRegs.take(ArgumentsRectifierReg);
         availRegs.take(code);
-        Register scratch = availRegs.takeAny();
-        Register pcIdx = availRegs.takeAny();
-
-        // Check if profiling is enabled.
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
-
-        // Update profiling entry before leaving function.
-        masm.load32(Address(BaselineStubReg, ICGetElemNativeGetterStub::offsetOfPCOffset()),
-                    pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
+        emitProfilingUpdate(masm, availRegs, ICGetElemNativeGetterStub::offsetOfPCOffset());
     }
+
     masm.callIon(code);
 
     leaveStubFrame(masm, true);
@@ -4183,10 +4263,10 @@ ICGetElemNativeCompiler::generateStubCode(MacroAssembler &masm)
         Label skipAtomize;
 
         // If string is already an atom, skip the atomize.
-        masm.branchTestPtr(Assembler::NonZero,
-                           Address(strExtract, JSString::offsetOfLengthAndFlags()),
-                           Imm32(JSString::ATOM_BIT),
-                           &skipAtomize);
+        masm.branchTest32(Assembler::NonZero,
+                          Address(strExtract, JSString::offsetOfFlags()),
+                          Imm32(JSString::ATOM_BIT),
+                          &skipAtomize);
 
         // Stow R0.
         EmitStowICValues(masm, 1);
@@ -4215,7 +4295,9 @@ ICGetElemNativeCompiler::generateStubCode(MacroAssembler &masm)
     }
 
     // Since this stub sometimes enter a stub frame, we manually set this to true (lie).
+#ifdef DEBUG
     entersStubFrame_ = true;
+#endif
 
     // Key has been atomized if necessary.  Do identity check on string pointer.
     masm.branchPtr(Assembler::NotEqual, nameAddr, strExtract, &failure);
@@ -4342,6 +4424,7 @@ ICGetElemNativeCompiler::generateStubCode(MacroAssembler &masm)
             // Load function in scratchReg and ensure that it has a jit script.
             masm.loadPtr(Address(BaselineStubReg, ICGetElemNativeGetterStub::offsetOfGetter()),
                          scratchReg);
+            masm.branchIfFunctionHasNoScript(scratchReg, popR1 ? &failurePopR1 : &failure);
             masm.loadPtr(Address(scratchReg, JSFunction::offsetOfNativeOrScript()), scratchReg);
             masm.loadBaselineOrIonRaw(scratchReg, scratchReg, SequentialExecution,
                                       popR1 ? &failurePopR1 : &failure);
@@ -4385,31 +4468,25 @@ ICGetElem_String::Compiler::generateStubCode(MacroAssembler &masm)
     // Unbox string in R0.
     Register str = masm.extractString(R0, ExtractTemp0);
 
-    // Load string lengthAndFlags
-    Address lengthAndFlagsAddr(str, JSString::offsetOfLengthAndFlags());
-    masm.loadPtr(lengthAndFlagsAddr, scratchReg);
-
     // Check for non-linear strings.
-    masm.branchTest32(Assembler::Zero, scratchReg, Imm32(JSString::FLAGS_MASK), &failure);
+    masm.branchIfRope(str, &failure);
 
     // Unbox key.
     Register key = masm.extractInt32(R1, ExtractTemp1);
 
-    // Extract length and bounds check.
-    masm.rshiftPtr(Imm32(JSString::LENGTH_SHIFT), scratchReg);
-    masm.branch32(Assembler::BelowOrEqual, scratchReg, key, &failure);
+    // Bounds check.
+    masm.branch32(Assembler::BelowOrEqual, Address(str, JSString::offsetOfLength()),
+                  key, &failure);
 
     // Get char code.
-    Address charsAddr(str, JSString::offsetOfChars());
-    masm.loadPtr(charsAddr, scratchReg);
-    masm.load16ZeroExtend(BaseIndex(scratchReg, key, TimesTwo, 0), scratchReg);
+    masm.loadStringChar(str, key, scratchReg);
 
     // Check if char code >= UNIT_STATIC_LIMIT.
     masm.branch32(Assembler::AboveOrEqual, scratchReg, Imm32(StaticStrings::UNIT_STATIC_LIMIT),
                   &failure);
 
     // Load static string.
-    masm.movePtr(ImmPtr(&cx->runtime()->staticStrings.unitStaticTable), str);
+    masm.movePtr(ImmPtr(&cx->staticStrings().unitStaticTable), str);
     masm.loadPtr(BaseIndex(str, scratchReg, ScalePointer), str);
 
     // Return.
@@ -4458,7 +4535,9 @@ ICGetElem_Dense::Compiler::generateStubCode(MacroAssembler &masm)
 
     // Check if __noSuchMethod__ should be called.
 #if JS_HAS_NO_SUCH_METHOD
+#ifdef DEBUG
     entersStubFrame_ = true;
+#endif
     if (isCallElem_) {
         Label afterNoSuchMethod;
         Label skipNoSuchMethod;
@@ -4567,7 +4646,7 @@ ICGetElem_TypedArray::Compiler::generateStubCode(MacroAssembler &masm)
     masm.loadPtr(Address(obj, TypedArrayObject::dataOffset()), scratchReg);
 
     // Load the value.
-    BaseIndex source(scratchReg, key, ScaleFromElemWidth(TypedArrayObject::slotWidth(type_)));
+    BaseIndex source(scratchReg, key, ScaleFromElemWidth(Scalar::byteSize(type_)));
     masm.loadFromTypedArray(type_, source, R0, false, scratchReg, &failure);
 
     // Todo: Allow loading doubles from uint32 arrays, but this requires monitoring.
@@ -4585,10 +4664,12 @@ ICGetElem_TypedArray::Compiler::generateStubCode(MacroAssembler &masm)
 bool
 ICGetElem_Arguments::Compiler::generateStubCode(MacroAssembler &masm)
 {
-    // Variatns of GetElem_Arguments can enter stub frames if entered in CallProp
+    // Variants of GetElem_Arguments can enter stub frames if entered in CallProp
     // context when noSuchMethod support is on.
 #if JS_HAS_NO_SUCH_METHOD
+#ifdef DEBUG
     entersStubFrame_ = true;
+#endif
 #endif
 
     Label failure;
@@ -4770,6 +4851,22 @@ ICGetElem_Arguments::Compiler::generateStubCode(MacroAssembler &masm)
 //
 
 static bool
+SetElemDenseAddHasSameShapes(ICSetElem_DenseAdd *stub, JSObject *obj)
+{
+    size_t numShapes = stub->protoChainDepth() + 1;
+    for (size_t i = 0; i < numShapes; i++) {
+        static const size_t MAX_DEPTH = ICSetElem_DenseAdd::MAX_PROTO_CHAIN_DEPTH;
+        if (obj->lastProperty() != stub->toImplUnchecked<MAX_DEPTH>()->shape(i))
+            return false;
+        obj = obj->getProto();
+        if (!obj && i != numShapes - 1)
+            return false;
+    }
+
+    return true;
+}
+
+static bool
 DenseSetElemStubExists(JSContext *cx, ICStub::Kind kind, ICSetElem_Fallback *stub, HandleObject obj)
 {
     JS_ASSERT(kind == ICStub::SetElem_Dense || kind == ICStub::SetElem_DenseAdd);
@@ -4783,11 +4880,8 @@ DenseSetElemStubExists(JSContext *cx, ICStub::Kind kind, ICSetElem_Fallback *stu
 
         if (kind == ICStub::SetElem_DenseAdd && iter->isSetElem_DenseAdd()) {
             ICSetElem_DenseAdd *dense = iter->toSetElem_DenseAdd();
-            if (obj->lastProperty() == dense->toImplUnchecked<0>()->shape(0) &&
-                obj->getType(cx) == dense->type())
-            {
+            if (obj->getType(cx) == dense->type() && SetElemDenseAddHasSameShapes(dense, obj))
                 return true;
-            }
         }
     }
     return false;
@@ -4819,7 +4913,7 @@ RemoveExistingTypedArraySetElemStub(JSContext *cx, ICSetElem_Fallback *stub, Han
         // TypedArraySetElem stubs are only removed using this procedure if
         // being replaced with one that expects out of bounds index.
         JS_ASSERT(!iter->toSetElem_TypedArray()->expectOutOfBounds());
-        iter.unlink(cx->zone());
+        iter.unlink(cx);
         return true;
     }
     return false;
@@ -4898,18 +4992,21 @@ CanOptimizeDenseSetElem(JSContext *cx, HandleObject obj, uint32_t index,
 }
 
 static bool
-DoSetElemFallback(JSContext *cx, BaselineFrame *frame, ICSetElem_Fallback *stub, Value *stack,
+DoSetElemFallback(JSContext *cx, BaselineFrame *frame, ICSetElem_Fallback *stub_, Value *stack,
                   HandleValue objv, HandleValue index, HandleValue rhs)
 {
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICSetElem_Fallback *> stub(frame, stub_);
+
     RootedScript script(cx, frame->script());
     jsbytecode *pc = stub->icEntry()->pc(script);
     JSOp op = JSOp(*pc);
     FallbackICSpew(cx, stub, "SetElem(%s)", js_CodeName[JSOp(*pc)]);
 
     JS_ASSERT(op == JSOP_SETELEM ||
-              op == JSOP_ENUMELEM ||
               op == JSOP_INITELEM ||
-              op == JSOP_INITELEM_ARRAY);
+              op == JSOP_INITELEM_ARRAY ||
+              op == JSOP_INITELEM_INC);
 
     RootedObject obj(cx, ToObjectFromStack(cx, objv));
     if (!obj)
@@ -4932,14 +5029,21 @@ DoSetElemFallback(JSContext *cx, BaselineFrame *frame, ICSetElem_Fallback *stub,
         JS_ASSERT(uint32_t(index.toInt32()) == GET_UINT24(pc));
         if (!InitArrayElemOperation(cx, pc, obj, index.toInt32(), rhs))
             return false;
+    } else if (op == JSOP_INITELEM_INC) {
+        if (!InitArrayElemOperation(cx, pc, obj, index.toInt32(), rhs))
+            return false;
     } else {
-        if (!SetObjectElement(cx, obj, index, rhs, script->strict, script, pc))
+        if (!SetObjectElement(cx, obj, index, rhs, script->strict(), script, pc))
             return false;
     }
 
     // Overwrite the object on the stack (pushed for the decompiler) with the rhs.
     JS_ASSERT(stack[2] == objv);
     stack[2] = rhs;
+
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
 
     if (stub->numOptimizedStubs() >= ICSetElem_Fallback::MAX_OPTIMIZED_STUBS) {
         // TODO: Discard all stubs in this IC and replace with inert megamorphic stub.
@@ -4949,11 +5053,10 @@ DoSetElemFallback(JSContext *cx, BaselineFrame *frame, ICSetElem_Fallback *stub,
 
     // Try to generate new stubs.
     if (obj->isNative() &&
+        !obj->is<TypedArrayObject>() &&
         index.isInt32() && index.toInt32() >= 0 &&
         !rhs.isMagic(JS_ELEMENTS_HOLE))
     {
-        JS_ASSERT(!obj->is<TypedArrayObject>());
-
         bool addingCase;
         size_t protoDepth;
 
@@ -5171,7 +5274,7 @@ ICSetElem_Dense::Compiler::generateStubCode(MacroAssembler &masm)
     if (cx->runtime()->jitSupportsFloatingPoint)
         masm.convertInt32ValueToDouble(valueAddr, regs.getAny(), &dontConvertDoubles);
     else
-        masm.assume_unreachable("There shouldn't be double arrays when there is no FP support.");
+        masm.assumeUnreachable("There shouldn't be double arrays when there is no FP support.");
     masm.bind(&dontConvertDoubles);
 
     // Don't overwrite R0 becuase |obj| might overlap with it, and it's needed
@@ -5181,17 +5284,13 @@ ICSetElem_Dense::Compiler::generateStubCode(MacroAssembler &masm)
     EmitPreBarrier(masm, element, MIRType_Value);
     masm.storeValue(tmpVal, element);
     regs.add(key);
-    regs.add(tmpVal);
 #ifdef JSGC_GENERATIONAL
-    Label skipBarrier;
-    masm.branchTestObject(Assembler::NotEqual, tmpVal, &skipBarrier);
-    {
+    if (cx->runtime()->gc.nursery.exists()) {
         Register r = regs.takeAny();
         GeneralRegisterSet saveRegs;
-        emitPostWriteBarrierSlot(masm, obj, r, saveRegs);
+        emitPostWriteBarrierSlot(masm, obj, tmpVal, r, saveRegs);
         regs.add(r);
     }
-    masm.bind(&skipBarrier);
 #endif
     EmitReturnFromIC(masm);
 
@@ -5359,7 +5458,7 @@ ICSetElemDenseAddCompiler::generateStubCode(MacroAssembler &masm)
     if (cx->runtime()->jitSupportsFloatingPoint)
         masm.convertInt32ValueToDouble(valueAddr, regs.getAny(), &dontConvertDoubles);
     else
-        masm.assume_unreachable("There shouldn't be double arrays when there is no FP support.");
+        masm.assumeUnreachable("There shouldn't be double arrays when there is no FP support.");
     masm.bind(&dontConvertDoubles);
 
     // Write the value.  No need for pre-barrier since we're not overwriting an old value.
@@ -5368,17 +5467,13 @@ ICSetElemDenseAddCompiler::generateStubCode(MacroAssembler &masm)
     masm.loadValue(valueAddr, tmpVal);
     masm.storeValue(tmpVal, element);
     regs.add(key);
-    regs.add(tmpVal);
 #ifdef JSGC_GENERATIONAL
-    Label skipBarrier;
-    masm.branchTestObject(Assembler::NotEqual, tmpVal, &skipBarrier);
-    {
+    if (cx->runtime()->gc.nursery.exists()) {
         Register r = regs.takeAny();
         GeneralRegisterSet saveRegs;
-        emitPostWriteBarrierSlot(masm, obj, r, saveRegs);
+        emitPostWriteBarrierSlot(masm, obj, tmpVal, r, saveRegs);
         regs.add(r);
     }
-    masm.bind(&skipBarrier);
 #endif
     EmitReturnFromIC(masm);
 
@@ -5440,7 +5535,7 @@ ICSetElem_TypedArray::Compiler::generateStubCode(MacroAssembler &masm)
     // Load the elements vector.
     masm.loadPtr(Address(obj, TypedArrayObject::dataOffset()), scratchReg);
 
-    BaseIndex dest(scratchReg, key, ScaleFromElemWidth(TypedArrayObject::slotWidth(type_)));
+    BaseIndex dest(scratchReg, key, ScaleFromElemWidth(Scalar::byteSize(type_)));
     Address value(BaselineStackReg, ICStackValueOffset);
 
     // We need a second scratch register. It's okay to clobber the type tag of
@@ -5451,18 +5546,17 @@ ICSetElem_TypedArray::Compiler::generateStubCode(MacroAssembler &masm)
     regs.take(scratchReg);
     Register secondScratch = regs.takeAny();
 
-    if (type_ == ScalarTypeRepresentation::TYPE_FLOAT32 || type_ == ScalarTypeRepresentation::TYPE_FLOAT64) {
+    if (type_ == Scalar::Float32 || type_ == Scalar::Float64) {
         masm.ensureDouble(value, FloatReg0, &failure);
-        if (LIRGenerator::allowFloat32Optimizations() &&
-            type_ == ScalarTypeRepresentation::TYPE_FLOAT32)
+        if (type_ == Scalar::Float32)
         {
-            masm.convertDoubleToFloat(FloatReg0, ScratchFloatReg);
-            masm.storeToTypedFloatArray(type_, ScratchFloatReg, dest);
+            masm.convertDoubleToFloat32(FloatReg0, ScratchFloat32Reg);
+            masm.storeToTypedFloatArray(type_, ScratchFloat32Reg, dest);
         } else {
             masm.storeToTypedFloatArray(type_, FloatReg0, dest);
         }
         EmitReturnFromIC(masm);
-    } else if (type_ == ScalarTypeRepresentation::TYPE_UINT8_CLAMPED) {
+    } else if (type_ == Scalar::Uint8Clamped) {
         Label notInt32;
         masm.branchTestInt32(Assembler::NotEqual, value, &notInt32);
         masm.unboxInt32(value, secondScratch);
@@ -5574,8 +5668,9 @@ ICIn_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
 
 // Attach an optimized stub for a GETGNAME/CALLGNAME op.
 static bool
-TryAttachGlobalNameStub(JSContext *cx, HandleScript script, ICGetName_Fallback *stub,
-                        HandleObject global, HandlePropertyName name)
+TryAttachGlobalNameStub(JSContext *cx, HandleScript script, jsbytecode *pc,
+                        ICGetName_Fallback *stub, HandleObject global,
+                        HandlePropertyName name)
 {
     JS_ASSERT(global->is<GlobalObject>());
 
@@ -5587,22 +5682,47 @@ TryAttachGlobalNameStub(JSContext *cx, HandleScript script, ICGetName_Fallback *
 
     // The property must be found, and it must be found as a normal data property.
     RootedShape shape(cx, global->nativeLookup(cx, id));
-    if (!shape || !shape->hasDefaultGetter() || !shape->hasSlot())
+    if (!shape)
         return true;
 
-    JS_ASSERT(shape->slot() >= global->numFixedSlots());
-    uint32_t slot = shape->slot() - global->numFixedSlots();
+    if (shape->hasDefaultGetter() && shape->hasSlot()) {
 
-    // TODO: if there's a previous stub discard it, or just update its Shape + slot?
+        JS_ASSERT(shape->slot() >= global->numFixedSlots());
+        uint32_t slot = shape->slot() - global->numFixedSlots();
 
-    ICStub *monitorStub = stub->fallbackMonitorStub()->firstMonitorStub();
-    IonSpew(IonSpew_BaselineIC, "  Generating GetName(GlobalName) stub");
-    ICGetName_Global::Compiler compiler(cx, monitorStub, global->lastProperty(), slot);
-    ICStub *newStub = compiler.getStub(compiler.getStubSpace(script));
-    if (!newStub)
-        return false;
+        // TODO: if there's a previous stub discard it, or just update its Shape + slot?
 
-    stub->addNewStub(newStub);
+        ICStub *monitorStub = stub->fallbackMonitorStub()->firstMonitorStub();
+        IonSpew(IonSpew_BaselineIC, "  Generating GetName(GlobalName) stub");
+        ICGetName_Global::Compiler compiler(cx, monitorStub, global->lastProperty(), slot);
+        ICStub *newStub = compiler.getStub(compiler.getStubSpace(script));
+        if (!newStub)
+            return false;
+
+        stub->addNewStub(newStub);
+        return true;
+    }
+
+    // Try to add a getter stub. We don't handle scripted getters yet; if this
+    // changes we need to make sure IonBuilder::getPropTryCommonGetter (which
+    // requires a Baseline stub) handles non-outerized this objects correctly.
+    bool isScripted;
+    if (IsCacheableGetPropCall(cx, global, global, shape, &isScripted) && !isScripted)
+    {
+        ICStub *monitorStub = stub->fallbackMonitorStub()->firstMonitorStub();
+        IonSpew(IonSpew_BaselineIC, "  Generating GetName(GlobalName/NativeGetter) stub");
+        RootedFunction getter(cx, &shape->getterObject()->as<JSFunction>());
+        ICGetProp_CallNative::Compiler compiler(cx, monitorStub, global,
+                                                getter, script->pcToOffset(pc),
+                                                /* inputDefinitelyObject = */ true);
+        ICStub *newStub = compiler.getStub(compiler.getStubSpace(script));
+        if (!newStub)
+            return false;
+
+        stub->addNewStub(newStub);
+        return true;
+    }
+
     return true;
 }
 
@@ -5626,7 +5746,7 @@ TryAttachScopeNameStub(JSContext *cx, HandleScript script, ICGetName_Fallback *s
             return true;
         }
 
-        if (!scopeChain->is<ScopeObject>() || scopeChain->is<WithObject>())
+        if (!scopeChain->is<ScopeObject>() || scopeChain->is<DynamicWithObject>())
             return true;
 
         // Check for an 'own' property on the scope. There is no need to
@@ -5638,6 +5758,10 @@ TryAttachScopeNameStub(JSContext *cx, HandleScript script, ICGetName_Fallback *s
 
         scopeChain = scopeChain->enclosingScope();
     }
+
+    // We don't handle getters here. When this changes, we need to make sure
+    // IonBuilder::getPropTryCommonGetter (which requires a Baseline stub to
+    // work) handles non-outerized this objects correctly.
 
     if (!IsCacheableGetPropReadSlot(scopeChain, scopeChain, shape))
         return true;
@@ -5697,15 +5821,18 @@ TryAttachScopeNameStub(JSContext *cx, HandleScript script, ICGetName_Fallback *s
 }
 
 static bool
-DoGetNameFallback(JSContext *cx, BaselineFrame *frame, ICGetName_Fallback *stub,
+DoGetNameFallback(JSContext *cx, BaselineFrame *frame, ICGetName_Fallback *stub_,
                   HandleObject scopeChain, MutableHandleValue res)
 {
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICGetName_Fallback *> stub(frame, stub_);
+
     RootedScript script(cx, frame->script());
     jsbytecode *pc = stub->icEntry()->pc(script);
     mozilla::DebugOnly<JSOp> op = JSOp(*pc);
     FallbackICSpew(cx, stub, "GetName(%s)", js_CodeName[JSOp(*pc)]);
 
-    JS_ASSERT(op == JSOP_NAME || op == JSOP_CALLNAME || op == JSOP_GETGNAME || op == JSOP_CALLGNAME);
+    JS_ASSERT(op == JSOP_NAME || op == JSOP_GETGNAME);
 
     RootedPropertyName name(cx, script->getName(pc));
 
@@ -5719,6 +5846,10 @@ DoGetNameFallback(JSContext *cx, BaselineFrame *frame, ICGetName_Fallback *stub,
 
     types::TypeScript::Monitor(cx, script, pc, res);
 
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
+
     // Add a type monitor stub for the resulting value.
     if (!stub->addMonitorStubForValue(cx, script, res))
         return false;
@@ -5730,7 +5861,7 @@ DoGetNameFallback(JSContext *cx, BaselineFrame *frame, ICGetName_Fallback *stub,
     }
 
     if (js_CodeSpec[*pc].format & JOF_GNAME) {
-        if (!TryAttachGlobalNameStub(cx, script, stub, scopeChain, name))
+        if (!TryAttachGlobalNameStub(cx, script, pc, stub, scopeChain, name))
             return false;
     } else {
         if (!TryAttachScopeNameStub(cx, script, stub, scopeChain, name))
@@ -5843,7 +5974,7 @@ DoBindNameFallback(JSContext *cx, BaselineFrame *frame, ICBindName_Fallback *stu
     RootedPropertyName name(cx, frame->script()->getName(pc));
 
     RootedObject scope(cx);
-    if (!LookupNameWithGlobalDefault(cx, name, scopeChain, &scope))
+    if (!LookupNameUnqualified(cx, name, scopeChain, &scope))
         return false;
 
     res.setObject(*scope);
@@ -5874,15 +6005,18 @@ ICBindName_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
 //
 
 static bool
-DoGetIntrinsicFallback(JSContext *cx, BaselineFrame *frame, ICGetIntrinsic_Fallback *stub,
+DoGetIntrinsicFallback(JSContext *cx, BaselineFrame *frame, ICGetIntrinsic_Fallback *stub_,
                        MutableHandleValue res)
 {
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICGetIntrinsic_Fallback *> stub(frame, stub_);
+
     RootedScript script(cx, frame->script());
     jsbytecode *pc = stub->icEntry()->pc(script);
     mozilla::DebugOnly<JSOp> op = JSOp(*pc);
     FallbackICSpew(cx, stub, "GetIntrinsic(%s)", js_CodeName[JSOp(*pc)]);
 
-    JS_ASSERT(op == JSOP_GETINTRINSIC || op == JSOP_CALLINTRINSIC);
+    JS_ASSERT(op == JSOP_GETINTRINSIC);
 
     if (!GetIntrinsicOperation(cx, pc, res))
         return false;
@@ -5892,6 +6026,10 @@ DoGetIntrinsicFallback(JSContext *cx, BaselineFrame *frame, ICGetIntrinsic_Fallb
     // directly.
 
     types::TypeScript::Monitor(cx, script, pc, res);
+
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
 
     IonSpew(IonSpew_BaselineIC, "  Generating GetIntrinsic optimized stub");
     ICGetIntrinsic_Constant::Compiler compiler(cx, res);
@@ -5933,7 +6071,51 @@ ICGetIntrinsic_Constant::Compiler::generateStubCode(MacroAssembler &masm)
 //
 
 static bool
-TryAttachLengthStub(JSContext *cx, HandleScript script, ICGetProp_Fallback *stub, HandleValue val,
+TryAttachMagicArgumentsGetPropStub(JSContext *cx, JSScript *script, ICGetProp_Fallback *stub,
+                                   HandlePropertyName name, HandleValue val, HandleValue res,
+                                   bool *attached)
+{
+    MOZ_ASSERT(!*attached);
+
+    if (!val.isMagic(JS_OPTIMIZED_ARGUMENTS))
+        return true;
+
+    // Try handling arguments.callee on optimized arguments.
+    if (name == cx->names().callee) {
+        MOZ_ASSERT(!script->strict());
+
+        IonSpew(IonSpew_BaselineIC, "  Generating GetProp(MagicArgs.callee) stub");
+
+        // Unlike ICGetProp_ArgumentsLength, only magic argument stubs are
+        // supported at the moment.
+        ICStub *monitorStub = stub->fallbackMonitorStub()->firstMonitorStub();
+
+        // XXXshu the compiler really should be stack allocated, but stack
+        // allocating it causes the test_temporary_storage indexedDB test to
+        // fail on GCC 4.7-compiled ARMv6 optimized builds on Android 2.3 and
+        // below with a NotFoundError, despite that test never exercising this
+        // code.
+        //
+        // Instead of tracking down the GCC bug, I've opted to heap allocate
+        // instead.
+        ScopedJSDeletePtr<ICGetProp_ArgumentsCallee::Compiler> compiler;
+        compiler = js_new<ICGetProp_ArgumentsCallee::Compiler>(cx, monitorStub);
+        if (!compiler)
+            return false;
+        ICStub *newStub = compiler->getStub(compiler->getStubSpace(script));
+        if (!newStub)
+            return false;
+        stub->addNewStub(newStub);
+
+        *attached = true;
+        return true;
+    }
+
+    return true;
+}
+
+static bool
+TryAttachLengthStub(JSContext *cx, JSScript *script, ICGetProp_Fallback *stub, HandleValue val,
                     HandleValue res, bool *attached)
 {
     JS_ASSERT(!*attached);
@@ -5971,18 +6153,6 @@ TryAttachLengthStub(JSContext *cx, HandleScript script, ICGetProp_Fallback *stub
     if (obj->is<ArrayObject>() && res.isInt32()) {
         IonSpew(IonSpew_BaselineIC, "  Generating GetProp(Array.length) stub");
         ICGetProp_ArrayLength::Compiler compiler(cx);
-        ICStub *newStub = compiler.getStub(compiler.getStubSpace(script));
-        if (!newStub)
-            return false;
-
-        *attached = true;
-        stub->addNewStub(newStub);
-        return true;
-    }
-    if (obj->is<TypedArrayObject>()) {
-        JS_ASSERT(res.isInt32());
-        IonSpew(IonSpew_BaselineIC, "  Generating GetProp(TypedArray.length) stub");
-        ICGetProp_TypedArrayLength::Compiler compiler(cx);
         ICStub *newStub = compiler.getStub(compiler.getStubSpace(script));
         if (!newStub)
             return false;
@@ -6060,7 +6230,7 @@ TryAttachNativeGetPropStub(JSContext *cx, HandleScript script, jsbytecode *pc,
         return false;
     }
 
-    if (!isDOMProxy && !obj->isNative() && !obj->is<TypedArrayObject>())
+    if (!isDOMProxy && !obj->isNative())
         return true;
 
     bool isCallProp = (JSOp(*pc) == JSOP_CALLPROP);
@@ -6105,12 +6275,16 @@ TryAttachNativeGetPropStub(JSContext *cx, HandleScript script, jsbytecode *pc,
             return true;
 #endif
 
+        // Don't handle scripted own property getters
+        if (obj == holder)
+            return true;
+
         RootedFunction callee(cx, &shape->getterObject()->as<JSFunction>());
         JS_ASSERT(obj != holder);
         JS_ASSERT(callee->hasScript());
 
         IonSpew(IonSpew_BaselineIC, "  Generating GetProp(NativeObj/ScriptedGetter %s:%d) stub",
-                    callee->nonLazyScript()->filename(), callee->nonLazyScript()->lineno);
+                    callee->nonLazyScript()->filename(), callee->nonLazyScript()->lineno());
 
         ICGetProp_CallScripted::Compiler compiler(cx, monitorStub, obj, holder, callee,
                                                   script->pcToOffset(pc));
@@ -6134,7 +6308,6 @@ TryAttachNativeGetPropStub(JSContext *cx, HandleScript script, jsbytecode *pc,
 #endif
 
         RootedFunction callee(cx, &shape->getterObject()->as<JSFunction>());
-        JS_ASSERT(obj != holder);
         JS_ASSERT(callee->isNative());
 
         IonSpew(IonSpew_BaselineIC, "  Generating GetProp(%s%s/NativeGetter %p) stub",
@@ -6144,6 +6317,7 @@ TryAttachNativeGetPropStub(JSContext *cx, HandleScript script, jsbytecode *pc,
 
         ICStub *newStub = nullptr;
         if (isDOMProxy) {
+            JS_ASSERT(obj != holder);
             ICStub::Kind kind;
             if (domProxyHasGeneration) {
                 if (UpdateExistingGenerationalDOMProxyStub(stub, obj)) {
@@ -6158,9 +6332,13 @@ TryAttachNativeGetPropStub(JSContext *cx, HandleScript script, jsbytecode *pc,
             ICGetPropCallDOMProxyNativeCompiler
                 compiler(cx, kind, monitorStub, proxy, holder, callee, script->pcToOffset(pc));
             newStub = compiler.getStub(compiler.getStubSpace(script));
-        } else {
-            ICGetProp_CallNative::Compiler compiler(cx, monitorStub, obj, holder, callee,
+        } else if (obj == holder) {
+            ICGetProp_CallNative::Compiler compiler(cx, monitorStub, obj, callee,
                                                     script->pcToOffset(pc));
+            newStub = compiler.getStub(compiler.getStubSpace(script));
+        } else {
+            ICGetProp_CallNativePrototype::Compiler compiler(cx, monitorStub, obj, holder, callee,
+                                                             script->pcToOffset(pc));
             newStub = compiler.getStub(compiler.getStubSpace(script));
         }
         if (!newStub)
@@ -6202,16 +6380,20 @@ TryAttachPrimitiveGetPropStub(JSContext *cx, HandleScript script, jsbytecode *pc
 
     JSValueType primitiveType;
     RootedObject proto(cx);
+    Rooted<GlobalObject*> global(cx, &script->global());
     if (val.isString()) {
         primitiveType = JSVAL_TYPE_STRING;
-        proto = script->global().getOrCreateStringPrototype(cx);
+        proto = GlobalObject::getOrCreateStringPrototype(cx, global);
+    } else if (val.isSymbol()) {
+        primitiveType = JSVAL_TYPE_SYMBOL;
+        proto = GlobalObject::getOrCreateSymbolPrototype(cx, global);
     } else if (val.isNumber()) {
         primitiveType = JSVAL_TYPE_DOUBLE;
-        proto = script->global().getOrCreateNumberPrototype(cx);
+        proto = GlobalObject::getOrCreateNumberPrototype(cx, global);
     } else {
         JS_ASSERT(val.isBoolean());
         primitiveType = JSVAL_TYPE_BOOLEAN;
-        proto = script->global().getOrCreateBooleanPrototype(cx);
+        proto = GlobalObject::getOrCreateBooleanPrototype(cx, global);
     }
     if (!proto)
         return false;
@@ -6245,57 +6427,108 @@ TryAttachPrimitiveGetPropStub(JSContext *cx, HandleScript script, jsbytecode *pc
 }
 
 static bool
-DoGetPropFallback(JSContext *cx, BaselineFrame *frame, ICGetProp_Fallback *stub,
+TryAttachNativeDoesNotExistStub(JSContext *cx, HandleScript script, jsbytecode *pc,
+                                ICGetProp_Fallback *stub, HandlePropertyName name,
+                                HandleValue val, bool *attached)
+{
+    MOZ_ASSERT(!*attached);
+
+    if (!val.isObject())
+        return true;
+
+    RootedObject obj(cx, &val.toObject());
+
+    // Don't attach stubs for CALLPROP since those need NoSuchMethod handling.
+    if (JSOp(*pc) == JSOP_CALLPROP)
+        return true;
+
+    // Check if does-not-exist can be confirmed on property.
+    RootedObject lastProto(cx);
+    size_t protoChainDepth = SIZE_MAX;
+    if (!CheckHasNoSuchProperty(cx, obj, name, &lastProto, &protoChainDepth))
+        return true;
+    MOZ_ASSERT(protoChainDepth < SIZE_MAX);
+
+    if (protoChainDepth > ICGetProp_NativeDoesNotExist::MAX_PROTO_CHAIN_DEPTH)
+        return true;
+
+    ICStub *monitorStub = stub->fallbackMonitorStub()->firstMonitorStub();
+    RootedShape objShape(cx, obj->lastProperty());
+    RootedShape lastShape(cx, lastProto->lastProperty());
+
+    // Confirmed no-such-property.  Add stub.
+    IonSpew(IonSpew_BaselineIC, "  Generating GetProp_NativeDoesNotExist stub");
+    ICGetPropNativeDoesNotExistCompiler compiler(cx, monitorStub, obj, protoChainDepth);
+    ICStub *newStub = compiler.getStub(compiler.getStubSpace(script));
+    if (!newStub)
+        return false;
+
+    stub->addNewStub(newStub);
+    *attached = true;
+    return true;
+}
+
+static bool
+ComputeGetPropResult(JSContext *cx, BaselineFrame *frame, JSOp op, HandlePropertyName name,
+                     MutableHandleValue val, MutableHandleValue res)
+{
+    // Handle arguments.length and arguments.callee on optimized arguments, as
+    // it is not an object.
+    if (val.isMagic(JS_OPTIMIZED_ARGUMENTS) && IsOptimizedArguments(frame, val.address())) {
+        if (op == JSOP_LENGTH) {
+            res.setInt32(frame->numActualArgs());
+        } else {
+            MOZ_ASSERT(name == cx->names().callee);
+            MOZ_ASSERT(!frame->script()->strict());
+            res.setObject(*frame->callee());
+        }
+    } else {
+        // Handle when val is an object.
+        RootedObject obj(cx, ToObjectFromStack(cx, val));
+        if (!obj)
+            return false;
+
+        RootedId id(cx, NameToId(name));
+        if (!JSObject::getGeneric(cx, obj, obj, id, res))
+            return false;
+
+#if JS_HAS_NO_SUCH_METHOD
+        // Handle objects with __noSuchMethod__.
+        if (op == JSOP_CALLPROP && MOZ_UNLIKELY(res.isUndefined()) && val.isObject()) {
+            if (!OnUnknownMethod(cx, obj, IdToValue(id), res))
+                return false;
+        }
+#endif
+    }
+
+    return true;
+}
+
+static bool
+DoGetPropFallback(JSContext *cx, BaselineFrame *frame, ICGetProp_Fallback *stub_,
                   MutableHandleValue val, MutableHandleValue res)
 {
-    RootedScript script(cx, frame->script());
-    jsbytecode *pc = stub->icEntry()->pc(script);
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICGetProp_Fallback *> stub(frame, stub_);
+
+    jsbytecode *pc = stub->icEntry()->pc(frame->script());
     JSOp op = JSOp(*pc);
     FallbackICSpew(cx, stub, "GetProp(%s)", js_CodeName[op]);
 
     JS_ASSERT(op == JSOP_GETPROP || op == JSOP_CALLPROP || op == JSOP_LENGTH || op == JSOP_GETXPROP);
 
-    RootedPropertyName name(cx, script->getName(pc));
-    RootedId id(cx, NameToId(name));
-
-    if (op == JSOP_LENGTH && val.isMagic(JS_OPTIMIZED_ARGUMENTS)) {
-        // Handle arguments.length access.
-        if (IsOptimizedArguments(frame, val.address())) {
-            res.setInt32(frame->numActualArgs());
-
-            // Monitor result
-            types::TypeScript::Monitor(cx, script, pc, res);
-            if (!stub->addMonitorStubForValue(cx, script, res))
-                return false;
-
-            bool attached = false;
-            if (!TryAttachLengthStub(cx, script, stub, val, res, &attached))
-                return false;
-            JS_ASSERT(attached);
-
-            return true;
-        }
-    }
-
-    RootedObject obj(cx, ToObjectFromStack(cx, val));
-    if (!obj)
+    RootedPropertyName name(cx, frame->script()->getName(pc));
+    if (!ComputeGetPropResult(cx, frame, op, name, val, res))
         return false;
 
-    if (!JSObject::getGeneric(cx, obj, obj, id, res))
-        return false;
+    types::TypeScript::Monitor(cx, frame->script(), pc, res);
 
-#if JS_HAS_NO_SUCH_METHOD
-    // Handle objects with __noSuchMethod__.
-    if (op == JSOP_CALLPROP && JS_UNLIKELY(res.isUndefined()) && val.isObject()) {
-        if (!OnUnknownMethod(cx, obj, IdToValue(id), res))
-            return false;
-    }
-#endif
-
-    types::TypeScript::Monitor(cx, script, pc, res);
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
 
     // Add a type monitor stub for the resulting value.
-    if (!stub->addMonitorStubForValue(cx, script, res))
+    if (!stub->addMonitorStubForValue(cx, frame->script(), res))
         return false;
 
     if (stub->numOptimizedStubs() >= ICGetProp_Fallback::MAX_OPTIMIZED_STUBS) {
@@ -6306,11 +6539,18 @@ DoGetPropFallback(JSContext *cx, BaselineFrame *frame, ICGetProp_Fallback *stub,
     bool attached = false;
 
     if (op == JSOP_LENGTH) {
-        if (!TryAttachLengthStub(cx, script, stub, val, res, &attached))
+        if (!TryAttachLengthStub(cx, frame->script(), stub, val, res, &attached))
             return false;
         if (attached)
             return true;
     }
+
+    if (!TryAttachMagicArgumentsGetPropStub(cx, frame->script(), stub, name, val, res, &attached))
+        return false;
+    if (attached)
+        return true;
+
+    RootedScript script(cx, frame->script());
 
     if (!TryAttachNativeGetPropStub(cx, script, pc, stub, name, val, res, &attached))
         return false;
@@ -6319,6 +6559,14 @@ DoGetPropFallback(JSContext *cx, BaselineFrame *frame, ICGetProp_Fallback *stub,
 
     if (val.isString() || val.isNumber() || val.isBoolean()) {
         if (!TryAttachPrimitiveGetPropStub(cx, script, pc, stub, name, val, res, &attached))
+            return false;
+        if (attached)
+            return true;
+    }
+
+    if (res.isUndefined()) {
+        // Try attaching property-not-found optimized stub for undefined results.
+        if (!TryAttachNativeDoesNotExistStub(cx, script, pc, stub, name, val, &attached))
             return false;
         if (attached)
             return true;
@@ -6353,13 +6601,15 @@ ICGetProp_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
     if (!tailCallVM(DoGetPropFallbackInfo, masm))
         return false;
 
-    // What follows is bailout-only code for inlined scripted getters
+    // What follows is bailout for inlined scripted getters.
     // The return address pointed to by the baseline stack points here.
     returnOffset_ = masm.currentOffset();
 
     // Even though the fallback frame doesn't enter a stub frame, the CallScripted
     // frame that we are emulating does. Again, we lie.
+#ifdef DEBUG
     entersStubFrame_ = true;
+#endif
 
     leaveStubFrame(masm, true);
 
@@ -6374,7 +6624,7 @@ ICGetProp_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
 }
 
 bool
-ICGetProp_Fallback::Compiler::postGenerateStubCode(MacroAssembler &masm, Handle<IonCode *> code)
+ICGetProp_Fallback::Compiler::postGenerateStubCode(MacroAssembler &masm, Handle<JitCode *> code)
 {
     CodeOffsetLabel offset(returnOffset_);
     offset.fixup(&masm);
@@ -6411,35 +6661,6 @@ ICGetProp_ArrayLength::Compiler::generateStubCode(MacroAssembler &masm)
 }
 
 bool
-ICGetProp_TypedArrayLength::Compiler::generateStubCode(MacroAssembler &masm)
-{
-    Label failure;
-    masm.branchTestObject(Assembler::NotEqual, R0, &failure);
-
-    Register scratch = R1.scratchReg();
-
-    // Unbox R0.
-    Register obj = masm.extractObject(R0, ExtractTemp0);
-
-    // Implement the negated version of JSObject::isTypedArray predicate.
-    masm.loadObjClass(obj, scratch);
-    masm.branchPtr(Assembler::Below, scratch, ImmPtr(&TypedArrayObject::classes[0]),
-                   &failure);
-    masm.branchPtr(Assembler::AboveOrEqual, scratch,
-                   ImmPtr(&TypedArrayObject::classes[ScalarTypeRepresentation::TYPE_MAX]),
-                   &failure);
-
-    // Load length from fixed slot.
-    masm.loadValue(Address(obj, TypedArrayObject::lengthOffset()), R0);
-    EmitReturnFromIC(masm);
-
-    // Failure case - jump to next stub
-    masm.bind(&failure);
-    EmitStubGuardFailure(masm);
-    return true;
-}
-
-bool
 ICGetProp_StringLength::Compiler::generateStubCode(MacroAssembler &masm)
 {
     Label failure;
@@ -6465,6 +6686,9 @@ ICGetProp_Primitive::Compiler::generateStubCode(MacroAssembler &masm)
     switch (primitiveType_) {
       case JSVAL_TYPE_STRING:
         masm.branchTestString(Assembler::NotEqual, R0, &failure);
+        break;
+      case JSVAL_TYPE_SYMBOL:
+        masm.branchTestSymbol(Assembler::NotEqual, R0, &failure);
         break;
       case JSVAL_TYPE_DOUBLE: // Also used for int32.
         masm.branchTestNumber(Assembler::NotEqual, R0, &failure);
@@ -6543,7 +6767,9 @@ ICGetPropNativeCompiler::generateStubCode(MacroAssembler &masm)
     BaseIndex result(holderReg, scratch, TimesOne);
 
 #if JS_HAS_NO_SUCH_METHOD
+#ifdef DEBUG
     entersStubFrame_ = true;
+#endif
     if (isCallProp_) {
         // Check for __noSuchMethod__ invocation.
         Label afterNoSuchMethod;
@@ -6603,6 +6829,87 @@ ICGetPropNativeCompiler::generateStubCode(MacroAssembler &masm)
     return true;
 }
 
+ICStub *
+ICGetPropNativeDoesNotExistCompiler::getStub(ICStubSpace *space)
+{
+    AutoShapeVector shapes(cx);
+    if (!shapes.append(obj_->lastProperty()))
+        return nullptr;
+
+    if (!GetProtoShapes(obj_, protoChainDepth_, &shapes))
+        return nullptr;
+
+    JS_STATIC_ASSERT(ICGetProp_NativeDoesNotExist::MAX_PROTO_CHAIN_DEPTH == 8);
+
+    ICStub *stub = nullptr;
+    switch(protoChainDepth_) {
+      case 0: stub = getStubSpecific<0>(space, &shapes); break;
+      case 1: stub = getStubSpecific<1>(space, &shapes); break;
+      case 2: stub = getStubSpecific<2>(space, &shapes); break;
+      case 3: stub = getStubSpecific<3>(space, &shapes); break;
+      case 4: stub = getStubSpecific<4>(space, &shapes); break;
+      case 5: stub = getStubSpecific<5>(space, &shapes); break;
+      case 6: stub = getStubSpecific<6>(space, &shapes); break;
+      case 7: stub = getStubSpecific<7>(space, &shapes); break;
+      case 8: stub = getStubSpecific<8>(space, &shapes); break;
+      default: MOZ_ASSUME_UNREACHABLE("ProtoChainDepth too high.");
+    }
+    if (!stub)
+        return nullptr;
+    return stub;
+}
+
+bool
+ICGetPropNativeDoesNotExistCompiler::generateStubCode(MacroAssembler &masm)
+{
+    Label failure;
+
+    GeneralRegisterSet regs(availableGeneralRegs(1));
+    Register scratch = regs.takeAny();
+
+#ifdef DEBUG
+    // Ensure that protoChainDepth_ matches the protoChainDepth stored on the stub.
+    {
+        Label ok;
+        masm.load16ZeroExtend(Address(BaselineStubReg, ICStub::offsetOfExtra()), scratch);
+        masm.branch32(Assembler::Equal, scratch, Imm32(protoChainDepth_), &ok);
+        masm.assumeUnreachable("Non-matching proto chain depth on stub.");
+        masm.bind(&ok);
+    }
+#endif // DEBUG
+
+    // Guard input is an object.
+    masm.branchTestObject(Assembler::NotEqual, R0, &failure);
+
+    // Unbox and guard against old shape.
+    Register objReg = masm.extractObject(R0, ExtractTemp0);
+    masm.loadPtr(Address(BaselineStubReg, ICGetProp_NativeDoesNotExist::offsetOfShape(0)),
+                 scratch);
+    masm.branchTestObjShape(Assembler::NotEqual, objReg, scratch, &failure);
+
+    Register protoReg = regs.takeAny();
+    // Check the proto chain.
+    for (size_t i = 0; i < protoChainDepth_; i++) {
+        masm.loadObjProto(i == 0 ? objReg : protoReg, protoReg);
+        masm.branchTestPtr(Assembler::Zero, protoReg, protoReg, &failure);
+        size_t shapeOffset = ICGetProp_NativeDoesNotExistImpl<0>::offsetOfShape(i + 1);
+        masm.loadPtr(Address(BaselineStubReg, shapeOffset), scratch);
+        masm.branchTestObjShape(Assembler::NotEqual, protoReg, scratch, &failure);
+    }
+
+    // Shape and type checks succeeded, ok to proceed.
+    masm.moveValue(UndefinedValue(), R0);
+
+    // Normally for this op, the result would have to be monitored by TI.
+    // However, since this stub ALWAYS returns UndefinedValue(), and we can be sure
+    // that undefined is already registered with the type-set, this can be avoided.
+    EmitReturnFromIC(masm);
+
+    masm.bind(&failure);
+    EmitStubGuardFailure(masm);
+    return true;
+}
+
 bool
 ICGetProp_CallScripted::Compiler::generateStubCode(MacroAssembler &masm)
 {
@@ -6616,7 +6923,7 @@ ICGetProp_CallScripted::Compiler::generateStubCode(MacroAssembler &masm)
 
     // Unbox and shape guard.
     Register objReg = masm.extractObject(R0, ExtractTemp0);
-    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallScripted::offsetOfShape()), scratch);
+    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallScripted::offsetOfReceiverShape()), scratch);
     masm.branchTestObjShape(Assembler::NotEqual, objReg, scratch, &failure);
 
     Register holderReg = regs.takeAny();
@@ -6639,6 +6946,7 @@ ICGetProp_CallScripted::Compiler::generateStubCode(MacroAssembler &masm)
     }
     Register code = regs.takeAny();
     masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallScripted::offsetOfGetter()), callee);
+    masm.branchIfFunctionHasNoScript(callee, &failureLeaveStubFrame);
     masm.loadPtr(Address(callee, JSFunction::offsetOfNativeOrScript()), code);
     masm.loadBaselineOrIonRaw(code, code, SequentialExecution, &failureLeaveStubFrame);
 
@@ -6653,17 +6961,17 @@ ICGetProp_CallScripted::Compiler::generateStubCode(MacroAssembler &masm)
 
     // Handle arguments underflow.
     Label noUnderflow;
-    masm.load16ZeroExtend(Address(callee, offsetof(JSFunction, nargs)), scratch);
+    masm.load16ZeroExtend(Address(callee, JSFunction::offsetOfNargs()), scratch);
     masm.branch32(Assembler::Equal, scratch, Imm32(0), &noUnderflow);
     {
         // Call the arguments rectifier.
         JS_ASSERT(ArgumentsRectifierReg != code);
 
-        IonCode *argumentsRectifier =
+        JitCode *argumentsRectifier =
             cx->runtime()->jitRuntime()->getArgumentsRectifier(SequentialExecution);
 
         masm.movePtr(ImmGCPtr(argumentsRectifier), code);
-        masm.loadPtr(Address(code, IonCode::offsetOfCode()), code);
+        masm.loadPtr(Address(code, JitCode::offsetOfCode()), code);
         masm.mov(ImmWord(0), ArgumentsRectifierReg);
     }
 
@@ -6672,24 +6980,12 @@ ICGetProp_CallScripted::Compiler::generateStubCode(MacroAssembler &masm)
     // If needed, update SPS Profiler frame entry.  At this point, callee and scratch can
     // be clobbered.
     {
-        Label skipProfilerUpdate;
-
-        // Need to avoid using ArgumentsRectifierReg and code register.
         GeneralRegisterSet availRegs = availableGeneralRegs(0);
         availRegs.take(ArgumentsRectifierReg);
         availRegs.take(code);
-        Register scratch = availRegs.takeAny();
-        Register pcIdx = availRegs.takeAny();
-
-        // Check if profiling is enabled.
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
-
-        // Update profiling entry before leaving function.
-        masm.load32(Address(BaselineStubReg, ICGetProp_CallScripted::offsetOfPCOffset()), pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
+        emitProfilingUpdate(masm, availRegs, ICGetProp_CallScripted::offsetOfPCOffset());
     }
+
     masm.callIon(code);
 
     leaveStubFrame(masm, true);
@@ -6711,6 +7007,53 @@ bool
 ICGetProp_CallNative::Compiler::generateStubCode(MacroAssembler &masm)
 {
     Label failure;
+
+    GeneralRegisterSet regs(availableGeneralRegs(0));
+    Register obj = InvalidReg;
+    if (inputDefinitelyObject_) {
+        obj = R0.scratchReg();
+    } else {
+        regs.take(R0);
+        masm.branchTestObject(Assembler::NotEqual, R0, &failure);
+        obj = masm.extractObject(R0, ExtractTemp0);
+    }
+    regs.takeUnchecked(obj);
+
+    Register scratch = regs.takeAnyExcluding(BaselineTailCallReg);
+
+    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallNative::offsetOfHolderShape()), scratch);
+    masm.branchTestObjShape(Assembler::NotEqual, obj, scratch, &failure);
+
+    enterStubFrame(masm, scratch);
+
+    masm.Push(obj);
+
+    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallNative::offsetOfGetter()), scratch);
+    masm.Push(scratch);
+
+    regs.add(scratch);
+    if (!inputDefinitelyObject_)
+        regs.add(R0);
+
+    // If needed, update SPS Profiler frame entry.
+    emitProfilingUpdate(masm, regs, ICGetProp_CallNative::offsetOfPCOffset());
+
+    if (!callVM(DoCallNativeGetterInfo, masm))
+        return false;
+    leaveStubFrame(masm);
+
+    EmitEnterTypeMonitorIC(masm);
+
+    masm.bind(&failure);
+    EmitStubGuardFailure(masm);
+
+    return true;
+}
+
+bool
+ICGetProp_CallNativePrototype::Compiler::generateStubCode(MacroAssembler &masm)
+{
+    Label failure;
     GeneralRegisterSet regs(availableGeneralRegs(1));
     Register scratch = regs.takeAnyExcluding(BaselineTailCallReg);
 
@@ -6719,12 +7062,12 @@ ICGetProp_CallNative::Compiler::generateStubCode(MacroAssembler &masm)
 
     // Unbox and shape guard.
     Register objReg = masm.extractObject(R0, ExtractTemp0);
-    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallNative::offsetOfShape()), scratch);
+    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallNativePrototype::offsetOfReceiverShape()), scratch);
     masm.branchTestObjShape(Assembler::NotEqual, objReg, scratch, &failure);
 
     Register holderReg = regs.takeAny();
-    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallNative::offsetOfHolder()), holderReg);
-    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallNative::offsetOfHolderShape()), scratch);
+    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallNativePrototype::offsetOfHolder()), holderReg);
+    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallNativePrototype::offsetOfHolderShape()), scratch);
     masm.branchTestObjShape(Assembler::NotEqual, holderReg, scratch, &failure);
     regs.add(holderReg);
 
@@ -6733,7 +7076,7 @@ ICGetProp_CallNative::Compiler::generateStubCode(MacroAssembler &masm)
 
     // Load callee function.
     Register callee = regs.takeAny();
-    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallNative::offsetOfGetter()), callee);
+    masm.loadPtr(Address(BaselineStubReg, ICGetProp_CallNativePrototype::offsetOfGetter()), callee);
 
     // Push args for vm call.
     masm.push(objReg);
@@ -6743,22 +7086,8 @@ ICGetProp_CallNative::Compiler::generateStubCode(MacroAssembler &masm)
     regs.add(R0);
 
     // If needed, update SPS Profiler frame entry.
-    {
-        Label skipProfilerUpdate;
-        Register scratch = regs.takeAny();
-        Register pcIdx = regs.takeAny();
+    emitProfilingUpdate(masm, regs, ICGetProp_CallNativePrototype::offsetOfPCOffset());
 
-        // Check if profiling is enabled.
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
-
-        // Update profiling entry before leaving function.
-        masm.load32(Address(BaselineStubReg, ICGetProp_CallNative::offsetOfPCOffset()), pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
-        regs.add(scratch);
-        regs.add(pcIdx);
-    }
     if (!callVM(DoCallNativeGetterInfo, masm))
         return false;
     leaveStubFrame(masm);
@@ -6830,23 +7159,8 @@ ICGetPropCallDOMProxyNativeCompiler::generateStubCode(MacroAssembler &masm,
     regs.add(R0);
 
     // If needed, update SPS Profiler frame entry.
-    {
-        Label skipProfilerUpdate;
-        Register scratch = regs.takeAny();
-        Register pcIdx = regs.takeAny();
+    emitProfilingUpdate(masm, regs, ICGetProp_CallDOMProxyNative::offsetOfPCOffset());
 
-        // Check if profiling is enabled.
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
-
-        // Update profiling entry before leaving function.
-        masm.load32(Address(BaselineStubReg, ICGetProp_CallDOMProxyNative::offsetOfPCOffset()),
-                    pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
-        regs.add(scratch);
-        regs.add(pcIdx);
-    }
     if (!callVM(DoCallNativeGetterInfo, masm))
         return false;
     leaveStubFrame(masm);
@@ -6980,22 +7294,8 @@ ICGetProp_DOMProxyShadowed::Compiler::generateStubCode(MacroAssembler &masm)
     regs.add(R0);
 
     // If needed, update SPS Profiler frame entry.
-    {
-        Label skipProfilerUpdate;
-        Register scratch = regs.takeAny();
-        Register pcIdx = regs.takeAny();
+    emitProfilingUpdate(masm, regs, ICGetProp_DOMProxyShadowed::offsetOfPCOffset());
 
-        // Check if profiling is enabled.
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
-
-        // Update profiling entry before leaving function.
-        masm.load32(Address(BaselineStubReg, ICGetProp_DOMProxyShadowed::offsetOfPCOffset()), pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
-        regs.add(scratch);
-        regs.add(pcIdx);
-    }
     if (!callVM(ProxyGetInfo, masm))
         return false;
     leaveStubFrame(masm);
@@ -7059,6 +7359,35 @@ ICGetProp_ArgumentsLength::Compiler::generateStubCode(MacroAssembler &masm)
     masm.rshiftPtr(Imm32(ArgumentsObject::PACKED_BITS_COUNT), scratchReg);
     masm.tagValue(JSVAL_TYPE_INT32, scratchReg, R0);
     EmitReturnFromIC(masm);
+
+    masm.bind(&failure);
+    EmitStubGuardFailure(masm);
+    return true;
+}
+
+ICGetProp_ArgumentsCallee::ICGetProp_ArgumentsCallee(JitCode *stubCode, ICStub *firstMonitorStub)
+  : ICMonitoredStub(GetProp_ArgumentsCallee, stubCode, firstMonitorStub)
+{ }
+
+bool
+ICGetProp_ArgumentsCallee::Compiler::generateStubCode(MacroAssembler &masm)
+{
+    Label failure;
+
+    // Ensure that this is lazy arguments.
+    masm.branchTestMagicValue(Assembler::NotEqual, R0, JS_OPTIMIZED_ARGUMENTS, &failure);
+
+    // Ensure that frame has not loaded different arguments object since.
+    masm.branchTest32(Assembler::NonZero,
+                      Address(BaselineFrameReg, BaselineFrame::reverseOffsetOfFlags()),
+                      Imm32(BaselineFrame::HAS_ARGS_OBJ),
+                      &failure);
+
+    Address callee(BaselineFrameReg, BaselineFrame::offsetOfCalleeToken());
+    masm.loadPtr(callee, R0.scratchReg());
+    masm.tagValue(JSVAL_TYPE_OBJECT, R0.scratchReg(), R0);
+
+    EmitEnterTypeMonitorIC(masm);
 
     masm.bind(&failure);
     EmitStubGuardFailure(masm);
@@ -7146,7 +7475,7 @@ TryAttachSetPropStub(JSContext *cx, HandleScript script, jsbytecode *pc, ICSetPr
         JS_ASSERT(callee->hasScript());
 
         IonSpew(IonSpew_BaselineIC, "  Generating SetProp(NativeObj/ScriptedSetter %s:%d) stub",
-                    callee->nonLazyScript()->filename(), callee->nonLazyScript()->lineno);
+                    callee->nonLazyScript()->filename(), callee->nonLazyScript()->lineno());
 
         ICSetProp_CallScripted::Compiler compiler(cx, obj, holder, callee, script->pcToOffset(pc));
         ICStub *newStub = compiler.getStub(compiler.getStubSpace(script));
@@ -7181,9 +7510,12 @@ TryAttachSetPropStub(JSContext *cx, HandleScript script, jsbytecode *pc, ICSetPr
 }
 
 static bool
-DoSetPropFallback(JSContext *cx, BaselineFrame *frame, ICSetProp_Fallback *stub, HandleValue lhs,
-                  HandleValue rhs, MutableHandleValue res)
+DoSetPropFallback(JSContext *cx, BaselineFrame *frame, ICSetProp_Fallback *stub_,
+                  HandleValue lhs, HandleValue rhs, MutableHandleValue res)
 {
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICSetProp_Fallback *> stub(frame, stub_);
+
     RootedScript script(cx, frame->script());
     jsbytecode *pc = stub->icEntry()->pc(script);
     JSOp op = JSOp(*pc);
@@ -7208,25 +7540,33 @@ DoSetPropFallback(JSContext *cx, BaselineFrame *frame, ICSetProp_Fallback *stub,
     RootedShape oldShape(cx, obj->lastProperty());
     uint32_t oldSlots = obj->numDynamicSlots();
 
-    if (op == JSOP_INITPROP && name != cx->names().proto) {
-        JS_ASSERT(obj->is<JSObject>());
-        if (!DefineNativeProperty(cx, obj, id, rhs, nullptr, nullptr, JSPROP_ENUMERATE, 0, 0, 0))
+    if (op == JSOP_INITPROP) {
+        MOZ_ASSERT(name != cx->names().proto, "should have used JSOP_MUTATEPROTO");
+        MOZ_ASSERT(obj->is<JSObject>());
+        if (!DefineNativeProperty(cx, obj, id, rhs, nullptr, nullptr, JSPROP_ENUMERATE))
             return false;
     } else if (op == JSOP_SETNAME || op == JSOP_SETGNAME) {
         if (!SetNameOperation(cx, script, pc, obj, rhs))
             return false;
     } else if (op == JSOP_SETALIASEDVAR) {
-        obj->as<ScopeObject>().setAliasedVar(cx, pc, name, rhs);
-    } else if (script->strict) {
-        if (!js::SetProperty<true>(cx, obj, id, rhs))
-            return false;
+        obj->as<ScopeObject>().setAliasedVar(cx, ScopeCoordinate(pc), name, rhs);
     } else {
-        if (!js::SetProperty<false>(cx, obj, id, rhs))
-            return false;
+        MOZ_ASSERT(op == JSOP_SETPROP);
+        if (script->strict()) {
+            if (!js::SetProperty<true>(cx, obj, id, rhs))
+                return false;
+        } else {
+            if (!js::SetProperty<false>(cx, obj, id, rhs))
+                return false;
+        }
     }
 
     // Leave the RHS on the stack.
     res.set(rhs);
+
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
 
     if (stub->numOptimizedStubs() >= ICSetProp_Fallback::MAX_OPTIMIZED_STUBS) {
         // TODO: Discard all stubs in this IC and replace with generic setprop stub.
@@ -7273,13 +7613,15 @@ ICSetProp_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
     if (!tailCallVM(DoSetPropFallbackInfo, masm))
         return false;
 
-    // What follows is bailout-only code for inlined scripted getters
+    // What follows is bailout-only code for inlined script getters.
     // The return address pointed to by the baseline stack points here.
     returnOffset_ = masm.currentOffset();
 
     // Even though the fallback frame doesn't enter a stub frame, the CallScripted
     // frame that we are emulating does. Again, we lie.
+#ifdef DEBUG
     entersStubFrame_ = true;
+#endif
 
     leaveStubFrame(masm, true);
 
@@ -7291,7 +7633,7 @@ ICSetProp_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
 }
 
 bool
-ICSetProp_Fallback::Compiler::postGenerateStubCode(MacroAssembler &masm, Handle<IonCode *> code)
+ICSetProp_Fallback::Compiler::postGenerateStubCode(MacroAssembler &masm, Handle<JitCode *> code)
 {
     CodeOffsetLabel offset(returnOffset_);
     offset.fixup(&masm);
@@ -7351,16 +7693,13 @@ ICSetProp_Native::Compiler::generateStubCode(MacroAssembler &masm)
     if (holderReg != objReg)
         regs.add(holderReg);
 #ifdef JSGC_GENERATIONAL
-    Label skipBarrier;
-    masm.branchTestObject(Assembler::NotEqual, R1, &skipBarrier);
-    {
+    if (cx->runtime()->gc.nursery.exists()) {
         Register scr = regs.takeAny();
         GeneralRegisterSet saveRegs;
         saveRegs.add(R1);
-        emitPostWriteBarrierSlot(masm, objReg, scr, saveRegs);
+        emitPostWriteBarrierSlot(masm, objReg, R1, scr, saveRegs);
         regs.add(scr);
     }
-    masm.bind(&skipBarrier);
 #endif
 
     // The RHS has to be in R0.
@@ -7476,15 +7815,12 @@ ICSetPropNativeAddCompiler::generateStubCode(MacroAssembler &masm)
         regs.add(holderReg);
 
 #ifdef JSGC_GENERATIONAL
-    Label skipBarrier;
-    masm.branchTestObject(Assembler::NotEqual, R1, &skipBarrier);
-    {
+    if (cx->runtime()->gc.nursery.exists()) {
         Register scr = regs.takeAny();
         GeneralRegisterSet saveRegs;
         saveRegs.add(R1);
-        emitPostWriteBarrierSlot(masm, objReg, scr, saveRegs);
+        emitPostWriteBarrierSlot(masm, objReg, R1, scr, saveRegs);
     }
-    masm.bind(&skipBarrier);
 #endif
 
     // The RHS has to be in R0.
@@ -7541,6 +7877,7 @@ ICSetProp_CallScripted::Compiler::generateStubCode(MacroAssembler &masm)
     }
     Register code = regs.takeAny();
     masm.loadPtr(Address(BaselineStubReg, ICSetProp_CallScripted::offsetOfSetter()), callee);
+    masm.branchIfFunctionHasNoScript(callee, &failureLeaveStubFrame);
     masm.loadPtr(Address(callee, JSFunction::offsetOfNativeOrScript()), code);
     masm.loadBaselineOrIonRaw(code, code, SequentialExecution, &failureLeaveStubFrame);
 
@@ -7560,17 +7897,17 @@ ICSetProp_CallScripted::Compiler::generateStubCode(MacroAssembler &masm)
 
     // Handle arguments underflow.
     Label noUnderflow;
-    masm.load16ZeroExtend(Address(callee, offsetof(JSFunction, nargs)), scratch);
+    masm.load16ZeroExtend(Address(callee, JSFunction::offsetOfNargs()), scratch);
     masm.branch32(Assembler::BelowOrEqual, scratch, Imm32(1), &noUnderflow);
     {
         // Call the arguments rectifier.
         JS_ASSERT(ArgumentsRectifierReg != code);
 
-        IonCode *argumentsRectifier =
+        JitCode *argumentsRectifier =
             cx->runtime()->jitRuntime()->getArgumentsRectifier(SequentialExecution);
 
         masm.movePtr(ImmGCPtr(argumentsRectifier), code);
-        masm.loadPtr(Address(code, IonCode::offsetOfCode()), code);
+        masm.loadPtr(Address(code, JitCode::offsetOfCode()), code);
         masm.mov(ImmWord(1), ArgumentsRectifierReg);
     }
 
@@ -7579,24 +7916,12 @@ ICSetProp_CallScripted::Compiler::generateStubCode(MacroAssembler &masm)
     // If needed, update SPS Profiler frame entry.  At this point, callee and scratch can
     // be clobbered.
     {
-        Label skipProfilerUpdate;
-
-        // Need to avoid using ArgumentsRectifierReg and code register.
         GeneralRegisterSet availRegs = availableGeneralRegs(0);
         availRegs.take(ArgumentsRectifierReg);
         availRegs.take(code);
-        Register scratch = availRegs.takeAny();
-        Register pcIdx = availRegs.takeAny();
-
-        // Check if profiling is enabled.
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
-
-        // Update profiling entry before leaving function.
-        masm.load32(Address(BaselineStubReg, ICSetProp_CallScripted::offsetOfPCOffset()), pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
+        emitProfilingUpdate(masm, availRegs, ICSetProp_CallScripted::offsetOfPCOffset());
     }
+
     masm.callIon(code);
 
     leaveStubFrame(masm, true);
@@ -7626,10 +7951,12 @@ DoCallNativeSetter(JSContext *cx, HandleFunction callee, HandleObject obj, Handl
     JS_ASSERT(callee->isNative());
     JSNative natfun = callee->native();
 
-    Value vp[3] = { ObjectValue(*callee.get()), ObjectValue(*obj.get()), val };
-    AutoValueArray rootVp(cx, vp, 3);
+    JS::AutoValueArray<3> vp(cx);
+    vp[0].setObject(*callee.get());
+    vp[1].setObject(*obj.get());
+    vp[2].set(val);
 
-    return natfun(cx, 1, vp);
+    return natfun(cx, 1, vp.begin());
 }
 
 typedef bool (*DoCallNativeSetterFn)(JSContext *, HandleFunction, HandleObject, HandleValue);
@@ -7681,22 +8008,8 @@ ICSetProp_CallNative::Compiler::generateStubCode(MacroAssembler &masm)
     regs.add(R0);
 
     // If needed, update SPS Profiler frame entry.
-    {
-        Label skipProfilerUpdate;
-        Register scratch = regs.takeAny();
-        Register pcIdx = regs.takeAny();
+    emitProfilingUpdate(masm, regs, ICSetProp_CallNative::offsetOfPCOffset());
 
-        // Check if profiling is enabled.
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
-
-        // Update profiling entry before leaving function.
-        masm.load32(Address(BaselineStubReg, ICSetProp_CallNative::offsetOfPCOffset()), pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
-        regs.add(scratch);
-        regs.add(pcIdx);
-    }
     if (!callVM(DoCallNativeSetterInfo, masm))
         return false;
     leaveStubFrame(masm);
@@ -7766,6 +8079,39 @@ TryAttachFunApplyStub(JSContext *cx, ICCall_Fallback *stub, HandleScript script,
             return true;
         }
     }
+    return true;
+}
+
+static bool
+TryAttachFunCallStub(JSContext *cx, ICCall_Fallback *stub, HandleScript script, jsbytecode *pc,
+                     HandleValue thisv, bool *attached)
+{
+    // Try to attach a stub for Function.prototype.call with scripted |this|.
+
+    *attached = false;
+    if (!thisv.isObject() || !thisv.toObject().is<JSFunction>())
+        return true;
+    RootedFunction target(cx, &thisv.toObject().as<JSFunction>());
+
+    // Attach a stub if the script can be Baseline-compiled. We do this also
+    // if the script is not yet compiled to avoid attaching a CallNative stub
+    // that handles everything, even after the callee becomes hot.
+    if (target->hasScript() && target->nonLazyScript()->canBaselineCompile() &&
+        !stub->hasStub(ICStub::Call_ScriptedFunCall))
+    {
+        IonSpew(IonSpew_BaselineIC, "  Generating Call_ScriptedFunCall stub");
+
+        ICCall_ScriptedFunCall::Compiler compiler(cx, stub->fallbackMonitorStub()->firstMonitorStub(),
+                                                  script->pcToOffset(pc));
+        ICStub *newStub = compiler.getStub(compiler.getStubSpace(script));
+        if (!newStub)
+            return false;
+
+        *attached = true;
+        stub->addNewStub(newStub);
+        return true;
+    }
+
     return true;
 }
 
@@ -7840,25 +8186,13 @@ GetTemplateObjectForNative(JSContext *cx, HandleScript script, jsbytecode *pc,
         return true;
     }
 
-    if (native == intrinsic_NewParallelArray || native == ParallelArrayObject::construct) {
-        res.set(ParallelArrayObject::newInstance(cx, TenuredObject));
-        if (!res)
-            return false;
-
-        types::TypeObject *type =
-            types::TypeScript::InitObject(cx, script, pc, JSProto_ParallelArray);
-        if (!type)
-            return false;
-        res->setType(type);
-        return true;
-    }
-
     return true;
 }
 
 static bool
 TryAttachCallStub(JSContext *cx, ICCall_Fallback *stub, HandleScript script, jsbytecode *pc,
-                  JSOp op, uint32_t argc, Value *vp, bool constructing, bool useNewType)
+                  JSOp op, uint32_t argc, Value *vp, bool constructing, bool isSpread,
+                  bool useNewType)
 {
     if (useNewType || op == JSOP_EVAL)
         return true;
@@ -7895,7 +8229,7 @@ TryAttachCallStub(JSContext *cx, ICCall_Fallback *stub, HandleScript script, jsb
         if (!calleeScript->hasBaselineScript() && !calleeScript->hasIonScript())
             return true;
 
-        if (calleeScript->shouldCloneAtCallsite)
+        if (calleeScript->shouldCloneAtCallsite())
             return true;
 
         // Check if this stub chain has already generalized scripted calls.
@@ -7906,11 +8240,11 @@ TryAttachCallStub(JSContext *cx, ICCall_Fallback *stub, HandleScript script, jsb
 
         if (stub->scriptedStubCount() >= ICCall_Fallback::MAX_SCRIPTED_STUBS) {
             // Create a Call_AnyScripted stub.
-            IonSpew(IonSpew_BaselineIC, "  Generating Call_AnyScripted stub (cons=%s)",
-                    constructing ? "yes" : "no");
+            IonSpew(IonSpew_BaselineIC, "  Generating Call_AnyScripted stub (cons=%s, spread=%s)",
+                    constructing ? "yes" : "no", isSpread ? "yes" : "no");
 
             ICCallScriptedCompiler compiler(cx, stub->fallbackMonitorStub()->firstMonitorStub(),
-                                            constructing, script->pcToOffset(pc));
+                                            constructing, isSpread, script->pcToOffset(pc));
             ICStub *newStub = compiler.getStub(compiler.getStubSpace(script));
             if (!newStub)
                 return false;
@@ -7938,12 +8272,12 @@ TryAttachCallStub(JSContext *cx, ICCall_Fallback *stub, HandleScript script, jsb
         }
 
         IonSpew(IonSpew_BaselineIC,
-                "  Generating Call_Scripted stub (fun=%p, %s:%d, cons=%s)",
-                fun.get(), fun->nonLazyScript()->filename(), fun->nonLazyScript()->lineno,
-                constructing ? "yes" : "no");
+                "  Generating Call_Scripted stub (fun=%p, %s:%d, cons=%s, spread=%s)",
+                fun.get(), fun->nonLazyScript()->filename(), fun->nonLazyScript()->lineno(),
+                constructing ? "yes" : "no", isSpread ? "yes" : "no");
         ICCallScriptedCompiler compiler(cx, stub->fallbackMonitorStub()->firstMonitorStub(),
                                         calleeScript, templateObject,
-                                        constructing, script->pcToOffset(pc));
+                                        constructing, isSpread, script->pcToOffset(pc));
         ICStub *newStub = compiler.getStub(compiler.getStubSpace(script));
         if (!newStub)
             return false;
@@ -7966,21 +8300,32 @@ TryAttachCallStub(JSContext *cx, ICCall_Fallback *stub, HandleScript script, jsb
             return true;
         }
 
+        if (op == JSOP_FUNCALL && fun->native() == js_fun_call) {
+            bool attached;
+            if (!TryAttachFunCallStub(cx, stub, script, pc, thisv, &attached))
+                return false;
+            if (attached)
+                return true;
+        }
+
         if (stub->nativeStubCount() >= ICCall_Fallback::MAX_NATIVE_STUBS) {
             IonSpew(IonSpew_BaselineIC,
                     "  Too many Call_Native stubs. TODO: add Call_AnyNative!");
             return true;
         }
 
-        CallArgs args = CallArgsFromVp(argc, vp);
         RootedObject templateObject(cx);
-        if (!GetTemplateObjectForNative(cx, script, pc, fun->native(), args, &templateObject))
-            return false;
+        if (MOZ_LIKELY(!isSpread)) {
+            CallArgs args = CallArgsFromVp(argc, vp);
+            if (!GetTemplateObjectForNative(cx, script, pc, fun->native(), args, &templateObject))
+                return false;
+        }
 
-        IonSpew(IonSpew_BaselineIC, "  Generating Call_Native stub (fun=%p, cons=%s)",
-                fun.get(), constructing ? "yes" : "no");
+        IonSpew(IonSpew_BaselineIC, "  Generating Call_Native stub (fun=%p, cons=%s, spread=%s)",
+                fun.get(), constructing ? "yes" : "no", isSpread ? "yes" : "no");
         ICCall_Native::Compiler compiler(cx, stub->fallbackMonitorStub()->firstMonitorStub(),
-                                         fun, templateObject, constructing, script->pcToOffset(pc));
+                                         fun, templateObject, constructing, isSpread,
+                                         script->pcToOffset(pc));
         ICStub *newStub = compiler.getStub(compiler.getStubSpace(script));
         if (!newStub)
             return false;
@@ -8000,10 +8345,7 @@ MaybeCloneFunctionAtCallsite(JSContext *cx, MutableHandleValue callee, HandleScr
     if (!IsFunctionObject(callee, fun.address()))
         return true;
 
-    if (!fun->hasScript() || !fun->nonLazyScript()->shouldCloneAtCallsite)
-        return true;
-
-    if (!cx->typeInferenceEnabled())
+    if (!fun->hasScript() || !fun->nonLazyScript()->shouldCloneAtCallsite())
         return true;
 
     fun = CloneFunctionAtCallsite(cx, fun, script, pc);
@@ -8015,9 +8357,12 @@ MaybeCloneFunctionAtCallsite(JSContext *cx, MutableHandleValue callee, HandleScr
 }
 
 static bool
-DoCallFallback(JSContext *cx, BaselineFrame *frame, ICCall_Fallback *stub, uint32_t argc,
+DoCallFallback(JSContext *cx, BaselineFrame *frame, ICCall_Fallback *stub_, uint32_t argc,
                Value *vp, MutableHandleValue res)
 {
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICCall_Fallback *> stub(frame, stub_);
+
     // Ensure vp array is rooted - we may GC in here.
     AutoArrayRooter vpRoot(cx, argc + 2, vp);
 
@@ -8041,12 +8386,10 @@ DoCallFallback(JSContext *cx, BaselineFrame *frame, ICCall_Fallback *stub, uint3
 
     // Compute construcing and useNewType flags.
     bool constructing = (op == JSOP_NEW);
-    bool newType = false;
-    if (cx->typeInferenceEnabled())
-        newType = types::UseNewType(cx, script, pc);
+    bool newType = types::UseNewType(cx, script, pc);
 
     // Try attaching a call stub.
-    if (!TryAttachCallStub(cx, stub, script, pc, op, argc, vp, constructing, newType))
+    if (!TryAttachCallStub(cx, stub, script, pc, op, argc, vp, constructing, false, newType))
         return false;
 
     // Maybe update PC in profiler entry before leaving this script by call.
@@ -8070,6 +8413,63 @@ DoCallFallback(JSContext *cx, BaselineFrame *frame, ICCall_Fallback *stub, uint3
     }
 
     types::TypeScript::Monitor(cx, script, pc, res);
+
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
+
+    // Attach a new TypeMonitor stub for this value.
+    ICTypeMonitor_Fallback *typeMonFbStub = stub->fallbackMonitorStub();
+    if (!typeMonFbStub->addMonitorStubForValue(cx, script, res))
+        return false;
+    // Add a type monitor stub for the resulting value.
+    if (!stub->addMonitorStubForValue(cx, script, res))
+        return false;
+
+    return true;
+}
+
+static bool
+DoSpreadCallFallback(JSContext *cx, BaselineFrame *frame, ICCall_Fallback *stub_, Value *vp,
+                     MutableHandleValue res)
+{
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICCall_Fallback *> stub(frame, stub_);
+
+    // Ensure vp array is rooted - we may GC in here.
+    AutoArrayRooter vpRoot(cx, 3, vp);
+
+    RootedScript script(cx, frame->script());
+    jsbytecode *pc = stub->icEntry()->pc(script);
+    JSOp op = JSOp(*pc);
+    FallbackICSpew(cx, stub, "SpreadCall(%s)", js_CodeName[op]);
+
+    RootedValue callee(cx, vp[0]);
+    RootedValue thisv(cx, vp[1]);
+    RootedValue arr(cx, vp[2]);
+
+    bool constructing = (op == JSOP_SPREADNEW);
+
+    // Try attaching a call stub.
+    if (op != JSOP_SPREADEVAL &&
+        !TryAttachCallStub(cx, stub, script, pc, op, 1, vp, constructing, true, false))
+    {
+        return false;
+    }
+
+    // Maybe update PC in profiler entry before leaving this script by call.
+    if (cx->runtime()->spsProfiler.enabled() && frame->hasPushedSPSFrame())
+        cx->runtime()->spsProfiler.updatePC(script, pc);
+
+    if (!MaybeCloneFunctionAtCallsite(cx, &callee, script, pc))
+        return false;
+
+    if (!SpreadCallOperation(cx, script, pc, thisv, callee, arr, res))
+        return false;
+
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
 
     // Attach a new TypeMonitor stub for this value.
     ICTypeMonitor_Fallback *typeMonFbStub = stub->fallbackMonitorStub();
@@ -8112,6 +8512,53 @@ ICCallStubCompiler::pushCallArguments(MacroAssembler &masm, GeneralRegisterSet r
         masm.jump(&loop);
     }
     masm.bind(&done);
+}
+
+void
+ICCallStubCompiler::guardSpreadCall(MacroAssembler &masm, Register argcReg, Label *failure)
+{
+    masm.unboxObject(Address(BaselineStackReg, ICStackValueOffset), argcReg);
+    masm.loadPtr(Address(argcReg, JSObject::offsetOfElements()), argcReg);
+    masm.load32(Address(argcReg, ObjectElements::offsetOfLength()), argcReg);
+
+    // Limit actual argc to something reasonable (huge number of arguments can
+    // blow the stack limit).
+    static_assert(ICCall_Scripted::MAX_ARGS_SPREAD_LENGTH <= ARGS_LENGTH_MAX,
+                  "maximum arguments length for optimized stub should be <= ARGS_LENGTH_MAX");
+    masm.branch32(Assembler::Above, argcReg, Imm32(ICCall_Scripted::MAX_ARGS_SPREAD_LENGTH),
+                  failure);
+}
+
+void
+ICCallStubCompiler::pushSpreadCallArguments(MacroAssembler &masm, GeneralRegisterSet regs,
+                                            Register argcReg)
+{
+    // Push arguments
+    Register startReg = regs.takeAny();
+    Register endReg = regs.takeAny();
+    masm.unboxObject(Address(BaselineStackReg, STUB_FRAME_SIZE), startReg);
+    masm.loadPtr(Address(startReg, JSObject::offsetOfElements()), startReg);
+    masm.mov(argcReg, endReg);
+    static_assert(sizeof(Value) == 8, "Value must be 8 bytes");
+    masm.lshiftPtr(Imm32(3), endReg);
+    masm.addPtr(startReg, endReg);
+
+    // Copying pre-decrements endReg by 8 until startReg is reached
+    Label copyDone;
+    Label copyStart;
+    masm.bind(&copyStart);
+    masm.branchPtr(Assembler::Equal, endReg, startReg, &copyDone);
+    masm.subPtr(Imm32(sizeof(Value)), endReg);
+    masm.pushValue(Address(endReg, 0));
+    masm.jump(&copyStart);
+    masm.bind(&copyDone);
+
+    regs.add(startReg);
+    regs.add(endReg);
+
+    // Push the callee and |this|.
+    masm.pushValue(Address(BaselineFrameReg, STUB_FRAME_SIZE + 1 * sizeof(Value)));
+    masm.pushValue(Address(BaselineFrameReg, STUB_FRAME_SIZE + 2 * sizeof(Value)));
 }
 
 Register
@@ -8284,6 +8731,11 @@ typedef bool (*DoCallFallbackFn)(JSContext *, BaselineFrame *, ICCall_Fallback *
                                  uint32_t, Value *, MutableHandleValue);
 static const VMFunction DoCallFallbackInfo = FunctionInfo<DoCallFallbackFn>(DoCallFallback);
 
+typedef bool (*DoSpreadCallFallbackFn)(JSContext *, BaselineFrame *, ICCall_Fallback *,
+                                       Value *, MutableHandleValue);
+static const VMFunction DoSpreadCallFallbackInfo =
+    FunctionInfo<DoSpreadCallFallbackFn>(DoSpreadCallFallback);
+
 bool
 ICCall_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
 {
@@ -8297,6 +8749,32 @@ ICCall_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
     // |this| and callee are pushed last.
 
     GeneralRegisterSet regs(availableGeneralRegs(0));
+
+    if (MOZ_UNLIKELY(isSpread_)) {
+        // Use BaselineFrameReg instead of BaselineStackReg, because
+        // BaselineFrameReg and BaselineStackReg hold the same value just after
+        // calling enterStubFrame.
+        masm.pushValue(Address(BaselineFrameReg, 0 * sizeof(Value) + STUB_FRAME_SIZE)); // array
+        masm.pushValue(Address(BaselineFrameReg, 1 * sizeof(Value) + STUB_FRAME_SIZE)); // this
+        masm.pushValue(Address(BaselineFrameReg, 2 * sizeof(Value) + STUB_FRAME_SIZE)); // callee
+
+        masm.push(BaselineStackReg);
+        masm.push(BaselineStubReg);
+
+        masm.loadPtr(Address(BaselineFrameReg, 0), R0.scratchReg());
+        masm.pushBaselineFramePtr(R0.scratchReg(), R0.scratchReg());
+
+        if (!callVM(DoSpreadCallFallbackInfo, masm))
+            return false;
+
+        leaveStubFrame(masm);
+        EmitReturnFromIC(masm);
+
+        // SPREADCALL is not yet supported in Ion, so do not generate asmcode for
+        // bailout.
+        return true;
+    }
+
     regs.take(R0.scratchReg()); // argc.
 
     pushCallArguments(masm, regs, R0.scratchReg());
@@ -8315,9 +8793,9 @@ ICCall_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
     leaveStubFrame(masm);
     EmitReturnFromIC(masm);
 
-    // The following asmcode is only used when an Ion inlined frame bails out into
-    // baseline jitcode.  The return address pushed onto the reconstructed baseline stack
-    // points here.
+    // The following asmcode is only used when an Ion inlined frame bails out
+    // into into baseline jitcode. The return address pushed onto the
+    // reconstructed baseline stack points here.
     returnOffset_ = masm.currentOffset();
 
     // Load passed-in ThisV into R1 just in case it's needed.  Need to do this before
@@ -8342,7 +8820,7 @@ ICCall_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
     masm.moveValue(R1, R0);
 #ifdef DEBUG
     masm.branchTestObject(Assembler::Equal, JSReturnOperand, &skipThisReplace);
-    masm.assume_unreachable("Failed to return object in constructing call.");
+    masm.assumeUnreachable("Failed to return object in constructing call.");
 #endif
     masm.bind(&skipThisReplace);
 
@@ -8358,8 +8836,11 @@ ICCall_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
 }
 
 bool
-ICCall_Fallback::Compiler::postGenerateStubCode(MacroAssembler &masm, Handle<IonCode *> code)
+ICCall_Fallback::Compiler::postGenerateStubCode(MacroAssembler &masm, Handle<JitCode *> code)
 {
+    if (MOZ_UNLIKELY(isSpread_))
+        return true;
+
     CodeOffsetLabel offset(returnOffset_);
     offset.fixup(&masm);
     cx->compartment()->jitCompartment()->initBaselineCallReturnAddr(code->raw() + offset.offset());
@@ -8383,10 +8864,18 @@ ICCallScriptedCompiler::generateStubCode(MacroAssembler &masm)
     regs.take(ArgumentsRectifierReg);
     regs.takeUnchecked(BaselineTailCallReg);
 
+    if (isSpread_)
+        guardSpreadCall(masm, argcReg, &failure);
+
     // Load the callee in R1.
     // Stack Layout: [ ..., CalleeVal, ThisVal, Arg0Val, ..., ArgNVal, +ICStackValueOffset+ ]
-    BaseIndex calleeSlot(BaselineStackReg, argcReg, TimesEight, ICStackValueOffset + sizeof(Value));
-    masm.loadValue(calleeSlot, R1);
+    if (isSpread_) {
+        masm.loadValue(Address(BaselineStackReg, 2 * sizeof(Value) + ICStackValueOffset), R1);
+    } else {
+        BaseIndex calleeSlot(BaselineStackReg, argcReg, TimesEight,
+                             ICStackValueOffset + sizeof(Value));
+        masm.loadValue(calleeSlot, R1);
+    }
     regs.take(R1);
 
     // Ensure callee is an object.
@@ -8414,7 +8903,7 @@ ICCallScriptedCompiler::generateStubCode(MacroAssembler &masm)
         masm.loadPtr(Address(callee, JSFunction::offsetOfNativeOrScript()), callee);
     }
 
-    // Load the start of the target IonCode.
+    // Load the start of the target JitCode.
     Register code;
     if (!isConstructing_) {
         code = regs.takeAny();
@@ -8440,9 +8929,14 @@ ICCallScriptedCompiler::generateStubCode(MacroAssembler &masm)
 
         // Stack now looks like:
         //      [..., Callee, ThisV, Arg0V, ..., ArgNV, StubFrameHeader, ArgC ]
-        BaseIndex calleeSlot2(BaselineStackReg, argcReg, TimesEight,
-                               sizeof(Value) + STUB_FRAME_SIZE + sizeof(size_t));
-        masm.loadValue(calleeSlot2, R1);
+        if (isSpread_) {
+            masm.loadValue(Address(BaselineStackReg,
+                                   2 * sizeof(Value) + STUB_FRAME_SIZE + sizeof(size_t)), R1);
+        } else {
+            BaseIndex calleeSlot2(BaselineStackReg, argcReg, TimesEight,
+                                  sizeof(Value) + STUB_FRAME_SIZE + sizeof(size_t));
+            masm.loadValue(calleeSlot2, R1);
+        }
         masm.push(masm.extractObject(R1, ExtractTemp0));
         if (!callVM(CreateThisInfoBaseline, masm))
             return false;
@@ -8451,7 +8945,7 @@ ICCallScriptedCompiler::generateStubCode(MacroAssembler &masm)
 #ifdef DEBUG
         Label createdThisIsObject;
         masm.branchTestObject(Assembler::Equal, JSReturnOperand, &createdThisIsObject);
-        masm.assume_unreachable("The return of CreateThis must be an object.");
+        masm.assumeUnreachable("The return of CreateThis must be an object.");
         masm.bind(&createdThisIsObject);
 #endif
 
@@ -8469,8 +8963,12 @@ ICCallScriptedCompiler::generateStubCode(MacroAssembler &masm)
         // Save "this" value back into pushed arguments on stack.  R0 can be clobbered after that.
         // Stack now looks like:
         //      [..., Callee, ThisV, Arg0V, ..., ArgNV, StubFrameHeader ]
-        BaseIndex thisSlot(BaselineStackReg, argcReg, TimesEight, STUB_FRAME_SIZE);
-        masm.storeValue(R0, thisSlot);
+        if (isSpread_) {
+            masm.storeValue(R0, Address(BaselineStackReg, sizeof(Value) + STUB_FRAME_SIZE));
+        } else {
+            BaseIndex thisSlot(BaselineStackReg, argcReg, TimesEight, STUB_FRAME_SIZE);
+            masm.storeValue(R0, thisSlot);
+        }
 
         // Restore the stub register from the baseline stub frame.
         masm.loadPtr(Address(BaselineStackReg, STUB_FRAME_SAVED_STUB_OFFSET), BaselineStubReg);
@@ -8481,9 +8979,13 @@ ICCallScriptedCompiler::generateStubCode(MacroAssembler &masm)
         // and jump to the next stub.
 
         // Just need to load the script now.
-        BaseIndex calleeSlot3(BaselineStackReg, argcReg, TimesEight,
-                               sizeof(Value) + STUB_FRAME_SIZE);
-        masm.loadValue(calleeSlot3, R0);
+        if (isSpread_) {
+            masm.loadValue(Address(BaselineStackReg, 2 * sizeof(Value) + STUB_FRAME_SIZE), R0);
+        } else {
+            BaseIndex calleeSlot3(BaselineStackReg, argcReg, TimesEight,
+                                  sizeof(Value) + STUB_FRAME_SIZE);
+            masm.loadValue(calleeSlot3, R0);
+        }
         callee = masm.extractObject(R0, ExtractTemp0);
         regs.add(R0);
         regs.takeUnchecked(callee);
@@ -8506,7 +9008,10 @@ ICCallScriptedCompiler::generateStubCode(MacroAssembler &masm)
     // Values are on the stack left-to-right. Calling convention wants them
     // right-to-left so duplicate them on the stack in reverse order.
     // |this| and callee are pushed last.
-    pushCallArguments(masm, regs, argcReg);
+    if (isSpread_)
+        pushSpreadCallArguments(masm, regs, argcReg);
+    else
+        pushCallArguments(masm, regs, argcReg);
 
     // The callee is on top of the stack. Pop and unbox it.
     ValueOperand val = regs.takeAnyValue();
@@ -8523,18 +9028,18 @@ ICCallScriptedCompiler::generateStubCode(MacroAssembler &masm)
 
     // Handle arguments underflow.
     Label noUnderflow;
-    masm.load16ZeroExtend(Address(callee, offsetof(JSFunction, nargs)), callee);
+    masm.load16ZeroExtend(Address(callee, JSFunction::offsetOfNargs()), callee);
     masm.branch32(Assembler::AboveOrEqual, argcReg, callee, &noUnderflow);
     {
         // Call the arguments rectifier.
         JS_ASSERT(ArgumentsRectifierReg != code);
         JS_ASSERT(ArgumentsRectifierReg != argcReg);
 
-        IonCode *argumentsRectifier =
+        JitCode *argumentsRectifier =
             cx->runtime()->jitRuntime()->getArgumentsRectifier(SequentialExecution);
 
         masm.movePtr(ImmGCPtr(argumentsRectifier), code);
-        masm.loadPtr(Address(code, IonCode::offsetOfCode()), code);
+        masm.loadPtr(Address(code, JitCode::offsetOfCode()), code);
         masm.mov(argcReg, ArgumentsRectifierReg);
     }
 
@@ -8542,27 +9047,13 @@ ICCallScriptedCompiler::generateStubCode(MacroAssembler &masm)
 
     // If needed, update SPS Profiler frame entry before and after call.
     {
-        Label skipProfilerUpdate;
-
-        // Need to avoid using ArgumentsRectifierReg and code register.
+        JS_ASSERT(kind == ICStub::Call_Scripted || kind == ICStub::Call_AnyScripted);
         GeneralRegisterSet availRegs = availableGeneralRegs(0);
         availRegs.take(ArgumentsRectifierReg);
         availRegs.take(code);
-        Register scratch = availRegs.takeAny();
-        Register pcIdx = availRegs.takeAny();
-
-        // Check if profiling is enabled.
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
-
-        // Update profiling entry before leaving function.
-        JS_ASSERT(kind == ICStub::Call_Scripted || kind == ICStub::Call_AnyScripted);
-        if (kind == ICStub::Call_Scripted)
-            masm.load32(Address(BaselineStubReg, ICCall_Scripted::offsetOfPCOffset()), pcIdx);
-        else
-            masm.load32(Address(BaselineStubReg, ICCall_AnyScripted::offsetOfPCOffset()), pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
+        emitProfilingUpdate(masm, availRegs, kind == ICStub::Call_Scripted ?
+                                                ICCall_Scripted::offsetOfPCOffset()
+                                              : ICCall_AnyScripted::offsetOfPCOffset());
     }
 
     masm.callIon(code);
@@ -8583,16 +9074,20 @@ ICCallScriptedCompiler::generateStubCode(MacroAssembler &masm)
         masm.loadPtr(Address(BaselineStackReg, 2*sizeof(size_t)), scratchReg);
 
         // scratchReg now contains actualArgCount.  Double it to account for skipping past two
-        // pushed copies of argument values.  Additionally, we need to add:
+        // pushed copies of argument values for non-spread, increment it to account for skipping
+        // actual argument values and array object for spread.  Additionally, we need to add:
         // STUB_FRAME_SIZE + sizeof(ThisVal) + sizeof(size_t) + sizeof(void *) + sizoef(size_t)
         // for: stub frame, this value, actual argc, callee, and descriptor
-        masm.lshiftPtr(Imm32(1), scratchReg);
+        if (isSpread_)
+            masm.add32(Imm32(1), scratchReg);
+        else
+            masm.lshiftPtr(Imm32(1), scratchReg);
         BaseIndex reloadThisSlot(BaselineStackReg, scratchReg, TimesEight,
                                  STUB_FRAME_SIZE + sizeof(Value) + 3*sizeof(size_t));
         masm.loadValue(reloadThisSlot, JSReturnOperand);
 #ifdef DEBUG
         masm.branchTestObject(Assembler::Equal, JSReturnOperand, &skipThisReplace);
-        masm.assume_unreachable("Return of constructing call should be an object.");
+        masm.assumeUnreachable("Return of constructing call should be an object.");
 #endif
         masm.bind(&skipThisReplace);
     }
@@ -8623,9 +9118,16 @@ ICCall_Native::Compiler::generateStubCode(MacroAssembler &masm)
     regs.take(argcReg);
     regs.takeUnchecked(BaselineTailCallReg);
 
+    if (isSpread_)
+        guardSpreadCall(masm, argcReg, &failure);
+
     // Load the callee in R1.
-    BaseIndex calleeSlot(BaselineStackReg, argcReg, TimesEight, ICStackValueOffset + sizeof(Value));
-    masm.loadValue(calleeSlot, R1);
+    if (isSpread_) {
+        masm.loadValue(Address(BaselineStackReg, ICStackValueOffset + 2 * sizeof(Value)), R1);
+    } else {
+        BaseIndex calleeSlot(BaselineStackReg, argcReg, TimesEight, ICStackValueOffset + sizeof(Value));
+        masm.loadValue(calleeSlot, R1);
+    }
     regs.take(R1);
 
     masm.branchTestObject(Assembler::NotEqual, R1, &failure);
@@ -8645,7 +9147,10 @@ ICCall_Native::Compiler::generateStubCode(MacroAssembler &masm)
     // Values are on the stack left-to-right. Calling convention wants them
     // right-to-left so duplicate them on the stack in reverse order.
     // |this| and callee are pushed last.
-    pushCallArguments(masm, regs, argcReg);
+    if (isSpread_)
+        pushSpreadCallArguments(masm, regs, argcReg);
+    else
+        pushCallArguments(masm, regs, argcReg);
 
     if (isConstructing_) {
         // Stack looks like: [ ..., Arg0Val, ThisVal, CalleeVal ]
@@ -8673,27 +9178,27 @@ ICCall_Native::Compiler::generateStubCode(MacroAssembler &masm)
     EmitCreateStubFrameDescriptor(masm, scratch);
     masm.push(scratch);
     masm.push(BaselineTailCallReg);
-    masm.enterFakeExitFrame();
+    masm.enterFakeExitFrame(IonNativeExitFrameLayout::Token());
 
     // If needed, update SPS Profiler frame entry.  At this point, BaselineTailCallReg
     // and scratch can be clobbered.
-    {
-        Label skipProfilerUpdate;
-        Register pcIdx = BaselineTailCallReg;
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
+    emitProfilingUpdate(masm, BaselineTailCallReg, scratch, ICCall_Native::offsetOfPCOffset());
 
-        masm.load32(Address(BaselineStubReg, ICCall_Native::offsetOfPCOffset()), pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
-    }
     // Execute call.
     masm.setupUnalignedABICall(3, scratch);
     masm.loadJSContext(scratch);
     masm.passABIArg(scratch);
     masm.passABIArg(argcReg);
     masm.passABIArg(vpReg);
+
+#if defined(JS_ARM_SIMULATOR) || defined(JS_MIPS_SIMULATOR)
+    // The simulator requires VM calls to be redirected to a special swi
+    // instruction to handle them, so we store the redirected pointer in the
+    // stub and use that instead of the original one.
+    masm.callWithABI(Address(BaselineStubReg, ICCall_Native::offsetOfNative()));
+#else
     masm.callWithABI(Address(callee, JSFunction::offsetOfNativeOrScript()));
+#endif
 
     // Test for failure.
     masm.branchIfFalseBool(ReturnReg, masm.exceptionLabel());
@@ -8779,7 +9284,7 @@ ICCall_ScriptedApplyArray::Compiler::generateStubCode(MacroAssembler &masm)
     masm.Push(scratch);
 
     // Load nargs into scratch for underflow check, and then load jitcode pointer into target.
-    masm.load16ZeroExtend(Address(target, offsetof(JSFunction, nargs)), scratch);
+    masm.load16ZeroExtend(Address(target, JSFunction::offsetOfNargs()), scratch);
     masm.loadPtr(Address(target, JSFunction::offsetOfNativeOrScript()), target);
     masm.loadBaselineOrIonRaw(target, target, SequentialExecution, nullptr);
 
@@ -8791,11 +9296,11 @@ ICCall_ScriptedApplyArray::Compiler::generateStubCode(MacroAssembler &masm)
         JS_ASSERT(ArgumentsRectifierReg != target);
         JS_ASSERT(ArgumentsRectifierReg != argcReg);
 
-        IonCode *argumentsRectifier =
+        JitCode *argumentsRectifier =
             cx->runtime()->jitRuntime()->getArgumentsRectifier(SequentialExecution);
 
         masm.movePtr(ImmGCPtr(argumentsRectifier), target);
-        masm.loadPtr(Address(target, IonCode::offsetOfCode()), target);
+        masm.loadPtr(Address(target, JitCode::offsetOfCode()), target);
         masm.mov(argcReg, ArgumentsRectifierReg);
     }
     masm.bind(&noUnderflow);
@@ -8803,19 +9308,9 @@ ICCall_ScriptedApplyArray::Compiler::generateStubCode(MacroAssembler &masm)
 
     // If needed, update SPS Profiler frame entry.  At this point, BaselineTailCallReg
     // and scratch can be clobbered.
-    {
-        Label skipProfilerUpdate;
-        Register pcIdx = regs.getAny();
-        JS_ASSERT(pcIdx != ArgumentsRectifierReg);
-        JS_ASSERT(pcIdx != target);
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
+    emitProfilingUpdate(masm, regs.getAny(), scratch,
+                        ICCall_ScriptedApplyArguments::offsetOfPCOffset());
 
-        masm.load32(Address(BaselineStubReg, ICCall_ScriptedApplyArguments::offsetOfPCOffset()),
-                    pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
-    }
     // Do call
     masm.callIon(target);
     leaveStubFrame(masm, true);
@@ -8890,7 +9385,7 @@ ICCall_ScriptedApplyArguments::Compiler::generateStubCode(MacroAssembler &masm)
     masm.Push(scratch);
 
     // Load nargs into scratch for underflow check, and then load jitcode pointer into target.
-    masm.load16ZeroExtend(Address(target, offsetof(JSFunction, nargs)), scratch);
+    masm.load16ZeroExtend(Address(target, JSFunction::offsetOfNargs()), scratch);
     masm.loadPtr(Address(target, JSFunction::offsetOfNativeOrScript()), target);
     masm.loadBaselineOrIonRaw(target, target, SequentialExecution, nullptr);
 
@@ -8902,11 +9397,11 @@ ICCall_ScriptedApplyArguments::Compiler::generateStubCode(MacroAssembler &masm)
         JS_ASSERT(ArgumentsRectifierReg != target);
         JS_ASSERT(ArgumentsRectifierReg != argcReg);
 
-        IonCode *argumentsRectifier =
+        JitCode *argumentsRectifier =
             cx->runtime()->jitRuntime()->getArgumentsRectifier(SequentialExecution);
 
         masm.movePtr(ImmGCPtr(argumentsRectifier), target);
-        masm.loadPtr(Address(target, IonCode::offsetOfCode()), target);
+        masm.loadPtr(Address(target, JitCode::offsetOfCode()), target);
         masm.mov(argcReg, ArgumentsRectifierReg);
     }
     masm.bind(&noUnderflow);
@@ -8914,21 +9409,137 @@ ICCall_ScriptedApplyArguments::Compiler::generateStubCode(MacroAssembler &masm)
 
     // If needed, update SPS Profiler frame entry.  At this point, BaselineTailCallReg
     // and scratch can be clobbered.
-    {
-        Label skipProfilerUpdate;
-        Register pcIdx = regs.getAny();
-        JS_ASSERT(pcIdx != ArgumentsRectifierReg);
-        JS_ASSERT(pcIdx != target);
-        guardProfilingEnabled(masm, scratch, &skipProfilerUpdate);
+    emitProfilingUpdate(masm, regs.getAny(), scratch,
+                        ICCall_ScriptedApplyArguments::offsetOfPCOffset());
 
-        masm.load32(Address(BaselineStubReg, ICCall_ScriptedApplyArguments::offsetOfPCOffset()),
-                    pcIdx);
-        masm.spsUpdatePCIdx(&cx->runtime()->spsProfiler, pcIdx, scratch);
-
-        masm.bind(&skipProfilerUpdate);
-    }
     // Do call
     masm.callIon(target);
+    leaveStubFrame(masm, true);
+
+    // Enter type monitor IC to type-check result.
+    EmitEnterTypeMonitorIC(masm);
+
+    masm.bind(&failure);
+    EmitStubGuardFailure(masm);
+    return true;
+}
+
+bool
+ICCall_ScriptedFunCall::Compiler::generateStubCode(MacroAssembler &masm)
+{
+    Label failure;
+    GeneralRegisterSet regs(availableGeneralRegs(0));
+    bool canUseTailCallReg = regs.has(BaselineTailCallReg);
+
+    Register argcReg = R0.scratchReg();
+    JS_ASSERT(argcReg != ArgumentsRectifierReg);
+
+    regs.take(argcReg);
+    regs.take(ArgumentsRectifierReg);
+    regs.takeUnchecked(BaselineTailCallReg);
+
+    // Load the callee in R1.
+    // Stack Layout: [ ..., CalleeVal, ThisVal, Arg0Val, ..., ArgNVal, +ICStackValueOffset+ ]
+    BaseIndex calleeSlot(BaselineStackReg, argcReg, TimesEight, ICStackValueOffset + sizeof(Value));
+    masm.loadValue(calleeSlot, R1);
+    regs.take(R1);
+
+    // Ensure callee is js_fun_call.
+    masm.branchTestObject(Assembler::NotEqual, R1, &failure);
+
+    Register callee = masm.extractObject(R1, ExtractTemp0);
+    masm.branchTestObjClass(Assembler::NotEqual, callee, regs.getAny(), &JSFunction::class_,
+                            &failure);
+    masm.loadPtr(Address(callee, JSFunction::offsetOfNativeOrScript()), callee);
+    masm.branchPtr(Assembler::NotEqual, callee, ImmPtr(js_fun_call), &failure);
+
+    // Ensure |this| is a scripted function with JIT code.
+    BaseIndex thisSlot(BaselineStackReg, argcReg, TimesEight, ICStackValueOffset);
+    masm.loadValue(thisSlot, R1);
+
+    masm.branchTestObject(Assembler::NotEqual, R1, &failure);
+    callee = masm.extractObject(R1, ExtractTemp0);
+
+    masm.branchTestObjClass(Assembler::NotEqual, callee, regs.getAny(), &JSFunction::class_,
+                            &failure);
+    masm.branchIfFunctionHasNoScript(callee, &failure);
+    masm.loadPtr(Address(callee, JSFunction::offsetOfNativeOrScript()), callee);
+
+    // Load the start of the target JitCode.
+    Register code = regs.takeAny();
+    masm.loadBaselineOrIonRaw(callee, code, SequentialExecution, &failure);
+
+    // We no longer need R1.
+    regs.add(R1);
+
+    // Push a stub frame so that we can perform a non-tail call.
+    enterStubFrame(masm, regs.getAny());
+    if (canUseTailCallReg)
+        regs.add(BaselineTailCallReg);
+
+    // Values are on the stack left-to-right. Calling convention wants them
+    // right-to-left so duplicate them on the stack in reverse order.
+    pushCallArguments(masm, regs, argcReg);
+
+    // Discard callee (function.call).
+    masm.addPtr(Imm32(sizeof(Value)), StackPointer);
+
+    // Pop scripted callee (the original |this|).
+    ValueOperand val = regs.takeAnyValue();
+    masm.popValue(val);
+
+    // Decrement argc if argc > 0. If argc == 0, push |undefined| as |this|.
+    Label zeroArgs, done;
+    masm.branchTest32(Assembler::Zero, argcReg, argcReg, &zeroArgs);
+    masm.sub32(Imm32(1), argcReg);
+    masm.jump(&done);
+
+    masm.bind(&zeroArgs);
+    masm.pushValue(UndefinedValue());
+    masm.bind(&done);
+
+    // Unbox scripted callee.
+    callee = masm.extractObject(val, ExtractTemp0);
+
+    Register scratch = regs.takeAny();
+    EmitCreateStubFrameDescriptor(masm, scratch);
+
+    // Note that we use Push, not push, so that callIon will align the stack
+    // properly on ARM.
+    masm.Push(argcReg);
+    masm.Push(callee);
+    masm.Push(scratch);
+
+    // Handle arguments underflow.
+    Label noUnderflow;
+    masm.load16ZeroExtend(Address(callee, JSFunction::offsetOfNargs()), callee);
+    masm.branch32(Assembler::AboveOrEqual, argcReg, callee, &noUnderflow);
+    {
+        // Call the arguments rectifier.
+        JS_ASSERT(ArgumentsRectifierReg != code);
+        JS_ASSERT(ArgumentsRectifierReg != argcReg);
+
+        JitCode *argumentsRectifier =
+            cx->runtime()->jitRuntime()->getArgumentsRectifier(SequentialExecution);
+
+        masm.movePtr(ImmGCPtr(argumentsRectifier), code);
+        masm.loadPtr(Address(code, JitCode::offsetOfCode()), code);
+        masm.mov(argcReg, ArgumentsRectifierReg);
+    }
+
+    masm.bind(&noUnderflow);
+
+    // If needed, update SPS Profiler frame entry.
+    {
+        // Need to avoid using ArgumentsRectifierReg and code register.
+        GeneralRegisterSet availRegs = availableGeneralRegs(0);
+        availRegs.take(ArgumentsRectifierReg);
+        availRegs.take(code);
+        emitProfilingUpdate(masm, availRegs, ICCall_ScriptedFunCall::offsetOfPCOffset());
+    }
+
+    masm.callIon(code);
+
     leaveStubFrame(masm, true);
 
     // Enter type monitor IC to type-check result.
@@ -9012,7 +9623,7 @@ ICTableSwitch::Compiler::generateStubCode(MacroAssembler &masm)
 ICStub *
 ICTableSwitch::Compiler::getStub(ICStubSpace *space)
 {
-    IonCode *code = getStubCode();
+    JitCode *code = getStubCode();
     if (!code)
         return nullptr;
 
@@ -9043,7 +9654,7 @@ ICTableSwitch::Compiler::getStub(ICStubSpace *space)
 }
 
 void
-ICTableSwitch::fixupJumpTable(HandleScript script, BaselineScript *baseline)
+ICTableSwitch::fixupJumpTable(JSScript *script, BaselineScript *baseline)
 {
     defaultTarget_ = baseline->nativeCodeForPC(script, (jsbytecode *) defaultTarget_);
 
@@ -9092,15 +9703,22 @@ ICIteratorNew_Fallback::Compiler::generateStubCode(MacroAssembler &masm)
 //
 
 static bool
-DoIteratorMoreFallback(JSContext *cx, BaselineFrame *frame, ICIteratorMore_Fallback *stub,
+DoIteratorMoreFallback(JSContext *cx, BaselineFrame *frame, ICIteratorMore_Fallback *stub_,
                        HandleValue iterValue, MutableHandleValue res)
 {
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICIteratorMore_Fallback *> stub(frame, stub_);
+
     FallbackICSpew(cx, stub, "IteratorMore");
 
     bool cond;
     if (!IteratorMore(cx, &iterValue.toObject(), &cond, res))
         return false;
     res.setBoolean(cond);
+
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
 
     if (iterValue.toObject().is<PropertyIteratorObject>() &&
         !stub->hasStub(ICStub::IteratorMore_Native))
@@ -9156,8 +9774,8 @@ ICIteratorMore_Native::Compiler::generateStubCode(MacroAssembler &masm)
 
     // Set output to true if props_cursor < props_end.
     masm.loadPtr(Address(nativeIterator, offsetof(NativeIterator, props_end)), scratch);
-    masm.cmpPtr(Address(nativeIterator, offsetof(NativeIterator, props_cursor)), scratch);
-    masm.emitSet(Assembler::LessThan, scratch);
+    Address cursorAddr = Address(nativeIterator, offsetof(NativeIterator, props_cursor));
+    masm.cmpPtrSet(Assembler::LessThan, cursorAddr, scratch, scratch);
 
     masm.tagValue(JSVAL_TYPE_BOOLEAN, scratch, R0);
     EmitReturnFromIC(masm);
@@ -9173,14 +9791,21 @@ ICIteratorMore_Native::Compiler::generateStubCode(MacroAssembler &masm)
 //
 
 static bool
-DoIteratorNextFallback(JSContext *cx, BaselineFrame *frame, ICIteratorNext_Fallback *stub,
+DoIteratorNextFallback(JSContext *cx, BaselineFrame *frame, ICIteratorNext_Fallback *stub_,
                        HandleValue iterValue, MutableHandleValue res)
 {
+    // This fallback stub may trigger debug mode toggling.
+    DebugModeOSRVolatileStub<ICIteratorNext_Fallback *> stub(frame, stub_);
+
     FallbackICSpew(cx, stub, "IteratorNext");
 
     RootedObject iteratorObject(cx, &iterValue.toObject());
     if (!IteratorNext(cx, iteratorObject, res))
         return false;
+
+    // Check if debug mode toggling made the stub invalid.
+    if (stub.invalid())
+        return true;
 
     if (!res.isString() && !stub->hasNonStringResult())
         stub->setHasNonStringResult();
@@ -9344,7 +9969,7 @@ DoTypeOfFallback(JSContext *cx, BaselineFrame *frame, ICTypeOf_Fallback *stub, H
 {
     FallbackICSpew(cx, stub, "TypeOf");
     JSType type = js::TypeOfValue(val);
-    RootedString string(cx, TypeName(type, cx->runtime()->atomState));
+    RootedString string(cx, TypeName(type, cx->names()));
 
     res.setString(string);
 
@@ -9402,6 +10027,10 @@ ICTypeOf_Typed::Compiler::generateStubCode(MacroAssembler &masm)
 
       case JSTYPE_BOOLEAN:
         masm.branchTestBoolean(Assembler::NotEqual, R0, &failure);
+        break;
+
+      case JSTYPE_SYMBOL:
+        masm.branchTestSymbol(Assembler::NotEqual, R0, &failure);
         break;
 
       default:
@@ -9521,34 +10150,34 @@ ICRetSub_Resume::Compiler::generateStubCode(MacroAssembler &masm)
     return true;
 }
 
-ICProfiler_PushFunction::ICProfiler_PushFunction(IonCode *stubCode, const char *str,
+ICProfiler_PushFunction::ICProfiler_PushFunction(JitCode *stubCode, const char *str,
                                                  HandleScript script)
   : ICStub(ICStub::Profiler_PushFunction, stubCode),
     str_(str),
     script_(script)
 { }
 
-ICTypeMonitor_SingleObject::ICTypeMonitor_SingleObject(IonCode *stubCode, HandleObject obj)
+ICTypeMonitor_SingleObject::ICTypeMonitor_SingleObject(JitCode *stubCode, HandleObject obj)
   : ICStub(TypeMonitor_SingleObject, stubCode),
     obj_(obj)
 { }
 
-ICTypeMonitor_TypeObject::ICTypeMonitor_TypeObject(IonCode *stubCode, HandleTypeObject type)
+ICTypeMonitor_TypeObject::ICTypeMonitor_TypeObject(JitCode *stubCode, HandleTypeObject type)
   : ICStub(TypeMonitor_TypeObject, stubCode),
     type_(type)
 { }
 
-ICTypeUpdate_SingleObject::ICTypeUpdate_SingleObject(IonCode *stubCode, HandleObject obj)
+ICTypeUpdate_SingleObject::ICTypeUpdate_SingleObject(JitCode *stubCode, HandleObject obj)
   : ICStub(TypeUpdate_SingleObject, stubCode),
     obj_(obj)
 { }
 
-ICTypeUpdate_TypeObject::ICTypeUpdate_TypeObject(IonCode *stubCode, HandleTypeObject type)
+ICTypeUpdate_TypeObject::ICTypeUpdate_TypeObject(JitCode *stubCode, HandleTypeObject type)
   : ICStub(TypeUpdate_TypeObject, stubCode),
     type_(type)
 { }
 
-ICGetElemNativeStub::ICGetElemNativeStub(ICStub::Kind kind, IonCode *stubCode,
+ICGetElemNativeStub::ICGetElemNativeStub(ICStub::Kind kind, JitCode *stubCode,
                                          ICStub *firstMonitorStub,
                                          HandleShape shape, HandlePropertyName name,
                                          AccessType acctype, bool needsAtomize)
@@ -9564,7 +10193,7 @@ ICGetElemNativeStub::~ICGetElemNativeStub()
 { }
 
 ICGetElemNativeGetterStub::ICGetElemNativeGetterStub(
-                        ICStub::Kind kind, IonCode *stubCode, ICStub *firstMonitorStub,
+                        ICStub::Kind kind, JitCode *stubCode, ICStub *firstMonitorStub,
                         HandleShape shape, HandlePropertyName name, AccessType acctype,
                         bool needsAtomize, HandleFunction getter, uint32_t pcOffset)
   : ICGetElemNativeStub(kind, stubCode, firstMonitorStub, shape, name, acctype, needsAtomize),
@@ -9577,7 +10206,7 @@ ICGetElemNativeGetterStub::ICGetElemNativeGetterStub(
 }
 
 ICGetElem_NativePrototypeSlot::ICGetElem_NativePrototypeSlot(
-                            IonCode *stubCode, ICStub *firstMonitorStub,
+                            JitCode *stubCode, ICStub *firstMonitorStub,
                             HandleShape shape, HandlePropertyName name,
                             AccessType acctype, bool needsAtomize, uint32_t offset,
                             HandleObject holder, HandleShape holderShape)
@@ -9588,7 +10217,7 @@ ICGetElem_NativePrototypeSlot::ICGetElem_NativePrototypeSlot(
 { }
 
 ICGetElemNativePrototypeCallStub::ICGetElemNativePrototypeCallStub(
-                                ICStub::Kind kind, IonCode *stubCode, ICStub *firstMonitorStub,
+                                ICStub::Kind kind, JitCode *stubCode, ICStub *firstMonitorStub,
                                 HandleShape shape, HandlePropertyName name,
                                 AccessType acctype, bool needsAtomize, HandleFunction getter,
                                 uint32_t pcOffset, HandleObject holder, HandleShape holderShape)
@@ -9598,12 +10227,48 @@ ICGetElemNativePrototypeCallStub::ICGetElemNativePrototypeCallStub(
     holderShape_(holderShape)
 {}
 
-ICGetElem_Dense::ICGetElem_Dense(IonCode *stubCode, ICStub *firstMonitorStub, HandleShape shape)
+/* static */ ICGetElem_NativePrototypeCallNative *
+ICGetElem_NativePrototypeCallNative::Clone(JSContext *cx, ICStubSpace *space,
+                                           ICStub *firstMonitorStub,
+                                           ICGetElem_NativePrototypeCallNative &other)
+{
+    RootedShape shape(cx, other.shape());
+    RootedPropertyName name(cx, other.name());
+    RootedFunction getter(cx, other.getter());
+    RootedObject holder(cx, other.holder());
+    RootedShape holderShape(cx, other.holderShape());
+    return New(space, other.jitCode(), firstMonitorStub, shape, name, other.accessType(),
+               other.needsAtomize(), getter, other.pcOffset_, holder, holderShape);
+}
+
+/* static */ ICGetElem_NativePrototypeCallScripted *
+ICGetElem_NativePrototypeCallScripted::Clone(JSContext *cx, ICStubSpace *space,
+                                             ICStub *firstMonitorStub,
+                                             ICGetElem_NativePrototypeCallScripted &other)
+{
+    RootedShape shape(cx, other.shape());
+    RootedPropertyName name(cx, other.name());
+    RootedFunction getter(cx, other.getter());
+    RootedObject holder(cx, other.holder());
+    RootedShape holderShape(cx, other.holderShape());
+    return New(space, other.jitCode(), firstMonitorStub, shape, name, other.accessType(),
+               other.needsAtomize(), getter, other.pcOffset_, holder, holderShape);
+}
+
+ICGetElem_Dense::ICGetElem_Dense(JitCode *stubCode, ICStub *firstMonitorStub, HandleShape shape)
     : ICMonitoredStub(GetElem_Dense, stubCode, firstMonitorStub),
       shape_(shape)
 { }
 
-ICGetElem_TypedArray::ICGetElem_TypedArray(IonCode *stubCode, HandleShape shape, uint32_t type)
+/* static */ ICGetElem_Dense *
+ICGetElem_Dense::Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                       ICGetElem_Dense &other)
+{
+    RootedShape shape(cx, other.shape_);
+    return New(space, other.jitCode(), firstMonitorStub, shape);
+}
+
+ICGetElem_TypedArray::ICGetElem_TypedArray(JitCode *stubCode, HandleShape shape, Scalar::Type type)
   : ICStub(GetElem_TypedArray, stubCode),
     shape_(shape)
 {
@@ -9611,13 +10276,20 @@ ICGetElem_TypedArray::ICGetElem_TypedArray(IonCode *stubCode, HandleShape shape,
     JS_ASSERT(extra_ == type);
 }
 
-ICSetElem_Dense::ICSetElem_Dense(IonCode *stubCode, HandleShape shape, HandleTypeObject type)
+/* static */ ICGetElem_Arguments *
+ICGetElem_Arguments::Clone(JSContext *, ICStubSpace *space, ICStub *firstMonitorStub,
+                           ICGetElem_Arguments &other)
+{
+    return New(space, other.jitCode(), firstMonitorStub, other.which());
+}
+
+ICSetElem_Dense::ICSetElem_Dense(JitCode *stubCode, HandleShape shape, HandleTypeObject type)
   : ICUpdatedStub(SetElem_Dense, stubCode),
     shape_(shape),
     type_(type)
 { }
 
-ICSetElem_DenseAdd::ICSetElem_DenseAdd(IonCode *stubCode, types::TypeObject *type,
+ICSetElem_DenseAdd::ICSetElem_DenseAdd(JitCode *stubCode, types::TypeObject *type,
                                        size_t protoChainDepth)
   : ICUpdatedStub(SetElem_DenseAdd, stubCode),
     type_(type)
@@ -9633,11 +10305,11 @@ ICSetElemDenseAddCompiler::getStubSpecific(ICStubSpace *space, const AutoShapeVe
     RootedTypeObject objType(cx, obj_->getType(cx));
     if (!objType)
         return nullptr;
-    Rooted<IonCode *> stubCode(cx, getStubCode());
+    Rooted<JitCode *> stubCode(cx, getStubCode());
     return ICSetElem_DenseAddImpl<ProtoChainDepth>::New(space, stubCode, objType, shapes);
 }
 
-ICSetElem_TypedArray::ICSetElem_TypedArray(IonCode *stubCode, HandleShape shape, uint32_t type,
+ICSetElem_TypedArray::ICSetElem_TypedArray(JitCode *stubCode, HandleShape shape, Scalar::Type type,
                                            bool expectOutOfBounds)
   : ICStub(SetElem_TypedArray, stubCode),
     shape_(shape)
@@ -9647,7 +10319,7 @@ ICSetElem_TypedArray::ICSetElem_TypedArray(IonCode *stubCode, HandleShape shape,
     extra_ |= (static_cast<uint16_t>(expectOutOfBounds) << 8);
 }
 
-ICGetName_Global::ICGetName_Global(IonCode *stubCode, ICStub *firstMonitorStub, HandleShape shape,
+ICGetName_Global::ICGetName_Global(JitCode *stubCode, ICStub *firstMonitorStub, HandleShape shape,
                                    uint32_t slot)
   : ICMonitoredStub(GetName_Global, stubCode, firstMonitorStub),
     shape_(shape),
@@ -9655,7 +10327,7 @@ ICGetName_Global::ICGetName_Global(IonCode *stubCode, ICStub *firstMonitorStub, 
 { }
 
 template <size_t NumHops>
-ICGetName_Scope<NumHops>::ICGetName_Scope(IonCode *stubCode, ICStub *firstMonitorStub,
+ICGetName_Scope<NumHops>::ICGetName_Scope(JitCode *stubCode, ICStub *firstMonitorStub,
                                           AutoShapeVector *shapes, uint32_t offset)
   : ICMonitoredStub(GetStubKind(), stubCode, firstMonitorStub),
     offset_(offset)
@@ -9666,7 +10338,7 @@ ICGetName_Scope<NumHops>::ICGetName_Scope(IonCode *stubCode, ICStub *firstMonito
         shapes_[i].init((*shapes)[i]);
 }
 
-ICGetIntrinsic_Constant::ICGetIntrinsic_Constant(IonCode *stubCode, HandleValue value)
+ICGetIntrinsic_Constant::ICGetIntrinsic_Constant(JitCode *stubCode, HandleValue value)
   : ICStub(GetIntrinsic_Constant, stubCode),
     value_(value)
 { }
@@ -9674,14 +10346,14 @@ ICGetIntrinsic_Constant::ICGetIntrinsic_Constant(IonCode *stubCode, HandleValue 
 ICGetIntrinsic_Constant::~ICGetIntrinsic_Constant()
 { }
 
-ICGetProp_Primitive::ICGetProp_Primitive(IonCode *stubCode, ICStub *firstMonitorStub,
+ICGetProp_Primitive::ICGetProp_Primitive(JitCode *stubCode, ICStub *firstMonitorStub,
                                          HandleShape protoShape, uint32_t offset)
   : ICMonitoredStub(GetProp_Primitive, stubCode, firstMonitorStub),
     protoShape_(protoShape),
     offset_(offset)
 { }
 
-ICGetPropNativeStub::ICGetPropNativeStub(ICStub::Kind kind, IonCode *stubCode,
+ICGetPropNativeStub::ICGetPropNativeStub(ICStub::Kind kind, JitCode *stubCode,
                                          ICStub *firstMonitorStub,
                                          HandleShape shape, uint32_t offset)
   : ICMonitoredStub(kind, stubCode, firstMonitorStub),
@@ -9689,7 +10361,15 @@ ICGetPropNativeStub::ICGetPropNativeStub(ICStub::Kind kind, IonCode *stubCode,
     offset_(offset)
 { }
 
-ICGetProp_NativePrototype::ICGetProp_NativePrototype(IonCode *stubCode, ICStub *firstMonitorStub,
+/* static */ ICGetProp_Native *
+ICGetProp_Native::Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                        ICGetProp_Native &other)
+{
+    RootedShape shape(cx, other.shape());
+    return New(space, other.jitCode(), firstMonitorStub, shape, other.offset());
+}
+
+ICGetProp_NativePrototype::ICGetProp_NativePrototype(JitCode *stubCode, ICStub *firstMonitorStub,
                                                      HandleShape shape, uint32_t offset,
                                                      HandleObject holder, HandleShape holderShape)
   : ICGetPropNativeStub(GetProp_NativePrototype, stubCode, firstMonitorStub, shape, offset),
@@ -9697,21 +10377,115 @@ ICGetProp_NativePrototype::ICGetProp_NativePrototype(IonCode *stubCode, ICStub *
     holderShape_(holderShape)
 { }
 
-ICGetPropCallGetter::ICGetPropCallGetter(Kind kind, IonCode *stubCode, ICStub *firstMonitorStub,
-                                         HandleShape shape, HandleObject holder,
-                                         HandleShape holderShape,
-                                         HandleFunction getter, uint32_t pcOffset)
+/* static */ ICGetProp_NativePrototype *
+ICGetProp_NativePrototype::Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                                 ICGetProp_NativePrototype &other)
+{
+    RootedShape shape(cx, other.shape());
+    RootedObject holder(cx, other.holder_);
+    RootedShape holderShape(cx, other.holderShape_);
+    return New(space, other.jitCode(), firstMonitorStub, shape, other.offset(),
+               holder, holderShape);
+}
+
+ICGetProp_NativeDoesNotExist::ICGetProp_NativeDoesNotExist(
+        JitCode *stubCode, ICStub *firstMonitorStub, size_t protoChainDepth)
+  : ICMonitoredStub(GetProp_NativeDoesNotExist, stubCode, firstMonitorStub)
+{
+    MOZ_ASSERT(protoChainDepth <= MAX_PROTO_CHAIN_DEPTH);
+    extra_ = protoChainDepth;
+}
+
+/* static */ size_t
+ICGetProp_NativeDoesNotExist::offsetOfShape(size_t idx)
+{
+    MOZ_ASSERT(ICGetProp_NativeDoesNotExistImpl<0>::offsetOfShape(idx) ==
+               ICGetProp_NativeDoesNotExistImpl<
+                    ICGetProp_NativeDoesNotExist::MAX_PROTO_CHAIN_DEPTH>::offsetOfShape(idx));
+    return ICGetProp_NativeDoesNotExistImpl<0>::offsetOfShape(idx);
+}
+
+template <size_t ProtoChainDepth>
+ICGetProp_NativeDoesNotExistImpl<ProtoChainDepth>::ICGetProp_NativeDoesNotExistImpl(
+        JitCode *stubCode, ICStub *firstMonitorStub, const AutoShapeVector *shapes)
+  : ICGetProp_NativeDoesNotExist(stubCode, firstMonitorStub, ProtoChainDepth)
+{
+    MOZ_ASSERT(shapes->length() == NumShapes);
+    for (size_t i = 0; i < NumShapes; i++)
+        shapes_[i].init((*shapes)[i]);
+}
+
+ICGetPropNativeDoesNotExistCompiler::ICGetPropNativeDoesNotExistCompiler(
+        JSContext *cx, ICStub *firstMonitorStub, HandleObject obj, size_t protoChainDepth)
+  : ICStubCompiler(cx, ICStub::GetProp_NativeDoesNotExist),
+    firstMonitorStub_(firstMonitorStub),
+    obj_(cx, obj),
+    protoChainDepth_(protoChainDepth)
+{
+    MOZ_ASSERT(protoChainDepth_ <= ICGetProp_NativeDoesNotExist::MAX_PROTO_CHAIN_DEPTH);
+}
+
+ICGetPropCallGetter::ICGetPropCallGetter(Kind kind, JitCode *stubCode, ICStub *firstMonitorStub,
+                                         HandleObject holder, HandleShape holderShape, HandleFunction getter,
+                                         uint32_t pcOffset)
   : ICMonitoredStub(kind, stubCode, firstMonitorStub),
-    shape_(shape),
     holder_(holder),
     holderShape_(holderShape),
     getter_(getter),
     pcOffset_(pcOffset)
 {
-    JS_ASSERT(kind == ICStub::GetProp_CallScripted || kind == ICStub::GetProp_CallNative);
+    JS_ASSERT(kind == ICStub::GetProp_CallScripted  ||
+              kind == ICStub::GetProp_CallNative    ||
+              kind == ICStub::GetProp_CallNativePrototype);
 }
 
-ICSetProp_Native::ICSetProp_Native(IonCode *stubCode, HandleTypeObject type, HandleShape shape,
+ICGetPropCallPrototypeGetter::ICGetPropCallPrototypeGetter(Kind kind, JitCode *stubCode,
+                                                           ICStub *firstMonitorStub,
+                                                           HandleShape receiverShape, HandleObject holder,
+                                                           HandleShape holderShape,
+                                                           HandleFunction getter, uint32_t pcOffset)
+  : ICGetPropCallGetter(kind, stubCode, firstMonitorStub, holder, holderShape, getter, pcOffset),
+    receiverShape_(receiverShape)
+{
+    JS_ASSERT(kind == ICStub::GetProp_CallScripted || kind == ICStub::GetProp_CallNativePrototype);
+}
+
+/* static */ ICGetProp_CallScripted *
+ICGetProp_CallScripted::Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                              ICGetProp_CallScripted &other)
+{
+    RootedShape receiverShape(cx, other.receiverShape_);
+    RootedObject holder(cx, other.holder_);
+    RootedShape holderShape(cx, other.holderShape_);
+    RootedFunction getter(cx, other.getter_);
+    return New(space, other.jitCode(), firstMonitorStub, receiverShape, holder,
+               holderShape, getter, other.pcOffset_);
+}
+
+/* static */ ICGetProp_CallNative *
+ICGetProp_CallNative::Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                            ICGetProp_CallNative &other)
+{
+    RootedObject holder(cx, other.holder_);
+    RootedShape holderShape(cx, other.holderShape_);
+    RootedFunction getter(cx, other.getter_);
+    return New(space, other.jitCode(), firstMonitorStub, holder, holderShape, getter,
+               other.pcOffset_);
+}
+
+/* static */ ICGetProp_CallNativePrototype *
+ICGetProp_CallNativePrototype::Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                                     ICGetProp_CallNativePrototype &other)
+{
+    RootedShape receiverShape(cx, other.receiverShape_);
+    RootedObject holder(cx, other.holder_);
+    RootedShape holderShape(cx, other.holderShape_);
+    RootedFunction getter(cx, other.getter_);
+    return New(space, other.jitCode(), firstMonitorStub, receiverShape, holder,
+               holderShape, getter, other.pcOffset_);
+}
+
+ICSetProp_Native::ICSetProp_Native(JitCode *stubCode, HandleTypeObject type, HandleShape shape,
                                    uint32_t offset)
   : ICUpdatedStub(SetProp_Native, stubCode),
     type_(type),
@@ -9733,7 +10507,7 @@ ICSetProp_Native::Compiler::getStub(ICStubSpace *space)
     return stub;
 }
 
-ICSetProp_NativeAdd::ICSetProp_NativeAdd(IonCode *stubCode, HandleTypeObject type,
+ICSetProp_NativeAdd::ICSetProp_NativeAdd(JitCode *stubCode, HandleTypeObject type,
                                          size_t protoChainDepth,
                                          HandleShape newShape,
                                          uint32_t offset)
@@ -9747,7 +10521,7 @@ ICSetProp_NativeAdd::ICSetProp_NativeAdd(IonCode *stubCode, HandleTypeObject typ
 }
 
 template <size_t ProtoChainDepth>
-ICSetProp_NativeAddImpl<ProtoChainDepth>::ICSetProp_NativeAddImpl(IonCode *stubCode,
+ICSetProp_NativeAddImpl<ProtoChainDepth>::ICSetProp_NativeAddImpl(JitCode *stubCode,
                                                                   HandleTypeObject type,
                                                                   const AutoShapeVector *shapes,
                                                                   HandleShape newShape,
@@ -9774,7 +10548,7 @@ ICSetPropNativeAddCompiler::ICSetPropNativeAddCompiler(JSContext *cx, HandleObje
     JS_ASSERT(protoChainDepth_ <= ICSetProp_NativeAdd::MAX_PROTO_CHAIN_DEPTH);
 }
 
-ICSetPropCallSetter::ICSetPropCallSetter(Kind kind, IonCode *stubCode, HandleShape shape,
+ICSetPropCallSetter::ICSetPropCallSetter(Kind kind, JitCode *stubCode, HandleShape shape,
                                          HandleObject holder, HandleShape holderShape,
                                          HandleFunction setter, uint32_t pcOffset)
   : ICStub(kind, stubCode),
@@ -9787,7 +10561,29 @@ ICSetPropCallSetter::ICSetPropCallSetter(Kind kind, IonCode *stubCode, HandleSha
     JS_ASSERT(kind == ICStub::SetProp_CallScripted || kind == ICStub::SetProp_CallNative);
 }
 
-ICCall_Scripted::ICCall_Scripted(IonCode *stubCode, ICStub *firstMonitorStub,
+/* static */ ICSetProp_CallScripted *
+ICSetProp_CallScripted::Clone(JSContext *cx, ICStubSpace *space, ICStub *,
+                              ICSetProp_CallScripted &other)
+{
+    RootedShape shape(cx, other.shape_);
+    RootedObject holder(cx, other.holder_);
+    RootedShape holderShape(cx, other.holderShape_);
+    RootedFunction setter(cx, other.setter_);
+    return New(space, other.jitCode(), shape, holder, holderShape, setter, other.pcOffset_);
+}
+
+/* static */ ICSetProp_CallNative *
+ICSetProp_CallNative::Clone(JSContext *cx, ICStubSpace *space, ICStub *,
+                            ICSetProp_CallNative &other)
+{
+    RootedShape shape(cx, other.shape_);
+    RootedObject holder(cx, other.holder_);
+    RootedShape holderShape(cx, other.holderShape_);
+    RootedFunction setter(cx, other.setter_);
+    return New(space, other.jitCode(), shape, holder, holderShape, setter, other.pcOffset_);
+}
+
+ICCall_Scripted::ICCall_Scripted(JitCode *stubCode, ICStub *firstMonitorStub,
                                  HandleScript calleeScript, HandleObject templateObject,
                                  uint32_t pcOffset)
   : ICMonitoredStub(ICStub::Call_Scripted, stubCode, firstMonitorStub),
@@ -9796,19 +10592,76 @@ ICCall_Scripted::ICCall_Scripted(IonCode *stubCode, ICStub *firstMonitorStub,
     pcOffset_(pcOffset)
 { }
 
-ICCall_Native::ICCall_Native(IonCode *stubCode, ICStub *firstMonitorStub,
+/* static */ ICCall_Scripted *
+ICCall_Scripted::Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                       ICCall_Scripted &other)
+{
+    RootedScript calleeScript(cx, other.calleeScript_);
+    RootedObject templateObject(cx, other.templateObject_);
+    return New(space, other.jitCode(), firstMonitorStub, calleeScript, templateObject,
+               other.pcOffset_);
+}
+
+/* static */ ICCall_AnyScripted *
+ICCall_AnyScripted::Clone(JSContext *, ICStubSpace *space, ICStub *firstMonitorStub,
+                          ICCall_AnyScripted &other)
+{
+    return New(space, other.jitCode(), firstMonitorStub, other.pcOffset_);
+}
+
+ICCall_Native::ICCall_Native(JitCode *stubCode, ICStub *firstMonitorStub,
                              HandleFunction callee, HandleObject templateObject,
                              uint32_t pcOffset)
   : ICMonitoredStub(ICStub::Call_Native, stubCode, firstMonitorStub),
     callee_(callee),
     templateObject_(templateObject),
     pcOffset_(pcOffset)
-{ }
+{
+#if defined(JS_ARM_SIMULATOR) || defined(JS_MIPS_SIMULATOR)
+    // The simulator requires VM calls to be redirected to a special swi
+    // instruction to handle them. To make this work, we store the redirected
+    // pointer in the stub.
+    native_ = Simulator::RedirectNativeFunction(JS_FUNC_TO_DATA_PTR(void *, callee->native()),
+                                                Args_General3);
+#endif
+}
 
-ICGetPropCallDOMProxyNativeStub::ICGetPropCallDOMProxyNativeStub(Kind kind, IonCode *stubCode,
+/* static */ ICCall_Native *
+ICCall_Native::Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                     ICCall_Native &other)
+{
+    RootedFunction callee(cx, other.callee_);
+    RootedObject templateObject(cx, other.templateObject_);
+    return New(space, other.jitCode(), firstMonitorStub, callee, templateObject,
+               other.pcOffset_);
+}
+
+/* static */ ICCall_ScriptedApplyArray *
+ICCall_ScriptedApplyArray::Clone(JSContext *, ICStubSpace *space, ICStub *firstMonitorStub,
+                                 ICCall_ScriptedApplyArray &other)
+{
+    return New(space, other.jitCode(), firstMonitorStub, other.pcOffset_);
+}
+
+/* static */ ICCall_ScriptedApplyArguments *
+ICCall_ScriptedApplyArguments::Clone(JSContext *, ICStubSpace *space,
+                                     ICStub *firstMonitorStub,
+                                     ICCall_ScriptedApplyArguments &other)
+{
+    return New(space, other.jitCode(), firstMonitorStub, other.pcOffset_);
+}
+
+/* static */ ICCall_ScriptedFunCall *
+ICCall_ScriptedFunCall::Clone(JSContext *, ICStubSpace *space, ICStub *firstMonitorStub,
+                              ICCall_ScriptedFunCall &other)
+{
+    return New(space, other.jitCode(), firstMonitorStub, other.pcOffset_);
+}
+
+ICGetPropCallDOMProxyNativeStub::ICGetPropCallDOMProxyNativeStub(Kind kind, JitCode *stubCode,
                                                                  ICStub *firstMonitorStub,
                                                                  HandleShape shape,
-                                                                 BaseProxyHandler *proxyHandler,
+                                                                 const BaseProxyHandler *proxyHandler,
                                                                  HandleShape expandoShape,
                                                                  HandleObject holder,
                                                                  HandleShape holderShape,
@@ -9843,10 +10696,38 @@ ICGetPropCallDOMProxyNativeCompiler::ICGetPropCallDOMProxyNativeCompiler(JSConte
     JS_ASSERT(proxy_->handler()->family() == GetDOMProxyHandlerFamily());
 }
 
-ICGetProp_DOMProxyShadowed::ICGetProp_DOMProxyShadowed(IonCode *stubCode,
+/* static */ ICGetProp_CallDOMProxyNative *
+ICGetProp_CallDOMProxyNative::Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                                    ICGetProp_CallDOMProxyNative &other)
+{
+    RootedShape shape(cx, other.shape_);
+    RootedShape expandoShape(cx, other.expandoShape_);
+    RootedObject holder(cx, other.holder_);
+    RootedShape holderShape(cx, other.holderShape_);
+    RootedFunction getter(cx, other.getter_);
+    return New(space, other.jitCode(), firstMonitorStub, shape, other.proxyHandler_,
+               expandoShape, holder, holderShape, getter, other.pcOffset_);
+}
+
+/* static */ ICGetProp_CallDOMProxyWithGenerationNative *
+ICGetProp_CallDOMProxyWithGenerationNative::Clone(JSContext *cx, ICStubSpace *space,
+                                                  ICStub *firstMonitorStub,
+                                                  ICGetProp_CallDOMProxyWithGenerationNative &other)
+{
+    RootedShape shape(cx, other.shape_);
+    RootedShape expandoShape(cx, other.expandoShape_);
+    RootedObject holder(cx, other.holder_);
+    RootedShape holderShape(cx, other.holderShape_);
+    RootedFunction getter(cx, other.getter_);
+    return New(space, other.jitCode(), firstMonitorStub, shape, other.proxyHandler_,
+               other.expandoAndGeneration_, other.generation_,
+               expandoShape, holder, holderShape, getter, other.pcOffset_);
+}
+
+ICGetProp_DOMProxyShadowed::ICGetProp_DOMProxyShadowed(JitCode *stubCode,
                                                        ICStub *firstMonitorStub,
                                                        HandleShape shape,
-                                                       BaseProxyHandler *proxyHandler,
+                                                       const BaseProxyHandler *proxyHandler,
                                                        HandlePropertyName name,
                                                        uint32_t pcOffset)
   : ICMonitoredStub(ICStub::GetProp_DOMProxyShadowed, stubCode, firstMonitorStub),
@@ -9855,6 +10736,16 @@ ICGetProp_DOMProxyShadowed::ICGetProp_DOMProxyShadowed(IonCode *stubCode,
     name_(name),
     pcOffset_(pcOffset)
 { }
+
+/* static */ ICGetProp_DOMProxyShadowed *
+ICGetProp_DOMProxyShadowed::Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                                  ICGetProp_DOMProxyShadowed &other)
+{
+    RootedShape shape(cx, other.shape_);
+    RootedPropertyName name(cx, other.name_);
+    return New(space, other.jitCode(), firstMonitorStub, shape, other.proxyHandler_,
+               name, other.pcOffset_);
+}
 
 //
 // Rest_Fallback

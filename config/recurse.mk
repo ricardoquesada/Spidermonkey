@@ -6,6 +6,10 @@ ifndef INCLUDED_RULES_MK
 include $(topsrcdir)/config/rules.mk
 endif
 
+# Make sure that anything that needs to be defined in moz.build wasn't
+# overwritten after including rules.mk.
+_eval_for_side_effects := $(CHECK_MOZBUILD_VARIABLES)
+
 # The traditional model of directory traversal with make is as follows:
 #   make -C foo
 #     Entering foo
@@ -22,8 +26,7 @@ endif
 #   make -C foo/baz
 #   make -C qux
 
-# MOZ_PSEUDO_DERECURSE can have values other than 1.
-ifeq (1_.,$(if $(MOZ_PSEUDO_DERECURSE),1)_$(DEPTH))
+ifeq (.,$(DEPTH))
 
 include root.mk
 
@@ -36,7 +39,7 @@ endif
 # Main rules (export, compile, binaries, libs and tools) call recurse_* rules.
 # This wrapping is only really useful for build status.
 compile binaries libs export tools::
-	$(call BUILDSTATUS,TIER_START $@ $($@_subtiers))
+	$(call BUILDSTATUS,TIER_START $@)
 	+$(MAKE) recurse_$@
 	$(call BUILDSTATUS,TIER_FINISH $@)
 
@@ -67,7 +70,8 @@ endif
 # Get all directories traversed for all subtiers in the current tier, or use
 # directly the $(*_dirs) variables available in root.mk when there is no
 # TIERS (like for js/src).
-CURRENT_DIRS := $(or $($(CURRENT_TIER)_dirs),$(foreach subtier,$(CURRENT_SUBTIERS),$($(CURRENT_TIER)_subtier_$(subtier))))
+TIER_DIRS = $(or $($(1)_dirs),$(foreach subtier,$($(1)_subtiers),$($(1)_subtier_$(subtier))))
+CURRENT_DIRS := $(call TIER_DIRS,$(CURRENT_TIER))
 
 ifneq (,$(filter binaries libs,$(CURRENT_TIER)))
 WANT_STAMPS = 1
@@ -76,11 +80,9 @@ endif
 
 # Subtier delimiter rules
 $(addprefix subtiers/,$(addsuffix _start/$(CURRENT_TIER),$(CURRENT_SUBTIERS))): subtiers/%_start/$(CURRENT_TIER): $(if $(WANT_STAMPS),$(call mkdir_deps,subtiers/%_start))
-	$(call BUILDSTATUS,SUBTIER_START $(CURRENT_TIER) $* $(if $(BUG_915535_FIXED),$($(CURRENT_TIER)_subtier_$*)))
 	@$(STAMP_TOUCH)
 
 $(addprefix subtiers/,$(addsuffix _finish/$(CURRENT_TIER),$(CURRENT_SUBTIERS))): subtiers/%_finish/$(CURRENT_TIER): $(if $(WANT_STAMPS),$(call mkdir_deps,subtiers/%_finish))
-	$(call BUILDSTATUS,SUBTIER_FINISH $(CURRENT_TIER) $*)
 	@$(STAMP_TOUCH)
 
 $(addprefix subtiers/,$(addsuffix /$(CURRENT_TIER),$(CURRENT_SUBTIERS))): %/$(CURRENT_TIER): $(if $(WANT_STAMPS),$(call mkdir_deps,%))
@@ -93,15 +95,9 @@ GARBAGE_DIRS += subtiers
 # root.mk defines subtier_of_* variables, that map a normalized subdir path to
 # a subtier name (e.g. subtier_of_memory_jemalloc = base)
 $(addsuffix /$(CURRENT_TIER),$(CURRENT_DIRS)): %/$(CURRENT_TIER):
-ifdef BUG_915535_FIXED
-	$(call BUILDSTATUS,TIERDIR_START $(CURRENT_TIER) $(subtier_of_$(subst /,_,$*)) $*)
-endif
-	+@$(MAKE) -C $* $(if $(filter $*,$(tier_$(subtier_of_$(subst /,_,$*))_staticdirs)),,$(CURRENT_TIER))
+	$(call SUBMAKE,$(if $(filter $*,$(tier_$(subtier_of_$(subst /,_,$*))_staticdirs)),,$(CURRENT_TIER)),$*)
 # Ensure existing stamps are up-to-date, but don't create one if submake didn't create one.
 	$(if $(wildcard $@),@$(STAMP_TOUCH))
-ifdef BUG_915535_FIXED
-	$(call BUILDSTATUS,TIERDIR_FINISH $(CURRENT_TIER) $(subtier_of_$(subst /,_,$*)) $*)
-endif
 
 # Dummy rules for possibly inexisting dependencies for the above tier targets
 $(addsuffix /Makefile,$(CURRENT_DIRS)) $(addsuffix /backend.mk,$(CURRENT_DIRS)):
@@ -113,6 +109,8 @@ $(addsuffix /$(CURRENT_TIER),$(filter-out config,$(CURRENT_DIRS))): config/$(CUR
 endif
 
 ifdef COMPILE_ENVIRONMENT
+# Disable dependency aggregation on PGO builds because of bug 934166.
+ifeq (,$(MOZ_PGO)$(MOZ_PROFILE_USE)$(MOZ_PROFILE_GENERATE))
 ifneq (,$(filter libs binaries,$(CURRENT_TIER)))
 # When doing a "libs" build, target_libs.mk ensures the interesting dependency data
 # is available in the "binaries" stamp. Once recursion is done, aggregate all that
@@ -128,8 +126,8 @@ recurse_$(CURRENT_TIER):
 
 # Creating binaries-deps.mk directly would make us build it twice: once when beginning
 # the build because of the include, and once at the end because of the stamps.
-binaries-deps: $(addsuffix /binaries,$(CURRENT_DIRS))
-	@$(call py_action,link_deps,-o $@.mk --group-by-depfile --topsrcdir $(topsrcdir) --topobjdir $(DEPTH) --dist $(DIST) --guard $(addprefix ',$(addsuffix ',$^)))
+binaries-deps:
+	@$(call py_action,link_deps,-o $@.mk --group-by-depfile --topsrcdir $(topsrcdir) --topobjdir $(DEPTH) --dist $(DIST) --guard $(addprefix ',$(addsuffix ', $(wildcard $(addsuffix /binaries,$(CURRENT_DIRS))))))
 	@$(TOUCH) $@
 
 ifeq (recurse_binaries,$(MAKECMDGOALS))
@@ -142,11 +140,12 @@ DIST_GARBAGE += binaries-deps.mk binaries-deps
 
 endif
 
+endif
+
 else
 
-# Don't recurse if MAKELEVEL is NO_RECURSE_MAKELEVEL as defined above, but
-# still recurse for externally managed make files (gyp-generated ones).
-ifeq ($(EXTERNALLY_MANAGED_MAKE_FILE)_$(NO_RECURSE_MAKELEVEL),_$(MAKELEVEL))
+# Don't recurse if MAKELEVEL is NO_RECURSE_MAKELEVEL as defined above
+ifeq ($(NO_RECURSE_MAKELEVEL),$(MAKELEVEL))
 
 compile binaries libs export tools::
 
@@ -158,12 +157,10 @@ else
 ifdef TIERS
 
 libs export tools::
-	$(call BUILDSTATUS,TIER_START $@ $(filter-out $(if $(filter export,$@),,precompile),$(TIERS)))
+	$(call BUILDSTATUS,TIER_START $@)
 	$(foreach tier,$(TIERS), $(if $(filter-out libs_precompile tools_precompile,$@_$(tier)), \
-		$(call BUILDSTATUS,SUBTIER_START $@ $(tier) $(if $(filter libs,$@),$(tier_$(tier)_staticdirs)) $(tier_$(tier)_dirs)) \
 		$(if $(filter libs,$@),$(foreach dir, $(tier_$(tier)_staticdirs), $(call TIER_DIR_SUBMAKE,$@,$(tier),$(dir),,1))) \
-		$(foreach dir, $(tier_$(tier)_dirs), $(call TIER_DIR_SUBMAKE,$@,$(tier),$(dir),$@)) \
-		$(call BUILDSTATUS,SUBTIER_FINISH $@ $(tier))))
+		$(foreach dir, $(tier_$(tier)_dirs), $(call TIER_DIR_SUBMAKE,$@,$(tier),$(dir),$@))))
 	$(call BUILDSTATUS,TIER_FINISH $@)
 
 else
@@ -193,48 +190,33 @@ tools export:: $(SUBMAKEFILES)
 
 endif # ifdef TIERS
 
-endif # ifeq ($(EXTERNALLY_MANAGED_MAKE_FILE)_$(NO_RECURSE_MAKELEVEL),_$(MAKELEVEL))
+endif # ifeq ($(NO_RECURSE_MAKELEVEL),$(MAKELEVEL))
 
-endif # ifeq (1_.,$(MOZ_PSEUDO_DERECURSE)_$(DEPTH))
-
-ifdef MOZ_PSEUDO_DERECURSE
-ifdef EXTERNALLY_MANAGED_MAKE_FILE
-# gyp-managed directories
-recurse_targets := $(addsuffix /binaries,$(DIRS) $(PARALLEL_DIRS))
-else
-ifeq (.,$(DEPTH))
-# top-level directories
-recurse_targets := $(addsuffix /binaries,$(binaries_dirs))
-ifdef recurse_targets
-# only js/src has binaries_dirs, and we want to adjust paths for it.
-want_abspaths = 1
-endif
-endif
-endif
+endif # ifeq (.,$(DEPTH))
 
 ifdef COMPILE_ENVIRONMENT
 
 # Aggregate all dependency files relevant to a binaries build except in
 # the mozilla top-level directory.
-ifneq (_.,$(recurse_targets)_$(DEPTH))
+ifneq (.,$(DEPTH))
 ALL_DEP_FILES := \
   $(BINARIES_PP) \
   $(addsuffix .pp,$(addprefix $(MDDEPDIR)/,$(sort \
     $(TARGETS) \
     $(filter-out $(SOBJS) $(ASOBJS) $(EXCLUDED_OBJS),$(OBJ_TARGETS)) \
   ))) \
-  $(recurse_targets) \
   $(NULL)
 endif
 
 binaries libs:: $(TARGETS) $(BINARIES_PP)
-ifneq (_.,$(recurse_targets)_$(DEPTH))
-	@$(if $(or $(recurse_targets),$^),$(call py_action,link_deps,-o binaries --group-all $(if $(want_abspaths),--abspaths )--topsrcdir $(topsrcdir) --topobjdir $(DEPTH) --dist $(DIST) $(ALL_DEP_FILES)))
+# Disable dependency aggregation on PGO builds because of bug 934166.
+ifeq (,$(MOZ_PGO)$(MOZ_PROFILE_USE)$(MOZ_PROFILE_GENERATE))
+ifneq (.,$(DEPTH))
+	@$(if $^,$(call py_action,link_deps,-o binaries --group-all --topsrcdir $(topsrcdir) --topobjdir $(DEPTH) --dist $(DIST) $(ALL_DEP_FILES)))
+endif
 endif
 
 endif
-
-endif # ifdef MOZ_PSEUDO_DERECURSE
 
 recurse:
 	@$(RECURSED_COMMAND)

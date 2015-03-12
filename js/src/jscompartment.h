@@ -9,9 +9,11 @@
 
 #include "mozilla/MemoryReporting.h"
 
-#include "builtin/TypeRepresentation.h"
+#include "builtin/RegExp.h"
 #include "gc/Zone.h"
 #include "vm/GlobalObject.h"
+#include "vm/PIC.h"
+#include "vm/SavedStacks.h"
 
 namespace js {
 
@@ -72,15 +74,15 @@ struct CrossCompartmentKey
 
     CrossCompartmentKey()
       : kind(ObjectWrapper), debugger(nullptr), wrapped(nullptr) {}
-    CrossCompartmentKey(JSObject *wrapped)
+    explicit CrossCompartmentKey(JSObject *wrapped)
       : kind(ObjectWrapper), debugger(nullptr), wrapped(wrapped) {}
-    CrossCompartmentKey(JSString *wrapped)
+    explicit CrossCompartmentKey(JSString *wrapped)
       : kind(StringWrapper), debugger(nullptr), wrapped(wrapped) {}
-    CrossCompartmentKey(Value wrapped)
+    explicit CrossCompartmentKey(Value wrapped)
       : kind(wrapped.isString() ? StringWrapper : ObjectWrapper),
         debugger(nullptr),
         wrapped((js::gc::Cell *)wrapped.toGCThing()) {}
-    CrossCompartmentKey(const RootedValue &wrapped)
+    explicit CrossCompartmentKey(const RootedValue &wrapped)
       : kind(wrapped.get().isString() ? StringWrapper : ObjectWrapper),
         debugger(nullptr),
         wrapped((js::gc::Cell *)wrapped.get().toGCThing()) {}
@@ -111,7 +113,6 @@ struct TypeInferenceSizes;
 
 namespace js {
 class AutoDebugModeInvalidation;
-class ArrayBufferObject;
 class DebugScopes;
 class WeakMapBase;
 }
@@ -127,7 +128,12 @@ struct JSCompartment
   public:
     JSPrincipals                 *principals;
     bool                         isSystem;
+    bool                         isSelfHosting;
     bool                         marked;
+
+    // A null add-on ID means that the compartment is not associated with an
+    // add-on.
+    JSAddonId                    *addonId;
 
 #ifdef DEBUG
     bool                         firedOnNewGlobalObject;
@@ -139,7 +145,7 @@ struct JSCompartment
     friend struct JSRuntime;
     friend struct JSContext;
     friend class js::ExclusiveContext;
-    js::ReadBarriered<js::GlobalObject> global_;
+    js::ReadBarrieredGlobalObject global_;
 
     unsigned                     enterCompartmentDepth;
 
@@ -187,8 +193,6 @@ struct JSCompartment
      */
     void adoptWorkerAllocator(js::Allocator *workerAllocator);
 
-
-    int64_t                      lastCodeRelease;
     bool                         activeAnalysis;
 
     /* Type information about the scripts and objects in this compartment. */
@@ -199,6 +203,8 @@ struct JSCompartment
   private:
     js::ObjectMetadataCallback   objectMetadataCallback;
 
+    js::SavedStacks              savedStacks_;
+
     js::WrapperMap               crossCompartmentWrappers;
 
   public:
@@ -206,9 +212,6 @@ struct JSCompartment
     int64_t                      lastAnimationTime;
 
     js::RegExpCompartment        regExps;
-
-    /* Set of all currently living type representations. */
-    js::TypeRepresentationHash   typeReprs;
 
     /*
      * For generational GC, record whether a write barrier has added this
@@ -221,7 +224,6 @@ struct JSCompartment
 
   public:
     void addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
-                                size_t *tiPendingArrays,
                                 size_t *tiAllocationSiteTables,
                                 size_t *tiArrayTypeTables,
                                 size_t *tiObjectTypeTables,
@@ -230,7 +232,7 @@ struct JSCompartment
                                 size_t *crossCompartmentWrappers,
                                 size_t *regexpCompartment,
                                 size_t *debuggeesSet,
-                                size_t *baselineStubsOptimized);
+                                size_t *savedStacksSet);
 
     /*
      * Shared scope property tree, and arena-pool for allocating its nodes.
@@ -244,12 +246,16 @@ struct JSCompartment
     /* Set of initial shapes in the compartment. */
     js::InitialShapeSet          initialShapes;
     void sweepInitialShapeTable();
-    void markAllInitialShapeTableEntries(JSTracer *trc);
 
     /* Set of default 'new' or lazy types in the compartment. */
-    js::types::TypeObjectSet     newTypeObjects;
-    js::types::TypeObjectSet     lazyTypeObjects;
-    void sweepNewTypeObjectTable(js::types::TypeObjectSet &table);
+    js::types::TypeObjectWithNewScriptSet newTypeObjects;
+    js::types::TypeObjectWithNewScriptSet lazyTypeObjects;
+    void sweepNewTypeObjectTable(js::types::TypeObjectWithNewScriptSet &table);
+#if defined(JSGC_GENERATIONAL) && defined(JS_GC_ZEAL)
+    void checkNewTypeObjectTableAfterMovingGC();
+    void checkInitialShapesTableAfterMovingGC();
+    void checkWrapperMapAfterMovingGC();
+#endif
 
     /*
      * Hash table of all manually call site-cloned functions from within
@@ -258,6 +264,12 @@ struct JSCompartment
      */
     js::CallsiteCloneTable callsiteClones;
     void sweepCallsiteClones();
+
+    /*
+     * Lazily initialized script source object to use for scripts cloned
+     * from the self-hosting global.
+     */
+    js::ReadBarrieredScriptSourceObject selfHostingScriptSource;
 
     /* During GC, stores the index of this compartment in rt->compartments. */
     unsigned                     gcIndex;
@@ -271,8 +283,8 @@ struct JSCompartment
      */
     JSObject                     *gcIncomingGrayPointers;
 
-    /* Linked list of live array buffers with >1 view. */
-    js::ArrayBufferObject        *gcLiveArrayBuffers;
+    /* During GC, list of live array buffers with >1 view accumulated during tracing. */
+    js::ArrayBufferVector        gcLiveArrayBuffers;
 
     /* Linked list of live weakmaps in this compartment. */
     js::WeakMapBase              *gcWeakMapList;
@@ -296,7 +308,6 @@ struct JSCompartment
 
     /* Mark cross-compartment wrappers. */
     void markCrossCompartmentWrappers(JSTracer *trc);
-    void markAllCrossCompartmentWrappers(JSTracer *trc);
 
     inline bool wrap(JSContext *cx, JS::MutableHandleValue vp,
                      JS::HandleObject existing = js::NullPtr());
@@ -305,16 +316,15 @@ struct JSCompartment
     bool wrap(JSContext *cx, js::HeapPtrString *strp);
     bool wrap(JSContext *cx, JS::MutableHandleObject obj,
               JS::HandleObject existingArg = js::NullPtr());
-    bool wrapId(JSContext *cx, jsid *idp);
     bool wrap(JSContext *cx, js::PropertyOp *op);
     bool wrap(JSContext *cx, js::StrictPropertyOp *op);
     bool wrap(JSContext *cx, JS::MutableHandle<js::PropertyDescriptor> desc);
-    bool wrap(JSContext *cx, js::AutoIdVector &props);
+    bool wrap(JSContext *cx, JS::MutableHandle<js::PropDesc> desc);
 
-    bool putWrapper(const js::CrossCompartmentKey& wrapped, const js::Value& wrapper);
+    bool putWrapper(JSContext *cx, const js::CrossCompartmentKey& wrapped, const js::Value& wrapper);
 
     js::WrapperMap::Ptr lookupWrapper(const js::Value& wrapped) {
-        return crossCompartmentWrappers.lookup(wrapped);
+        return crossCompartmentWrappers.lookup(js::CrossCompartmentKey(wrapped));
     }
 
     void removeWrapper(js::WrapperMap::Ptr p) {
@@ -322,10 +332,11 @@ struct JSCompartment
     }
 
     struct WrapperEnum : public js::WrapperMap::Enum {
-        WrapperEnum(JSCompartment *c) : js::WrapperMap::Enum(c->crossCompartmentWrappers) {}
+        explicit WrapperEnum(JSCompartment *c) : js::WrapperMap::Enum(c->crossCompartmentWrappers) {}
     };
 
-    void mark(JSTracer *trc);
+    void trace(JSTracer *trc);
+    void markRoots(JSTracer *trc);
     bool isDiscardingJitCode(JSTracer *trc);
     void sweep(js::FreeOp *fop, bool releaseTypes);
     void sweepCrossCompartmentWrappers();
@@ -337,6 +348,8 @@ struct JSCompartment
     bool callObjectMetadataCallback(JSContext *cx, JSObject **obj) const {
         return objectMetadataCallback(cx, obj);
     }
+
+    js::SavedStacks &savedStacks() { return savedStacks_; }
 
     void findOutgoingEdges(js::gc::ComponentFinder<JS::Zone> &finder);
 
@@ -391,22 +404,27 @@ struct JSCompartment
   private:
 
     /* This is called only when debugMode() has just toggled. */
-    void updateForDebugMode(js::FreeOp *fop, js::AutoDebugModeInvalidation &invalidate);
+    bool updateJITForDebugMode(JSContext *maybecx, js::AutoDebugModeInvalidation &invalidate);
 
   public:
     js::GlobalObjectSet &getDebuggees() { return debuggees; }
     bool addDebuggee(JSContext *cx, js::GlobalObject *global);
     bool addDebuggee(JSContext *cx, js::GlobalObject *global,
                      js::AutoDebugModeInvalidation &invalidate);
-    void removeDebuggee(js::FreeOp *fop, js::GlobalObject *global,
+    bool removeDebuggee(JSContext *cx, js::GlobalObject *global,
                         js::GlobalObjectSet::Enum *debuggeesEnum = nullptr);
-    void removeDebuggee(js::FreeOp *fop, js::GlobalObject *global,
+    bool removeDebuggee(JSContext *cx, js::GlobalObject *global,
                         js::AutoDebugModeInvalidation &invalidate,
                         js::GlobalObjectSet::Enum *debuggeesEnum = nullptr);
+    void removeDebuggeeUnderGC(js::FreeOp *fop, js::GlobalObject *global,
+                               js::GlobalObjectSet::Enum *debuggeesEnum = nullptr);
+    void removeDebuggeeUnderGC(js::FreeOp *fop, js::GlobalObject *global,
+                               js::AutoDebugModeInvalidation &invalidate,
+                               js::GlobalObjectSet::Enum *debuggeesEnum = nullptr);
     bool setDebugModeFromC(JSContext *cx, bool b,
                            js::AutoDebugModeInvalidation &invalidate);
 
-    void clearBreakpointsIn(js::FreeOp *fop, js::Debugger *dbg, JSObject *handler);
+    void clearBreakpointsIn(js::FreeOp *fop, js::Debugger *dbg, JS::HandleObject handler);
     void clearTraps(js::FreeOp *fop);
 
   private:
@@ -502,18 +520,12 @@ class js::AutoDebugModeInvalidation
         // must all agree on the toggle. This is so we can decide if we need
         // to invalidate on-stack scripts.
         MOZ_ASSERT_IF(needInvalidation_ != NoNeed,
-                      needInvalidation_ == debugMode ? ToggledOn : ToggledOff);
+                      needInvalidation_ == (debugMode ? ToggledOn : ToggledOff));
         needInvalidation_ = debugMode ? ToggledOn : ToggledOff;
     }
 };
 
 namespace js {
-
-inline bool
-ExclusiveContext::typeInferenceEnabled() const
-{
-    return compartment_->options().typeInference(this);
-}
 
 inline js::Handle<js::GlobalObject*>
 ExclusiveContext::global() const
@@ -524,14 +536,15 @@ ExclusiveContext::global() const
      * barrier on it. Once the compartment is popped, the handle is no longer
      * safe to use.
      */
+    MOZ_ASSERT(compartment_, "Caller needs to enter a compartment first");
     return Handle<GlobalObject*>::fromMarkedLocation(compartment_->global_.unsafeGet());
 }
 
 class AssertCompartmentUnchanged
 {
   public:
-    AssertCompartmentUnchanged(JSContext *cx
-                                MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+    explicit AssertCompartmentUnchanged(JSContext *cx
+                                        MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : cx(cx), oldCompartment(cx->compartment())
     {
         MOZ_GUARD_OBJECT_NOTIFIER_INIT;
@@ -573,11 +586,10 @@ class AutoCompartment
 class ErrorCopier
 {
     mozilla::Maybe<AutoCompartment> &ac;
-    RootedObject scope;
 
   public:
-    ErrorCopier(mozilla::Maybe<AutoCompartment> &ac, JSObject *scope)
-      : ac(ac), scope(ac.ref().context(), scope) {}
+    explicit ErrorCopier(mozilla::Maybe<AutoCompartment> &ac)
+      : ac(ac) {}
     ~ErrorCopier();
 };
 
@@ -639,11 +651,11 @@ class AutoWrapperVector : public AutoVectorRooter<WrapperValue>
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
-class AutoWrapperRooter : private AutoGCRooter {
+class AutoWrapperRooter : private JS::AutoGCRooter {
   public:
     AutoWrapperRooter(JSContext *cx, WrapperValue v
                       MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : AutoGCRooter(cx, WRAPPER), value(v)
+      : JS::AutoGCRooter(cx, WRAPPER), value(v)
     {
         MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
@@ -652,7 +664,7 @@ class AutoWrapperRooter : private AutoGCRooter {
         return value.get().toObjectOrNull();
     }
 
-    friend void AutoGCRooter::trace(JSTracer *trc);
+    friend void JS::AutoGCRooter::trace(JSTracer *trc);
 
   private:
     WrapperValue value;

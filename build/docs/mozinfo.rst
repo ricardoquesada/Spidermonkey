@@ -59,6 +59,12 @@ bits
 
    Optional.
 
+buildapp
+   The path to the XUL application being built.
+
+   For desktop Firefox, this is ``browser``. For Fennec, it's
+   ``mobile/android``. For B2G, it's ``b2g``.
+
 crashreporter
    Whether the crash reporter is enabled for this build.
 
@@ -67,7 +73,7 @@ crashreporter
    Always defined.
 
 datareporting
-  Whether data reporting (MOZ_DATA_REPORTING) is enabled for this build.
+   Whether data reporting (MOZ_DATA_REPORTING) is enabled for this build.
 
    Values are ``true`` and ``false``.
 
@@ -75,6 +81,13 @@ datareporting
 
 debug
    Whether this is a debug build.
+
+   Values are ``true`` and ``false``.
+
+   Always defined.
+
+healthreport
+   Whether the Health Report feature is enabled.
 
    Values are ``true`` and ``false``.
 
@@ -127,3 +140,16 @@ topsrcdir
 
    Always defined.
 
+wave
+   Whether Wave audio support is enabled.
+
+   Values are ``true`` and ``false``.
+
+   Always defined.
+
+webm
+   Whether WebM support is enabled.
+
+   Values are ``true`` and ``false``.
+
+   Always defined.

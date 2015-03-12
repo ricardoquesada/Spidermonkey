@@ -1,5 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-// vim:cindent:ts=8:et:sw=4:
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30,8 +30,8 @@ XPCNativeMember::GetCallInfo(JSObject* funobj,
     jsval ifaceVal = js::GetFunctionNativeReserved(funobj, 0);
     jsval memberVal = js::GetFunctionNativeReserved(funobj, 1);
 
-    *pInterface = (XPCNativeInterface*) JSVAL_TO_PRIVATE(ifaceVal);
-    *pMember = (XPCNativeMember*) JSVAL_TO_PRIVATE(memberVal);
+    *pInterface = (XPCNativeInterface*) ifaceVal.toPrivate();
+    *pMember = (XPCNativeMember*) memberVal.toPrivate();
 
     return true;
 }
@@ -51,21 +51,10 @@ XPCNativeMember::Resolve(XPCCallContext& ccx, XPCNativeInterface* iface,
                          HandleObject parent, jsval *vp)
 {
     if (IsConstant()) {
-        const nsXPTConstant* constant;
-        if (NS_FAILED(iface->GetInterfaceInfo()->GetConstant(mIndex, &constant)))
-            return false;
-
-        const nsXPTCMiniVariant& mv = *constant->GetValue();
-
-        // XXX Big Hack!
-        nsXPTCVariant v;
-        v.flags = 0;
-        v.type = constant->GetType();
-        memcpy(&v.val, &mv.val, sizeof(mv.val));
-
         RootedValue resultVal(ccx);
-
-        if (!XPCConvert::NativeData2JS(&resultVal, &v.val, v.type, nullptr, nullptr))
+        nsXPIDLCString name;
+        if (NS_FAILED(iface->GetInterfaceInfo()->GetConstant(mIndex, &resultVal,
+                                                             getter_Copies(name))))
             return false;
 
         *vp = resultVal;
@@ -310,13 +299,14 @@ XPCNativeInterface::NewInstance(nsIInterfaceInfo* aInfo)
 
     if (!failed) {
         for (i = 0; i < constCount; i++) {
-            const nsXPTConstant* constant;
-            if (NS_FAILED(aInfo->GetConstant(i, &constant))) {
+            RootedValue constant(cx);
+            nsXPIDLCString namestr;
+            if (NS_FAILED(aInfo->GetConstant(i, &constant, getter_Copies(namestr)))) {
                 failed = true;
                 break;
             }
 
-            str = JS_InternString(cx, constant->GetName());
+            str = JS_InternString(cx, namestr);
             if (!str) {
                 NS_ERROR("bad constant name");
                 failed = true;
@@ -479,8 +469,6 @@ XPCNativeSet::GetNewOrUsed(nsIClassInfo* classInfo)
     if (iidCount) {
         AutoMarkingNativeInterfacePtrArrayPtr
             arr(cx, new XPCNativeInterface*[iidCount], iidCount, true);
-        if (!arr)
-            goto out;
 
         interfaceArray = arr;
 

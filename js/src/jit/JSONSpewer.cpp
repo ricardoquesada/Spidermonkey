@@ -185,7 +185,7 @@ JSONSpewer::beginFunction(JSScript *script)
 
     beginObject();
     if (script)
-        stringProperty("name", "%s:%d", script->filename(), script->lineno);
+        stringProperty("name", "%s:%d", script->filename(), script->lineno());
     else
         stringProperty("name", "asm.js compilation");
     beginListProperty("passes");
@@ -228,6 +228,8 @@ JSONSpewer::spewMResumePoint(MResumePoint *rp)
     for (MResumePoint *iter = rp; iter; iter = iter->caller()) {
         for (int i = iter->numOperands() - 1; i >= 0; i--)
             integerValue(iter->getOperand(i)->id());
+        if (iter->caller())
+            stringValue("|");
     }
     endList();
 
@@ -421,8 +423,8 @@ JSONSpewer::spewIntervals(LinearScanAllocator *regalloc)
 
                         for (size_t j = 0; j < live->numRanges(); j++) {
                             beginObject();
-                            integerProperty("start", live->getRange(j)->from.pos());
-                            integerProperty("end", live->getRange(j)->to.pos());
+                            integerProperty("start", live->getRange(j)->from.bits());
+                            integerProperty("end", live->getRange(j)->to.bits());
                             endObject();
                         }
 

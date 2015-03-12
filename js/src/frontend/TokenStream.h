@@ -11,6 +11,7 @@
 
 #include "mozilla/DebugOnly.h"
 #include "mozilla/PodOperations.h"
+#include "mozilla/UniquePtr.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -21,6 +22,8 @@
 
 #include "js/Vector.h"
 #include "vm/RegExpObject.h"
+
+struct KeywordInfo;
 
 namespace js {
 namespace frontend {
@@ -43,6 +46,8 @@ enum TokenKind {
     TOK_NAME,                      // identifier
     TOK_NUMBER,                    // numeric constant
     TOK_STRING,                    // string constant
+    TOK_TEMPLATE_HEAD,             // start of template literal with substitutions
+    TOK_NO_SUBS_TEMPLATE,          // template literal without substitutions
     TOK_REGEXP,                    // RegExp constant
     TOK_TRUE,                      // true
     TOK_FALSE,                     // false
@@ -275,7 +280,9 @@ struct Token
     }
 
     void setAtom(JSAtom *atom) {
-        JS_ASSERT(type == TOK_STRING);
+        JS_ASSERT (type == TOK_STRING ||
+                   type == TOK_TEMPLATE_HEAD ||
+                   type == TOK_NO_SUBS_TEMPLATE);
         JS_ASSERT(!IsPoisonedPtr(atom));
         u.atom = atom;
     }
@@ -300,7 +307,9 @@ struct Token
     }
 
     JSAtom *atom() const {
-        JS_ASSERT(type == TOK_STRING);
+        JS_ASSERT (type == TOK_STRING ||
+                   type == TOK_TEMPLATE_HEAD ||
+                   type == TOK_NO_SUBS_TEMPLATE);
         return u.atom;
     }
 
@@ -493,6 +502,7 @@ class MOZ_STACK_CLASS TokenStream
                         //   we look for a regexp instead of just returning
                         //   TOK_DIV.
         KeywordIsName,  // Treat keywords as names by returning TOK_NAME.
+        TemplateTail,   // Treat next characters as part of a template string
     };
 
     // Get the next token from the stream, make it the current token, and
@@ -539,7 +549,7 @@ class MOZ_STACK_CLASS TokenStream
     // returns TOK_EOL.  In that case, no token with TOK_EOL is actually
     // created, just a TOK_EOL TokenKind is returned, and currentToken()
     // shouldn't be consulted.  (This is the only place TOK_EOL is produced.)
-    JS_ALWAYS_INLINE TokenKind peekTokenSameLine(Modifier modifier = None) {
+    MOZ_ALWAYS_INLINE TokenKind peekTokenSameLine(Modifier modifier = None) {
        const Token &curr = currentToken();
 
         // If lookahead != 0, we have scanned ahead at least one token, and
@@ -597,7 +607,7 @@ class MOZ_STACK_CLASS TokenStream
         //
         // This class is explicity ignored by the analysis, so don't add any
         // more pointers to GC things here!
-        Position(AutoKeepAtoms&) { }
+        explicit Position(AutoKeepAtoms&) { }
       private:
         Position(const Position&) MOZ_DELETE;
         friend class TokenStream;
@@ -614,7 +624,7 @@ class MOZ_STACK_CLASS TokenStream
     void advance(size_t position);
     void tell(Position *);
     void seek(const Position &pos);
-    void seek(const Position &pos, const TokenStream &other);
+    bool seek(const Position &pos, const TokenStream &other);
 
     size_t positionToOffset(const Position &pos) const {
         return pos.buf - userbuf.base();
@@ -628,12 +638,12 @@ class MOZ_STACK_CLASS TokenStream
         return userbuf.limit();
     }
 
-    bool hasSourceURL() const {
-        return sourceURL_ != nullptr;
+    bool hasDisplayURL() const {
+        return displayURL_ != nullptr;
     }
 
-    jschar *sourceURL() {
-        return sourceURL_;
+    jschar *displayURL() {
+        return displayURL_.get();
     }
 
     bool hasSourceMapURL() const {
@@ -641,7 +651,7 @@ class MOZ_STACK_CLASS TokenStream
     }
 
     jschar *sourceMapURL() {
-        return sourceMapURL_;
+        return sourceMapURL_.get();
     }
 
     // If the name at s[0:length] is not a keyword in this version, return
@@ -654,7 +664,9 @@ class MOZ_STACK_CLASS TokenStream
     // null, report a SyntaxError ("if is a reserved identifier") and return
     // false. If ttp is non-null, return true with the keyword's TokenKind in
     // *ttp.
+    bool checkForKeyword(const KeywordInfo *kw, TokenKind *ttp);
     bool checkForKeyword(const jschar *s, size_t length, TokenKind *ttp);
+    bool checkForKeyword(JSAtom *atom, TokenKind *ttp);
 
     // This class maps a userbuf offset (which is 0-indexed) to a line number
     // (which is 1-indexed) and a column index (which is 0-indexed).
@@ -710,7 +722,7 @@ class MOZ_STACK_CLASS TokenStream
         SourceCoords(ExclusiveContext *cx, uint32_t ln);
 
         void add(uint32_t lineNum, uint32_t lineStartOffset);
-        void fill(const SourceCoords &other);
+        bool fill(const SourceCoords &other);
 
         bool isOnThisLine(uint32_t offset, uint32_t lineNum) const {
             uint32_t lineIndex = lineNumToIndex(lineNum);
@@ -747,8 +759,7 @@ class MOZ_STACK_CLASS TokenStream
     class TokenBuf {
       public:
         TokenBuf(ExclusiveContext *cx, const jschar *buf, size_t length)
-          : base_(buf), limit_(buf + length), ptr(buf),
-            skipBase(cx, &base_), skipLimit(cx, &limit_), skipPtr(cx, &ptr)
+          : base_(buf), limit_(buf + length), ptr(buf)
         { }
 
         bool hasRawChars() const {
@@ -816,7 +827,7 @@ class MOZ_STACK_CLASS TokenStream
 #endif
 
         static bool isRawEOLChar(int32_t c) {
-            return (c == '\n' || c == '\r' || c == LINE_SEPARATOR || c == PARA_SEPARATOR);
+            return c == '\n' || c == '\r' || c == LINE_SEPARATOR || c == PARA_SEPARATOR;
         }
 
         // Finds the next EOL, but stops once 'max' jschars have been scanned
@@ -827,12 +838,11 @@ class MOZ_STACK_CLASS TokenStream
         const jschar *base_;            // base of buffer
         const jschar *limit_;           // limit for quick bounds check
         const jschar *ptr;              // next char to get
-
-        // We are not yet moving strings
-        SkipRoot skipBase, skipLimit, skipPtr;
     };
 
     TokenKind getTokenInternal(Modifier modifier);
+
+    bool getStringOrTemplateToken(int qc, Token **tp);
 
     int32_t getChar();
     int32_t getCharIgnoreEOL();
@@ -847,14 +857,15 @@ class MOZ_STACK_CLASS TokenStream
     bool getDirectives(bool isMultiline, bool shouldWarnDeprecated);
     bool getDirective(bool isMultiline, bool shouldWarnDeprecated,
                       const char *directive, int directiveLength,
-                      const char *errorMsgPragma, jschar **destination);
-    bool getSourceURL(bool isMultiline, bool shouldWarnDeprecated);
+                      const char *errorMsgPragma,
+                      mozilla::UniquePtr<jschar[], JS::FreePolicy> *destination);
+    bool getDisplayURL(bool isMultiline, bool shouldWarnDeprecated);
     bool getSourceMappingURL(bool isMultiline, bool shouldWarnDeprecated);
 
     // |expect| cannot be an EOL char.
     bool matchChar(int32_t expect) {
         MOZ_ASSERT(!TokenBuf::isRawEOLChar(expect));
-        return JS_LIKELY(userbuf.hasRawChars()) &&
+        return MOZ_LIKELY(userbuf.hasRawChars()) &&
                userbuf.matchRawChar(expect);
     }
 
@@ -889,8 +900,8 @@ class MOZ_STACK_CLASS TokenStream
     const jschar        *prevLinebase;      // start of previous line;  nullptr if on the first line
     TokenBuf            userbuf;            // user input buffer
     const char          *filename;          // input filename or null
-    jschar              *sourceURL_;        // the user's requested source URL or null
-    jschar              *sourceMapURL_;     // source map's filename or null
+    mozilla::UniquePtr<jschar[], JS::FreePolicy> displayURL_; // the user's requested source URL or null
+    mozilla::UniquePtr<jschar[], JS::FreePolicy> sourceMapURL_; // source map's filename or null
     CharBuffer          tokenbuf;           // current token string buffer
     bool                maybeEOL[256];      // probabilistic EOL lookup table
     bool                maybeStrSpecial[256];   // speeds up string scanning
@@ -898,15 +909,6 @@ class MOZ_STACK_CLASS TokenStream
     ExclusiveContext    *const cx;
     JSPrincipals        *const originPrincipals;
     StrictModeGetter    *strictModeGetter;  // used to test for strict mode
-
-    // The tokens array stores pointers to JSAtoms. These are rooted by the
-    // atoms table using AutoKeepAtoms in the Parser. This SkipRoot tells the
-    // exact rooting analysis to ignore the atoms in the tokens array.
-    SkipRoot            tokenSkip;
-
-    // Bug 846011
-    SkipRoot            linebaseSkip;
-    SkipRoot            prevLinebaseSkip;
 };
 
 // Steal one JSREPORT_* bit (see jsapi.h) to tell that arguments to the error

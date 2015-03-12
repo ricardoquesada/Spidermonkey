@@ -8,9 +8,9 @@
 #define nsDateTimeFormatUnix_h__
 
 
-#include "nsICharsetConverterManager.h"
 #include "nsCOMPtr.h"
 #include "nsIDateTimeFormat.h"
+#include "nsIUnicodeDecoder.h"
 
 #define kPlatformLocaleLength 64
 
@@ -50,9 +50,9 @@ public:
 
   nsDateTimeFormatUnix() {mLocale.Truncate();mAppLocale.Truncate();}
 
+private:
   virtual ~nsDateTimeFormatUnix() {}
 
-private:
   // init this interface to a specified locale
   NS_IMETHOD Initialize(nsILocale* locale);
 

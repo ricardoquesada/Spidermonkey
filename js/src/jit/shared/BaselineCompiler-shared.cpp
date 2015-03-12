@@ -12,16 +12,16 @@
 using namespace js;
 using namespace js::jit;
 
-BaselineCompilerShared::BaselineCompilerShared(JSContext *cx, TempAllocator &alloc, HandleScript script)
+BaselineCompilerShared::BaselineCompilerShared(JSContext *cx, TempAllocator &alloc, JSScript *script)
   : cx(cx),
-    script(cx, script),
+    script(script),
     pc(script->code()),
     ionCompileable_(jit::IsIonEnabled(cx) && CanIonCompileScript(cx, script, false)),
     ionOSRCompileable_(jit::IsIonEnabled(cx) && CanIonCompileScript(cx, script, true)),
     debugMode_(cx->compartment()->debugMode()),
     alloc_(alloc),
     analysis_(alloc, script),
-    frame(cx, script, masm),
+    frame(script, masm),
     stubSpace_(),
     icEntries_(),
     pcMappingEntries_(),
@@ -34,7 +34,7 @@ BaselineCompilerShared::BaselineCompilerShared(JSContext *cx, TempAllocator &all
 bool
 BaselineCompilerShared::callVM(const VMFunction &fun, CallVMPhase phase)
 {
-    IonCode *code = cx->runtime()->jitRuntime()->getVMWrapper(fun);
+    JitCode *code = cx->runtime()->jitRuntime()->getVMWrapper(fun);
     if (!code)
         return false;
 
@@ -57,12 +57,12 @@ BaselineCompilerShared::callVM(const VMFunction &fun, CallVMPhase phase)
     uint32_t frameFullSize = frameBaseSize + (frameVals * sizeof(Value));
     if (phase == POST_INITIALIZE) {
         masm.store32(Imm32(frameFullSize), frameSizeAddress);
-        uint32_t descriptor = MakeFrameDescriptor(frameFullSize + argSize, IonFrame_BaselineJS);
+        uint32_t descriptor = MakeFrameDescriptor(frameFullSize + argSize, JitFrame_BaselineJS);
         masm.push(Imm32(descriptor));
 
     } else if (phase == PRE_INITIALIZE) {
         masm.store32(Imm32(frameBaseSize), frameSizeAddress);
-        uint32_t descriptor = MakeFrameDescriptor(frameBaseSize + argSize, IonFrame_BaselineJS);
+        uint32_t descriptor = MakeFrameDescriptor(frameBaseSize + argSize, JitFrame_BaselineJS);
         masm.push(Imm32(descriptor));
 
     } else {
@@ -85,7 +85,7 @@ BaselineCompilerShared::callVM(const VMFunction &fun, CallVMPhase phase)
         masm.bind(&afterWrite);
         masm.store32(BaselineTailCallReg, frameSizeAddress);
         masm.add32(Imm32(argSize), BaselineTailCallReg);
-        masm.makeFrameDescriptor(BaselineTailCallReg, IonFrame_BaselineJS);
+        masm.makeFrameDescriptor(BaselineTailCallReg, JitFrame_BaselineJS);
         masm.push(BaselineTailCallReg);
     }
 
@@ -96,8 +96,8 @@ BaselineCompilerShared::callVM(const VMFunction &fun, CallVMPhase phase)
 
     // Add a fake ICEntry (without stubs), so that the return offset to
     // pc mapping works.
-    ICEntry entry(script->pcToOffset(pc), false);
-    entry.setReturnOffset(callOffset);
+    ICEntry entry(script->pcToOffset(pc), ICEntry::Kind_CallVM);
+    entry.setReturnOffset(CodeOffsetLabel(callOffset));
 
     return icEntries_.append(entry);
 }

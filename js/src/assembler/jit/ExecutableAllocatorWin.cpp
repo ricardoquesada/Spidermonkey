@@ -28,6 +28,7 @@
 #if ENABLE_ASSEMBLER && WTF_OS_WINDOWS
 
 #include "jswin.h"
+#include "mozilla/WindowsVersion.h"
 
 extern uint64_t random_next(uint64_t *, int);
 
@@ -72,16 +73,8 @@ void *ExecutableAllocator::computeRandomAllocationAddress()
 static bool
 RandomizeIsBrokenImpl()
 {
-    OSVERSIONINFO osvi;
-    ZeroMemory(&osvi, sizeof(OSVERSIONINFO));
-    osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
-
-    GetVersionEx(&osvi);
-
-    // Version number mapping is available at:
-    // http://msdn.microsoft.com/en-us/library/ms724832%28v=vs.85%29.aspx
     // We disable everything before Vista, for now.
-    return osvi.dwMajorVersion <= 5;
+    return !mozilla::IsVistaOrLater();
 }
 
 static bool
@@ -99,7 +92,7 @@ ExecutablePool::Allocation ExecutableAllocator::systemAlloc(size_t n)
     // Randomization disabled to avoid a performance fault on x64 builds.
     // See bug 728623.
 #ifndef JS_CPU_X64
-    if (allocBehavior == AllocationCanRandomize && !RandomizeIsBroken()) {
+    if (!RandomizeIsBroken()) {
         void *randomAddress = computeRandomAllocationAddress();
         allocation = VirtualAlloc(randomAddress, n, MEM_COMMIT | MEM_RESERVE,
                                   PAGE_EXECUTE_READWRITE);
@@ -123,8 +116,11 @@ ExecutablePool::toggleAllCodeAsAccessible(bool accessible)
     size_t size = m_freePtr - begin;
 
     if (size) {
+        // N.B. DEP is not on automatically in Windows XP, so be sure to use
+        // PAGE_NOACCESS instead of PAGE_READWRITE when making inaccessible.
         DWORD oldProtect;
-        if (!VirtualProtect(begin, size, accessible ? PAGE_EXECUTE_READWRITE : PAGE_NOACCESS, &oldProtect))
+        int flags = accessible ? PAGE_EXECUTE_READWRITE : PAGE_NOACCESS;
+        if (!VirtualProtect(begin, size, flags, &oldProtect))
             MOZ_CRASH();
     }
 }

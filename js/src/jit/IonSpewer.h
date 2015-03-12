@@ -24,9 +24,9 @@ namespace jit {
     _(Abort)                                \
     /* Information about compiled scripts */\
     _(Scripts)                              \
-    /* Information during MIR building */   \
-    _(Logs)                                 \
     /* Info about failing to log script */  \
+    _(Logs)                                 \
+    /* Information during MIR building */   \
     _(MIR)                                  \
     /* Information during alias analysis */ \
     _(Alias)                                \
@@ -54,8 +54,6 @@ namespace jit {
     _(Safepoints)                           \
     /* Debug info about Pools*/             \
     _(Pools)                                \
-    /* Calls to js::jit::Trace() */         \
-    _(Trace)                                \
     /* Debug info about the I$ */           \
     _(CacheFlush)                           \
                                             \
@@ -74,7 +72,9 @@ namespace jit {
     /* OSR from Baseline => Ion. */         \
     _(BaselineOSR)                          \
     /* Bailouts. */                         \
-    _(BaselineBailouts)
+    _(BaselineBailouts)                     \
+    /* Debug Mode On Stack Recompile . */   \
+    _(BaselineDebugModeOSR)
 
 
 enum IonSpewChannel {
@@ -95,14 +95,13 @@ class IonSpewer
 {
   private:
     MIRGraph *graph;
-    JS::HandleScript function;
     C1Spewer c1Spewer;
     JSONSpewer jsonSpewer;
     bool inited_;
 
   public:
     IonSpewer()
-      : graph(nullptr), function(NullPtr()), inited_(false)
+      : graph(nullptr), inited_(false)
     { }
 
     // File output is terminated safely upon destruction.
@@ -114,6 +113,13 @@ class IonSpewer
     void spewPass(const char *pass);
     void spewPass(const char *pass, LinearScanAllocator *ra);
     void endFunction();
+};
+
+class IonSpewFunction
+{
+  public:
+    IonSpewFunction(MIRGraph *graph, JS::HandleScript function);
+    ~IonSpewFunction();
 };
 
 void IonSpewNewFunction(MIRGraph *graph, JS::HandleScript function);

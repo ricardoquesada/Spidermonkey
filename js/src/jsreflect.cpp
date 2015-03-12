@@ -30,6 +30,7 @@
 using namespace js;
 using namespace js::frontend;
 
+using JS::AutoValueArray;
 using mozilla::ArrayLength;
 using mozilla::DebugOnly;
 
@@ -148,23 +149,21 @@ GetPropertyDefault(JSContext *cx, HandleObject obj, HandleId id, HandleValue def
  */
 class NodeBuilder
 {
+    typedef AutoValueArray<AST_LIMIT> CallbackArray;
+
     JSContext   *cx;
     TokenStream *tokenStream;
     bool        saveLoc;               /* save source location information?     */
     char const  *src;                  /* source filename or null               */
     RootedValue srcval;                /* source filename JS value or null      */
-    Value       callbacks[AST_LIMIT];  /* user-specified callbacks              */
-    AutoValueArray callbacksRoots;     /* for rooting |callbacks|               */
+    CallbackArray callbacks;           /* user-specified callbacks              */
     RootedValue userv;                 /* user-specified builder object or null */
-    RootedValue undefinedVal;          /* a rooted undefined val, used by opt() */
 
   public:
     NodeBuilder(JSContext *c, bool l, char const *s)
-        : cx(c), tokenStream(nullptr), saveLoc(l), src(s), srcval(c),
-          callbacksRoots(c, callbacks, AST_LIMIT), userv(c), undefinedVal(c, UndefinedValue())
-    {
-        MakeRangeGCSafe(callbacks, mozilla::ArrayLength(callbacks));
-    }
+      : cx(c), tokenStream(nullptr), saveLoc(l), src(s), srcval(c), callbacks(cx),
+          userv(c)
+    {}
 
     bool init(HandleObject userobj = js::NullPtr()) {
         if (src) {
@@ -206,7 +205,7 @@ class NodeBuilder
                 return false;
             }
 
-            callbacks[i] = funv;
+            callbacks[i].set(funv);
         }
 
         return true;
@@ -222,14 +221,14 @@ class NodeBuilder
             RootedValue loc(cx);
             if (!newNodeLoc(pos, &loc))
                 return false;
-            Value argv[] = { loc };
-            AutoValueArray ava(cx, argv, 1);
-            return Invoke(cx, userv, fun, ArrayLength(argv), argv, dst);
+            AutoValueArray<1> argv(cx);
+            argv[0].set(loc);
+            return Invoke(cx, userv, fun, argv.length(), argv.begin(), dst);
         }
 
-        Value argv[] = { NullValue() }; /* no zero-length arrays allowed! */
-        AutoValueArray ava(cx, argv, 1);
-        return Invoke(cx, userv, fun, 0, argv, dst);
+        AutoValueArray<1> argv(cx);
+        argv[0].setNull(); /* no zero-length arrays allowed! */
+        return Invoke(cx, userv, fun, 0, argv.begin(), dst);
     }
 
     bool callback(HandleValue fun, HandleValue v1, TokenPos *pos, MutableHandleValue dst) {
@@ -237,14 +236,15 @@ class NodeBuilder
             RootedValue loc(cx);
             if (!newNodeLoc(pos, &loc))
                 return false;
-            Value argv[] = { v1, loc };
-            AutoValueArray ava(cx, argv, 2);
-            return Invoke(cx, userv, fun, ArrayLength(argv), argv, dst);
+            AutoValueArray<2> argv(cx);
+            argv[0].set(v1);
+            argv[1].set(loc);
+            return Invoke(cx, userv, fun, argv.length(), argv.begin(), dst);
         }
 
-        Value argv[] = { v1 };
-        AutoValueArray ava(cx, argv, 1);
-        return Invoke(cx, userv, fun, ArrayLength(argv), argv, dst);
+        AutoValueArray<1> argv(cx);
+        argv[0].set(v1);
+        return Invoke(cx, userv, fun, argv.length(), argv.begin(), dst);
     }
 
     bool callback(HandleValue fun, HandleValue v1, HandleValue v2, TokenPos *pos,
@@ -253,14 +253,17 @@ class NodeBuilder
             RootedValue loc(cx);
             if (!newNodeLoc(pos, &loc))
                 return false;
-            Value argv[] = { v1, v2, loc };
-            AutoValueArray ava(cx, argv, 3);
-            return Invoke(cx, userv, fun, ArrayLength(argv), argv, dst);
+            AutoValueArray<3> argv(cx);
+            argv[0].set(v1);
+            argv[1].set(v2);
+            argv[2].set(loc);
+            return Invoke(cx, userv, fun, argv.length(), argv.begin(), dst);
         }
 
-        Value argv[] = { v1, v2 };
-        AutoValueArray ava(cx, argv, 2);
-        return Invoke(cx, userv, fun, ArrayLength(argv), argv, dst);
+        AutoValueArray<2> argv(cx);
+        argv[0].set(v1);
+        argv[1].set(v2);
+        return Invoke(cx, userv, fun, argv.length(), argv.begin(), dst);
     }
 
     bool callback(HandleValue fun, HandleValue v1, HandleValue v2, HandleValue v3, TokenPos *pos,
@@ -269,14 +272,19 @@ class NodeBuilder
             RootedValue loc(cx);
             if (!newNodeLoc(pos, &loc))
                 return false;
-            Value argv[] = { v1, v2, v3, loc };
-            AutoValueArray ava(cx, argv, 4);
-            return Invoke(cx, userv, fun, ArrayLength(argv), argv, dst);
+            AutoValueArray<4> argv(cx);
+            argv[0].set(v1);
+            argv[1].set(v2);
+            argv[2].set(v3);
+            argv[3].set(loc);
+            return Invoke(cx, userv, fun, argv.length(), argv.begin(), dst);
         }
 
-        Value argv[] = { v1, v2, v3 };
-        AutoValueArray ava(cx, argv, 3);
-        return Invoke(cx, userv, fun, ArrayLength(argv), argv, dst);
+        AutoValueArray<3> argv(cx);
+        argv[0].set(v1);
+        argv[1].set(v2);
+        argv[2].set(v3);
+        return Invoke(cx, userv, fun, argv.length(), argv.begin(), dst);
     }
 
     bool callback(HandleValue fun, HandleValue v1, HandleValue v2, HandleValue v3, HandleValue v4,
@@ -285,14 +293,21 @@ class NodeBuilder
             RootedValue loc(cx);
             if (!newNodeLoc(pos, &loc))
                 return false;
-            Value argv[] = { v1, v2, v3, v4, loc };
-            AutoValueArray ava(cx, argv, 5);
-            return Invoke(cx, userv, fun, ArrayLength(argv), argv, dst);
+            AutoValueArray<5> argv(cx);
+            argv[0].set(v1);
+            argv[1].set(v2);
+            argv[2].set(v3);
+            argv[3].set(v4);
+            argv[4].set(loc);
+            return Invoke(cx, userv, fun, argv.length(), argv.begin(), dst);
         }
 
-        Value argv[] = { v1, v2, v3, v4 };
-        AutoValueArray ava(cx, argv, 4);
-        return Invoke(cx, userv, fun, ArrayLength(argv), argv, dst);
+        AutoValueArray<4> argv(cx);
+        argv[0].set(v1);
+        argv[1].set(v2);
+        argv[2].set(v3);
+        argv[3].set(v4);
+        return Invoke(cx, userv, fun, argv.length(), argv.begin(), dst);
     }
 
     bool callback(HandleValue fun, HandleValue v1, HandleValue v2, HandleValue v3, HandleValue v4,
@@ -301,23 +316,32 @@ class NodeBuilder
             RootedValue loc(cx);
             if (!newNodeLoc(pos, &loc))
                 return false;
-            Value argv[] = { v1, v2, v3, v4, v5, loc };
-            AutoValueArray ava(cx, argv, 6);
-            return Invoke(cx, userv, fun, ArrayLength(argv), argv, dst);
+            AutoValueArray<6> argv(cx);
+            argv[0].set(v1);
+            argv[1].set(v2);
+            argv[2].set(v3);
+            argv[3].set(v4);
+            argv[4].set(v5);
+            argv[5].set(loc);
+            return Invoke(cx, userv, fun, argv.length(), argv.begin(), dst);
         }
 
-        Value argv[] = { v1, v2, v3, v4, v5 };
-        AutoValueArray ava(cx, argv, 5);
-        return Invoke(cx, userv, fun, ArrayLength(argv), argv, dst);
+        AutoValueArray<5> argv(cx);
+        argv[0].set(v1);
+        argv[1].set(v2);
+        argv[2].set(v3);
+        argv[3].set(v4);
+        argv[4].set(v5);
+        return Invoke(cx, userv, fun, argv.length(), argv.begin(), dst);
     }
 
     // WARNING: Returning a Handle is non-standard, but it works in this case
-    // because both |v| and |undefinedVal| are definitely rooted on a previous
-    // stack frame (i.e. we're just choosing between two already-rooted
-    // values).
+    // because both |v| and |UndefinedHandleValue| are definitely rooted on a
+    // previous stack frame (i.e. we're just choosing between two
+    // already-rooted values).
     HandleValue opt(HandleValue v) {
         JS_ASSERT_IF(v.isMagic(), v.whyMagic() == JS_SERIALIZE_NO_NODE);
-        return v.isMagic(JS_SERIALIZE_NO_NODE) ? undefinedVal : v;
+        return v.isMagic(JS_SERIALIZE_NO_NODE) ? JS::UndefinedHandleValue : v;
     }
 
     bool atomValue(const char *s, MutableHandleValue dst) {
@@ -508,8 +532,8 @@ class NodeBuilder
     bool catchClause(HandleValue var, HandleValue guard, HandleValue body, TokenPos *pos,
                      MutableHandleValue dst);
 
-    bool propertyInitializer(HandleValue key, HandleValue val, PropKind kind, TokenPos *pos,
-                             MutableHandleValue dst);
+    bool propertyInitializer(HandleValue key, HandleValue val, PropKind kind, bool isShorthand,
+                             TokenPos *pos, MutableHandleValue dst);
 
 
     /*
@@ -605,6 +629,8 @@ class NodeBuilder
 
     bool arrayExpression(NodeVector &elts, TokenPos *pos, MutableHandleValue dst);
 
+    bool templateLiteral(NodeVector &elts, TokenPos *pos, MutableHandleValue dst);
+
     bool spreadExpression(HandleValue expr, TokenPos *pos, MutableHandleValue dst);
 
     bool objectExpression(NodeVector &elts, TokenPos *pos, MutableHandleValue dst);
@@ -639,7 +665,8 @@ class NodeBuilder
 
     bool objectPattern(NodeVector &elts, TokenPos *pos, MutableHandleValue dst);
 
-    bool propertyPattern(HandleValue key, HandleValue patt, TokenPos *pos, MutableHandleValue dst);
+    bool propertyPattern(HandleValue key, HandleValue patt, bool isShorthand, TokenPos *pos,
+                         MutableHandleValue dst);
 };
 
 } /* anonymous namespace */
@@ -1184,6 +1211,14 @@ NodeBuilder::arrayExpression(NodeVector &elts, TokenPos *pos, MutableHandleValue
     return listNode(AST_ARRAY_EXPR, "elements", elts, pos, dst);
 }
 
+#ifdef JS_HAS_TEMPLATE_STRINGS
+bool
+NodeBuilder::templateLiteral(NodeVector &elts, TokenPos *pos, MutableHandleValue dst)
+{
+    return listNode(AST_TEMPLATE_LITERAL, "elements", elts, pos, dst);
+}
+#endif
+
 bool
 NodeBuilder::spreadExpression(HandleValue expr, TokenPos *pos, MutableHandleValue dst)
 {
@@ -1193,12 +1228,14 @@ NodeBuilder::spreadExpression(HandleValue expr, TokenPos *pos, MutableHandleValu
 }
 
 bool
-NodeBuilder::propertyPattern(HandleValue key, HandleValue patt, TokenPos *pos,
+NodeBuilder::propertyPattern(HandleValue key, HandleValue patt, bool isShorthand, TokenPos *pos,
                              MutableHandleValue dst)
 {
     RootedValue kindName(cx);
     if (!atomValue("init", &kindName))
         return false;
+
+    RootedValue isShorthandVal(cx, BooleanValue(isShorthand));
 
     RootedValue cb(cx, callbacks[AST_PROP_PATT]);
     if (!cb.isNull())
@@ -1208,12 +1245,13 @@ NodeBuilder::propertyPattern(HandleValue key, HandleValue patt, TokenPos *pos,
                    "key", key,
                    "value", patt,
                    "kind", kindName,
+                   "shorthand", isShorthandVal,
                    dst);
 }
 
 bool
-NodeBuilder::propertyInitializer(HandleValue key, HandleValue val, PropKind kind, TokenPos *pos,
-                                 MutableHandleValue dst)
+NodeBuilder::propertyInitializer(HandleValue key, HandleValue val, PropKind kind, bool isShorthand,
+                                 TokenPos *pos, MutableHandleValue dst)
 {
     RootedValue kindName(cx);
     if (!atomValue(kind == PROP_INIT
@@ -1224,6 +1262,8 @@ NodeBuilder::propertyInitializer(HandleValue key, HandleValue val, PropKind kind
         return false;
     }
 
+    RootedValue isShorthandVal(cx, BooleanValue(isShorthand));
+
     RootedValue cb(cx, callbacks[AST_PROPERTY]);
     if (!cb.isNull())
         return callback(cb, kindName, key, val, pos, dst);
@@ -1232,6 +1272,7 @@ NodeBuilder::propertyInitializer(HandleValue key, HandleValue val, PropKind kind
                    "key", key,
                    "value", val,
                    "kind", kindName,
+                   "shorthand", isShorthandVal,
                    dst);
 }
 
@@ -2768,11 +2809,6 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
 
       case PNK_OBJECT:
       {
-        /* The parser notes any uninitialized properties by setting the PNX_DESTRUCT flag. */
-        if (pn->pn_xflags & PNX_DESTRUCT) {
-            JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_BAD_OBJECT_INIT);
-            return false;
-        }
         NodeVector elts(cx);
         if (!elts.reserve(pn->pn_count))
             return false;
@@ -2795,6 +2831,26 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
       case PNK_THIS:
         return builder.thisExpression(&pn->pn_pos, dst);
 
+#ifdef JS_HAS_TEMPLATE_STRINGS
+      case PNK_TEMPLATE_STRING_LIST:
+      {
+        NodeVector elts(cx);
+        if (!elts.reserve(pn->pn_count))
+            return false;
+
+        for (ParseNode *next = pn->pn_head; next; next = next->pn_next) {
+            JS_ASSERT(pn->pn_pos.encloses(next->pn_pos));
+
+            RootedValue expr(cx);
+            if (!expression(next, &expr))
+                return false;
+            elts.infallibleAppend(expr);
+        }
+
+        return builder.templateLiteral(elts, &pn->pn_pos, dst);
+      }
+      case PNK_TEMPLATE_STRING:
+#endif
       case PNK_STRING:
       case PNK_REGEXP:
       case PNK_NUMBER:
@@ -2870,10 +2926,11 @@ ASTSerializer::property(ParseNode *pn, MutableHandleValue dst)
         LOCAL_NOT_REACHED("unexpected object-literal property");
     }
 
+    bool isShorthand = pn->isKind(PNK_SHORTHAND);
     RootedValue key(cx), val(cx);
     return propertyName(pn->pn_left, &key) &&
            expression(pn->pn_right, &val) &&
-           builder.propertyInitializer(key, val, kind, &pn->pn_pos, dst);
+           builder.propertyInitializer(key, val, kind, isShorthand, &pn->pn_pos, dst);
 }
 
 bool
@@ -2881,6 +2938,9 @@ ASTSerializer::literal(ParseNode *pn, MutableHandleValue dst)
 {
     RootedValue val(cx);
     switch (pn->getKind()) {
+#ifdef JS_HAS_TEMPLATE_STRINGS
+      case PNK_TEMPLATE_STRING:
+#endif
       case PNK_STRING:
         val.setString(pn->pn_atom);
         break;
@@ -2890,11 +2950,7 @@ ASTSerializer::literal(ParseNode *pn, MutableHandleValue dst)
         RootedObject re1(cx, pn->as<RegExpLiteral>().objbox()->object);
         LOCAL_ASSERT(re1 && re1->is<RegExpObject>());
 
-        RootedObject proto(cx);
-        if (!js_GetClassPrototype(cx, JSProto_RegExp, &proto))
-            return false;
-
-        RootedObject re2(cx, CloneRegExpObject(cx, re1, proto));
+        RootedObject re2(cx, CloneRegExpObject(cx, re1));
         if (!re2)
             return false;
 
@@ -2963,7 +3019,8 @@ ASTSerializer::objectPattern(ParseNode *pn, VarDeclKind *pkind, MutableHandleVal
         RootedValue key(cx), patt(cx), prop(cx);
         if (!propertyName(next->pn_left, &key) ||
             !pattern(next->pn_right, pkind, &patt) ||
-            !builder.propertyPattern(key, patt, &next->pn_pos, &prop)) {
+            !builder.propertyPattern(key, patt, next->isKind(PNK_SHORTHAND), &next->pn_pos,
+                                     &prop)) {
             return false;
         }
 
@@ -3148,7 +3205,7 @@ ASTSerializer::functionArgs(ParseNode *pn, ParseNode *pnargs, ParseNode *pndestr
             else if (!args.append(node))
                 return false;
             if (arg->pn_dflags & PND_DEFAULT) {
-                ParseNode *expr = arg->isDefn() ? arg->expr() : arg->pn_kid->pn_right;
+                ParseNode *expr = arg->expr();
                 RootedValue def(cx);
                 if (!expression(expr, &def) || !defaults.append(def))
                     return false;
@@ -3234,13 +3291,7 @@ reflect_parse(JSContext *cx, uint32_t argc, jsval *vp)
                 if (!str)
                     return false;
 
-                size_t length = str->length();
-                const jschar *chars = str->getChars(cx);
-                if (!chars)
-                    return false;
-
-                TwoByteChars tbchars(chars, length);
-                filename = LossyTwoByteCharsToNewLatin1CharsZ(cx, tbchars).c_str();
+                filename = JS_EncodeString(cx, str);
                 if (!filename)
                     return false;
             }
@@ -3276,17 +3327,20 @@ reflect_parse(JSContext *cx, uint32_t argc, jsval *vp)
     if (!serialize.init(builder))
         return false;
 
-    JSStableString *stable = src->ensureStable(cx);
-    if (!stable)
+    JSFlatString *flat = src->ensureFlat(cx);
+    if (!flat)
         return false;
 
-    const StableCharPtr chars = stable->chars();
-    size_t length = stable->length();
+    AutoStableStringChars flatChars(cx);
+    if (!flatChars.initTwoByte(cx, flat))
+        return false;
+
     CompileOptions options(cx);
     options.setFileAndLine(filename, lineno);
     options.setCanLazilyParse(false);
-    Parser<FullParseHandler> parser(cx, &cx->tempLifoAlloc(), options, chars.get(), length,
-                                    /* foldConstants = */ false, nullptr, nullptr);
+    mozilla::Range<const jschar> chars = flatChars.twoByteRange();
+    Parser<FullParseHandler> parser(cx, &cx->tempLifoAlloc(), options, chars.start().get(),
+                                    chars.length(), /* foldConstants = */ false, nullptr, nullptr);
 
     serialize.setParser(&parser);
 
@@ -3305,14 +3359,13 @@ reflect_parse(JSContext *cx, uint32_t argc, jsval *vp)
 }
 
 JS_PUBLIC_API(JSObject *)
-JS_InitReflect(JSContext *cx, JSObject *objArg)
+JS_InitReflect(JSContext *cx, HandleObject obj)
 {
     static const JSFunctionSpec static_methods[] = {
         JS_FN("parse", reflect_parse, 1, 0),
         JS_FS_END
     };
 
-    RootedObject obj(cx, objArg);
     RootedObject proto(cx, obj->as<GlobalObject>().getOrCreateObjectPrototype(cx));
     if (!proto)
         return nullptr;
@@ -3321,8 +3374,8 @@ JS_InitReflect(JSContext *cx, JSObject *objArg)
     if (!Reflect)
         return nullptr;
 
-    if (!JS_DefineProperty(cx, obj, "Reflect", OBJECT_TO_JSVAL(Reflect),
-                           JS_PropertyStub, JS_StrictPropertyStub, 0)) {
+    if (!JS_DefineProperty(cx, obj, "Reflect", Reflect, 0,
+                           JS_PropertyStub, JS_StrictPropertyStub)) {
         return nullptr;
     }
 

@@ -70,11 +70,7 @@ public class CodeGenerator {
                 "    ").append(mCClassName).append("(jobject obj, JNIEnv* env) : AutoGlobalWrappedJavaObject(obj, env) {};\n");
 
         wrapperMethodBodies.append("\n").append(mCClassName).append("* ").append(mCClassName).append("::Wrap(jobject obj) {\n" +
-                "    JNIEnv *env = GetJNIForThread();\n\n" +
-                "    if (!env) {\n" +
-                "        ALOG_BRIDGE(\"Aborted: No env - %s\", __PRETTY_FUNCTION__);\n" +
-                "        return NULL;\n" +
-                "    }\n\n" +
+                "    JNIEnv *env = GetJNIForThread();\n" +
                 "    ").append(mCClassName).append("* ret = new ").append(mCClassName).append("(obj, env);\n" +
                 "    env->DeleteLocalRef(obj);\n" +
                 "    return ret;\n" +
@@ -107,17 +103,21 @@ public class CodeGenerator {
         Class<?> returnType = theMethod.getReturnType();
 
         // Get the C++ method signature for this method.
-        String implementationSignature = Utils.getCImplementationMethodSignature(parameterTypes, returnType, CMethodName, mCClassName);
-        String headerSignature = Utils.getCHeaderMethodSignature(parameterTypes, theMethod.getParameterAnnotations(), returnType, CMethodName, mCClassName, shallGenerateStatic);
+        String implementationSignature = Utils.getCImplementationMethodSignature(parameterTypes, returnType, CMethodName, mCClassName, aMethodTuple.mAnnotationInfo.narrowChars);
+        String headerSignature = Utils.getCHeaderMethodSignature(parameterTypes, theMethod.getParameterAnnotations(), returnType, CMethodName, mCClassName, shallGenerateStatic, aMethodTuple.mAnnotationInfo.narrowChars);
 
         // Add the header signature to the header file.
         writeSignatureToHeader(headerSignature);
 
         // Use the implementation signature to generate the method body...
-        writeMethodBody(implementationSignature, CMethodName, theMethod, mClassToWrap, aMethodTuple.mAnnotationInfo.isStatic, aMethodTuple.mAnnotationInfo.isMultithreaded);
+        writeMethodBody(implementationSignature, CMethodName, theMethod, mClassToWrap,
+            aMethodTuple.mAnnotationInfo.isStatic,
+            aMethodTuple.mAnnotationInfo.isMultithreaded,
+            aMethodTuple.mAnnotationInfo.noThrow,
+            aMethodTuple.mAnnotationInfo.narrowChars);
     }
 
-    private void generateGetterOrSetterBody(Class<?> aFieldType, String aFieldName, boolean aIsFieldStatic, boolean isSetter) {
+    private void generateGetterOrSetterBody(Class<?> aFieldType, String aFieldName, boolean aIsFieldStatic, boolean isSetter, boolean aNarrowChars) {
         StringBuilder argumentContent = null;
 
         if (isSetter) {
@@ -134,7 +134,7 @@ public class CodeGenerator {
             wrapperMethodBodies.append("return ");
 
             if (isObjectReturningMethod) {
-                wrapperMethodBodies.append("static_cast<").append(Utils.getCReturnType(aFieldType)).append(">(");
+                wrapperMethodBodies.append("static_cast<").append(Utils.getCReturnType(aFieldType, aNarrowChars)).append(">(");
             }
 
             wrapperMethodBodies.append("env->Get");
@@ -185,14 +185,14 @@ public class CodeGenerator {
         boolean shallGenerateStatic = isFieldStatic || aFieldTuple.mAnnotationInfo.isStatic;
 
         String getterName = "get" + CFieldName;
-        String getterSignature = Utils.getCImplementationMethodSignature(EMPTY_CLASS_ARRAY, fieldType, getterName, mCClassName);
-        String getterHeaderSignature = Utils.getCHeaderMethodSignature(EMPTY_CLASS_ARRAY, GETTER_ARGUMENT_ANNOTATIONS, fieldType, getterName, mCClassName, shallGenerateStatic);
+        String getterSignature = Utils.getCImplementationMethodSignature(EMPTY_CLASS_ARRAY, fieldType, getterName, mCClassName, aFieldTuple.mAnnotationInfo.narrowChars);
+        String getterHeaderSignature = Utils.getCHeaderMethodSignature(EMPTY_CLASS_ARRAY, GETTER_ARGUMENT_ANNOTATIONS, fieldType, getterName, mCClassName, shallGenerateStatic, aFieldTuple.mAnnotationInfo.narrowChars);
 
         writeSignatureToHeader(getterHeaderSignature);
 
         writeFunctionStartupBoilerPlate(getterSignature, fieldType, isFieldStatic, true);
 
-        generateGetterOrSetterBody(fieldType, CFieldName, isFieldStatic, false);
+        generateGetterOrSetterBody(fieldType, CFieldName, isFieldStatic, false, aFieldTuple.mAnnotationInfo.narrowChars);
 
         // If field not final, also generate a setter function.
         if (!isFieldFinal) {
@@ -200,14 +200,14 @@ public class CodeGenerator {
 
             Class<?>[] setterArguments = new Class<?>[]{fieldType};
 
-            String setterSignature = Utils.getCImplementationMethodSignature(setterArguments, Void.class, setterName, mCClassName);
-            String setterHeaderSignature = Utils.getCHeaderMethodSignature(setterArguments, SETTER_ARGUMENT_ANNOTATIONS, Void.class, setterName, mCClassName, shallGenerateStatic);
+            String setterSignature = Utils.getCImplementationMethodSignature(setterArguments, Void.class, setterName, mCClassName, aFieldTuple.mAnnotationInfo.narrowChars);
+            String setterHeaderSignature = Utils.getCHeaderMethodSignature(setterArguments, SETTER_ARGUMENT_ANNOTATIONS, Void.class, setterName, mCClassName, shallGenerateStatic, aFieldTuple.mAnnotationInfo.narrowChars);
 
             writeSignatureToHeader(setterHeaderSignature);
 
             writeFunctionStartupBoilerPlate(setterSignature, Void.class, isFieldStatic, true);
 
-            generateGetterOrSetterBody(fieldType, CFieldName, isFieldStatic, true);
+            generateGetterOrSetterBody(fieldType, CFieldName, isFieldStatic, true, aFieldTuple.mAnnotationInfo.narrowChars);
         }
     }
 
@@ -218,8 +218,8 @@ public class CodeGenerator {
 
         generateMemberCommon(theCtor, mCClassName, mClassToWrap);
 
-        String implementationSignature = Utils.getCImplementationMethodSignature(theCtor.getParameterTypes(), Void.class, CMethodName, mCClassName);
-        String headerSignature = Utils.getCHeaderMethodSignature(theCtor.getParameterTypes(), theCtor.getParameterAnnotations(), Void.class, CMethodName, mCClassName, false);
+        String implementationSignature = Utils.getCImplementationMethodSignature(theCtor.getParameterTypes(), Void.class, CMethodName, mCClassName, aCtorTuple.mAnnotationInfo.narrowChars);
+        String headerSignature = Utils.getCHeaderMethodSignature(theCtor.getParameterTypes(), theCtor.getParameterAnnotations(), Void.class, CMethodName, mCClassName, false, aCtorTuple.mAnnotationInfo.narrowChars);
 
         // Slice off the "void " from the start of the constructor declaration.
         headerSignature = headerSignature.substring(5);
@@ -229,7 +229,9 @@ public class CodeGenerator {
         writeSignatureToHeader(headerSignature);
 
         // Use the implementation signature to generate the method body...
-        writeCtorBody(implementationSignature, theCtor, aCtorTuple.mAnnotationInfo.isMultithreaded);
+        writeCtorBody(implementationSignature, theCtor,
+            aCtorTuple.mAnnotationInfo.isMultithreaded,
+            aCtorTuple.mAnnotationInfo.noThrow);
 
         if (theCtor.getParameterTypes().length == 0) {
             mHasEncounteredDefaultConstructor = true;
@@ -286,10 +288,6 @@ public class CodeGenerator {
         } else {
             wrapperMethodBodies.append("GetJNIForThread();\n");
         }
-        wrapperMethodBodies.append("    if (!env) {\n" +
-                                   "        ALOG_BRIDGE(\"Aborted: No env - %s\", __PRETTY_FUNCTION__);\n" +
-                                   "        return").append(Utils.getFailureReturnForType(returnType)).append(";\n" +
-                "    }\n\n");
     }
 
     /**
@@ -299,7 +297,8 @@ public class CodeGenerator {
      * @param aMethod A constructor/method being wrapped.
      * @param aIsObjectReturningMethod Does the method being wrapped return an object?
      */
-    private void writeFramePushBoilerplate(Member aMethod, boolean aIsObjectReturningMethod) {
+    private void writeFramePushBoilerplate(Member aMethod,
+            boolean aIsObjectReturningMethod, boolean aNoThrow) {
         if (aMethod instanceof Field) {
             throw new IllegalArgumentException("Tried to push frame for a FIELD?!");
         }
@@ -325,13 +324,18 @@ public class CodeGenerator {
         if (aIsObjectReturningMethod) {
             localReferencesNeeded++;
         }
-        wrapperMethodBodies.append("    if (env->PushLocalFrame(").append(localReferencesNeeded).append(") != 0) {\n" +
-                "        ALOG_BRIDGE(\"Exceptional exit of: %s\", __PRETTY_FUNCTION__);\n" +
-                "        env->ExceptionDescribe();\n"+
-                "        env->ExceptionClear();\n" +
-                "        return").append(Utils.getFailureReturnForType(returnType)).append(";\n" +
+        wrapperMethodBodies.append(
+                "    if (env->PushLocalFrame(").append(localReferencesNeeded).append(") != 0) {\n");
+        if (!aNoThrow) {
+            wrapperMethodBodies.append(
+                "        AndroidBridge::HandleUncaughtException(env);\n" +
+                "        MOZ_CRASH(\"Exception should have caused crash.\");\n");
+        } else {
+            wrapperMethodBodies.append(
+                "        return").append(Utils.getFailureReturnForType(returnType)).append(";\n");
+        }
+        wrapperMethodBodies.append(
                 "    }\n\n");
-
     }
 
     private StringBuilder getArgumentMarshalling(Class<?>[] argumentTypes) {
@@ -376,12 +380,13 @@ public class CodeGenerator {
         return argumentContent;
     }
 
-    private void writeCtorBody(String implementationSignature, Constructor theCtor, boolean aIsThreaded) {
+    private void writeCtorBody(String implementationSignature, Constructor theCtor,
+            boolean aIsThreaded, boolean aNoThrow) {
         Class<?>[] argumentTypes = theCtor.getParameterTypes();
 
         writeFunctionStartupBoilerPlate(implementationSignature, Void.class, false, aIsThreaded);
 
-        writeFramePushBoilerplate(theCtor, false);
+        writeFramePushBoilerplate(theCtor, false, aNoThrow);
 
         // Marshall arguments for this constructor, if any...
         boolean hasArguments = argumentTypes.length != 0;
@@ -407,7 +412,7 @@ public class CodeGenerator {
         // Tack on the arguments, if any..
                            .append(argumentContent)
                            .append("), env);\n" +
-                                   "    env->PopLocalFrame(NULL);\n" +
+                                   "    env->PopLocalFrame(nullptr);\n" +
                                    "}\n");
     }
 
@@ -420,7 +425,9 @@ public class CodeGenerator {
      * @param aMethod         The Java method to be wrapped by the C++ method being generated.
      * @param aClass          The Java class to which the method belongs.
      */
-    private void writeMethodBody(String methodSignature, String aCMethodName, Method aMethod, Class<?> aClass, boolean aIsStaticBridgeMethod, boolean aIsMultithreaded) {
+    private void writeMethodBody(String methodSignature, String aCMethodName, Method aMethod,
+            Class<?> aClass, boolean aIsStaticBridgeMethod, boolean aIsMultithreaded,
+				 boolean aNoThrow, boolean aNarrowChars) {
         Class<?>[] argumentTypes = aMethod.getParameterTypes();
         Class<?> returnType = aMethod.getReturnType();
 
@@ -428,7 +435,7 @@ public class CodeGenerator {
 
         boolean isObjectReturningMethod = !returnType.getCanonicalName().equals("void") && Utils.isObjectType(returnType);
 
-        writeFramePushBoilerplate(aMethod, isObjectReturningMethod);
+        writeFramePushBoilerplate(aMethod, isObjectReturningMethod, aNoThrow);
 
         // Marshall arguments, if we have any.
         boolean hasArguments = argumentTypes.length != 0;
@@ -449,7 +456,7 @@ public class CodeGenerator {
             if (isObjectReturningMethod) {
                 wrapperMethodBodies.append("jobject");
             } else {
-                wrapperMethodBodies.append(Utils.getCReturnType(returnType));
+                wrapperMethodBodies.append(Utils.getCReturnType(returnType, aNarrowChars));
             }
             wrapperMethodBodies.append(" temp = ");
         }
@@ -477,32 +484,28 @@ public class CodeGenerator {
 
         // Tack on the arguments, if any..
         wrapperMethodBodies.append(argumentContent)
-                           .append(");\n\n");
+                           .append(");\n");
 
-        // Check for exception and return the failure value..
-        wrapperMethodBodies.append("    if (env->ExceptionCheck()) {\n" +
-                                   "        ALOG_BRIDGE(\"Exceptional exit of: %s\", __PRETTY_FUNCTION__);\n" +
-                                   "        env->ExceptionDescribe();\n" +
-                                   "        env->ExceptionClear();\n" +
-                                   "        env->PopLocalFrame(NULL);\n" +
-                                   "        return").append(Utils.getFailureReturnForType(returnType)).append(";\n" +
-                                   "    }\n\n");
+        // Check for exception and crash if any...
+        if (!aNoThrow) {
+            wrapperMethodBodies.append("    AndroidBridge::HandleUncaughtException(env);\n");
+        }
 
         // If we're returning an object, pop the callee's stack frame extracting our ref as the return
         // value.
         if (isObjectReturningMethod) {
             wrapperMethodBodies.append("    ")
-                               .append(Utils.getCReturnType(returnType))
-                               .append(" ret = static_cast<").append(Utils.getCReturnType(returnType)).append(">(env->PopLocalFrame(temp));\n" +
+		.append(Utils.getCReturnType(returnType, aNarrowChars))
+		.append(" ret = static_cast<").append(Utils.getCReturnType(returnType, aNarrowChars)).append(">(env->PopLocalFrame(temp));\n" +
                                        "    return ret;\n");
         } else if (!returnType.getCanonicalName().equals("void")) {
             // If we're a primitive-returning function, just return the directly-obtained primative
             // from the call to Java.
-            wrapperMethodBodies.append("    env->PopLocalFrame(NULL);\n" +
+            wrapperMethodBodies.append("    env->PopLocalFrame(nullptr);\n" +
                                        "    return temp;\n");
         } else {
             // If we don't return anything, just pop the stack frame and move on with life.
-            wrapperMethodBodies.append("    env->PopLocalFrame(NULL);\n");
+            wrapperMethodBodies.append("    env->PopLocalFrame(nullptr);\n");
         }
         wrapperMethodBodies.append("}\n");
     }

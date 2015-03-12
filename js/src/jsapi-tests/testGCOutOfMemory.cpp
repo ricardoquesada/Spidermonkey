@@ -29,13 +29,12 @@ BEGIN_TEST(testGCOutOfMemory)
         "        array.push({});"
         "    array = []; array.push(0);"
         "})();";
-    bool ok = JS_EvaluateScript(cx, global, source, strlen(source), "", 1,
-                                  root.address());
+    bool ok = JS_EvaluateScript(cx, global, source, strlen(source), "", 1, &root);
 
     /* Check that we get OOM. */
     CHECK(!ok);
     CHECK(!JS_IsExceptionPending(cx));
-    CHECK_EQUAL(errorCount, 1);
+    CHECK_EQUAL(errorCount, 1u);
     JS_GC(rt);
 
     // Temporarily disabled to reopen the tree. Bug 847579.
@@ -47,13 +46,13 @@ BEGIN_TEST(testGCOutOfMemory)
          "        --i;"
          "        array.push({});"
          "    }"
-         "})();", root.address());
-    CHECK_EQUAL(errorCount, 1);
+         "})();", &root);
+    CHECK_EQUAL(errorCount, 1u);
     return true;
 }
 
 virtual JSRuntime * createRuntime() {
-    JSRuntime *rt = JS_NewRuntime(768 * 1024, JS_USE_HELPER_THREADS);
+    JSRuntime *rt = JS_NewRuntime(768 * 1024);
     if (!rt)
         return nullptr;
     setNativeStackQuota(rt);

@@ -6,14 +6,17 @@
 #include "nsCOMPtr.h"
 
 #include "nsIOutputStream.h"
-#include "nsICharsetConverterManager.h"
+#include "nsString.h"
 
 #include "nsConverterOutputStream.h"
-#include "nsServiceManagerUtils.h"
+#include "nsIUnicodeEncoder.h"
+#include "mozilla/dom/EncodingUtils.h"
 
-NS_IMPL_ISUPPORTS2(nsConverterOutputStream,
-                   nsIUnicharOutputStream,
-                   nsIConverterOutputStream)
+using mozilla::dom::EncodingUtils;
+
+NS_IMPL_ISUPPORTS(nsConverterOutputStream,
+                  nsIUnicharOutputStream,
+                  nsIConverterOutputStream)
 
 nsConverterOutputStream::~nsConverterOutputStream()
 {
@@ -24,21 +27,26 @@ NS_IMETHODIMP
 nsConverterOutputStream::Init(nsIOutputStream* aOutStream,
                               const char*      aCharset,
                               uint32_t         aBufferSize /* ignored */,
-                              PRUnichar        aReplacementChar)
+                              char16_t        aReplacementChar)
 {
     NS_PRECONDITION(aOutStream, "Null output stream!");
 
-    if (!aCharset)
-        aCharset = "UTF-8";
+    nsAutoCString label;
+    if (!aCharset) {
+        label.AssignLiteral("UTF-8");
+    } else {
+        label = aCharset;
+    }
 
-    nsresult rv;
-    nsCOMPtr<nsICharsetConverterManager> ccm =
-        do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv);
-    if (NS_FAILED(rv)) return rv;
-
-    rv = ccm->GetUnicodeEncoder(aCharset, getter_AddRefs(mConverter));
-    if (NS_FAILED(rv))
-        return rv;
+    nsAutoCString encoding;
+    if (label.EqualsLiteral("UTF-16")) {
+        // Make sure to output a BOM when UTF-16 requested
+        encoding.Assign(label);
+    } else if (!EncodingUtils::FindEncodingForLabelNoReplacement(label,
+                                                                 encoding)) {
+      return NS_ERROR_UCONV_NOCONV;
+    }
+    mConverter = EncodingUtils::EncoderForEncoding(encoding);
 
     mOutStream = aOutStream;
 
@@ -51,7 +59,7 @@ nsConverterOutputStream::Init(nsIOutputStream* aOutStream,
 }
 
 NS_IMETHODIMP
-nsConverterOutputStream::Write(uint32_t aCount, const PRUnichar* aChars,
+nsConverterOutputStream::Write(uint32_t aCount, const char16_t* aChars,
                                bool* aSuccess)
 {
     if (!mOutStream) {

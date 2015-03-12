@@ -7,7 +7,7 @@ Test Manifests
 Many test suites have their test metadata defined in files called
 **test manifests**.
 
-Test manifests are divided into two flavors: :ref:`manifest_destiny_manifests`
+Test manifests are divided into two flavors: :ref:`manifestparser_manifests`
 and :ref:`reftest_manifests`.
 
 Naming Convention
@@ -34,16 +34,16 @@ xpcshell.ini
 webapprt.ini
    For the *chrome* flavor of webapp runtime mochitests.
 
-.. _manifest_destiny_manifests:
+.. _manifestparser_manifests:
 
-Manifest Destiny Manifests
+ManifestParser Manifests
 ==========================
 
-Manifest destiny manifests are essentially ini files that conform to a basic
+ManifestParser manifests are essentially ini files that conform to a basic
 set of assumptions.
 
-The `reference documentation <http://mozbase.readthedocs.org/en/latest/manifestdestiny.html>`_
-for manifest destiny manifests describes the basic format of test manifests.
+The `reference documentation <http://mozbase.readthedocs.org/en/latest/manifestparser.html>`_
+for manifestparser manifests describes the basic format of test manifests.
 
 In summary, manifests are ini files with section names describing test files::
 
@@ -95,6 +95,12 @@ support-files
    A double ``**`` will descend into child directories. For example,
    ``data/*`` will match ``data/foo`` but not ``data/subdir/bar`` where
    ``data/**`` will match ``data/foo`` and ``data/subdir/bar``.
+
+   Support files starting with ``/`` are placed in a root directory, rather
+   than a location determined by the manifest location. For mochitests,
+   this allows for the placement of files at the server root. The source
+   file is selected from the base name (e.g., ``foo`` for ``/path/foo``).
+   Files starting with ``/`` cannot be selected using globbing.
 
 generated-files
    List of files that are generated as part of the build and don't exist in
@@ -160,7 +166,7 @@ The expressions can reference a well-defined set of variables, such as
 the :ref:`mozinfo documentation <mozinfo_attributes>`.
 
 See
-`the source <https://hg.mozilla.org/mozilla-central/file/default/testing/mozbase/manifestdestiny/manifestparser/manifestparser.py>`_ for the full documentation of the
+`the source <https://hg.mozilla.org/mozilla-central/file/default/testing/mozbase/manifestparser/manifestparser/manifestparser.py>`_ for the full documentation of the
 expression syntax until it is documented here.
 
 .. todo::
@@ -176,8 +182,16 @@ Files referenced by manifests are automatically installed into the object
 directory into paths defined in
 :py:func:`mozbuild.frontend.emitter.TreeMetadataEmitter._process_test_manifest`.
 
-Referenced files in the manifest not in the same directory tree as the manifest
-file are **not** installed.
+Relative paths resolving to parent directory (e.g.
+``support-files = ../foo.txt`` have special behavior.
+
+For ``support-files``, the file will be installed to the default destination
+for that manifest. Only the file's base name is used to construct the final
+path: directories are irrelevant.  Files starting with ``/`` are an exception,
+these are installed relative to the root of the destination; the base name is
+instead used to select the file..
+
+For all other entry types, the file installation is skipped.
 
 .. _reftest_manifests:
 

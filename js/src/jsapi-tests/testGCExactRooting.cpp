@@ -9,15 +9,29 @@
 
 BEGIN_TEST(testGCExactRooting)
 {
-    JS::RootedObject rootCx(cx, JS_NewObject(cx, nullptr, nullptr, nullptr));
-    JS::RootedObject rootRt(cx->runtime(), JS_NewObject(cx, nullptr, nullptr, nullptr));
+    JS::RootedObject rootCx(cx, JS_NewObject(cx, nullptr, JS::NullPtr(), JS::NullPtr()));
+    JS::RootedObject rootRt(cx->runtime(), JS_NewObject(cx, nullptr, JS::NullPtr(), JS::NullPtr()));
 
     JS_GC(cx->runtime());
 
     /* Use the objects we just created to ensure that they are still alive. */
-    JS_DefineProperty(cx, rootCx, "foo", JS::DoubleValue(0), nullptr, nullptr, 0);
-    JS_DefineProperty(cx, rootRt, "foo", JS::DoubleValue(0), nullptr, nullptr, 0);
+    JS_DefineProperty(cx, rootCx, "foo", JS::UndefinedHandleValue, 0);
+    JS_DefineProperty(cx, rootRt, "foo", JS::UndefinedHandleValue, 0);
 
     return true;
 }
 END_TEST(testGCExactRooting)
+
+BEGIN_TEST(testGCSuppressions)
+{
+    JS::AutoAssertOnGC nogc;
+    JS::AutoCheckCannotGC checkgc;
+    JS::AutoSuppressGCAnalysis noanalysis;
+
+    JS::AutoAssertOnGC nogcRt(cx->runtime());
+    JS::AutoCheckCannotGC checkgcRt(cx->runtime());
+    JS::AutoSuppressGCAnalysis noanalysisRt(cx->runtime());
+
+    return true;
+}
+END_TEST(testGCSuppressions)

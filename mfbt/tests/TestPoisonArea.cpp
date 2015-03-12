@@ -95,12 +95,6 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#elif defined(__OS2__)
-#include <sys/types.h>
-#include <unistd.h>
-#include <setjmp.h>
-#define INCL_DOS
-#include <os2.h>
 #else
 #include <sys/types.h>
 #include <fcntl.h>
@@ -161,6 +155,9 @@
 #elif defined __s390__
 #define RETURN_INSTR 0x07fe0000 /* br %r14 */
 
+#elif defined __aarch64__
+#define RETURN_INSTR 0xd65f03c0 /* ret */
+
 #elif defined __ia64
 struct ia64_instr { uint32_t i[4]; };
 static const ia64_instr _return_instr =
@@ -201,15 +198,18 @@ StrW32Error(DWORD errcode)
 
 // Because we use VirtualAlloc in MEM_RESERVE mode, the "page size" we want
 // is the allocation granularity.
-static SYSTEM_INFO _sinfo;
-#undef PAGESIZE
-#define PAGESIZE (_sinfo.dwAllocationGranularity)
+static SYSTEM_INFO sInfo_;
 
+static inline uint32_t
+PageSize()
+{
+  return sInfo_.dwAllocationGranularity;
+}
 
 static void *
 ReserveRegion(uintptr_t request, bool accessible)
 {
-  return VirtualAlloc((void *)request, PAGESIZE,
+  return VirtualAlloc((void *)request, PageSize(),
                       accessible ? MEM_RESERVE|MEM_COMMIT : MEM_RESERVE,
                       accessible ? PAGE_EXECUTE_READWRITE : PAGE_NOACCESS);
 }
@@ -217,14 +217,14 @@ ReserveRegion(uintptr_t request, bool accessible)
 static void
 ReleaseRegion(void *page)
 {
-  VirtualFree(page, PAGESIZE, MEM_RELEASE);
+  VirtualFree(page, PageSize(), MEM_RELEASE);
 }
 
 static bool
 ProbeRegion(uintptr_t page)
 {
-  if (page >= (uintptr_t)_sinfo.lpMaximumApplicationAddress &&
-      page + PAGESIZE >= (uintptr_t)_sinfo.lpMaximumApplicationAddress) {
+  if (page >= (uintptr_t)sInfo_.lpMaximumApplicationAddress &&
+      page + PageSize() >= (uintptr_t)sInfo_.lpMaximumApplicationAddress) {
     return true;
   } else {
     return false;
@@ -240,86 +240,22 @@ MakeRegionExecutable(void *)
 #undef MAP_FAILED
 #define MAP_FAILED 0
 
-#elif defined(__OS2__)
-
-// page size is always 4k
-#undef PAGESIZE
-#define PAGESIZE 0x1000
-static unsigned long rc = 0;
-
-char * LastErrMsg()
-{
-  char * errmsg = (char *)malloc(16);
-  sprintf(errmsg, "rc= %ld", rc);
-  rc = 0;
-  return errmsg;
-}
-
-static void *
-ReserveRegion(uintptr_t request, bool accessible)
-{
-  // OS/2 doesn't support allocation at an arbitrary address,
-  // so return an address that is known to be invalid.
-  if (request) {
-    return (void*)0xFFFD0000;
-  }
-  void * mem = 0;
-  rc = DosAllocMem(&mem, PAGESIZE,
-                   (accessible ? PAG_COMMIT : 0) | PAG_READ | PAG_WRITE);
-  return rc ? 0 : mem;
-}
-
-static void
-ReleaseRegion(void *page)
-{
-  return;
-}
-
-static bool
-ProbeRegion(uintptr_t page)
-{
-  // There's no reliable way to probe an address in the system
-  // arena other than by touching it and seeing if a trap occurs.
-  return false;
-}
-
-static bool
-MakeRegionExecutable(void *page)
-{
-  rc = DosSetMem(page, PAGESIZE, PAG_READ | PAG_WRITE | PAG_EXECUTE);
-  return rc ? true : false;
-}
-
-typedef struct _XCPT {
-  EXCEPTIONREGISTRATIONRECORD regrec;
-  jmp_buf                     jmpbuf;
-} XCPT;
-
-static unsigned long _System
-ExceptionHandler(PEXCEPTIONREPORTRECORD pReport,
-                 PEXCEPTIONREGISTRATIONRECORD pRegRec,
-                 PCONTEXTRECORD pContext, PVOID pVoid)
-{
-  if (pReport->fHandlerFlags == 0) {
-    longjmp(((XCPT*)pRegRec)->jmpbuf, pReport->ExceptionNum);
-  }
-  return XCPT_CONTINUE_SEARCH;
-}
-
-#undef MAP_FAILED
-#define MAP_FAILED 0
-
 #else // Unix
 
 #define LastErrMsg() (strerror(errno))
 
-static unsigned long _pagesize;
-#define PAGESIZE _pagesize
+static unsigned long unixPageSize;
+
+static inline unsigned long
+PageSize()
+{
+  return unixPageSize;
+}
 
 static void *
 ReserveRegion(uintptr_t request, bool accessible)
 {
-  return mmap(reinterpret_cast<void*>(request), PAGESIZE,
+  return mmap(reinterpret_cast<void*>(request), PageSize(),
               accessible ? PROT_READ|PROT_WRITE : PROT_NONE,
               MAP_PRIVATE|MAP_ANON, -1, 0);
 }
@@ -327,13 +263,13 @@ ReserveRegion(uintptr_t request, bool accessible)
 static void
 ReleaseRegion(void *page)
 {
-  munmap(page, PAGESIZE);
+  munmap(page, PageSize());
 }
 
 static bool
 ProbeRegion(uintptr_t page)
 {
-  if (madvise(reinterpret_cast<void*>(page), PAGESIZE, MADV_NORMAL)) {
+  if (madvise(reinterpret_cast<void*>(page), PageSize(), MADV_NORMAL)) {
     return true;
   } else {
     return false;
@@ -343,7 +279,7 @@ ProbeRegion(uintptr_t page)
 static int
 MakeRegionExecutable(void *page)
 {
-  return mprotect((caddr_t)page, PAGESIZE, PROT_READ|PROT_WRITE|PROT_EXEC);
+  return mprotect((caddr_t)page, PageSize(), PROT_READ|PROT_WRITE|PROT_EXEC);
 }
 
 #endif
@@ -357,12 +293,12 @@ ReservePoisonArea()
     // code is compiled in 32-bit mode, although it is never executed there.
     uintptr_t result = (((uintptr_t(0x7FFFFFFFu) << 31) << 1 |
                          uintptr_t(0xF0DEAFFFu)) &
-                        ~uintptr_t(PAGESIZE-1));
+                        ~uintptr_t(PageSize()-1));
     printf("INFO | poison area assumed at 0x%.*" PRIxPTR "\n", SIZxPTR, result);
     return result;
   } else {
     // First see if we can allocate the preferred poison address from the OS.
-    uintptr_t candidate = (0xF0DEAFFF & ~(PAGESIZE-1));
+    uintptr_t candidate = (0xF0DEAFFF & ~(PageSize()-1));
     void *result = ReserveRegion(candidate, false);
     if (result == (void *)candidate) {
       // success - inaccessible page allocated
@@ -435,7 +371,7 @@ ReserveNegativeControl()
 
   // Fill the page with return instructions.
   RETURN_INSTR_TYPE *p = (RETURN_INSTR_TYPE *)result;
-  RETURN_INSTR_TYPE *limit = (RETURN_INSTR_TYPE *)(((char *)result) + PAGESIZE);
+  RETURN_INSTR_TYPE *limit = (RETURN_INSTR_TYPE *)(((char *)result) + PageSize());
   while (p < limit)
     *p++ = RETURN_INSTR;
 
@@ -472,14 +408,14 @@ IsBadExecPtr(uintptr_t ptr)
 {
   BOOL ret = false;
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && !defined(__clang__)
   __try {
     JumpTo(ptr);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     ret = true;
   }
 #else
-  printf("INFO | exec test not supported on MinGW build\n");
+  printf("INFO | exec test not supported on MinGW or clang-cl builds\n");
   // We do our best
   ret = IsBadReadPtr((const void*)ptr, 1);
 #endif
@@ -499,9 +435,9 @@ TestPage(const char *pagelabel, uintptr_t pageaddr, int should_succeed)
     switch (test) {
       // The execute test must be done before the write test, because the
       // write test will clobber memory at the target address.
-    case 0: oplabel = "reading"; opaddr = pageaddr + PAGESIZE/2 - 1; break;
-    case 1: oplabel = "executing"; opaddr = pageaddr + PAGESIZE/2; break;
-    case 2: oplabel = "writing"; opaddr = pageaddr + PAGESIZE/2 - 1; break;
+    case 0: oplabel = "reading"; opaddr = pageaddr + PageSize()/2 - 1; break;
+    case 1: oplabel = "executing"; opaddr = pageaddr + PageSize()/2; break;
+    case 2: oplabel = "writing"; opaddr = pageaddr + PageSize()/2 - 1; break;
     default: abort();
     }
 
@@ -530,41 +466,6 @@ TestPage(const char *pagelabel, uintptr_t pageaddr, int should_succeed)
         printf("TEST-UNEXPECTED-FAIL | %s %s\n", oplabel, pagelabel);
         failed = true;
       }
-    }
-#elif defined(__OS2__)
-    XCPT xcpt;
-    volatile int code = setjmp(xcpt.jmpbuf);
-
-    if (!code) {
-      xcpt.regrec.prev_structure = 0;
-      xcpt.regrec.ExceptionHandler = ExceptionHandler;
-      DosSetExceptionHandler(&xcpt.regrec);
-      unsigned char scratch;
-      switch (test) {
-        case 0: scratch = *(volatile unsigned char *)opaddr; break;
-        case 1: ((void (*)())opaddr)(); break;
-        case 2: *(volatile unsigned char *)opaddr = 0; break;
-        default: abort();
-      }
-    }
-
-    if (code) {
-      if (should_succeed) {
-        printf("TEST-UNEXPECTED-FAIL | %s %s | exception code %x\n",
-               oplabel, pagelabel, code);
-        failed = true;
-      } else {
-        printf("TEST-PASS | %s %s | exception code %x\n",
-               oplabel, pagelabel, code);
-      }
-    } else {
-      if (should_succeed) {
-        printf("TEST-PASS | %s %s\n", oplabel, pagelabel);
-      } else {
-        printf("TEST-UNEXPECTED-FAIL | %s %s\n", oplabel, pagelabel);
-        failed = true;
-      }
-      DosUnsetExceptionHandler(&xcpt.regrec);
     }
 #else
     pid_t pid = fork();
@@ -626,9 +527,9 @@ int
 main()
 {
 #ifdef _WIN32
-  GetSystemInfo(&_sinfo);
-#elif !defined(__OS2__)
-  _pagesize = sysconf(_SC_PAGESIZE);
+  GetSystemInfo(&sInfo_);
+#else
+  unixPageSize = sysconf(_SC_PAGESIZE);
 #endif
 
   uintptr_t ncontrol = ReserveNegativeControl();

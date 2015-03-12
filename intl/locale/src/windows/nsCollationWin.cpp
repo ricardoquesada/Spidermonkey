@@ -7,7 +7,6 @@
 #include "nsCollationWin.h"
 #include "nsIServiceManager.h"
 #include "nsIComponentManager.h"
-#include "nsLocaleCID.h"
 #include "nsILocaleService.h"
 #include "nsIPlatformCharset.h"
 #include "nsWin32Locale.h"
@@ -18,7 +17,7 @@
 
 #undef CompareString
 
-NS_IMPL_ISUPPORTS1(nsCollationWin, nsICollation)
+NS_IMPL_ISUPPORTS(nsCollationWin, nsICollation)
 
 
 nsCollationWin::nsCollationWin() : mCollation(nullptr)

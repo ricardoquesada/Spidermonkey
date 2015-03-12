@@ -5,6 +5,16 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 intl_unicharutil_util_lcppsrcs = [
+    'GreekCasing.cpp',
+]
+
+if CONFIG['ENABLE_INTL_API']:
+    intl_unicharutil_util_lcppsrcs += [
+        'ICUUtils.cpp',
+    ]
+
+intl_unicharutil_util_lcppsrcs += [
+    'IrishCasing.cpp',
     'nsBidiUtils.cpp',
     'nsSpecialCasingData.cpp',
     'nsUnicharUtils.cpp',

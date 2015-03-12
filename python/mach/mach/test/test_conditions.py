@@ -5,17 +5,22 @@
 from __future__ import unicode_literals
 
 import os
-import unittest
-
-from StringIO import StringIO
 
 from mach.base import MachError
 from mach.main import Mach
 from mach.test.common import TestBase
 
-def _populate_context(context):
-    context.foo = True
-    context.bar = False
+from mozunit import main
+
+
+def _populate_context(context, key=None):
+    if key is None:
+        return
+    if key == 'foo':
+        return True
+    if key == 'bar':
+        return False
+    raise AttributeError(key)
 
 class TestConditions(TestBase):
     """Tests for conditionally filtering commands."""
@@ -71,3 +76,7 @@ class TestConditions(TestBase):
         self.assertIn('cmd_foo_ctx', stdout)
         self.assertNotIn('cmd_bar_ctx', stdout)
         self.assertNotIn('cmd_foobar_ctx', stdout)
+
+
+if __name__ == '__main__':
+    main()

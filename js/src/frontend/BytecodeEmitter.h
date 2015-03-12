@@ -31,7 +31,7 @@ class TokenStream;
 class CGConstList {
     Vector<Value> list;
   public:
-    CGConstList(ExclusiveContext *cx) : list(cx) {}
+    explicit CGConstList(ExclusiveContext *cx) : list(cx) {}
     bool append(Value v) { JS_ASSERT_IF(v.isString(), v.toString()->isAtom()); return list.append(v); }
     size_t length() const { return list.length(); }
     void finish(ConstArray *array);
@@ -46,22 +46,24 @@ struct CGObjectList {
     unsigned add(ObjectBox *objbox);
     unsigned indexOf(JSObject *obj);
     void finish(ObjectArray *array);
+    ObjectBox* find(uint32_t index);
 };
 
 struct CGTryNoteList {
     Vector<JSTryNote> list;
-    CGTryNoteList(ExclusiveContext *cx) : list(cx) {}
+    explicit CGTryNoteList(ExclusiveContext *cx) : list(cx) {}
 
-    bool append(JSTryNoteKind kind, unsigned stackDepth, size_t start, size_t end);
+    bool append(JSTryNoteKind kind, uint32_t stackDepth, size_t start, size_t end);
     size_t length() const { return list.length(); }
     void finish(TryNoteArray *array);
 };
 
 struct CGBlockScopeList {
     Vector<BlockScopeNote> list;
-    CGBlockScopeList(ExclusiveContext *cx) : list(cx) {}
+    explicit CGBlockScopeList(ExclusiveContext *cx) : list(cx) {}
 
     bool append(uint32_t scopeObject, uint32_t offset, uint32_t parent);
+    uint32_t findEnclosingScope(uint32_t index);
     void recordEnd(uint32_t index, uint32_t offset);
     size_t length() const { return list.length(); }
     void finish(BlockScopeArray *array);
@@ -105,16 +107,16 @@ struct BytecodeEmitter
 
     StmtInfoBCE     *topStmt;       /* top of statement info stack */
     StmtInfoBCE     *topScopeStmt;  /* top lexical scope statement */
-    Rooted<StaticBlockObject *> blockChain;
-                                    /* compile time block scope chain */
+    Rooted<NestedScopeObject *> staticScope;
+                                    /* compile time scope chain */
 
     OwnedAtomIndexMapPtr atomIndices; /* literals indexed for mapping */
     unsigned        firstLine;      /* first line, for JSScript::initFromEmitter */
 
-    int             stackDepth;     /* current stack depth in script frame */
-    unsigned        maxStackDepth;  /* maximum stack depth so far */
+    int32_t         stackDepth;     /* current stack depth in script frame */
+    uint32_t        maxStackDepth;  /* maximum stack depth so far */
 
-    unsigned        arrayCompDepth; /* stack depth of array in comprehension */
+    uint32_t        arrayCompDepth; /* stack depth of array in comprehension */
 
     unsigned        emitLevel;      /* js::frontend::EmitTree recursion level */
 
@@ -149,7 +151,7 @@ struct BytecodeEmitter
         Normal,
 
         /*
-         * Emit JSOP_CALLINTRINSIC instead of JSOP_NAME and assert that
+         * Emit JSOP_GETINTRINSIC instead of JSOP_NAME and assert that
          * JSOP_NAME and JSOP_*GNAME don't ever get emitted. See the comment
          * for the field |selfHostingMode| in Parser.h for details.
          */
@@ -177,7 +179,7 @@ struct BytecodeEmitter
 
     bool isAliasedName(ParseNode *pn);
 
-    JS_ALWAYS_INLINE
+    MOZ_ALWAYS_INLINE
     bool makeAtomIndex(JSAtom *atom, jsatomid *indexp) {
         AtomIndexAddPtr p = atomIndices->lookupForAdd(atom);
         if (p) {
@@ -213,8 +215,6 @@ struct BytecodeEmitter
     ptrdiff_t lastNoteOffset() const { return current->lastNoteOffset; }
     unsigned currentLine() const { return current->currentLine; }
     unsigned lastColumn() const { return current->lastColumn; }
-
-    inline ptrdiff_t countFinalSourceNotes();
 
     bool reportError(ParseNode *pn, unsigned errorNumber, ...);
     bool reportStrictWarning(ParseNode *pn, unsigned errorNumber, ...);
@@ -278,39 +278,10 @@ bool
 AddToSrcNoteDelta(ExclusiveContext *cx, BytecodeEmitter *bce, jssrcnote *sn, ptrdiff_t delta);
 
 bool
-FinishTakingSrcNotes(ExclusiveContext *cx, BytecodeEmitter *bce, jssrcnote *notes);
+FinishTakingSrcNotes(ExclusiveContext *cx, BytecodeEmitter *bce, uint32_t *out);
 
-/*
- * Finish taking source notes in cx's notePool, copying final notes to the new
- * stable store allocated by the caller and passed in via notes. Return false
- * on malloc failure, which means this function reported an error.
- *
- * Use this to compute the number of jssrcnotes to allocate and pass in via
- * notes. This method knows a lot about details of FinishTakingSrcNotes, so
- * DON'T CHANGE js::frontend::FinishTakingSrcNotes WITHOUT CHECKING WHETHER
- * THIS METHOD NEEDS CORRESPONDING CHANGES!
- */
-inline ptrdiff_t
-BytecodeEmitter::countFinalSourceNotes()
-{
-    ptrdiff_t diff = prologOffset() - prolog.lastNoteOffset;
-    ptrdiff_t cnt = prolog.notes.length() + main.notes.length() + 1;
-    if (prolog.notes.length() && prolog.currentLine != firstLine) {
-        if (diff > SN_DELTA_MASK)
-            cnt += JS_HOWMANY(diff - SN_DELTA_MASK, SN_XDELTA_MASK);
-        cnt += 2 + ((firstLine > SN_3BYTE_OFFSET_MASK) << 1);
-    } else if (diff > 0) {
-        if (main.notes.length()) {
-            jssrcnote *sn = main.notes.begin();
-            diff -= SN_IS_XDELTA(sn)
-                    ? SN_XDELTA_MASK - (*sn & SN_XDELTA_MASK)
-                    : SN_DELTA_MASK - (*sn & SN_DELTA_MASK);
-        }
-        if (diff > 0)
-            cnt += JS_HOWMANY(diff, SN_XDELTA_MASK);
-    }
-    return cnt;
-}
+void
+CopySrcNotes(BytecodeEmitter *bce, jssrcnote *destination, uint32_t nsrcnotes);
 
 } /* namespace frontend */
 } /* namespace js */

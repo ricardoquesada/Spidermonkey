@@ -28,7 +28,6 @@ enum Phase {
     PHASE_PURGE,
     PHASE_MARK,
     PHASE_MARK_ROOTS,
-    PHASE_MARK_TYPES,
     PHASE_MARK_DELAYED,
     PHASE_SWEEP,
     PHASE_SWEEP_MARK,
@@ -40,6 +39,7 @@ enum Phase {
     PHASE_SWEEP_MARK_GRAY_WEAK,
     PHASE_FINALIZE_START,
     PHASE_SWEEP_ATOMS,
+    PHASE_SWEEP_SYMBOL_REGISTRY,
     PHASE_SWEEP_COMPARTMENTS,
     PHASE_SWEEP_DISCARD_CODE,
     PHASE_SWEEP_TABLES,
@@ -53,12 +53,11 @@ enum Phase {
     PHASE_DISCARD_TI,
     PHASE_FREE_TI_ARENA,
     PHASE_SWEEP_TYPES,
-    PHASE_CLEAR_SCRIPT_ANALYSIS,
     PHASE_SWEEP_OBJECT,
     PHASE_SWEEP_STRING,
     PHASE_SWEEP_SCRIPT,
     PHASE_SWEEP_SHAPE,
-    PHASE_SWEEP_IONCODE,
+    PHASE_SWEEP_JITCODE,
     PHASE_FINALIZE_END,
     PHASE_DESTROY,
     PHASE_GC_END,
@@ -69,20 +68,38 @@ enum Phase {
 enum Stat {
     STAT_NEW_CHUNK,
     STAT_DESTROY_CHUNK,
+    STAT_MINOR_GC,
 
     STAT_LIMIT
 };
 
 class StatisticsSerializer;
 
-struct Statistics {
-    Statistics(JSRuntime *rt);
+struct ZoneGCStats
+{
+    /* Number of zones collected in this GC. */
+    int collectedCount;
+
+    /* Total number of zones in the Runtime at the start of this GC. */
+    int zoneCount;
+
+    /* Total number of compartments in the Runtime at the start of this GC. */
+    int compartmentCount;
+
+    bool isCollectingAllZones() const { return collectedCount == zoneCount; }
+
+    ZoneGCStats() : collectedCount(0), zoneCount(0), compartmentCount(0) {}
+};
+
+struct Statistics
+{
+    explicit Statistics(JSRuntime *rt);
     ~Statistics();
 
     void beginPhase(Phase phase);
     void endPhase(Phase phase);
 
-    void beginSlice(int collectedCount, int zoneCount, int compartmentCount, JS::gcreason::Reason reason);
+    void beginSlice(const ZoneGCStats &zoneStats, JS::gcreason::Reason reason);
     void endSlice();
 
     void reset(const char *reason) { slices.back().resetReason = reason; }
@@ -99,6 +116,8 @@ struct Statistics {
     jschar *formatMessage();
     jschar *formatJSON(uint64_t timestamp);
 
+    JS::GCSliceCallback setSliceCallback(JS::GCSliceCallback callback);
+
   private:
     JSRuntime *runtime;
 
@@ -113,9 +132,8 @@ struct Statistics {
      */
     int gcDepth;
 
-    int collectedCount;
-    int zoneCount;
-    int compartmentCount;
+    ZoneGCStats zoneStats;
+
     const char *nonincrementalReason;
 
     struct SliceData {
@@ -161,6 +179,8 @@ struct Statistics {
     /* Sweep times for SCCs of compartments. */
     Vector<int64_t, 0, SystemAllocPolicy> sccTimes;
 
+    JS::GCSliceCallback sliceCallback;
+
     void beginGC();
     void endGC();
 
@@ -174,13 +194,12 @@ struct Statistics {
 
 struct AutoGCSlice
 {
-    AutoGCSlice(Statistics &stats, int collectedCount, int zoneCount, int compartmentCount,
-                JS::gcreason::Reason reason
+    AutoGCSlice(Statistics &stats, const ZoneGCStats &zoneStats, JS::gcreason::Reason reason
                 MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : stats(stats)
     {
         MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-        stats.beginSlice(collectedCount, zoneCount, compartmentCount, reason);
+        stats.beginSlice(zoneStats, reason);
     }
     ~AutoGCSlice() { stats.endSlice(); }
 
@@ -208,7 +227,7 @@ struct AutoPhase
 
 struct MaybeAutoPhase
 {
-    MaybeAutoPhase(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM)
+    explicit MaybeAutoPhase(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM)
       : stats(nullptr)
     {
         MOZ_GUARD_OBJECT_NOTIFIER_INIT;
@@ -248,6 +267,8 @@ struct AutoSCC
     int64_t start;
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
+
+const char *ExplainReason(JS::gcreason::Reason reason);
 
 } /* namespace gcstats */
 } /* namespace js */

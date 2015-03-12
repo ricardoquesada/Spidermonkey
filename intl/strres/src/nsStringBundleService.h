@@ -6,10 +6,9 @@
 #ifndef nsStringBundleService_h__
 #define nsStringBundleService_h__
 
-#include "plarena.h"
-
 #include "nsCOMPtr.h"
-#include "nsHashtable.h"
+#include "nsDataHashtable.h"
+#include "nsHashKeys.h"
 #include "nsIPersistentProperties2.h"
 #include "nsIStringBundle.h"
 #include "nsIObserver.h"
@@ -27,32 +26,30 @@ class nsStringBundleService : public nsIStringBundleService,
 {
 public:
   nsStringBundleService();
-  virtual ~nsStringBundleService();
 
   nsresult Init();
 
-  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_ISUPPORTS
   NS_DECL_NSISTRINGBUNDLESERVICE
   NS_DECL_NSIOBSERVER
-    
+
 private:
+  virtual ~nsStringBundleService();
+
   nsresult getStringBundle(const char *aUrl, nsIStringBundle** aResult);
-  nsresult FormatWithBundle(nsIStringBundle* bundle, nsresult aStatus, 
-                            uint32_t argCount, PRUnichar** argArray,
-                            PRUnichar* *result);
+  nsresult FormatWithBundle(nsIStringBundle* bundle, nsresult aStatus,
+                            uint32_t argCount, char16_t** argArray,
+                            char16_t* *result);
 
   void flushBundleCache();
-  
-  bundleCacheEntry_t *insertIntoCache(nsIStringBundle *aBundle,
-                                      nsCStringKey *aHashKey);
 
-  static void recycleEntry(bundleCacheEntry_t*);
-  
-  nsHashtable mBundleMap;
+  bundleCacheEntry_t *insertIntoCache(already_AddRefed<nsIStringBundle> aBundle,
+                                      nsCString &aHashKey);
+
+  nsDataHashtable<nsCStringHashKey, bundleCacheEntry_t*> mBundleMap;
   mozilla::LinkedList<bundleCacheEntry_t> mBundleCache;
-  PLArenaPool mCacheEntryPool;
 
-  nsCOMPtr<nsIErrorService>     mErrorService;
+  nsCOMPtr<nsIErrorService> mErrorService;
   nsCOMPtr<nsIStringBundleOverride> mOverrideStrings;
 };
 

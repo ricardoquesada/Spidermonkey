@@ -1,3 +1,5 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,9 +18,9 @@
 #include "nsHTMLDocument.h"
 #include "nsICSSDeclaration.h"
 #include "nsSVGElement.h"
-#include "nsDOMEvent.h"
-#include "nsDOMMouseEvent.h"
-#include "nsDOMUIEvent.h"
+#include "mozilla/dom/Event.h"
+#include "mozilla/dom/UIEvent.h"
+#include "mozilla/dom/MouseEvent.h"
 #include "mozilla/dom/EventTargetBinding.h"
 #include "mozilla/dom/NodeBinding.h"
 #include "mozilla/dom/ElementBinding.h"
@@ -57,9 +59,10 @@ NEW_BINDING(nsIDocument, Document);
 NEW_BINDING(nsDocument, Document);
 NEW_BINDING(nsHTMLDocument, HTMLDocument);
 NEW_BINDING(nsSVGElement, SVGElement);
-NEW_BINDING(nsDOMEvent, Event);
-NEW_BINDING(nsDOMMouseEvent, MouseEvent);
-NEW_BINDING(nsDOMUIEvent, UIEvent);
+NEW_BINDING(mozilla::dom::Event, Event);
+NEW_BINDING(mozilla::dom::UIEvent, UIEvent);
+NEW_BINDING(mozilla::dom::MouseEvent, MouseEvent);
+NEW_BINDING(nsGlobalWindow, Window);
 
 #define DEFINE_UNWRAP_CAST(_interface, _base, _bit)                           \
 template <>                                                                   \
