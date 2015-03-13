@@ -14,13 +14,13 @@ MOZ_ARG_WITH_STRING(ios-version,
 [  --with-ios-version=VER
                       version of the iOS SDK, defaults to 6.0],
     ios_sdk_version=$withval,
-    ios_sdk_version=6.0)
+    ios_sdk_version=8.1)
 
 MOZ_ARG_WITH_STRING(ios-min-version,
 [  --with-ios-min-version=VER
                           deploy target version, defaults to 4.3],
     ios_deploy_version=$withval,
-    ios_deploy_version=4.3)
+    ios_deploy_version=5.1.1)
 
 MOZ_ARG_WITH_STRING(ios-arch,
 [  --with-ios-arch=ARCH
@@ -36,16 +36,13 @@ iPhoneOS|iPhoneSimulator)
     fi
 
     if test "$ios_target" == "iPhoneSimulator" ; then
-        echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
         if test "$ios_arch" == "i386"; then
             dnl force ios_arch to i386 for simulator
-            echo "======================================================================================================"
             CPU_ARCH=i386
             ios_arch=i386
         fi
 
         if test "$ios_arch" == "x86_64"; then
-            echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
             dnl force ios_arch to x86_64 for simulator
             CPU_ARCH=x86_64
             ios_arch=x86_64
