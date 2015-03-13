@@ -43,7 +43,7 @@ MacroAssemblerX86::getDouble(double d)
 }
 
 void
-MacroAssemblerX86::loadConstantDouble(double d, const FloatRegister &dest)
+MacroAssemblerX86::loadConstantDouble(double d, FloatRegister dest)
 {
     if (maybeInlineDouble(d, dest))
         return;
@@ -55,7 +55,7 @@ MacroAssemblerX86::loadConstantDouble(double d, const FloatRegister &dest)
 }
 
 void
-MacroAssemblerX86::addConstantDouble(double d, const FloatRegister &dest)
+MacroAssemblerX86::addConstantDouble(double d, FloatRegister dest)
 {
     Double *dbl = getDouble(d);
     if (!dbl)
@@ -89,7 +89,7 @@ MacroAssemblerX86::getFloat(float f)
 }
 
 void
-MacroAssemblerX86::loadConstantFloat32(float f, const FloatRegister &dest)
+MacroAssemblerX86::loadConstantFloat32(float f, FloatRegister dest)
 {
     if (maybeInlineFloat(f, dest))
         return;
@@ -101,7 +101,7 @@ MacroAssemblerX86::loadConstantFloat32(float f, const FloatRegister &dest)
 }
 
 void
-MacroAssemblerX86::addConstantFloat32(float f, const FloatRegister &dest)
+MacroAssemblerX86::addConstantFloat32(float f, FloatRegister dest)
 {
     Float *flt = getFloat(f);
     if (!flt)
@@ -113,10 +113,8 @@ MacroAssemblerX86::addConstantFloat32(float f, const FloatRegister &dest)
 void
 MacroAssemblerX86::finish()
 {
-    if (doubles_.empty() && floats_.empty())
-        return;
-
-    masm.align(sizeof(double));
+    if (!doubles_.empty())
+        masm.align(sizeof(double));
     for (size_t i = 0; i < doubles_.length(); i++) {
         CodeLabel cl(doubles_[i].uses);
         writeDoubleConstant(doubles_[i].value, cl.src());
@@ -124,6 +122,9 @@ MacroAssemblerX86::finish()
         if (!enoughMemory_)
             return;
     }
+
+    if (!floats_.empty())
+        masm.align(sizeof(float));
     for (size_t i = 0; i < floats_.length(); i++) {
         CodeLabel cl(floats_[i].uses);
         writeFloatConstant(floats_[i].value, cl.src());
@@ -152,7 +153,7 @@ MacroAssemblerX86::setupAlignedABICall(uint32_t args)
 }
 
 void
-MacroAssemblerX86::setupUnalignedABICall(uint32_t args, const Register &scratch)
+MacroAssemblerX86::setupUnalignedABICall(uint32_t args, Register scratch)
 {
     setupABICall(args);
     dynamicAlignment_ = true;
@@ -163,29 +164,30 @@ MacroAssemblerX86::setupUnalignedABICall(uint32_t args, const Register &scratch)
 }
 
 void
-MacroAssemblerX86::passABIArg(const MoveOperand &from)
+MacroAssemblerX86::passABIArg(const MoveOperand &from, MoveOp::Type type)
 {
     ++passedArgs_;
     MoveOperand to = MoveOperand(StackPointer, stackForCall_);
-    if (from.isDouble()) {
-        stackForCall_ += sizeof(double);
-        enoughMemory_ &= moveResolver_.addMove(from, to, Move::DOUBLE);
-    } else {
-        stackForCall_ += sizeof(int32_t);
-        enoughMemory_ &= moveResolver_.addMove(from, to, Move::GENERAL);
+    switch (type) {
+      case MoveOp::FLOAT32: stackForCall_ += sizeof(float); break;
+      case MoveOp::DOUBLE:  stackForCall_ += sizeof(double); break;
+      case MoveOp::INT32:   stackForCall_ += sizeof(int32_t); break;
+      case MoveOp::GENERAL: stackForCall_ += sizeof(intptr_t); break;
+      default: MOZ_ASSUME_UNREACHABLE("Unexpected argument type");
     }
+    enoughMemory_ &= moveResolver_.addMove(from, to, type);
 }
 
 void
-MacroAssemblerX86::passABIArg(const Register &reg)
+MacroAssemblerX86::passABIArg(Register reg)
 {
-    passABIArg(MoveOperand(reg));
+    passABIArg(MoveOperand(reg), MoveOp::GENERAL);
 }
 
 void
-MacroAssemblerX86::passABIArg(const FloatRegister &reg)
+MacroAssemblerX86::passABIArg(FloatRegister reg, MoveOp::Type type)
 {
-    passABIArg(MoveOperand(reg));
+    passABIArg(MoveOperand(reg), type);
 }
 
 void
@@ -196,7 +198,7 @@ MacroAssemblerX86::callWithABIPre(uint32_t *stackAdjust)
 
     if (dynamicAlignment_) {
         *stackAdjust = stackForCall_
-                     + ComputeByteAlignment(stackForCall_ + STACK_SLOT_SIZE,
+                     + ComputeByteAlignment(stackForCall_ + sizeof(intptr_t),
                                             StackAlignment);
     } else {
         *stackAdjust = stackForCall_
@@ -230,19 +232,18 @@ MacroAssemblerX86::callWithABIPre(uint32_t *stackAdjust)
 }
 
 void
-MacroAssemblerX86::callWithABIPost(uint32_t stackAdjust, Result result)
+MacroAssemblerX86::callWithABIPost(uint32_t stackAdjust, MoveOp::Type result)
 {
     freeStack(stackAdjust);
-    if (result == DOUBLE) {
+    if (result == MoveOp::DOUBLE) {
         reserveStack(sizeof(double));
         fstp(Operand(esp, 0));
-        loadDouble(Operand(esp, 0), ReturnFloatReg);
+        loadDouble(Operand(esp, 0), ReturnDoubleReg);
         freeStack(sizeof(double));
-    }
-    if (result == FLOAT) {
+    } else if (result == MoveOp::FLOAT32) {
         reserveStack(sizeof(float));
         fstp32(Operand(esp, 0));
-        loadFloat(Operand(esp, 0), ReturnFloatReg);
+        loadFloat32(Operand(esp, 0), ReturnFloat32Reg);
         freeStack(sizeof(float));
     }
     if (dynamicAlignment_)
@@ -253,7 +254,7 @@ MacroAssemblerX86::callWithABIPost(uint32_t stackAdjust, Result result)
 }
 
 void
-MacroAssemblerX86::callWithABI(void *fun, Result result)
+MacroAssemblerX86::callWithABI(void *fun, MoveOp::Type result)
 {
     uint32_t stackAdjust;
     callWithABIPre(&stackAdjust);
@@ -262,7 +263,7 @@ MacroAssemblerX86::callWithABI(void *fun, Result result)
 }
 
 void
-MacroAssemblerX86::callWithABI(AsmJSImmPtr fun, Result result)
+MacroAssemblerX86::callWithABI(AsmJSImmPtr fun, MoveOp::Type result)
 {
     uint32_t stackAdjust;
     callWithABIPre(&stackAdjust);
@@ -271,7 +272,7 @@ MacroAssemblerX86::callWithABI(AsmJSImmPtr fun, Result result)
 }
 
 void
-MacroAssemblerX86::callWithABI(const Address &fun, Result result)
+MacroAssemblerX86::callWithABI(const Address &fun, MoveOp::Type result)
 {
     uint32_t stackAdjust;
     callWithABIPre(&stackAdjust);
@@ -291,7 +292,7 @@ MacroAssemblerX86::handleFailureWithHandler(void *handler)
     passABIArg(eax);
     callWithABI(handler);
 
-    IonCode *excTail = GetIonContext()->runtime->jitRuntime()->getExceptionTail();
+    JitCode *excTail = GetIonContext()->runtime->jitRuntime()->getExceptionTail();
     jmp(excTail);
 }
 
@@ -386,32 +387,64 @@ MacroAssemblerX86::branchTestValue(Condition cond, const ValueOperand &value, co
     }
 }
 
-Assembler::Condition
-MacroAssemblerX86::testNegativeZero(const FloatRegister &reg, const Register &scratch)
+template <typename T>
+void
+MacroAssemblerX86::storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const T &dest,
+                                     MIRType slotType)
 {
-    // Determines whether the single double contained in the XMM register reg
-    // is equal to double-precision -0.
+    if (valueType == MIRType_Double) {
+        storeDouble(value.reg().typedReg().fpu(), dest);
+        return;
+    }
 
-    Label nonZero;
+    // Store the type tag if needed.
+    if (valueType != slotType)
+        storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), Operand(dest));
 
-    // Compare to zero. Lets through {0, -0}.
-    xorpd(ScratchFloatReg, ScratchFloatReg);
-    // If reg is non-zero, then a test of Zero is false.
-    branchDouble(DoubleNotEqual, reg, ScratchFloatReg, &nonZero);
-
-    // Input register is either zero or negative zero. Test sign bit.
-    movmskpd(reg, scratch);
-    // If reg is -0, then a test of Zero is true.
-    cmpl(scratch, Imm32(1));
-
-    bind(&nonZero);
-    return Zero;
+    // Store the payload.
+    if (value.constant())
+        storePayload(value.value(), Operand(dest));
+    else
+        storePayload(value.reg().typedReg().gpr(), Operand(dest));
 }
 
-Assembler::Condition
-MacroAssemblerX86::testNegativeZeroFloat32(const FloatRegister &reg, const Register &scratch)
+template void
+MacroAssemblerX86::storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const Address &dest,
+                                     MIRType slotType);
+
+template void
+MacroAssemblerX86::storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const BaseIndex &dest,
+                                     MIRType slotType);
+
+#ifdef JSGC_GENERATIONAL
+
+void
+MacroAssemblerX86::branchPtrInNurseryRange(Condition cond, Register ptr, Register temp,
+                                           Label *label)
 {
-    movd(reg, scratch);
-    cmpl(scratch, Imm32(1));
-    return Overflow;
+    JS_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
+    JS_ASSERT(ptr != temp);
+    JS_ASSERT(temp != InvalidReg);  // A temp register is required for x86.
+
+    const Nursery &nursery = GetIonContext()->runtime->gcNursery();
+    movePtr(ImmWord(-ptrdiff_t(nursery.start())), temp);
+    addPtr(ptr, temp);
+    branchPtr(cond == Assembler::Equal ? Assembler::Below : Assembler::AboveOrEqual,
+              temp, Imm32(nursery.nurserySize()), label);
 }
+
+void
+MacroAssemblerX86::branchValueIsNurseryObject(Condition cond, ValueOperand value, Register temp,
+                                              Label *label)
+{
+    JS_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
+
+    Label done;
+
+    branchTestObject(Assembler::NotEqual, value, cond == Assembler::Equal ? &done : label);
+    branchPtrInNurseryRange(cond, value.payloadReg(), temp, label);
+
+    bind(&done);
+}
+
+#endif

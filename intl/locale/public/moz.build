@@ -5,14 +5,11 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 EXPORTS += [
-    'nsCharsetAlias.h',
     'nsCollationCID.h',
     'nsDateTimeFormatCID.h',
     'nsIDateTimeFormat.h',
     'nsILanguageAtomService.h',
-    'nsIOS2Locale.h',
     'nsIPlatformCharset.h',
-    'nsLocaleCID.h',
     'nsPosixLocale.h',
     'nsWin32Locale.h',
 ]

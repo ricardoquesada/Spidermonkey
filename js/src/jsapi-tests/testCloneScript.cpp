@@ -7,6 +7,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "jsfriendapi.h"
 #include "js/OldDebugAPI.h"
 #include "jsapi-tests/tests.h"
 
@@ -32,11 +33,11 @@ BEGIN_TEST(test_cloneScript)
     // compile for A
     {
         JSAutoCompartment a(cx, A);
-        JSFunction *fun;
+        JS::RootedFunction fun(cx);
         JS::CompileOptions options(cx);
         options.setFileAndLine(__FILE__, 1);
-        CHECK(fun = JS_CompileFunction(cx, A, "f", 0, nullptr, source,
-                                       strlen(source), options));
+        CHECK(JS_CompileFunction(cx, A, "f", 0, nullptr, source,
+                                 strlen(source), options, &fun));
         CHECK(obj = JS_GetFunctionObject(fun));
     }
 
@@ -107,11 +108,11 @@ BEGIN_TEST(test_cloneScriptWithPrincipals)
     {
         JSAutoCompartment a(cx, A);
         JS::CompileOptions options(cx);
-        options.setFileAndLine(__FILE__, 1)
-               .setPrincipals(principalsA);
-        JS::RootedFunction fun(cx, JS_CompileFunction(cx, A, "f",
-                mozilla::ArrayLength(argnames), argnames, source,
-                strlen(source), options));
+        options.setFileAndLine(__FILE__, 1);
+        JS::RootedFunction fun(cx);
+        JS_CompileFunction(cx, A, "f",
+                           mozilla::ArrayLength(argnames), argnames, source,
+                           strlen(source), options, &fun);
         CHECK(fun);
 
         JSScript *script;
@@ -127,7 +128,7 @@ BEGIN_TEST(test_cloneScriptWithPrincipals)
         JS::RootedObject cloned(cx);
         CHECK(cloned = JS_CloneFunctionObject(cx, obj, B));
 
-        JSFunction *fun;
+        JS::RootedFunction fun(cx);
         JS::RootedValue clonedValue(cx, JS::ObjectValue(*cloned));
         CHECK(fun = JS_ValueToFunction(cx, clonedValue));
 
@@ -137,8 +138,8 @@ BEGIN_TEST(test_cloneScriptWithPrincipals)
         CHECK(JS_GetScriptPrincipals(script) == principalsB);
 
         JS::RootedValue v(cx);
-        JS::Value args[] = { JS::Int32Value(1) };
-        CHECK(JS_CallFunctionValue(cx, B, JS::ObjectValue(*cloned), 1, args, v.address()));
+        JS::RootedValue arg(cx, JS::Int32Value(1));
+        CHECK(JS_CallFunctionValue(cx, B, clonedValue, JS::HandleValueArray(arg), &v));
         CHECK(v.isObject());
 
         JSObject *funobj = &v.toObject();

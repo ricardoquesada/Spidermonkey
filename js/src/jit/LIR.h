@@ -37,7 +37,7 @@ class MSnapshot;
 
 static const uint32_t VREG_INCREMENT = 1;
 
-static const uint32_t THIS_FRAME_SLOT = 0;
+static const uint32_t THIS_FRAME_ARGSLOT = 0;
 
 #if defined(JS_NUNBOX32)
 # define BOX_PIECES         2
@@ -60,7 +60,7 @@ class LAllocation : public TempObject
     static const uintptr_t TAG_BIT = 1;
     static const uintptr_t TAG_SHIFT = 0;
     static const uintptr_t TAG_MASK = 1 << TAG_SHIFT;
-    static const uintptr_t KIND_BITS = 4;
+    static const uintptr_t KIND_BITS = 3;
     static const uintptr_t KIND_SHIFT = TAG_SHIFT + TAG_BIT;
     static const uintptr_t KIND_MASK = (1 << KIND_BITS) - 1;
 
@@ -76,10 +76,8 @@ class LAllocation : public TempObject
         CONSTANT_INDEX, // Constant arbitrary index.
         GPR,            // General purpose register.
         FPU,            // Floating-point register.
-        STACK_SLOT,     // 32-bit stack slot.
-        DOUBLE_SLOT,    // 64-bit stack slot.
-        INT_ARGUMENT,   // Argument slot that gets loaded into a GPR.
-        DOUBLE_ARGUMENT // Argument slot to be loaded into an FPR
+        STACK_SLOT,     // Stack slot.
+        ARGUMENT_SLOT   // Argument slot.
     };
 
   protected:
@@ -125,7 +123,7 @@ class LAllocation : public TempObject
         JS_ASSERT(!isTagged());
         bits_ |= TAG_MASK;
     }
-    inline explicit LAllocation(const AnyRegister &reg);
+    inline explicit LAllocation(AnyRegister reg);
 
     Kind kind() const {
         if (isTagged())
@@ -145,9 +143,6 @@ class LAllocation : public TempObject
     bool isConstantIndex() const {
         return kind() == CONSTANT_INDEX;
     }
-    bool isValue() const {
-        return kind() == CONSTANT_VALUE;
-    }
     bool isGeneralReg() const {
         return kind() == GPR;
     }
@@ -155,10 +150,10 @@ class LAllocation : public TempObject
         return kind() == FPU;
     }
     bool isStackSlot() const {
-        return kind() == STACK_SLOT || kind() == DOUBLE_SLOT;
+        return kind() == STACK_SLOT;
     }
     bool isArgument() const {
-        return kind() == INT_ARGUMENT || kind() == DOUBLE_ARGUMENT;
+        return kind() == ARGUMENT_SLOT;
     }
     bool isRegister() const {
         return isGeneralReg() || isFloatReg();
@@ -168,9 +163,6 @@ class LAllocation : public TempObject
     }
     bool isMemory() const {
         return isStackSlot() || isArgument();
-    }
-    bool isDouble() const {
-        return kind() == DOUBLE_SLOT || kind() == FPU || kind() == DOUBLE_ARGUMENT;
     }
     inline LUse *toUse();
     inline const LUse *toUse() const;
@@ -203,8 +195,9 @@ class LAllocation : public TempObject
 #else
     const char *toString() const { return "???"; }
 #endif
-
+    bool aliases(const LAllocation &other) const;
     void dump() const;
+
 };
 
 class LUse : public LAllocation
@@ -212,7 +205,7 @@ class LUse : public LAllocation
     static const uint32_t POLICY_BITS = 3;
     static const uint32_t POLICY_SHIFT = 0;
     static const uint32_t POLICY_MASK = (1 << POLICY_BITS) - 1;
-    static const uint32_t REG_BITS = 5;
+    static const uint32_t REG_BITS = 6;
     static const uint32_t REG_SHIFT = POLICY_SHIFT + POLICY_BITS;
     static const uint32_t REG_MASK = (1 << REG_BITS) - 1;
 
@@ -222,7 +215,7 @@ class LUse : public LAllocation
     static const uint32_t USED_AT_START_MASK = (1 << USED_AT_START_BITS) - 1;
 
   public:
-    // Virtual registers get the remaining 20 bits.
+    // Virtual registers get the remaining 19 bits.
     static const uint32_t VREG_BITS = DATA_BITS - (USED_AT_START_SHIFT + USED_AT_START_BITS);
     static const uint32_t VREG_SHIFT = USED_AT_START_SHIFT + USED_AT_START_BITS;
     static const uint32_t VREG_MASK = (1 << VREG_BITS) - 1;
@@ -261,13 +254,13 @@ class LUse : public LAllocation
         set(policy, 0, usedAtStart);
         setVirtualRegister(vreg);
     }
-    LUse(Policy policy, bool usedAtStart = false) {
+    explicit LUse(Policy policy, bool usedAtStart = false) {
         set(policy, 0, usedAtStart);
     }
-    LUse(Register reg, bool usedAtStart = false) {
+    explicit LUse(Register reg, bool usedAtStart = false) {
         set(FIXED, reg.code(), usedAtStart);
     }
-    LUse(FloatRegister reg, bool usedAtStart = false) {
+    explicit LUse(FloatRegister reg, bool usedAtStart = false) {
         set(FIXED, reg.code(), usedAtStart);
     }
     LUse(Register reg, uint32_t virtualRegister) {
@@ -354,35 +347,26 @@ class LConstantIndex : public LAllocation
     }
 };
 
-// Stack slots are indexes into the stack, given that each slot is size
-// STACK_SLOT_SIZE.
+// Stack slots are indices into the stack. The indices are byte indices.
 class LStackSlot : public LAllocation
 {
   public:
-    explicit LStackSlot(uint32_t slot, bool isDouble = false)
-      : LAllocation(isDouble ? DOUBLE_SLOT : STACK_SLOT, slot)
+    explicit LStackSlot(uint32_t slot)
+      : LAllocation(STACK_SLOT, slot)
     { }
-
-    bool isDouble() const {
-        return kind() == DOUBLE_SLOT;
-    }
 
     uint32_t slot() const {
         return data();
     }
 };
 
-// Arguments are reverse indexes into the stack, and as opposed to LStackSlot,
-// each index is measured in bytes because we have to index the middle of a
-// Value on 32 bits architectures.
+// Arguments are reverse indices into the stack. The indices are byte indices.
 class LArgument : public LAllocation
 {
   public:
-    explicit LArgument(LAllocation::Kind kind, int32_t index)
-      : LAllocation(kind, index)
-    {
-        JS_ASSERT(kind == INT_ARGUMENT || kind == DOUBLE_ARGUMENT);
-    }
+    explicit LArgument(int32_t index)
+      : LAllocation(ARGUMENT_SLOT, index)
+    { }
 
     int32_t index() const {
         return data();
@@ -397,7 +381,7 @@ class LDefinition
 
     // Before register allocation, this optionally contains a fixed policy.
     // Register allocation assigns this field to a physical policy if none is
-    // preset.
+    // fixed.
     //
     // Right now, pre-allocated outputs are limited to the following:
     //   * Physical argument stack slots.
@@ -421,15 +405,15 @@ class LDefinition
     // is a stack slot.
     enum Policy {
         // A random register of an appropriate class will be assigned.
-        DEFAULT,
+        REGISTER,
 
         // The policy is predetermined by the LAllocation attached to this
         // definition. The allocation may be:
         //   * A register, which may not appear as any fixed temporary.
         //   * A stack slot or argument.
         //
-        // Register allocation will not modify a preset allocation.
-        PRESET,
+        // Register allocation will not modify a fixed allocation.
+        FIXED,
 
         // One definition per instruction must re-use the first input
         // allocation, which (for now) must be a register.
@@ -444,9 +428,11 @@ class LDefinition
 
     enum Type {
         GENERAL,    // Generic, integer or pointer-width data (GPR).
+        INT32,      // int32 data (GPR).
         OBJECT,     // Pointer that may be collected as garbage (GPR).
         SLOTS,      // Slots/elements pointer that may be moved by minor GCs (GPR).
-        DOUBLE,     // 64-bit point value (FPU).
+        FLOAT32,    // 32-bit floating-point value (FPU).
+        DOUBLE,     // 64-bit floating-point value (FPU).
 #ifdef JS_NUNBOX32
         // A type virtual register must be followed by a payload virtual
         // register, as both will be tracked as a single gcthing.
@@ -463,24 +449,24 @@ class LDefinition
     }
 
   public:
-    LDefinition(uint32_t index, Type type, Policy policy = DEFAULT) {
+    LDefinition(uint32_t index, Type type, Policy policy = REGISTER) {
         set(index, type, policy);
     }
 
-    LDefinition(Type type, Policy policy = DEFAULT) {
+    explicit LDefinition(Type type, Policy policy = REGISTER) {
         set(0, type, policy);
     }
 
     LDefinition(Type type, const LAllocation &a)
       : output_(a)
     {
-        set(0, type, PRESET);
+        set(0, type, FIXED);
     }
 
     LDefinition(uint32_t index, Type type, const LAllocation &a)
       : output_(a)
     {
-        set(index, type, PRESET);
+        set(index, type, FIXED);
     }
 
     LDefinition() : bits_(0)
@@ -496,6 +482,31 @@ class LDefinition
     Type type() const {
         return (Type)((bits_ >> TYPE_SHIFT) & TYPE_MASK);
     }
+    bool isCompatibleReg(const AnyRegister &r) const {
+        if (isFloatReg() && r.isFloat()) {
+#if defined(JS_CODEGEN_ARM)
+            if (type() == FLOAT32)
+                return r.fpu().isSingle();
+            return r.fpu().isDouble();
+#else
+            return true;
+#endif
+        }
+        return !isFloatReg() && !r.isFloat();
+    }
+    bool isCompatibleDef(const LDefinition &other) const {
+#ifdef JS_CODEGEN_ARM
+        if (isFloatReg() && other.isFloatReg())
+            return type() == other.type();
+        return !isFloatReg() && !other.isFloatReg();
+#else
+        return isFloatReg() == other.isFloatReg();
+#endif
+    }
+
+    bool isFloatReg() const {
+        return type() == FLOAT32 || type() == DOUBLE;
+    }
     uint32_t virtualRegister() const {
         return (bits_ >> VREG_SHIFT) & VREG_MASK;
     }
@@ -505,11 +516,11 @@ class LDefinition
     const LAllocation *output() const {
         return &output_;
     }
-    bool isPreset() const {
-        return policy() == PRESET;
+    bool isFixed() const {
+        return policy() == FIXED;
     }
     bool isBogusTemp() const {
-        return isPreset() && output()->isConstantIndex();
+        return isFixed() && output()->isConstantIndex();
     }
     void setVirtualRegister(uint32_t index) {
         JS_ASSERT(index < VREG_MASK);
@@ -520,7 +531,7 @@ class LDefinition
         output_ = a;
         if (!a.isUse()) {
             bits_ &= ~(POLICY_MASK << POLICY_SHIFT);
-            bits_ |= PRESET << POLICY_SHIFT;
+            bits_ |= FIXED << POLICY_SHIFT;
         }
     }
     void setReusedInput(uint32_t operand) {
@@ -535,13 +546,18 @@ class LDefinition
         switch (type) {
           case MIRType_Boolean:
           case MIRType_Int32:
-            return LDefinition::GENERAL;
+            // The stack slot allocator doesn't currently support allocating
+            // 1-byte slots, so for now we lower MIRType_Boolean into INT32.
+            static_assert(sizeof(bool) <= sizeof(int32_t), "bool doesn't fit in an int32 slot");
+            return LDefinition::INT32;
           case MIRType_String:
+          case MIRType_Symbol:
           case MIRType_Object:
             return LDefinition::OBJECT;
           case MIRType_Double:
-          case MIRType_Float32:
             return LDefinition::DOUBLE;
+          case MIRType_Float32:
+            return LDefinition::FLOAT32;
 #if defined(JS_PUNBOX64)
           case MIRType_Value:
             return LDefinition::BOX;
@@ -551,12 +567,20 @@ class LDefinition
             return LDefinition::SLOTS;
           case MIRType_Pointer:
             return LDefinition::GENERAL;
-          case MIRType_ForkJoinSlice:
+          case MIRType_ForkJoinContext:
             return LDefinition::GENERAL;
           default:
             MOZ_ASSUME_UNREACHABLE("unexpected type");
         }
     }
+
+#ifdef DEBUG
+    const char *toString() const;
+#else
+    const char *toString() const { return "???"; }
+#endif
+
+    void dump() const;
 };
 
 // Forward declarations of LIR types.
@@ -703,6 +727,7 @@ class LInstructionVisitor
 
   protected:
     jsbytecode *lastPC_;
+    jsbytecode *lastNotInlinedPC_;
 
     LInstruction *instruction() {
         return ins_;
@@ -711,13 +736,17 @@ class LInstructionVisitor
   public:
     void setInstruction(LInstruction *ins) {
         ins_ = ins;
-        if (ins->mirRaw())
+        if (ins->mirRaw()) {
             lastPC_ = ins->mirRaw()->trackedPc();
+            if (ins->mirRaw()->trackedTree())
+                lastNotInlinedPC_ = ins->mirRaw()->profilerLeavePc();
+        }
     }
 
     LInstructionVisitor()
       : ins_(nullptr),
-        lastPC_(nullptr)
+        lastPC_(nullptr),
+        lastNotInlinedPC_(nullptr)
     {}
 
   public:
@@ -734,40 +763,29 @@ class LMoveGroup;
 class LBlock : public TempObject
 {
     MBasicBlock *block_;
-    Vector<LPhi *, 4, IonAllocPolicy> phis_;
+    FixedList<LPhi> phis_;
     InlineList<LInstruction> instructions_;
     LMoveGroup *entryMoveGroup_;
     LMoveGroup *exitMoveGroup_;
     Label label_;
 
-    LBlock(TempAllocator &alloc, MBasicBlock *block)
+    explicit LBlock(MBasicBlock *block)
       : block_(block),
-        phis_(alloc),
+        phis_(),
         entryMoveGroup_(nullptr),
         exitMoveGroup_(nullptr)
     { }
 
   public:
-    static LBlock *New(TempAllocator &alloc, MBasicBlock *from) {
-        return new(alloc) LBlock(alloc, from);
-    }
+    static LBlock *New(TempAllocator &alloc, MBasicBlock *from);
     void add(LInstruction *ins) {
         instructions_.pushBack(ins);
-    }
-    bool addPhi(LPhi *phi) {
-        return phis_.append(phi);
     }
     size_t numPhis() const {
         return phis_.length();
     }
-    LPhi *getPhi(size_t index) const {
-        return phis_[index];
-    }
-    void removePhi(size_t index) {
-        phis_.erase(&phis_[index]);
-    }
-    void clearPhis() {
-        phis_.clear();
+    LPhi *getPhi(size_t index) {
+        return &phis_[index];
     }
     MBasicBlock *mir() const {
         return block_;
@@ -800,13 +818,29 @@ class LBlock : public TempObject
         JS_ASSERT(!at->isLabel());
         instructions_.insertBefore(at, ins);
     }
-    uint32_t firstId();
-    uint32_t lastId();
+    uint32_t firstId() const;
+    uint32_t lastId() const;
+
+    // Return the label to branch to when branching to this block.
     Label *label() {
+        JS_ASSERT(!isTrivial());
         return &label_;
     }
+
     LMoveGroup *getEntryMoveGroup(TempAllocator &alloc);
     LMoveGroup *getExitMoveGroup(TempAllocator &alloc);
+
+    // Test whether this basic block is empty except for a simple goto, and
+    // which is not forming a loop. No code will be emitted for such blocks.
+    bool isTrivial() {
+        LInstructionIterator ins(begin());
+        while (ins->isLabel())
+            ++ins;
+        return ins->isGoto() && !mir()->isLoopHeader();
+    }
+
+    void dump(FILE *fp);
+    void dump();
 };
 
 template <size_t Defs, size_t Operands, size_t Temps>
@@ -881,6 +915,102 @@ class LCallInstructionHelper : public LInstructionHelper<Defs, Operands, Temps>
     }
 };
 
+class LRecoverInfo : public TempObject
+{
+  public:
+    typedef Vector<MNode *, 2, IonAllocPolicy> Instructions;
+
+  private:
+    // List of instructions needed to recover the stack frames.
+    // Outer frames are stored before inner frames.
+    Instructions instructions_;
+
+    // Cached offset where this resume point is encoded.
+    RecoverOffset recoverOffset_;
+
+    explicit LRecoverInfo(TempAllocator &alloc);
+    bool init(MResumePoint *mir);
+
+    // Fill the instruction vector such as all instructions needed for the
+    // recovery are pushed before the current instruction.
+    bool appendOperands(MNode *ins);
+    bool appendDefinition(MDefinition *def);
+    bool appendResumePoint(MResumePoint *rp);
+  public:
+    static LRecoverInfo *New(MIRGenerator *gen, MResumePoint *mir);
+
+    // Resume point of the inner most function.
+    MResumePoint *mir() const {
+        return instructions_.back()->toResumePoint();
+    }
+    RecoverOffset recoverOffset() const {
+        return recoverOffset_;
+    }
+    void setRecoverOffset(RecoverOffset offset) {
+        JS_ASSERT(recoverOffset_ == INVALID_RECOVER_OFFSET);
+        recoverOffset_ = offset;
+    }
+
+    MNode **begin() {
+        return instructions_.begin();
+    }
+    MNode **end() {
+        return instructions_.end();
+    }
+    size_t numInstructions() const {
+        return instructions_.length();
+    }
+
+    class OperandIter
+    {
+      private:
+        MNode **it_;
+        MNode **end_;
+        size_t op_;
+
+      public:
+        explicit OperandIter(LRecoverInfo *recoverInfo)
+          : it_(recoverInfo->begin()), end_(recoverInfo->end()), op_(0)
+        {
+            settle();
+        }
+
+        void settle() {
+            while ((*it_)->numOperands() == 0) {
+                ++it_;
+                op_ = 0;
+            }
+        }
+
+        MDefinition *operator *() {
+            return (*it_)->getOperand(op_);
+        }
+        MDefinition *operator ->() {
+            return (*it_)->getOperand(op_);
+        }
+
+        OperandIter &operator ++() {
+            ++op_;
+            if (op_ == (*it_)->numOperands()) {
+                op_ = 0;
+                ++it_;
+            }
+            if (!*this)
+                settle();
+
+            return *this;
+        }
+
+        operator bool() const {
+            return it_ == end_;
+        }
+
+#ifdef DEBUG
+        bool canOptimizeOutIfUnused();
+#endif
+    };
+};
+
 // An LSnapshot is the reflection of an MResumePoint in LIR. Unlike MResumePoints,
 // they cannot be shared, as they are filled in by the register allocator in
 // order to capture the precise low-level stack state in between an
@@ -891,16 +1021,16 @@ class LSnapshot : public TempObject
   private:
     uint32_t numSlots_;
     LAllocation *slots_;
-    MResumePoint *mir_;
+    LRecoverInfo *recoverInfo_;
     SnapshotOffset snapshotOffset_;
     BailoutId bailoutId_;
     BailoutKind bailoutKind_;
 
-    LSnapshot(MResumePoint *mir, BailoutKind kind);
+    LSnapshot(LRecoverInfo *recover, BailoutKind kind);
     bool init(MIRGenerator *gen);
 
   public:
-    static LSnapshot *New(MIRGenerator *gen, MResumePoint *snapshot, BailoutKind kind);
+    static LSnapshot *New(MIRGenerator *gen, LRecoverInfo *recover, BailoutKind kind);
 
     size_t numEntries() const {
         return numSlots_;
@@ -928,8 +1058,11 @@ class LSnapshot : public TempObject
         JS_ASSERT(i < numSlots_);
         slots_[i] = alloc;
     }
+    LRecoverInfo *recoverInfo() const {
+        return recoverInfo_;
+    }
     MResumePoint *mir() const {
-        return mir_;
+        return recoverInfo()->mir();
     }
     SnapshotOffset snapshotOffset() const {
         return snapshotOffset_;
@@ -984,7 +1117,7 @@ class LSafepoint : public TempObject
     // For call instructions, the live regs are empty. Call instructions may
     // have register inputs or temporaries, which will *not* be in the live
     // registers: if passed to the call, the values passed will be marked via
-    // MarkIonExitFrame, and no registers can be live after the instruction
+    // MarkJitExitFrame, and no registers can be live after the instruction
     // except its outputs.
     RegisterSet liveRegs_;
 
@@ -992,9 +1125,9 @@ class LSafepoint : public TempObject
     GeneralRegisterSet gcRegs_;
 
 #ifdef CHECK_OSIPOINT_REGISTERS
-    // Temp regs of the current instruction. This set is never written to the
-    // safepoint; it's only used by assertions during compilation.
-    RegisterSet tempRegs_;
+    // Clobbered regs of the current instruction. This set is never written to
+    // the safepoint; it's only used by assertions during compilation.
+    RegisterSet clobberedRegs_;
 #endif
 
     // Offset to a position in the safepoint stream, or
@@ -1028,7 +1161,15 @@ class LSafepoint : public TempObject
     SlotList slotsOrElementsSlots_;
 
   public:
-    LSafepoint(TempAllocator &alloc)
+    void assertInvariants() {
+        // Every register in valueRegs and gcRegs should also be in liveRegs.
+#ifndef JS_NUNBOX32
+        JS_ASSERT((valueRegs().bits() & ~liveRegs().gprs().bits()) == 0);
+#endif
+        JS_ASSERT((gcRegs().bits() & ~liveRegs().gprs().bits()) == 0);
+    }
+
+    explicit LSafepoint(TempAllocator &alloc)
       : safepointOffset_(INVALID_SAFEPOINT_OFFSET)
       , osiCallPointOffset_(0)
       , gcSlots_(alloc)
@@ -1038,29 +1179,37 @@ class LSafepoint : public TempObject
       , partialNunboxes_(0)
 #endif
       , slotsOrElementsSlots_(alloc)
-    { }
+    {
+      assertInvariants();
+    }
     void addLiveRegister(AnyRegister reg) {
         liveRegs_.addUnchecked(reg);
+        assertInvariants();
     }
     const RegisterSet &liveRegs() const {
         return liveRegs_;
     }
 #ifdef CHECK_OSIPOINT_REGISTERS
-    void addTempRegister(AnyRegister reg) {
-        tempRegs_.addUnchecked(reg);
+    void addClobberedRegister(AnyRegister reg) {
+        clobberedRegs_.addUnchecked(reg);
+        assertInvariants();
     }
-    const RegisterSet &tempRegs() const {
-        return tempRegs_;
+    const RegisterSet &clobberedRegs() const {
+        return clobberedRegs_;
     }
 #endif
     void addGcRegister(Register reg) {
         gcRegs_.addUnchecked(reg);
+        assertInvariants();
     }
     GeneralRegisterSet gcRegs() const {
         return gcRegs_;
     }
     bool addGcSlot(uint32_t slot) {
-        return gcSlots_.append(slot);
+        bool result = gcSlots_.append(slot);
+        if (result)
+            assertInvariants();
+        return result;
     }
     SlotList &gcSlots() {
         return gcSlots_;
@@ -1074,18 +1223,23 @@ class LSafepoint : public TempObject
     }
     void addSlotsOrElementsRegister(Register reg) {
         slotsOrElementsRegs_.addUnchecked(reg);
+        assertInvariants();
     }
     bool addSlotsOrElementsSlot(uint32_t slot) {
-        return slotsOrElementsSlots_.append(slot);
+        bool result = slotsOrElementsSlots_.append(slot);
+        if (result)
+            assertInvariants();
+        return result;
     }
     bool addSlotsOrElementsPointer(LAllocation alloc) {
         if (alloc.isStackSlot())
             return addSlotsOrElementsSlot(alloc.toStackSlot()->slot());
         JS_ASSERT(alloc.isRegister());
         addSlotsOrElementsRegister(alloc.toRegister().gpr());
+        assertInvariants();
         return true;
     }
-    bool hasSlotsOrElementsPointer(LAllocation alloc) {
+    bool hasSlotsOrElementsPointer(LAllocation alloc) const {
         if (alloc.isRegister())
             return slotsOrElementsRegs().has(alloc.toRegister().gpr());
         if (alloc.isStackSlot()) {
@@ -1103,10 +1257,11 @@ class LSafepoint : public TempObject
             return addGcSlot(alloc.toStackSlot()->slot());
         if (alloc.isRegister())
             addGcRegister(alloc.toRegister().gpr());
+        assertInvariants();
         return true;
     }
 
-    bool hasGcPointer(LAllocation alloc) {
+    bool hasGcPointer(LAllocation alloc) const {
         if (alloc.isRegister())
             return gcRegs().has(alloc.toRegister().gpr());
         if (alloc.isStackSlot()) {
@@ -1121,13 +1276,16 @@ class LSafepoint : public TempObject
     }
 
     bool addValueSlot(uint32_t slot) {
-        return valueSlots_.append(slot);
+        bool result = valueSlots_.append(slot);
+        if (result)
+            assertInvariants();
+        return result;
     }
     SlotList &valueSlots() {
         return valueSlots_;
     }
 
-    bool hasValueSlot(uint32_t slot) {
+    bool hasValueSlot(uint32_t slot) const {
         for (size_t i = 0; i < valueSlots_.length(); i++) {
             if (valueSlots_[i] == slot)
                 return true;
@@ -1138,7 +1296,10 @@ class LSafepoint : public TempObject
 #ifdef JS_NUNBOX32
 
     bool addNunboxParts(LAllocation type, LAllocation payload) {
-        return nunboxParts_.append(NunboxEntry(type, payload));
+        bool result = nunboxParts_.append(NunboxEntry(type, payload));
+        if (result)
+            assertInvariants();
+        return result;
     }
 
     bool addNunboxType(uint32_t typeVreg, LAllocation type) {
@@ -1155,10 +1316,13 @@ class LSafepoint : public TempObject
 
         // vregs for nunbox pairs are adjacent, with the type coming first.
         uint32_t payloadVreg = typeVreg + 1;
-        return nunboxParts_.append(NunboxEntry(type, LUse(payloadVreg, LUse::ANY)));
+        bool result = nunboxParts_.append(NunboxEntry(type, LUse(payloadVreg, LUse::ANY)));
+        if (result)
+            assertInvariants();
+        return result;
     }
 
-    bool hasNunboxType(LAllocation type) {
+    bool hasNunboxType(LAllocation type) const {
         if (type.isArgument())
             return true;
         if (type.isStackSlot() && hasValueSlot(type.toStackSlot()->slot() + 1))
@@ -1184,10 +1348,13 @@ class LSafepoint : public TempObject
 
         // vregs for nunbox pairs are adjacent, with the type coming first.
         uint32_t typeVreg = payloadVreg - 1;
-        return nunboxParts_.append(NunboxEntry(LUse(typeVreg, LUse::ANY), payload));
+        bool result = nunboxParts_.append(NunboxEntry(LUse(typeVreg, LUse::ANY), payload));
+        if (result)
+            assertInvariants();
+        return result;
     }
 
-    bool hasNunboxPayload(LAllocation payload) {
+    bool hasNunboxPayload(LAllocation payload) const {
         if (payload.isArgument())
             return true;
         if (payload.isStackSlot() && hasValueSlot(payload.toStackSlot()->slot()))
@@ -1211,8 +1378,9 @@ class LSafepoint : public TempObject
 
     void addValueRegister(Register reg) {
         valueRegs_.add(reg);
+        assertInvariants();
     }
-    GeneralRegisterSet valueRegs() {
+    GeneralRegisterSet valueRegs() const {
         return valueRegs_;
     }
 
@@ -1235,7 +1403,7 @@ class LSafepoint : public TempObject
         return true;
     }
 
-    bool hasBoxedValue(LAllocation alloc) {
+    bool hasBoxedValue(LAllocation alloc) const {
         if (alloc.isRegister())
             return valueRegs().has(alloc.toRegister().gpr());
         if (alloc.isStackSlot())
@@ -1260,7 +1428,7 @@ class LSafepoint : public TempObject
         // In general, pointer arithmetic on code is bad, but in this case,
         // getting the return address from a call instruction, stepping over pools
         // would be wrong.
-        return osiCallPointOffset_ + Assembler::patchWrite_NearCallSize();
+        return osiCallPointOffset_ + Assembler::PatchWrite_NearCallSize();
     }
     uint32_t osiCallPointOffset() const {
         return osiCallPointOffset_;
@@ -1271,7 +1439,6 @@ class LSafepoint : public TempObject
     }
     void fixupOffset(MacroAssembler *masm) {
         osiCallPointOffset_ = masm->actualOffset(osiCallPointOffset_);
-        safepointOffset_ = masm->actualOffset(safepointOffset_);
     }
 };
 
@@ -1291,7 +1458,7 @@ class LInstruction::InputIterator
     }
 
 public:
-    InputIterator(LInstruction &ins) :
+    explicit InputIterator(LInstruction &ins) :
       ins_(ins),
       idx_(0),
       snapshot_(false)
@@ -1339,8 +1506,21 @@ public:
 
 class LIRGraph
 {
-    Vector<LBlock *, 16, IonAllocPolicy> blocks_;
+    struct ValueHasher
+    {
+        typedef Value Lookup;
+        static HashNumber hash(const Value &v) {
+            return HashNumber(v.asRawBits());
+        }
+        static bool match(const Value &lhs, const Value &rhs) {
+            return lhs == rhs;
+        }
+    };
+
+    FixedList<LBlock *> blocks_;
     Vector<Value, 0, IonAllocPolicy> constantPool_;
+    typedef HashMap<Value, uint32_t, ValueHasher, IonAllocPolicy> ConstantPoolMap;
+    ConstantPoolMap constantPoolMap_;
     Vector<LInstruction *, 0, IonAllocPolicy> safepoints_;
     Vector<LInstruction *, 0, IonAllocPolicy> nonCallSafepoints_;
     uint32_t numVirtualRegisters_;
@@ -1354,14 +1534,14 @@ class LIRGraph
     // Snapshot taken before any LIR has been lowered.
     LSnapshot *entrySnapshot_;
 
-    // LBlock containing LOsrEntry, or nullptr.
-    LBlock *osrBlock_;
-
     MIRGraph &mir_;
 
   public:
-    LIRGraph(MIRGraph *mir);
+    explicit LIRGraph(MIRGraph *mir);
 
+    bool init() {
+        return constantPoolMap_.init() && blocks_.init(mir_.alloc(), mir_.numBlocks());
+    }
     MIRGraph &mir() const {
         return mir_;
     }
@@ -1374,8 +1554,8 @@ class LIRGraph
     uint32_t numBlockIds() const {
         return mir_.numBlockIds();
     }
-    bool addBlock(LBlock *block) {
-        return blocks_.append(block);
+    void setBlock(size_t index, LBlock *block) {
+        blocks_[index] = block;
     }
     uint32_t getVirtualRegister() {
         numVirtualRegisters_ += VREG_INCREMENT;
@@ -1396,7 +1576,20 @@ class LIRGraph
         localSlotCount_ = localSlotCount;
     }
     uint32_t localSlotCount() const {
-        return AlignBytes(localSlotCount_, StackAlignment / STACK_SLOT_SIZE);
+        return localSlotCount_;
+    }
+    // Return the localSlotCount() value rounded up so that it satisfies the
+    // platform stack alignment requirement, and so that it's a multiple of
+    // the number of slots per Value.
+    uint32_t paddedLocalSlotCount() const {
+        // Round to StackAlignment, but also round to at least sizeof(Value) in
+        // case that's greater, because StackOffsetOfPassedArg rounds argument
+        // slots to 8-byte boundaries.
+        size_t Alignment = Max(size_t(StackAlignment), sizeof(Value));
+        return AlignBytes(localSlotCount(), Alignment);
+    }
+    size_t paddedLocalSlotsSize() const {
+        return paddedLocalSlotCount();
     }
     void setArgumentSlotCount(uint32_t argumentSlotCount) {
         argumentSlotCount_ = argumentSlotCount;
@@ -1404,8 +1597,11 @@ class LIRGraph
     uint32_t argumentSlotCount() const {
         return argumentSlotCount_;
     }
+    size_t argumentsSize() const {
+        return argumentSlotCount() * sizeof(Value);
+    }
     uint32_t totalSlotCount() const {
-        return localSlotCount() + (argumentSlotCount() * sizeof(Value) / STACK_SLOT_SIZE);
+        return paddedLocalSlotCount() + argumentsSize();
     }
     bool addConstantToPool(const Value &v, uint32_t *index);
     size_t numConstants() const {
@@ -1414,25 +1610,15 @@ class LIRGraph
     Value *constantPool() {
         return &constantPool_[0];
     }
-    const Value &getConstant(size_t index) const {
-        return constantPool_[index];
-    }
     void setEntrySnapshot(LSnapshot *snapshot) {
         JS_ASSERT(!entrySnapshot_);
-        JS_ASSERT(snapshot->bailoutKind() == Bailout_Normal);
+        JS_ASSERT(snapshot->bailoutKind() == Bailout_InitialState);
         snapshot->setBailoutKind(Bailout_ArgumentCheck);
         entrySnapshot_ = snapshot;
     }
     LSnapshot *entrySnapshot() const {
         JS_ASSERT(entrySnapshot_);
         return entrySnapshot_;
-    }
-    void setOsrBlock(LBlock *block) {
-        JS_ASSERT(!osrBlock_);
-        osrBlock_ = block;
-    }
-    LBlock *osrBlock() const {
-        return osrBlock_;
     }
     bool noteNeedsSafepoint(LInstruction *ins);
     size_t numNonCallSafepoints() const {
@@ -1447,10 +1633,12 @@ class LIRGraph
     LInstruction *getSafepoint(size_t i) const {
         return safepoints_[i];
     }
-    void removeBlock(size_t i);
+
+    void dump(FILE *fp) const;
+    void dump() const;
 };
 
-LAllocation::LAllocation(const AnyRegister &reg)
+LAllocation::LAllocation(AnyRegister reg)
 {
     if (reg.isFloat())
         *this = LFloatReg(reg.fpu());
@@ -1479,31 +1667,20 @@ LAllocation::toRegister() const
         return visitor->visit##opcode(this);                                \
     }
 
-#if defined(JS_NUNBOX32)
-# define BOX_OUTPUT_ACCESSORS()                                             \
-    const LDefinition *outputType() {                                       \
-        return getDef(TYPE_INDEX);                                          \
-    }                                                                       \
-    const LDefinition *outputPayload() {                                    \
-        return getDef(PAYLOAD_INDEX);                                       \
-    }
-#elif defined(JS_PUNBOX64)
-# define BOX_OUTPUT_ACCESSORS()                                             \
-    const LDefinition *outputValue() {                                      \
-        return getDef(0);                                                   \
-    }
-#endif
-
 #include "jit/LIR-Common.h"
-#if defined(JS_CPU_X86) || defined(JS_CPU_X64)
-# if defined(JS_CPU_X86)
+#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
+# if defined(JS_CODEGEN_X86)
 #  include "jit/x86/LIR-x86.h"
-# elif defined(JS_CPU_X64)
+# elif defined(JS_CODEGEN_X64)
 #  include "jit/x64/LIR-x64.h"
 # endif
 # include "jit/shared/LIR-x86-shared.h"
-#elif defined(JS_CPU_ARM)
+#elif defined(JS_CODEGEN_ARM)
 # include "jit/arm/LIR-arm.h"
+#elif defined(JS_CODEGEN_MIPS)
+# include "jit/mips/LIR-mips.h"
+#else
+# error "Unknown architecture!"
 #endif
 
 #undef LIR_HEADER
@@ -1563,8 +1740,8 @@ static inline unsigned
 OffsetOfNunboxSlot(LDefinition::Type type)
 {
     if (type == LDefinition::PAYLOAD)
-        return NUNBOX32_PAYLOAD_OFFSET / STACK_SLOT_SIZE;
-    return NUNBOX32_TYPE_OFFSET / STACK_SLOT_SIZE;
+        return NUNBOX32_PAYLOAD_OFFSET;
+    return NUNBOX32_TYPE_OFFSET;
 }
 
 // Note that stack indexes for LStackSlot are modelled backwards, so a
@@ -1573,8 +1750,8 @@ static inline unsigned
 BaseOfNunboxSlot(LDefinition::Type type, unsigned slot)
 {
     if (type == LDefinition::PAYLOAD)
-        return slot + (NUNBOX32_PAYLOAD_OFFSET / STACK_SLOT_SIZE);
-    return slot + (NUNBOX32_TYPE_OFFSET / STACK_SLOT_SIZE);
+        return slot + NUNBOX32_PAYLOAD_OFFSET;
+    return slot + NUNBOX32_TYPE_OFFSET;
 }
 #endif
 

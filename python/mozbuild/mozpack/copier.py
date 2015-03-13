@@ -13,6 +13,7 @@ from mozpack.files import (
 import mozpack.path
 import errno
 from collections import (
+    Counter,
     OrderedDict,
 )
 
@@ -31,6 +32,19 @@ class FileRegistry(object):
 
     def __init__(self):
         self._files = OrderedDict()
+        self._required_directories = Counter()
+
+    def _partial_paths(self, path):
+        '''
+        Turn "foo/bar/baz/zot" into ["foo/bar/baz", "foo/bar", "foo"].
+        '''
+        partial_paths = []
+        partial_path = path
+        while partial_path:
+            partial_path = mozpack.path.dirname(partial_path)
+            if partial_path:
+                partial_paths.append(partial_path)
+        return partial_paths
 
     def add(self, path, content):
         '''
@@ -39,14 +53,17 @@ class FileRegistry(object):
         assert isinstance(content, BaseFile)
         if path in self._files:
             return errors.error("%s already added" % path)
+        if self._required_directories[path] > 0:
+            return errors.error("Can't add %s: it is a required directory" %
+                                path)
         # Check whether any parent of the given path is already stored
-        partial_path = path
-        while partial_path:
-            partial_path = mozpack.path.dirname(partial_path)
+        partial_paths = self._partial_paths(path)
+        for partial_path in partial_paths:
             if partial_path in self._files:
                 return errors.error("Can't add %s: %s is a file" %
                                     (path, partial_path))
         self._files[path] = content
+        self._required_directories.update(partial_paths)
 
     def match(self, pattern):
         '''
@@ -76,6 +93,7 @@ class FileRegistry(object):
                                 "not matching anything previously added"))
         for i in items:
             del self._files[i]
+            self._required_directories.subtract(self._partial_paths(i))
 
     def paths(self):
         '''
@@ -116,6 +134,15 @@ class FileRegistry(object):
         '''
         return self._files.iteritems()
 
+    def required_directories(self):
+        '''
+        Return the set of directories required by the paths in the container,
+        in no particular order.  The returned directories are relative to an
+        unspecified (virtual) root directory (and do not include said root
+        directory).
+        '''
+        return set(k for k, v in self._required_directories.items() if v > 0)
+
 
 class FileCopyResult(object):
     """Represents results of a FileCopier.copy operation."""
@@ -148,7 +175,10 @@ class FileCopier(FileRegistry):
     FileRegistry with the ability to copy the registered files to a separate
     directory.
     '''
-    def copy(self, destination, skip_if_older=True, remove_unaccounted=True):
+    def copy(self, destination, skip_if_older=True,
+             remove_unaccounted=True,
+             remove_all_directory_symlinks=True,
+             remove_empty_directories=True):
         '''
         Copy all registered files to the given destination path. The given
         destination can be an existing directory, or not exist at all. It
@@ -156,9 +186,24 @@ class FileCopier(FileRegistry):
         The copy process acts a bit like rsync: files are not copied when they
         don't need to (see mozpack.files for details on file.copy).
 
-        By default, files in the destination directory that aren't registered
-        are removed and empty directories are deleted. To disable removing of
-        unregistered files, pass remove_unaccounted=False.
+        By default, files in the destination directory that aren't
+        registered are removed and empty directories are deleted. In
+        addition, all directory symlinks in the destination directory
+        are deleted: this is a conservative approach to ensure that we
+        never accidently write files into a directory that is not the
+        destination directory. In the worst case, we might have a
+        directory symlink in the object directory to the source
+        directory.
+
+        To disable removing of unregistered files, pass
+        remove_unaccounted=False. To disable removing empty
+        directories, pass remove_empty_directories=False. In rare
+        cases, you might want to maintain directory symlinks in the
+        destination directory (at least those that are not required to
+        be regular directories): pass
+        remove_all_directory_symlinks=False. Exercise caution with
+        this flag: you almost certainly do not want to preserve
+        directory symlinks.
 
         Returns a FileCopyResult that details what changed.
         '''
@@ -185,24 +230,14 @@ class FileCopier(FileRegistry):
         # in Python over possibly I/O bound filesystem calls to stat() and
         # friends.
 
-        required_dirs = set()
+        required_dirs = set([destination])
         dest_files = set()
 
         for p, f in self:
-            required_dirs.add(os.path.normpath(os.path.dirname(p)))
             dest_files.add(os.path.normpath(os.path.join(destination, p)))
 
-        # Ensure all parent directories are present in required_dirs.
-        extra = set()
-        for d in required_dirs:
-            parent = d
-            while parent:
-                parent = os.path.dirname(parent)
-                extra.add(parent)
-
-        required_dirs |= extra
-        required_dirs = set(os.path.normpath(os.path.join(destination, d))
-            for d in required_dirs)
+        required_dirs |= set(os.path.normpath(os.path.join(destination, d))
+            for d in self.required_directories())
 
         # Ensure destination directories are in place and proper.
         #
@@ -257,9 +292,14 @@ class FileCopier(FileRegistry):
                     full = os.path.join(root, d)
                     st = os.lstat(full)
                     if stat.S_ISLNK(st.st_mode):
-                        os.remove(full)
-                        # We don't need to recreate it because the code above
-                        # would have created it as necessary.
+                        # This directory symlink is not a required
+                        # directory: any such symlink would have been
+                        # removed and a directory created above.
+                        if remove_all_directory_symlinks:
+                            os.remove(full)
+                            result.removed_files.add(os.path.normpath(full))
+                        else:
+                            existing_files.add(os.path.normpath(full))
                     else:
                         filtered.append(d)
 
@@ -294,6 +334,9 @@ class FileCopier(FileRegistry):
                 result.updated_files.add(destfile)
             else:
                 result.existing_files.add(destfile)
+
+        if not remove_empty_directories:
+            return result
 
         # Figure out which directories can be removed. This is complicated
         # by the fact we optionally remove existing files. This would be easy
@@ -436,7 +479,7 @@ class Jarrer(FileRegistry, BaseFile):
                 else:
                     deflater = DeflaterDest(compress=self.compress)
                 file.copy(deflater, skip_if_older)
-                jar.add(path, deflater.deflater)
+                jar.add(path, deflater.deflater, mode=file.mode)
             if self._preload:
                 jar.preload(self._preload)
 

@@ -15,7 +15,8 @@
 namespace js {
 
 class DeclEnvObject;
-class ForkJoinSlice;
+class ForkJoinContext;
+class StaticWithObject;
 
 namespace jit {
 
@@ -113,7 +114,7 @@ struct VMFunction
     // The root type of the out param if outParam == Type_Handle.
     RootType outParamRootType;
 
-    // Does this function take a ForkJoinSlice * or a JSContext *?
+    // Does this function take a ForkJoinContext * or a JSContext *?
     ExecutionMode executionMode;
 
     // Number of Values the VM wrapper should pop from the stack when it returns.
@@ -187,6 +188,27 @@ struct VMFunction
         return stackSlots;
     }
 
+    size_t doubleByRefArgs() const {
+        size_t count = 0;
+
+        // Fetch all explicit arguments.
+        uint32_t n =
+            ((1 << (explicitArgs * 2)) - 1) // = Explicit argument mask.
+            & argumentProperties;
+
+        // Filter double-size arguments (0x5 = 0b0101) and take (&) only
+        // arguments passed by reference (0b1010 >> 1 == 0b0101).
+        n = (n & 0x55555555) & (n >> 1);
+
+        // Add the number of double-word transfered by refference. (expect a
+        // few loop iterations)
+        while (n) {
+            count++;
+            n &= n - 1;
+        }
+        return count;
+    }
+
     VMFunction()
       : wrapped(nullptr),
         explicitArgs(0),
@@ -241,7 +263,7 @@ struct VMFunction
 // A collection of VM functions for each execution mode.
 struct VMFunctionsModal
 {
-    VMFunctionsModal(const VMFunction &info) {
+    explicit VMFunctionsModal(const VMFunction &info) {
         add(info);
     }
     VMFunctionsModal(const VMFunction &info1, const VMFunction &info2) {
@@ -260,7 +282,7 @@ struct VMFunctionsModal
         funs_[info.executionMode].init(info);
     }
 
-    VMFunction funs_[NumExecutionModes];
+    mozilla::Array<VMFunction, NumExecutionModes> funs_;
 };
 
 template <class> struct TypeToDataType { /* Unexpected return type for a VMFunction. */ };
@@ -273,6 +295,7 @@ template <> struct TypeToDataType<HandleObject> { static const DataType result =
 template <> struct TypeToDataType<HandleString> { static const DataType result = Type_Handle; };
 template <> struct TypeToDataType<HandlePropertyName> { static const DataType result = Type_Handle; };
 template <> struct TypeToDataType<HandleFunction> { static const DataType result = Type_Handle; };
+template <> struct TypeToDataType<Handle<StaticWithObject *> > { static const DataType result = Type_Handle; };
 template <> struct TypeToDataType<Handle<StaticBlockObject *> > { static const DataType result = Type_Handle; };
 template <> struct TypeToDataType<HandleScript> { static const DataType result = Type_Handle; };
 template <> struct TypeToDataType<HandleValue> { static const DataType result = Type_Handle; };
@@ -297,6 +320,9 @@ template <> struct TypeToArgProperties<HandlePropertyName> {
 };
 template <> struct TypeToArgProperties<HandleFunction> {
     static const uint32_t result = TypeToArgProperties<JSFunction *>::result | VMFunction::ByRef;
+};
+template <> struct TypeToArgProperties<Handle<StaticWithObject *> > {
+    static const uint32_t result = TypeToArgProperties<StaticWithObject *>::result | VMFunction::ByRef;
 };
 template <> struct TypeToArgProperties<Handle<StaticBlockObject *> > {
     static const uint32_t result = TypeToArgProperties<StaticBlockObject *>::result | VMFunction::ByRef;
@@ -326,7 +352,7 @@ template <> struct TypeToPassInFloatReg<double> {
     static const uint32_t result = 1;
 };
 
-// Convert argument types to root types used by the gc, see MarkIonExitFrame.
+// Convert argument types to root types used by the gc, see MarkJitExitFrame.
 template <class T> struct TypeToRootType {
     static const uint32_t result = VMFunction::RootNone;
 };
@@ -353,6 +379,18 @@ template <> struct TypeToRootType<HandleShape> {
 };
 template <> struct TypeToRootType<HandleTypeObject> {
     static const uint32_t result = VMFunction::RootCell;
+};
+template <> struct TypeToRootType<HandleScript> {
+    static const uint32_t result = VMFunction::RootCell;
+};
+template <> struct TypeToRootType<Handle<StaticBlockObject *> > {
+    static const uint32_t result = VMFunction::RootObject;
+};
+template <> struct TypeToRootType<Handle<StaticWithObject *> > {
+    static const uint32_t result = VMFunction::RootCell;
+};
+template <class T> struct TypeToRootType<Handle<T> > {
+    // Fail for Handle types that aren't specialized above.
 };
 
 template <class> struct OutParamToDataType { static const DataType result = Type_Void; };
@@ -386,7 +424,7 @@ template <> struct MatchContext<JSContext *> {
 template <> struct MatchContext<ExclusiveContext *> {
     static const ExecutionMode execMode = SequentialExecution;
 };
-template <> struct MatchContext<ForkJoinSlice *> {
+template <> struct MatchContext<ForkJoinContext *> {
     static const ExecutionMode execMode = ParallelExecution;
 };
 template <> struct MatchContext<ThreadSafeContext *> {
@@ -440,7 +478,7 @@ template <> struct MatchContext<ThreadSafeContext *> {
     static inline uint64_t argumentRootTypes() {                                        \
         return ForEachNb(COMPUTE_ARG_ROOT, SEP_OR, NOTHING);                            \
     }                                                                                   \
-    FunctionInfo(pf fun, PopValues extraValuesToPop = PopValues(0))                     \
+    explicit FunctionInfo(pf fun, PopValues extraValuesToPop = PopValues(0))            \
         : VMFunction(JS_FUNC_TO_DATA_PTR(void *, fun), explicitArgs(),                  \
                      argumentProperties(), argumentPassedInFloatRegs(),                 \
                      argumentRootTypes(), outParam(), outParamRootType(),               \
@@ -481,7 +519,7 @@ struct FunctionInfo<R (*)(Context)> : public VMFunction {
     static inline uint64_t argumentRootTypes() {
         return 0;
     }
-    FunctionInfo(pf fun)
+    explicit FunctionInfo(pf fun)
       : VMFunction(JS_FUNC_TO_DATA_PTR(void *, fun), explicitArgs(),
                    argumentProperties(), argumentPassedInFloatRegs(),
                    argumentRootTypes(), outParam(), outParamRootType(),
@@ -551,6 +589,8 @@ class AutoDetectInvalidation
     Value *rval_;
     bool disabled_;
 
+    void setReturnOverride();
+
   public:
     AutoDetectInvalidation(JSContext *cx, Value *rval, IonScript *ionScript = nullptr);
 
@@ -561,13 +601,12 @@ class AutoDetectInvalidation
 
     ~AutoDetectInvalidation() {
         if (!disabled_ && ionScript_->invalidated())
-            cx_->runtime()->setIonReturnOverride(*rval_);
+            setReturnOverride();
     }
 };
 
 bool InvokeFunction(JSContext *cx, HandleObject obj0, uint32_t argc, Value *argv, Value *rval);
-JSObject *NewGCThing(JSContext *cx, gc::AllocKind allocKind, size_t thingSize,
-                     gc::InitialHeap initialHeap);
+JSObject *NewGCObject(JSContext *cx, gc::AllocKind allocKind, gc::InitialHeap initialHeap);
 
 bool CheckOverRecursed(JSContext *cx);
 bool CheckOverRecursedWithExtra(JSContext *cx, BaselineFrame *frame,
@@ -575,6 +614,7 @@ bool CheckOverRecursedWithExtra(JSContext *cx, BaselineFrame *frame,
 
 bool DefVarOrConst(JSContext *cx, HandlePropertyName dn, unsigned attrs, HandleObject scopeChain);
 bool SetConst(JSContext *cx, HandlePropertyName name, HandleObject scopeChain, HandleValue rval);
+bool MutatePrototype(JSContext *cx, HandleObject obj, HandleValue value);
 bool InitProp(JSContext *cx, HandleObject obj, HandlePropertyName name, HandleValue value);
 
 template<bool Equal>
@@ -612,9 +652,9 @@ bool SetProperty(JSContext *cx, HandleObject obj, HandlePropertyName name, Handl
 
 bool InterruptCheck(JSContext *cx);
 
-HeapSlot *NewSlots(JSRuntime *rt, unsigned nslots);
-JSObject *NewCallObject(JSContext *cx, HandleScript script,
-                        HandleShape shape, HandleTypeObject type, HeapSlot *slots);
+void *MallocWrapper(JSRuntime *rt, size_t nbytes);
+JSObject *NewCallObject(JSContext *cx, HandleShape shape, HandleTypeObject type);
+JSObject *NewSingletonCallObject(JSContext *cx, HandleShape shape);
 JSObject *NewStringObject(JSContext *cx, HandleString str);
 
 bool SPSEnter(JSContext *cx, HandleScript script);
@@ -638,8 +678,9 @@ void PostGlobalWriteBarrier(JSRuntime *rt, JSObject *obj);
 
 uint32_t GetIndexFromString(JSString *str);
 
-bool DebugPrologue(JSContext *cx, BaselineFrame *frame, bool *mustReturn);
-bool DebugEpilogue(JSContext *cx, BaselineFrame *frame, bool ok);
+bool DebugPrologue(JSContext *cx, BaselineFrame *frame, jsbytecode *pc, bool *mustReturn);
+bool DebugEpilogue(JSContext *cx, BaselineFrame *frame, jsbytecode *pc, bool ok);
+bool DebugEpilogueOnBaselineReturn(JSContext *cx, BaselineFrame *frame, jsbytecode *pc);
 
 bool StrictEvalPrologue(JSContext *cx, BaselineFrame *frame);
 bool HeavyweightFunPrologue(JSContext *cx, BaselineFrame *frame);
@@ -652,16 +693,40 @@ JSObject *InitRestParameter(JSContext *cx, uint32_t length, Value *rest, HandleO
 bool HandleDebugTrap(JSContext *cx, BaselineFrame *frame, uint8_t *retAddr, bool *mustReturn);
 bool OnDebuggerStatement(JSContext *cx, BaselineFrame *frame, jsbytecode *pc, bool *mustReturn);
 
-bool EnterBlock(JSContext *cx, BaselineFrame *frame, Handle<StaticBlockObject *> block);
-bool LeaveBlock(JSContext *cx, BaselineFrame *frame);
+bool EnterWith(JSContext *cx, BaselineFrame *frame, HandleValue val,
+               Handle<StaticWithObject *> templ);
+bool LeaveWith(JSContext *cx, BaselineFrame *frame);
 
-bool InitBaselineFrameForOsr(BaselineFrame *frame, StackFrame *interpFrame,
+bool PushBlockScope(JSContext *cx, BaselineFrame *frame, Handle<StaticBlockObject *> block);
+bool PopBlockScope(JSContext *cx, BaselineFrame *frame);
+bool DebugLeaveBlock(JSContext *cx, BaselineFrame *frame, jsbytecode *pc);
+
+bool InitBaselineFrameForOsr(BaselineFrame *frame, InterpreterFrame *interpFrame,
                              uint32_t numStackValues);
 
-JSObject *CreateDerivedTypedObj(JSContext *cx, HandleObject type,
+JSObject *CreateDerivedTypedObj(JSContext *cx, HandleObject descr,
                                 HandleObject owner, int32_t offset);
 
+bool ArraySpliceDense(JSContext *cx, HandleObject obj, uint32_t start, uint32_t deleteCount);
+
 bool Recompile(JSContext *cx);
+JSString *RegExpReplace(JSContext *cx, HandleString string, HandleObject regexp,
+                        HandleString repl);
+JSString *StringReplace(JSContext *cx, HandleString string, HandleString pattern,
+                        HandleString repl);
+
+bool SetDenseElement(JSContext *cx, HandleObject obj, int32_t index, HandleValue value,
+                     bool strict);
+
+#ifdef DEBUG
+void AssertValidObjectPtr(JSContext *cx, JSObject *obj);
+void AssertValidStringPtr(JSContext *cx, JSString *str);
+void AssertValidSymbolPtr(JSContext *cx, JS::Symbol *sym);
+void AssertValidValue(JSContext *cx, Value *v);
+#endif
+
+JSObject *TypedObjectProto(JSObject *obj);
+
 } // namespace jit
 } // namespace js
 

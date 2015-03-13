@@ -37,7 +37,7 @@ BEGIN_TEST(testTypedArrays)
     CHECK(!JS_IsArrayBufferObject(dummy));
 
     CHECK_EQUAL(JS_GetArrayBufferByteLength(buffer), nbytes);
-    memset(JS_GetArrayBufferData(buffer), 1, nbytes);
+    memset(JS_GetStableArrayBufferData(cx, buffer), 1, nbytes);
 
     ok = ok &&
         TestArrayFromBuffer<JS_NewInt8ArrayWithBuffer, JS_NewInt8ArrayFromArray, int8_t, JS_GetInt8ArrayData>(cx) &&
@@ -72,8 +72,8 @@ TestPlainTypedArray(JSContext *cx)
     RootedObject dummy(cx, JS_GetParent(proto));
     CHECK(!JS_IsTypedArrayObject(dummy));
 
-    CHECK_EQUAL(JS_GetTypedArrayLength(array), 7);
-    CHECK_EQUAL(JS_GetTypedArrayByteOffset(array), 0);
+    CHECK_EQUAL(JS_GetTypedArrayLength(array), 7u);
+    CHECK_EQUAL(JS_GetTypedArrayByteOffset(array), 0u);
     CHECK_EQUAL(JS_GetTypedArrayByteLength(array), sizeof(Element) * 7);
 
     Element *data;
@@ -86,8 +86,8 @@ TestPlainTypedArray(JSContext *cx)
     return true;
 }
 
-template<JSObject *CreateWithBuffer(JSContext *, JSObject *, uint32_t, int32_t),
-         JSObject *CreateFromArray(JSContext *, JSObject *),
+template<JSObject *CreateWithBuffer(JSContext *, JS::HandleObject, uint32_t, int32_t),
+         JSObject *CreateFromArray(JSContext *, JS::HandleObject),
          typename Element,
          Element *GetData(JSObject *)>
 bool
@@ -97,7 +97,7 @@ TestArrayFromBuffer(JSContext *cx)
     size_t nbytes = elts * sizeof(Element);
     RootedObject buffer(cx, JS_NewArrayBuffer(cx, nbytes));
     uint8_t *bufdata;
-    CHECK(bufdata = JS_GetArrayBufferData(buffer));
+    CHECK(bufdata = JS_GetStableArrayBufferData(cx, buffer));
     memset(bufdata, 1, nbytes);
 
     {
@@ -107,21 +107,21 @@ TestArrayFromBuffer(JSContext *cx)
 
     RootedObject array(cx, CreateWithBuffer(cx, buffer, 0, -1));
     CHECK_EQUAL(JS_GetTypedArrayLength(array), elts);
-    CHECK_EQUAL(JS_GetTypedArrayByteOffset(array), 0);
+    CHECK_EQUAL(JS_GetTypedArrayByteOffset(array), 0u);
     CHECK_EQUAL(JS_GetTypedArrayByteLength(array), nbytes);
-    CHECK_EQUAL(JS_GetArrayBufferViewBuffer(array), (JSObject*) buffer);
+    CHECK_EQUAL(JS_GetArrayBufferViewBuffer(cx, array), (JSObject*) buffer);
 
     Element *data;
     CHECK(data = GetData(array));
-    CHECK(bufdata = JS_GetArrayBufferData(buffer));
+    CHECK(bufdata = JS_GetStableArrayBufferData(cx, buffer));
     CHECK_EQUAL((void*) data, (void*) bufdata);
 
-    CHECK_EQUAL(*bufdata, 1);
-    CHECK_EQUAL(*reinterpret_cast<uint8_t*>(data), 1);
+    CHECK_EQUAL(*bufdata, 1u);
+    CHECK_EQUAL(*reinterpret_cast<uint8_t*>(data), 1u);
 
     RootedObject shortArray(cx, CreateWithBuffer(cx, buffer, 0, elts / 2));
     CHECK_EQUAL(JS_GetTypedArrayLength(shortArray), elts / 2);
-    CHECK_EQUAL(JS_GetTypedArrayByteOffset(shortArray), 0);
+    CHECK_EQUAL(JS_GetTypedArrayByteOffset(shortArray), 0u);
     CHECK_EQUAL(JS_GetTypedArrayByteLength(shortArray), nbytes / 2);
 
     RootedObject ofsArray(cx, CreateWithBuffer(cx, buffer, nbytes / 2, -1));
@@ -131,29 +131,29 @@ TestArrayFromBuffer(JSContext *cx)
 
     // Make sure all 3 views reflect the same buffer at the expected locations
     JS::RootedValue v(cx, INT_TO_JSVAL(39));
-    JS_SetElement(cx, array, 0, &v);
+    JS_SetElement(cx, array, 0, v);
     JS::RootedValue v2(cx);
     CHECK(JS_GetElement(cx, array, 0, &v2));
     CHECK_SAME(v, v2);
     CHECK(JS_GetElement(cx, shortArray, 0, &v2));
     CHECK_SAME(v, v2);
-    CHECK_EQUAL(long(JSVAL_TO_INT(v)), long(reinterpret_cast<Element*>(data)[0]));
+    CHECK_EQUAL(long(v.toInt32()), long(reinterpret_cast<Element*>(data)[0]));
 
     v = INT_TO_JSVAL(40);
-    JS_SetElement(cx, array, elts / 2, &v);
+    JS_SetElement(cx, array, elts / 2, v);
     CHECK(JS_GetElement(cx, array, elts / 2, &v2));
     CHECK_SAME(v, v2);
     CHECK(JS_GetElement(cx, ofsArray, 0, &v2));
     CHECK_SAME(v, v2);
-    CHECK_EQUAL(long(JSVAL_TO_INT(v)), long(reinterpret_cast<Element*>(data)[elts / 2]));
+    CHECK_EQUAL(long(v.toInt32()), long(reinterpret_cast<Element*>(data)[elts / 2]));
 
     v = INT_TO_JSVAL(41);
-    JS_SetElement(cx, array, elts - 1, &v);
+    JS_SetElement(cx, array, elts - 1, v);
     CHECK(JS_GetElement(cx, array, elts - 1, &v2));
     CHECK_SAME(v, v2);
     CHECK(JS_GetElement(cx, ofsArray, elts / 2 - 1, &v2));
     CHECK_SAME(v, v2);
-    CHECK_EQUAL(long(JSVAL_TO_INT(v)), long(reinterpret_cast<Element*>(data)[elts - 1]));
+    CHECK_EQUAL(long(v.toInt32()), long(reinterpret_cast<Element*>(data)[elts - 1]));
 
     JS::RootedObject copy(cx, CreateFromArray(cx, array));
     CHECK(JS_GetElement(cx, array, 0, &v));
@@ -162,7 +162,7 @@ TestArrayFromBuffer(JSContext *cx)
 
     /* The copy should not see changes in the original */
     v2 = INT_TO_JSVAL(42);
-    JS_SetElement(cx, array, 0, &v2);
+    JS_SetElement(cx, array, 0, v2);
     CHECK(JS_GetElement(cx, copy, 0, &v2));
     CHECK_SAME(v2, v); /* v is still the original value from 'array' */
 

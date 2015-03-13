@@ -1,4 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,6 +8,7 @@
 #include "jsfriendapi.h"
 #include "jsprf.h"
 #include "nsCOMPtr.h"
+#include "AccessCheck.h"
 #include "WrapperFactory.h"
 #include "xpcprivate.h"
 #include "XPCInlines.h"
@@ -121,10 +123,10 @@ xpc_qsDefineQuickStubs(JSContext *cx, JSObject *protoArg, unsigned flags,
                 for ( ; ps < ps_end; ++ps) {
                     if (!JS_DefineProperty(cx, proto,
                                            stringTable + ps->name_index,
-                                           JSVAL_VOID,
+                                           JS::UndefinedHandleValue,
+                                           flags | JSPROP_SHARED | JSPROP_NATIVE_ACCESSORS,
                                            (JSPropertyOp)ps->getter,
-                                           (JSStrictPropertyOp)ps->setter,
-                                           flags | JSPROP_SHARED | JSPROP_NATIVE_ACCESSORS))
+                                           (JSStrictPropertyOp)ps->setter))
                         return false;
                 }
 
@@ -140,7 +142,13 @@ xpc_qsDefineQuickStubs(JSContext *cx, JSObject *protoArg, unsigned flags,
                 }
 
                 if (entry->newBindingProperties) {
-                    mozilla::dom::DefineWebIDLBindingPropertiesOnXPCObject(cx, proto, entry->newBindingProperties, false);
+                    if (entry->newBindingProperties->regular) {
+                        mozilla::dom::DefineWebIDLBindingPropertiesOnXPCObject(cx, proto, entry->newBindingProperties->regular);
+                    }
+                    if (entry->newBindingProperties->chromeOnly &&
+                        xpc::AccessCheck::isChrome(js::GetContextCompartment(cx))) {
+                        mozilla::dom::DefineWebIDLBindingPropertiesOnXPCObject(cx, proto, entry->newBindingProperties->chromeOnly);
+                    }
                 }
                 // Next.
                 size_t j = entry->parentInterface;
@@ -198,12 +206,13 @@ GetMemberInfo(JSObject *obj, jsid memberId, const char **ifaceName)
 static void
 GetMethodInfo(JSContext *cx, jsval *vp, const char **ifaceNamep, jsid *memberIdp)
 {
-    RootedObject funobj(cx, JSVAL_TO_OBJECT(JS_CALLEE(cx, vp)));
+    CallReceiver call = CallReceiverFromVp(vp);
+    RootedObject funobj(cx, &call.callee());
     MOZ_ASSERT(JS_ObjectIsFunction(cx, funobj),
                "JSNative callee should be Function object");
     RootedString str(cx, JS_GetFunctionId(JS_GetObjectFunction(funobj)));
     RootedId methodId(cx, str ? INTERNED_STRING_TO_JSID(cx, str) : JSID_VOID);
-    GetMemberInfo(JSVAL_TO_OBJECT(vp[1]), methodId, ifaceNamep);
+    GetMemberInfo(&call.thisv().toObject(), methodId, ifaceNamep);
     *memberIdp = methodId;
 }
 
@@ -413,15 +422,9 @@ xpc_qsDOMString::xpc_qsDOMString(JSContext *cx, HandleValue v,
     if (!s)
         return;
 
-    size_t len;
-    const jschar *chars = JS_GetStringCharsZAndLength(cx, s, &len);
-    if (!chars) {
-        mValid = false;
-        return;
-    }
+    nsAutoString *str = new(mBuf) implementation_type();
 
-    new(mBuf) implementation_type(chars, len);
-    mValid = true;
+    mValid = AssignJSString(cx, *str, s);
 }
 
 xpc_qsACString::xpc_qsACString(JSContext *cx, HandleValue v,
@@ -456,20 +459,19 @@ xpc_qsACString::xpc_qsACString(JSContext *cx, HandleValue v,
 
 xpc_qsAUTF8String::xpc_qsAUTF8String(JSContext *cx, HandleValue v, MutableHandleValue pval, bool notpassed)
 {
-    typedef nsCharTraits<PRUnichar> traits;
+    typedef nsCharTraits<char16_t> traits;
     // From the T_UTF8STRING  case in XPCConvert::JSData2Native.
     JSString *s = InitOrStringify<traits>(cx, v, pval, notpassed, eNull, eNull);
     if (!s)
         return;
 
-    size_t len;
-    const PRUnichar *chars = JS_GetStringCharsZAndLength(cx, s, &len);
-    if (!chars) {
+    nsAutoJSString str;
+    if (!str.init(cx, s)) {
         mValid = false;
         return;
     }
 
-    new(mBuf) implementation_type(chars, len);
+    new(mBuf) implementation_type(str);
     mValid = true;
 }
 
@@ -637,7 +639,7 @@ castNativeFromWrapper(JSContext *cx,
             native = nullptr;
         }
     } else if (cur && protoDepth >= 0) {
-        const mozilla::dom::DOMClass* domClass =
+        const mozilla::dom::DOMJSClass* domClass =
             mozilla::dom::GetDOMClass(cur);
         native = mozilla::dom::UnwrapDOMObject<nsISupports>(cur);
         if (native &&
@@ -657,24 +659,6 @@ castNativeFromWrapper(JSContext *cx,
     }
 
     return native;
-}
-
-bool
-xpc_qsUnwrapThisFromCcxImpl(XPCCallContext &ccx,
-                            const nsIID &iid,
-                            void **ppThis,
-                            nsISupports **pThisRef,
-                            jsval *vp)
-{
-    nsISupports *native = ccx.GetIdentityObject();
-    if (!native)
-        return xpc_qsThrow(ccx.GetJSContext(), NS_ERROR_XPC_HAS_BEEN_SHUTDOWN);
-
-    RootedObject obj(ccx, ccx.GetFlattenedJSObject());
-    nsresult rv = getNative(native, obj, iid, ppThis, pThisRef, vp);
-    if (NS_FAILED(rv))
-        return xpc_qsThrow(ccx.GetJSContext(), rv);
-    return true;
 }
 
 nsresult

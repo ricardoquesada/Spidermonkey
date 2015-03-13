@@ -117,8 +117,14 @@ class FullParseHandler
     }
 
     ParseNode *newStringLiteral(JSAtom *atom, const TokenPos &pos) {
-        return new_<NullaryNode>(PNK_STRING, JSOP_STRING, pos, atom);
+        return new_<NullaryNode>(PNK_STRING, JSOP_NOP, pos, atom);
     }
+
+#ifdef JS_HAS_TEMPLATE_STRINGS
+    ParseNode *newTemplateStringLiteral(JSAtom *atom, const TokenPos &pos) {
+        return new_<NullaryNode>(PNK_TEMPLATE_STRING, JSOP_NOP, pos, atom);
+    }
+#endif
 
     ParseNode *newThisLiteral(const TokenPos &pos) {
         return new_<ThisLiteral>(pos);
@@ -191,6 +197,17 @@ class FullParseHandler
 
     // Expressions
 
+    ParseNode *newArrayComprehension(ParseNode *body, unsigned blockid, const TokenPos &pos) {
+        JS_ASSERT(pos.begin <= body->pn_pos.begin);
+        JS_ASSERT(body->pn_pos.end <= pos.end);
+        ParseNode *pn = new_<ListNode>(PNK_ARRAYCOMP, pos);
+        if (!pn)
+            return nullptr;
+        pn->pn_blockid = blockid;
+        pn->append(body);
+        return pn;
+    }
+
     ParseNode *newArrayLiteral(uint32_t begin, unsigned blockid) {
         ParseNode *literal = new_<ListNode>(PNK_ARRAY, TokenPos(begin, begin + 1));
         // Later in this stack: remove dependency on this opcode.
@@ -235,19 +252,13 @@ class FullParseHandler
         return literal;
     }
 
-    bool addPropertyDefinition(ParseNode *literal, ParseNode *name, ParseNode *expr) {
-        ParseNode *propdef = newBinary(PNK_COLON, name, expr, JSOP_INITPROP);
-        if (!propdef)
-            return false;
-        literal->append(propdef);
-        return true;
-    }
-
-    bool addShorthandPropertyDefinition(ParseNode *literal, ParseNode *name) {
+    bool addPropertyDefinition(ParseNode *literal, ParseNode *name, ParseNode *expr,
+                               bool isShorthand = false) {
         JS_ASSERT(literal->isArity(PN_LIST));
-        literal->pn_xflags |= PNX_DESTRUCT | PNX_NONCONST;  // XXX why PNX_DESTRUCT?
-
-        ParseNode *propdef = newBinary(PNK_COLON, name, name, JSOP_INITPROP);
+        ParseNode *propdef = newBinary(isShorthand ? PNK_SHORTHAND : PNK_COLON, name, expr,
+                                       JSOP_INITPROP);
+        if (isShorthand)
+            literal->pn_xflags |= PNX_NONCONST;
         if (!propdef)
             return false;
         literal->append(propdef);
@@ -390,8 +401,10 @@ class FullParseHandler
         return new_<UnaryNode>(PNK_RETURN, JSOP_RETURN, pos, expr);
     }
 
-    ParseNode *newWithStatement(uint32_t begin, ParseNode *expr, ParseNode *body) {
-        return new_<BinaryNode>(PNK_WITH, JSOP_NOP, TokenPos(begin, body->pn_pos.end), expr, body);
+    ParseNode *newWithStatement(uint32_t begin, ParseNode *expr, ParseNode *body,
+                                ObjectBox *staticWith) {
+        return new_<BinaryObjNode>(PNK_WITH, JSOP_NOP, TokenPos(begin, body->pn_pos.end),
+                                   expr, body, staticWith);
     }
 
     ParseNode *newLabeledStatement(PropertyName *label, ParseNode *stmt, uint32_t begin) {
@@ -424,8 +437,6 @@ class FullParseHandler
     inline bool addCatchBlock(ParseNode *catchList, ParseNode *letBlock,
                               ParseNode *catchName, ParseNode *catchGuard, ParseNode *catchBody);
 
-    inline void setLeaveBlockResult(ParseNode *block, ParseNode *kid, bool leaveBlockExpr);
-
     inline void setLastFunctionArgumentDefault(ParseNode *funcpn, ParseNode *pn);
     inline ParseNode *newFunctionDefinition();
     void setFunctionBody(ParseNode *pn, ParseNode *kid) {
@@ -438,7 +449,10 @@ class FullParseHandler
     void addFunctionArgument(ParseNode *pn, ParseNode *argpn) {
         pn->pn_body->append(argpn);
     }
+
     inline ParseNode *newLexicalScope(ObjectBox *blockbox);
+    inline void setLexicalScopeBody(ParseNode *block, ParseNode *body);
+
     bool isOperationWithoutParens(ParseNode *pn, ParseNodeKind kind) {
         return pn->isKind(kind) && !pn->isInParens();
     }
@@ -601,15 +615,6 @@ FullParseHandler::addCatchBlock(ParseNode *catchList, ParseNode *letBlock,
 }
 
 inline void
-FullParseHandler::setLeaveBlockResult(ParseNode *block, ParseNode *kid, bool leaveBlockExpr)
-{
-    JS_ASSERT(block->isOp(JSOP_LEAVEBLOCK));
-    if (leaveBlockExpr)
-        block->setOp(JSOP_LEAVEBLOCKEXPR);
-    block->pn_expr = kid;
-}
-
-inline void
 FullParseHandler::setLastFunctionArgumentDefault(ParseNode *funcpn, ParseNode *defaultValue)
 {
     ParseNode *arg = funcpn->pn_body->last();
@@ -637,11 +642,16 @@ FullParseHandler::newLexicalScope(ObjectBox *blockbox)
     if (!pn)
         return nullptr;
 
-    pn->setOp(JSOP_LEAVEBLOCK);
     pn->pn_objbox = blockbox;
     pn->pn_cookie.makeFree();
     pn->pn_dflags = 0;
     return pn;
+}
+
+inline void
+FullParseHandler::setLexicalScopeBody(ParseNode *block, ParseNode *kid)
+{
+    block->pn_expr = kid;
 }
 
 inline bool

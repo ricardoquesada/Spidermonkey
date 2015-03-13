@@ -5,13 +5,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "nsString.h"
-#include "nsICharsetConverterManager.h"
 #include "nsUTF8ConverterService.h"
 #include "nsEscape.h"
 #include "nsAutoPtr.h"
-#include "nsServiceManagerUtils.h"
+#include "nsIUnicodeDecoder.h"
+#include "mozilla/dom/EncodingUtils.h"
 
-NS_IMPL_ISUPPORTS1(nsUTF8ConverterService, nsIUTF8ConverterService)
+using mozilla::dom::EncodingUtils;
+
+NS_IMPL_ISUPPORTS(nsUTF8ConverterService, nsIUTF8ConverterService)
 
 static nsresult 
 ToUTF8(const nsACString &aString, const char *aCharset,
@@ -21,15 +23,13 @@ ToUTF8(const nsACString &aString, const char *aCharset,
   if (!aCharset || !*aCharset)
     return NS_ERROR_INVALID_ARG;
 
-  nsCOMPtr<nsICharsetConverterManager> ccm;
-
-  ccm = do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsCOMPtr<nsIUnicodeDecoder> unicodeDecoder;
-  rv = ccm->GetUnicodeDecoder(aCharset,
-                              getter_AddRefs(unicodeDecoder));
-  NS_ENSURE_SUCCESS(rv, rv);
+  nsDependentCString label(aCharset);
+  nsAutoCString encoding;
+  if (!EncodingUtils::FindEncodingForLabelNoReplacement(label, encoding)) {
+    return NS_ERROR_UCONV_NOCONV;
+  }
+  nsCOMPtr<nsIUnicodeDecoder> unicodeDecoder =
+    EncodingUtils::DecoderForEncoding(encoding);
 
   if (!aAllowSubstitution)
     unicodeDecoder->SetInputErrorBehavior(nsIUnicodeDecoder::kOnError_Signal);
@@ -40,7 +40,7 @@ ToUTF8(const nsACString &aString, const char *aCharset,
   rv = unicodeDecoder->GetMaxLength(inStr.get(), srcLen, &dstLen);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsAutoArrayPtr<PRUnichar> ustr(new PRUnichar[dstLen]);
+  nsAutoArrayPtr<char16_t> ustr(new char16_t[dstLen]);
   NS_ENSURE_TRUE(ustr, NS_ERROR_OUT_OF_MEMORY);
 
   rv = unicodeDecoder->Convert(inStr.get(), &srcLen, ustr, &dstLen);

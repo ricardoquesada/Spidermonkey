@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -64,7 +64,7 @@ function DocumentWrite(s)
 }
 
 function print() {
-  var s = '';
+  var s = 'TEST-INFO | ';
   var a;
   for (var i = 0; i < arguments.length; i++)
   {
@@ -108,7 +108,7 @@ function writeFormattedResult( expect, actual, string, passed ) {
   var s = "<tt>"+ string ;
   s += "<b>" ;
   s += ( passed ) ? "<font color=#009900> &nbsp;" + PASSED
-    : "<font color=#aa0000>&nbsp;" +  FAILED + expect + "</tt>";
+    : "<font color=#aa0000>&nbsp;" +  FAILED + expect;
 
   DocumentWrite( s + "</font></b></tt><br>" );
   return passed;
@@ -161,21 +161,6 @@ function gc()
   catch(ex)
   {
     print('gc: ' + ex);
-  }
-}
-
-function jsdgc()
-{
-  try
-  {
-    var jsdIDebuggerService = SpecialPowers.Ci.jsdIDebuggerService;
-    var service = SpecialPowers.Cc['@mozilla.org/js/jsd/debugger-service;1'].
-      getService(jsdIDebuggerService);
-    service.GC();
-  }
-  catch(ex)
-  {
-    print('jsdgc: ' + ex);
   }
 }
 
@@ -326,6 +311,9 @@ function jsTestDriverBrowserInit()
     // Otherwise adjust the version to match the suite version for 1.6,
     // and later due to the use of for-each, let, yield, etc.
     //
+    // The logic to upgrade the JS version in the shell lives in the
+    // corresponding shell.js.
+    //
     // Note that js1_8, js1_8_1, and js1_8_5 are treated identically in
     // the browser.
     if (properties.test.match(/^js1_6/))
@@ -337,6 +325,10 @@ function jsTestDriverBrowserInit()
       properties.version = '1.7';
     }
     else if (properties.test.match(/^js1_8/))
+    {
+      properties.version = '1.8';
+    }
+    else if (properties.test.match(/^ecma_6\/LexicalEnvironment/))
     {
       properties.version = '1.8';
     }

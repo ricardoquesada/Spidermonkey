@@ -128,7 +128,7 @@ GetValueOutput(LInstruction *ins)
 }
 
 static inline ValueOperand
-GetTempValue(const Register &type, const Register &payload)
+GetTempValue(Register type, Register payload)
 {
 #if defined(JS_NUNBOX32)
     return ValueOperand(type, payload);
@@ -162,6 +162,24 @@ CodeGeneratorShared::restoreLiveIgnore(LInstruction *ins, RegisterSet ignore)
     JS_ASSERT(!ins->isCall());
     LSafepoint *safepoint = ins->safepoint();
     masm.PopRegsInMaskIgnore(safepoint->liveRegs(), ignore);
+}
+
+void
+CodeGeneratorShared::saveLiveVolatile(LInstruction *ins)
+{
+    JS_ASSERT(!ins->isCall());
+    LSafepoint *safepoint = ins->safepoint();
+    RegisterSet regs = RegisterSet::Intersect(safepoint->liveRegs(), RegisterSet::Volatile());
+    masm.PushRegsInMask(regs);
+}
+
+void
+CodeGeneratorShared::restoreLiveVolatile(LInstruction *ins)
+{
+    JS_ASSERT(!ins->isCall());
+    LSafepoint *safepoint = ins->safepoint();
+    RegisterSet regs = RegisterSet::Intersect(safepoint->liveRegs(), RegisterSet::Volatile());
+    masm.PopRegsInMask(regs);
 }
 
 } // ion

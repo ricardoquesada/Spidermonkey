@@ -6,6 +6,8 @@
 
 #include "jit/AsmJSLink.h"
 
+#include "mozilla/PodOperations.h"
+
 #ifdef MOZ_VTUNE
 # include "vtune/VTuneWrapper.h"
 #endif
@@ -18,9 +20,11 @@
 #include "frontend/BytecodeCompiler.h"
 #include "jit/AsmJSModule.h"
 #include "jit/Ion.h"
+#include "jit/JitCommon.h"
 #ifdef JS_ION_PERF
 # include "jit/PerfSpewer.h"
 #endif
+#include "vm/StringBuffer.h"
 
 #include "jsobjinlines.h"
 
@@ -28,8 +32,24 @@ using namespace js;
 using namespace js::jit;
 
 using mozilla::IsNaN;
+using mozilla::PodZero;
 
-static const unsigned MODULE_FUN_SLOT = 0;
+static bool
+CloneModule(JSContext *cx, MutableHandle<AsmJSModuleObject*> moduleObj)
+{
+    ScopedJSDeletePtr<AsmJSModule> module;
+    if (!moduleObj->module().clone(cx, &module))
+        return false;
+
+    module->staticallyLink(cx);
+
+    AsmJSModuleObject *newModuleObj = AsmJSModuleObject::create(cx, &module);
+    if (!newModuleObj)
+        return false;
+
+    moduleObj.set(newModuleObj);
+    return true;
+}
 
 static bool
 LinkFail(JSContext *cx, const char *str)
@@ -40,13 +60,15 @@ LinkFail(JSContext *cx, const char *str)
 }
 
 static bool
-GetDataProperty(JSContext *cx, const Value &objVal, HandlePropertyName field, MutableHandleValue v)
+GetDataProperty(JSContext *cx, HandleValue objVal, HandlePropertyName field, MutableHandleValue v)
 {
     if (!objVal.isObject())
         return LinkFail(cx, "accessing property of non-object");
 
     Rooted<JSPropertyDescriptor> desc(cx);
-    if (!JS_GetPropertyDescriptorById(cx, &objVal.toObject(), NameToId(field), 0, &desc))
+    RootedObject obj(cx, &objVal.toObject());
+    RootedId id(cx, NameToId(field));
+    if (!JS_GetPropertyDescriptorById(cx, obj, id, &desc))
         return false;
 
     if (!desc.object())
@@ -70,10 +92,17 @@ ValidateGlobalVariable(JSContext *cx, const AsmJSModule &module, AsmJSModule::Gl
     switch (global.varInitKind()) {
       case AsmJSModule::Global::InitConstant: {
         const Value &v = global.varInitConstant();
-        if (v.isInt32())
+        switch (global.varInitCoercion()) {
+          case AsmJS_ToInt32:
             *(int32_t *)datum = v.toInt32();
-        else
+            break;
+          case AsmJS_ToNumber:
             *(double *)datum = v.toDouble();
+            break;
+          case AsmJS_FRound:
+            *(float *)datum = static_cast<float>(v.toDouble());
+            break;
+        }
         break;
       }
       case AsmJSModule::Global::InitImport: {
@@ -82,13 +111,17 @@ ValidateGlobalVariable(JSContext *cx, const AsmJSModule &module, AsmJSModule::Gl
         if (!GetDataProperty(cx, importVal, field, &v))
             return false;
 
-        switch (global.varImportCoercion()) {
+        switch (global.varInitCoercion()) {
           case AsmJS_ToInt32:
             if (!ToInt32(cx, v, (int32_t *)datum))
                 return false;
             break;
           case AsmJS_ToNumber:
             if (!ToNumber(cx, v, (double *)datum))
+                return false;
+            break;
+          case AsmJS_FRound:
+            if (!RoundFloat32(cx, v, (float *)datum))
                 return false;
             break;
         }
@@ -111,7 +144,7 @@ ValidateFFI(JSContext *cx, AsmJSModule::Global &global, HandleValue importVal,
     if (!v.isObject() || !v.toObject().is<JSFunction>())
         return LinkFail(cx, "FFI imports must be functions");
 
-    (*ffis)[global.ffiIndex()] = &v.toObject().as<JSFunction>();
+    (*ffis)[global.ffiIndex()].set(&v.toObject().as<JSFunction>());
     return true;
 }
 
@@ -131,7 +164,7 @@ ValidateArrayView(JSContext *cx, AsmJSModule::Global &global, HandleValue global
 }
 
 static bool
-ValidateMathBuiltin(JSContext *cx, AsmJSModule::Global &global, HandleValue globalVal)
+ValidateMathBuiltinFunction(JSContext *cx, AsmJSModule::Global &global, HandleValue globalVal)
 {
     RootedValue v(cx);
     if (!GetDataProperty(cx, globalVal, cx->names().Math, &v))
@@ -141,7 +174,7 @@ ValidateMathBuiltin(JSContext *cx, AsmJSModule::Global &global, HandleValue glob
         return false;
 
     Native native = nullptr;
-    switch (global.mathBuiltin()) {
+    switch (global.mathBuiltinFunction()) {
       case AsmJSMathBuiltin_sin: native = math_sin; break;
       case AsmJSMathBuiltin_cos: native = math_cos; break;
       case AsmJSMathBuiltin_tan: native = math_tan; break;
@@ -154,27 +187,35 @@ ValidateMathBuiltin(JSContext *cx, AsmJSModule::Global &global, HandleValue glob
       case AsmJSMathBuiltin_log: native = math_log; break;
       case AsmJSMathBuiltin_pow: native = js_math_pow; break;
       case AsmJSMathBuiltin_sqrt: native = js_math_sqrt; break;
+      case AsmJSMathBuiltin_min: native = js_math_min; break;
+      case AsmJSMathBuiltin_max: native = js_math_max; break;
       case AsmJSMathBuiltin_abs: native = js_math_abs; break;
       case AsmJSMathBuiltin_atan2: native = math_atan2; break;
       case AsmJSMathBuiltin_imul: native = math_imul; break;
+      case AsmJSMathBuiltin_fround: native = math_fround; break;
     }
 
     if (!IsNativeFunction(v, native))
-        return LinkFail(cx, "bad Math.* builtin");
+        return LinkFail(cx, "bad Math.* builtin function");
 
     return true;
 }
 
 static bool
-ValidateGlobalConstant(JSContext *cx, AsmJSModule::Global &global, HandleValue globalVal)
+ValidateConstant(JSContext *cx, AsmJSModule::Global &global, HandleValue globalVal)
 {
     RootedPropertyName field(cx, global.constantName());
-    RootedValue v(cx);
-    if (!GetDataProperty(cx, globalVal, field, &v))
-        return false;
+    RootedValue v(cx, globalVal);
 
+    if (global.constantKind() == AsmJSModule::Global::MathConstant) {
+        if (!GetDataProperty(cx, v, cx->names().Math, &v))
+            return false;
+    }
+
+    if (!GetDataProperty(cx, v, field, &v))
+        return false;
     if (!v.isNumber())
-        return LinkFail(cx, "global constant value needs to be a number");
+        return LinkFail(cx, "math / global constant value needs to be a number");
 
     // NaN != NaN
     if (IsNaN(global.constantValue())) {
@@ -189,24 +230,60 @@ ValidateGlobalConstant(JSContext *cx, AsmJSModule::Global &global, HandleValue g
 }
 
 static bool
+LinkModuleToHeap(JSContext *cx, AsmJSModule &module, Handle<ArrayBufferObject*> heap)
+{
+    uint32_t heapLength = heap->byteLength();
+    if (!IsValidAsmJSHeapLength(heapLength)) {
+        ScopedJSFreePtr<char> msg(
+            JS_smprintf("ArrayBuffer byteLength 0x%x is not a valid heap length. The next "
+                        "valid length is 0x%x",
+                        heapLength,
+                        RoundUpToNextValidAsmJSHeapLength(heapLength)));
+        return LinkFail(cx, msg.get());
+    }
+
+    // This check is sufficient without considering the size of the loaded datum because heap
+    // loads and stores start on an aligned boundary and the heap byteLength has larger alignment.
+    JS_ASSERT((module.minHeapLength() - 1) <= INT32_MAX);
+    if (heapLength < module.minHeapLength()) {
+        ScopedJSFreePtr<char> msg(
+            JS_smprintf("ArrayBuffer byteLength of 0x%x is less than 0x%x (which is the"
+                        "largest constant heap access offset rounded up to the next valid "
+                        "heap size).",
+                        heapLength,
+                        module.minHeapLength()));
+        return LinkFail(cx, msg.get());
+    }
+
+    // If we've generated the code with signal handlers in mind (for bounds
+    // checks on x64 and for interrupt callback requesting on all platforms),
+    // we need to be able to use signals at runtime. In particular, a module
+    // can have been created using signals and cached, and executed without
+    // signals activated.
+    if (module.usesSignalHandlersForInterrupt() && !cx->canUseSignalHandlers())
+        return LinkFail(cx, "Code generated with signal handlers but signals are deactivated");
+
+    if (!ArrayBufferObject::prepareForAsmJS(cx, heap, module.usesSignalHandlersForOOB()))
+        return LinkFail(cx, "Unable to prepare ArrayBuffer for asm.js use");
+
+    module.initHeap(heap, cx);
+    return true;
+}
+
+static bool
 DynamicallyLinkModule(JSContext *cx, CallArgs args, AsmJSModule &module)
 {
-    if (module.isLinked())
-        return LinkFail(cx, "As a temporary limitation, modules cannot be linked more than "
-                            "once. This limitation should be removed in a future release. To "
-                            "work around this, compile a second module (e.g., using the "
-                            "Function constructor).");
-    module.setIsLinked();
+    module.setIsDynamicallyLinked();
 
-    RootedValue globalVal(cx, UndefinedValue());
+    RootedValue globalVal(cx);
     if (args.length() > 0)
         globalVal = args[0];
 
-    RootedValue importVal(cx, UndefinedValue());
+    RootedValue importVal(cx);
     if (args.length() > 1)
         importVal = args[1];
 
-    RootedValue bufferVal(cx, UndefinedValue());
+    RootedValue bufferVal(cx);
     if (args.length() > 2)
         bufferVal = args[2];
 
@@ -215,26 +292,9 @@ DynamicallyLinkModule(JSContext *cx, CallArgs args, AsmJSModule &module)
         if (!IsTypedArrayBuffer(bufferVal))
             return LinkFail(cx, "bad ArrayBuffer argument");
 
-        heap = &bufferVal.toObject().as<ArrayBufferObject>();
-
-        if (!IsValidAsmJSHeapLength(heap->byteLength())) {
-            return LinkFail(cx, JS_smprintf("ArrayBuffer byteLength 0x%x is not a valid heap length. The next valid length is 0x%x",
-                                            heap->byteLength(),
-                                            RoundUpToNextValidAsmJSHeapLength(heap->byteLength())));
-        }
-
-        // This check is sufficient without considering the size of the loaded datum because heap
-        // loads and stores start on an aligned boundary and the heap byteLength has larger alignment.
-        JS_ASSERT((module.minHeapLength() - 1) <= INT32_MAX);
-        if (heap->byteLength() < module.minHeapLength()) {
-            return LinkFail(cx, JS_smprintf("ArrayBuffer byteLength of 0x%x is less than 0x%x (which is the largest constant heap access offset rounded up to the next valid heap size).",
-                                            heap->byteLength(), module.minHeapLength()));
-        }
-
-        if (!ArrayBufferObject::prepareForAsmJS(cx, heap))
-            return LinkFail(cx, "Unable to prepare ArrayBuffer for asm.js use");
-
-        module.initHeap(heap, cx);
+        heap = &AsTypedArrayBuffer(bufferVal);
+        if (!LinkModuleToHeap(cx, module, heap))
+            return false;
     }
 
     AutoObjectVector ffis(cx);
@@ -256,12 +316,12 @@ DynamicallyLinkModule(JSContext *cx, CallArgs args, AsmJSModule &module)
             if (!ValidateArrayView(cx, global, globalVal, bufferVal))
                 return false;
             break;
-          case AsmJSModule::Global::MathBuiltin:
-            if (!ValidateMathBuiltin(cx, global, globalVal))
+          case AsmJSModule::Global::MathBuiltinFunction:
+            if (!ValidateMathBuiltinFunction(cx, global, globalVal))
                 return false;
             break;
           case AsmJSModule::Global::Constant:
-            if (!ValidateGlobalConstant(cx, global, globalVal))
+            if (!ValidateConstant(cx, global, globalVal))
                 return false;
             break;
         }
@@ -273,43 +333,28 @@ DynamicallyLinkModule(JSContext *cx, CallArgs args, AsmJSModule &module)
     return true;
 }
 
-AsmJSActivation::AsmJSActivation(JSContext *cx, AsmJSModule &module)
-  : cx_(cx),
-    module_(module),
-    errorRejoinSP_(nullptr),
-    profiler_(nullptr),
-    resumePC_(nullptr)
-{
-    if (cx->runtime()->spsProfiler.enabled()) {
-        // Use a profiler string that matches jsMatch regex in
-        // browser/devtools/profiler/cleopatra/js/parserWorker.js.
-        // (For now use a single static string to avoid further slowing down
-        // calls into asm.js.)
-        profiler_ = &cx->runtime()->spsProfiler;
-        profiler_->enterNative("asm.js code :0", this);
-    }
-
-    prev_ = cx_->runtime()->mainThread.asmJSActivationStack_;
-
-    JSRuntime::AutoLockForOperationCallback lock(cx_->runtime());
-    cx_->runtime()->mainThread.asmJSActivationStack_ = this;
-
-    (void) errorRejoinSP_;  // squelch GCC warning
-}
-
-AsmJSActivation::~AsmJSActivation()
-{
-    if (profiler_)
-        profiler_->exitNative();
-
-    JS_ASSERT(cx_->runtime()->mainThread.asmJSActivationStack_ == this);
-
-    JSRuntime::AutoLockForOperationCallback lock(cx_->runtime());
-    cx_->runtime()->mainThread.asmJSActivationStack_ = prev_;
-}
-
 static const unsigned ASM_MODULE_SLOT = 0;
 static const unsigned ASM_EXPORT_INDEX_SLOT = 1;
+
+static unsigned
+FunctionToExportedFunctionIndex(HandleFunction fun)
+{
+    Value v = fun->getExtendedSlot(ASM_EXPORT_INDEX_SLOT);
+    return v.toInt32();
+}
+
+static const AsmJSModule::ExportedFunction &
+FunctionToExportedFunction(HandleFunction fun, AsmJSModule &module)
+{
+    unsigned funIndex = FunctionToExportedFunctionIndex(fun);
+    return module.exportedFunction(funIndex);
+}
+
+static AsmJSModule &
+FunctionToEnclosingModule(HandleFunction fun)
+{
+    return fun->getExtendedSlot(ASM_MODULE_SLOT).toObject().as<AsmJSModuleObject>().module();
+}
 
 // The JSNative for the functions nested in an asm.js module. Calling this
 // native will trampoline into generated code.
@@ -322,23 +367,12 @@ CallAsmJS(JSContext *cx, unsigned argc, Value *vp)
     // An asm.js function stores, in its extended slots:
     //  - a pointer to the module from which it was returned
     //  - its index in the ordered list of exported functions
-    RootedObject moduleObj(cx, &callee->getExtendedSlot(ASM_MODULE_SLOT).toObject());
-    AsmJSModule &module = moduleObj->as<AsmJSModuleObject>().module();
+    AsmJSModule &module = FunctionToEnclosingModule(callee);
 
     // An exported function points to the code as well as the exported
     // function's signature, which implies the dynamic coercions performed on
     // the arguments.
-    unsigned exportIndex = callee->getExtendedSlot(ASM_EXPORT_INDEX_SLOT).toInt32();
-    const AsmJSModule::ExportedFunction &func = module.exportedFunction(exportIndex);
-
-    // An asm.js module is specialized to its heap's base address and length
-    // which is normally immutable except for the neuter operation that occurs
-    // when an ArrayBuffer is transfered. Throw an internal error if we try to
-    // run with a neutered heap.
-    if (module.maybeHeapBufferObject() && module.maybeHeapBufferObject()->isNeutered()) {
-        js_ReportOverRecursed(cx);
-        return false;
-    }
+    const AsmJSModule::ExportedFunction &func = FunctionToExportedFunction(callee, module);
 
     // The calling convention for an external call into asm.js is to pass an
     // array of 8-byte values where each value contains either a coerced int32
@@ -364,25 +398,45 @@ CallAsmJS(JSContext *cx, unsigned argc, Value *vp)
             if (!ToNumber(cx, v, (double*)&coercedArgs[i]))
                 return false;
             break;
+          case AsmJS_FRound:
+            if (!RoundFloat32(cx, v, (float *)&coercedArgs[i]))
+                return false;
+            break;
         }
     }
 
-    {
-        // Each call into an asm.js module requires an AsmJSActivation record
-        // pushed on a stack maintained by the runtime. This record is used for
-        // to handle a variety of exceptional things that can happen in asm.js
-        // code.
-        AsmJSActivation activation(cx, module);
+    // An asm.js module is specialized to its heap's base address and length
+    // which is normally immutable except for the neuter operation that occurs
+    // when an ArrayBuffer is transfered. Throw an internal error if we're
+    // about to run with a neutered heap.
+    if (module.maybeHeapBufferObject() && module.maybeHeapBufferObject()->isNeutered()) {
+        js_ReportOverRecursed(cx);
+        return false;
+    }
 
-        // Eagerly push an IonContext+JitActivation so that the optimized
-        // asm.js-to-Ion FFI call path (which we want to be very fast) can
-        // avoid doing so.
-        jit::IonContext ictx(cx, nullptr);
+    {
+        // Push an AsmJSActivation to describe the asm.js frames we're about to
+        // push when running this module. Additionally, push a JitActivation so
+        // that the optimized asm.js-to-Ion FFI call path (which we want to be
+        // very fast) can avoid doing so. The JitActivation is marked as
+        // inactive so stack iteration will skip over it.
+        AsmJSActivation activation(cx, module);
         JitActivation jitActivation(cx, /* firstFrameIsConstructing = */ false, /* active */ false);
 
         // Call the per-exported-function trampoline created by GenerateEntry.
-        if (!module.entryTrampoline(func)(coercedArgs.begin(), module.globalData()))
+        AsmJSModule::CodePtr enter = module.entryTrampoline(func);
+        if (!CALL_GENERATED_ASMJS(enter, coercedArgs.begin(), module.globalData()))
             return false;
+    }
+
+    if (callArgs.isConstructing()) {
+        // By spec, when a function is called as a constructor and this function
+        // returns a primary type, which is the case for all asm.js exported
+        // functions, the returned value is discarded and an empty object is
+        // returned instead.
+        JSObject *obj = NewBuiltinClassInstance(cx, &JSObject::class_);
+        callArgs.rval().set(ObjectValue(*obj));
+        return true;
     }
 
     switch (func.returnType()) {
@@ -406,7 +460,7 @@ NewExportedFunction(JSContext *cx, const AsmJSModule::ExportedFunction &func,
 {
     RootedPropertyName name(cx, func.name());
     JSFunction *fun = NewFunction(cx, NullPtr(), CallAsmJS, func.numArgs(),
-                                  JSFunction::NATIVE_FUN, cx->global(), name,
+                                  JSFunction::ASMJS_CTOR, cx->global(), name,
                                   JSFunction::ExtendedFinalizeKind);
     if (!fun)
         return nullptr;
@@ -422,9 +476,9 @@ HandleDynamicLinkFailure(JSContext *cx, CallArgs args, AsmJSModule &module, Hand
     if (cx->isExceptionPending())
         return false;
 
-    uint32_t begin = module.charsBegin();
-    uint32_t end = module.charsEnd();
-    Rooted<JSStableString*> src(cx, module.scriptSource()->substring(cx, begin, end));
+    uint32_t begin = module.srcBodyStart();  // starts right after 'use asm'
+    uint32_t end = module.srcEndBeforeCurly();
+    Rooted<JSFlatString*> src(cx, module.scriptSource()->substringDontDeflate(cx, begin, end));
     if (!src)
         return false;
 
@@ -444,33 +498,31 @@ HandleDynamicLinkFailure(JSContext *cx, CallArgs args, AsmJSModule &module, Hand
         formals.infallibleAppend(module.bufferArgumentName());
 
     CompileOptions options(cx);
-    options.setPrincipals(cx->compartment()->principals)
-           .setOriginPrincipals(module.scriptSource()->originPrincipals())
+    options.setOriginPrincipals(module.scriptSource()->originPrincipals())
+           .setFile(module.scriptSource()->filename())
            .setCompileAndGo(false)
            .setNoScriptRval(false);
 
-    if (!frontend::CompileFunctionBody(cx, &fun, options, formals, src->chars().get(), end - begin))
+    // The exported function inherits an implicit strict context if the module
+    // also inherited it somehow.
+    if (module.strict())
+        options.strictOption = true;
+
+    AutoStableStringChars stableChars(cx);
+    if (!stableChars.initTwoByte(cx, src))
+        return false;
+
+    const jschar *chars = stableChars.twoByteRange().start().get();
+    SourceBufferHolder::Ownership ownership = stableChars.maybeGiveOwnershipToCaller()
+                                              ? SourceBufferHolder::GiveOwnership
+                                              : SourceBufferHolder::NoOwnership;
+    SourceBufferHolder srcBuf(chars, end - begin, ownership);
+    if (!frontend::CompileFunctionBody(cx, &fun, options, formals, srcBuf))
         return false;
 
     // Call the function we just recompiled.
-
-    unsigned argc = args.length();
-
-    InvokeArgs args2(cx);
-    if (!args2.init(argc))
-        return false;
-
-    args2.setCallee(ObjectValue(*fun));
-    args2.setThis(args.thisv());
-    for (unsigned i = 0; i < argc; i++)
-        args2[i].set(args[i]);
-
-    if (!Invoke(cx, args2))
-        return false;
-
-    args.rval().set(args2.rval());
-
-    return true;
+    args.setCallee(ObjectValue(*fun));
+    return Invoke(cx, args, args.isConstructing() ? CONSTRUCT : NO_CONSTRUCT);
 }
 
 #ifdef MOZ_VTUNE
@@ -482,8 +534,8 @@ SendFunctionsToVTune(JSContext *cx, AsmJSModule &module)
     for (unsigned i = 0; i < module.numProfiledFunctions(); i++) {
         const AsmJSModule::ProfiledFunction &func = module.profiledFunction(i);
 
-        uint8_t *start = base + func.startCodeOffset;
-        uint8_t *end   = base + func.endCodeOffset;
+        uint8_t *start = base + func.pod.startCodeOffset;
+        uint8_t *end   = base + func.pod.endCodeOffset;
         JS_ASSERT(end >= start);
 
         unsigned method_id = iJIT_GetNewMethodID();
@@ -523,10 +575,10 @@ SendFunctionsToPerf(JSContext *cx, AsmJSModule &module)
     uintptr_t base = (uintptr_t) module.codeBase();
     const char *filename = module.scriptSource()->filename();
 
-    for (unsigned i = 0; i < module.numPerfFunctions(); i++) {
-        const AsmJSModule::ProfiledFunction &func = module.perfProfiledFunction(i);
-        uintptr_t start = base + (unsigned long) func.startCodeOffset;
-        uintptr_t end   = base + (unsigned long) func.endCodeOffset;
+    for (unsigned i = 0; i < module.numProfiledFunctions(); i++) {
+        const AsmJSModule::ProfiledFunction &func = module.profiledFunction(i);
+        uintptr_t start = base + (unsigned long) func.pod.startCodeOffset;
+        uintptr_t end   = base + (unsigned long) func.pod.endCodeOffset;
         JS_ASSERT(end >= start);
         size_t size = end - start;
 
@@ -535,7 +587,8 @@ SendFunctionsToPerf(JSContext *cx, AsmJSModule &module)
         if (!name)
             return false;
 
-        writePerfSpewerAsmJSFunctionMap(start, size, filename, func.lineno, func.columnIndex, name);
+        writePerfSpewerAsmJSFunctionMap(start, size, filename, func.pod.lineno,
+                                        func.pod.columnIndex, name);
     }
 
     return true;
@@ -553,14 +606,14 @@ SendBlocksToPerf(JSContext *cx, AsmJSModule &module)
     for (unsigned i = 0; i < module.numPerfBlocksFunctions(); i++) {
         const AsmJSModule::ProfiledBlocksFunction &func = module.perfProfiledBlocksFunction(i);
 
-        size_t size = func.endCodeOffset - func.startCodeOffset;
+        size_t size = func.pod.endCodeOffset - func.pod.startCodeOffset;
 
         JSAutoByteString bytes;
         const char *name = AtomToPrintableString(cx, func.name, &bytes);
         if (!name)
             return false;
 
-        writePerfSpewerAsmJSBlocksMap(funcBaseAddress, func.startCodeOffset,
+        writePerfSpewerAsmJSBlocksMap(funcBaseAddress, func.pod.startCodeOffset,
                                       func.endInlineCodeOffset, size, filename, name, func.blocks);
     }
 
@@ -578,8 +631,8 @@ SendModuleToAttachedProfiler(JSContext *cx, AsmJSModule &module)
 
 #if defined(JS_ION_PERF)
     if (module.numExportedFunctions() > 0) {
-        size_t firstEntryCode = (size_t) module.entryTrampoline(module.exportedFunction(0));
-        writePerfSpewerAsmJSEntriesAndExits(firstEntryCode, (size_t) module.globalData() - firstEntryCode);
+        size_t firstEntryCode = size_t(module.codeBase() + module.functionBytes());
+        writePerfSpewerAsmJSEntriesAndExits(firstEntryCode, module.codeBytes() - module.functionBytes());
     }
     if (!SendBlocksToPerf(cx, module))
         return false;
@@ -592,9 +645,9 @@ SendModuleToAttachedProfiler(JSContext *cx, AsmJSModule &module)
 
 
 static JSObject *
-CreateExportObject(JSContext *cx, HandleObject moduleObj)
+CreateExportObject(JSContext *cx, Handle<AsmJSModuleObject*> moduleObj)
 {
-    AsmJSModule &module = moduleObj->as<AsmJSModuleObject>().module();
+    AsmJSModule &module = moduleObj->module();
 
     if (module.numExportedFunctions() == 1) {
         const AsmJSModule::ExportedFunction &func = module.exportedFunction(0);
@@ -617,11 +670,19 @@ CreateExportObject(JSContext *cx, HandleObject moduleObj)
         JS_ASSERT(func.maybeFieldName() != nullptr);
         RootedId id(cx, NameToId(func.maybeFieldName()));
         RootedValue val(cx, ObjectValue(*fun));
-        if (!DefineNativeProperty(cx, obj, id, val, nullptr, nullptr, JSPROP_ENUMERATE, 0, 0))
+        if (!DefineNativeProperty(cx, obj, id, val, nullptr, nullptr, JSPROP_ENUMERATE))
             return nullptr;
     }
 
     return obj;
+}
+
+static const unsigned MODULE_FUN_SLOT = 0;
+
+static AsmJSModuleObject &
+ModuleFunctionToModuleObject(JSFunction *fun)
+{
+    return fun->getExtendedSlot(MODULE_FUN_SLOT).toObject().as<AsmJSModuleObject>();
 }
 
 // Implements the semantics of an asm.js module function that has been successfully validated.
@@ -633,8 +694,28 @@ LinkAsmJS(JSContext *cx, unsigned argc, JS::Value *vp)
     // The LinkAsmJS builtin (created by NewAsmJSModuleFunction) is an extended
     // function and stores its module in an extended slot.
     RootedFunction fun(cx, &args.callee().as<JSFunction>());
-    RootedObject moduleObj(cx,  &fun->getExtendedSlot(MODULE_FUN_SLOT).toObject());
-    AsmJSModule &module = moduleObj->as<AsmJSModuleObject>().module();
+    Rooted<AsmJSModuleObject*> moduleObj(cx, &ModuleFunctionToModuleObject(fun));
+
+    // All ICache flushing of the module being linked has been inhibited under the
+    // assumption that the module is flushed after dynamic linking (when the last code
+    // mutation occurs).  Thus, enter an AutoFlushICache context for the entire module
+    // now.  The module range is set below.
+    AutoFlushICache afc("LinkAsmJS");
+
+    // When a module is linked, it is dynamically specialized to the given
+    // arguments (buffer, ffis). Thus, if the module is linked again (it is just
+    // a function so it can be called multiple times), we need to clone a new
+    // module.
+    if (moduleObj->module().isDynamicallyLinked()) {
+        if (!CloneModule(cx, &moduleObj))
+            return false;
+    } else {
+        // CloneModule already calls setAutoFlushICacheRange internally before patching
+        // the cloned module, so avoid calling twice.
+        moduleObj->module().setAutoFlushICacheRange();
+    }
+
+    AsmJSModule &module = moduleObj->module();
 
     // Link the module by performing the link-time validation checks in the
     // asm.js spec and then patching the generated module to associate it with
@@ -666,8 +747,11 @@ JSFunction *
 js::NewAsmJSModuleFunction(ExclusiveContext *cx, JSFunction *origFun, HandleObject moduleObj)
 {
     RootedPropertyName name(cx, origFun->name());
-    JSFunction *moduleFun = NewFunction(cx, NullPtr(), LinkAsmJS, origFun->nargs,
-                                        JSFunction::NATIVE_FUN, NullPtr(), name,
+
+    JSFunction::Flags flags = origFun->isLambda() ? JSFunction::ASMJS_LAMBDA_CTOR
+                                                  : JSFunction::ASMJS_CTOR;
+    JSFunction *moduleFun = NewFunction(cx, NullPtr(), LinkAsmJS, origFun->nargs(),
+                                        flags, NullPtr(), name,
                                         JSFunction::ExtendedFinalizeKind, TenuredObject);
     if (!moduleFun)
         return nullptr;
@@ -705,9 +789,101 @@ bool
 js::IsAsmJSModule(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    bool rval = args.hasDefined(0) && IsMaybeWrappedNativeFunction(args[0], LinkAsmJS);
+    bool rval = args.hasDefined(0) && IsMaybeWrappedNativeFunction(args.get(0), LinkAsmJS);
     args.rval().set(BooleanValue(rval));
     return true;
+}
+
+bool
+js::IsAsmJSModule(HandleFunction fun)
+{
+    return fun->isNative() && fun->maybeNative() == LinkAsmJS;
+}
+
+static bool
+AppendUseStrictSource(JSContext *cx, HandleFunction fun, Handle<JSFlatString*> src, StringBuffer &out)
+{
+    // We need to add "use strict" in the body right after the opening
+    // brace.
+    size_t bodyStart = 0, bodyEnd;
+
+    // No need to test for functions created with the Function ctor as
+    // these don't implicitly inherit the "use strict" context. Strict mode is
+    // enabled for functions created with the Function ctor only if they begin with
+    // the "use strict" directive, but these functions won't validate as asm.js
+    // modules.
+
+    if (!FindBody(cx, fun, src, &bodyStart, &bodyEnd))
+        return false;
+
+    return out.appendSubstring(src, 0, bodyStart) &&
+           out.append("\n\"use strict\";\n") &&
+           out.appendSubstring(src, bodyStart, src->length() - bodyStart);
+}
+
+JSString *
+js::AsmJSModuleToString(JSContext *cx, HandleFunction fun, bool addParenToLambda)
+{
+    AsmJSModule &module = ModuleFunctionToModuleObject(fun).module();
+
+    uint32_t begin = module.srcStart();
+    uint32_t end = module.srcEndAfterCurly();
+    ScriptSource *source = module.scriptSource();
+    StringBuffer out(cx);
+
+    // Whether the function has been created with a Function ctor
+    bool funCtor = begin == 0 && end == source->length() && source->argumentsNotIncluded();
+
+    if (addParenToLambda && fun->isLambda() && !out.append("("))
+        return nullptr;
+
+    if (!out.append("function "))
+        return nullptr;
+
+    if (fun->atom() && !out.append(fun->atom()))
+        return nullptr;
+
+    if (funCtor) {
+        // Functions created with the function constructor don't have arguments in their source.
+        if (!out.append("("))
+            return nullptr;
+
+        if (PropertyName *argName = module.globalArgumentName()) {
+            if (!out.append(argName))
+                return nullptr;
+        }
+        if (PropertyName *argName = module.importArgumentName()) {
+            if (!out.append(", ") || !out.append(argName))
+                return nullptr;
+        }
+        if (PropertyName *argName = module.bufferArgumentName()) {
+            if (!out.append(", ") || !out.append(argName))
+                return nullptr;
+        }
+
+        if (!out.append(") {\n"))
+            return nullptr;
+    }
+
+    Rooted<JSFlatString*> src(cx, source->substring(cx, begin, end));
+    if (!src)
+        return nullptr;
+
+    if (module.strict()) {
+        if (!AppendUseStrictSource(cx, fun, src, out))
+            return nullptr;
+    } else {
+        if (!out.append(src))
+            return nullptr;
+    }
+
+    if (funCtor && !out.append("\n}"))
+        return nullptr;
+
+    if (addParenToLambda && fun->isLambda() && !out.append(")"))
+        return nullptr;
+
+    return out.finishString();
 }
 
 bool
@@ -723,8 +899,7 @@ js::IsAsmJSModuleLoadedFromCache(JSContext *cx, unsigned argc, Value *vp)
         return false;
     }
 
-    JSObject &moduleObj = fun->getExtendedSlot(MODULE_FUN_SLOT).toObject();
-    bool loadedFromCache = moduleObj.as<AsmJSModuleObject>().module().loadedFromCache();
+    bool loadedFromCache = ModuleFunctionToModuleObject(fun).module().loadedFromCache();
 
     args.rval().set(BooleanValue(loadedFromCache));
     return true;
@@ -737,4 +912,53 @@ js::IsAsmJSFunction(JSContext *cx, unsigned argc, Value *vp)
     bool rval = args.hasDefined(0) && IsMaybeWrappedNativeFunction(args[0], CallAsmJS);
     args.rval().set(BooleanValue(rval));
     return true;
+}
+
+bool
+js::IsAsmJSFunction(HandleFunction fun)
+{
+    return fun->isNative() && fun->maybeNative() == CallAsmJS;
+}
+
+JSString *
+js::AsmJSFunctionToString(JSContext *cx, HandleFunction fun)
+{
+    AsmJSModule &module = FunctionToEnclosingModule(fun);
+    const AsmJSModule::ExportedFunction &f = FunctionToExportedFunction(fun, module);
+    uint32_t begin = module.srcStart() + f.startOffsetInModule();
+    uint32_t end = module.srcStart() + f.endOffsetInModule();
+
+    ScriptSource *source = module.scriptSource();
+    StringBuffer out(cx);
+
+    // asm.js functions cannot have been created with a Function constructor
+    // as they belong within a module.
+    JS_ASSERT(!(begin == 0 && end == source->length() && source->argumentsNotIncluded()));
+
+    if (!out.append("function "))
+        return nullptr;
+
+    if (module.strict()) {
+        // AppendUseStrictSource expects its input to start right after the
+        // function name, so split the source chars from the src into two parts:
+        // the function name and the rest (arguments + body).
+
+        // asm.js functions can't be anonymous
+        JS_ASSERT(fun->atom());
+        if (!out.append(fun->atom()))
+            return nullptr;
+
+        size_t nameEnd = begin + fun->atom()->length();
+        Rooted<JSFlatString*> src(cx, source->substring(cx, nameEnd, end));
+        if (!AppendUseStrictSource(cx, fun, src, out))
+            return nullptr;
+    } else {
+        Rooted<JSFlatString*> src(cx, source->substring(cx, begin, end));
+        if (!src)
+            return nullptr;
+        if (!out.append(src))
+            return nullptr;
+    }
+
+    return out.finishString();
 }

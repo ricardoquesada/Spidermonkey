@@ -68,7 +68,7 @@ LIRGeneratorShared::defineFixed(LInstructionHelper<1, X, Y> *lir, MDefinition *m
 {
     LDefinition::Type type = LDefinition::TypeFrom(mir->type());
 
-    LDefinition def(type, LDefinition::PRESET);
+    LDefinition def(type, LDefinition::FIXED);
     def.setOutput(output);
 
     // Add an LNop to avoid regalloc problems if the next op uses this value
@@ -76,7 +76,7 @@ LIRGeneratorShared::defineFixed(LInstructionHelper<1, X, Y> *lir, MDefinition *m
     if (!define(lir, mir, def))
         return false;
 
-    if (js_IonOptions.registerAllocator == RegisterAllocator_LSRA) {
+    if (gen->optimizationInfo().registerAllocator() == RegisterAllocator_LSRA) {
         if (!add(new(alloc()) LNop))
             return false;
     }
@@ -149,12 +149,14 @@ LIRGeneratorShared::defineReturn(LInstruction *lir, MDefinition *mir)
 #endif
         break;
       case MIRType_Float32:
+        lir->setDef(0, LDefinition(vreg, LDefinition::FLOAT32, LFloatReg(ReturnFloat32Reg)));
+        break;
       case MIRType_Double:
-        lir->setDef(0, LDefinition(vreg, LDefinition::DOUBLE, LFloatReg(ReturnFloatReg)));
+        lir->setDef(0, LDefinition(vreg, LDefinition::DOUBLE, LFloatReg(ReturnDoubleReg)));
         break;
       default:
         LDefinition::Type type = LDefinition::TypeFrom(mir->type());
-        JS_ASSERT(type != LDefinition::DOUBLE);
+        JS_ASSERT(type != LDefinition::DOUBLE && type != LDefinition::FLOAT32);
         lir->setDef(0, LDefinition(vreg, type, LGeneralReg(ReturnReg)));
         break;
     }
@@ -163,7 +165,7 @@ LIRGeneratorShared::defineReturn(LInstruction *lir, MDefinition *mir)
     if (!add(lir))
         return false;
 
-    if (js_IonOptions.registerAllocator == RegisterAllocator_LSRA) {
+    if (gen->optimizationInfo().registerAllocator() == RegisterAllocator_LSRA) {
         if (!add(new(alloc()) LNop))
             return false;
     }
@@ -291,6 +293,14 @@ LIRGeneratorShared::useOrConstant(MDefinition *mir)
 }
 
 LAllocation
+LIRGeneratorShared::useOrConstantAtStart(MDefinition *mir)
+{
+    if (mir->isConstant())
+        return LAllocation(mir->toConstant()->vp());
+    return useAtStart(mir);
+}
+
+LAllocation
 LIRGeneratorShared::useRegisterOrConstant(MDefinition *mir)
 {
     if (mir->isConstant())
@@ -322,7 +332,7 @@ LIRGeneratorShared::useRegisterOrNonDoubleConstant(MDefinition *mir)
     return useRegister(mir);
 }
 
-#if defined(JS_CPU_ARM)
+#if defined(JS_CODEGEN_ARM)
 LAllocation
 LIRGeneratorShared::useAnyOrConstant(MDefinition *mir)
 {
@@ -398,7 +408,7 @@ LIRGeneratorShared::useFixed(MDefinition *mir, FloatRegister reg)
 LUse
 LIRGeneratorShared::useFixed(MDefinition *mir, AnyRegister reg)
 {
-    return reg.isFloat() ? use(mir, reg.fpu()) : use(mir, reg.gpr());
+    return reg.isFloat() ? use(mir, LUse(reg.fpu())) : use(mir, LUse(reg.gpr()));
 }
 
 LDefinition
@@ -421,7 +431,13 @@ LIRGeneratorShared::tempFixed(Register reg)
 }
 
 LDefinition
-LIRGeneratorShared::tempFloat()
+LIRGeneratorShared::tempFloat32()
+{
+    return temp(LDefinition::FLOAT32);
+}
+
+LDefinition
+LIRGeneratorShared::tempDouble()
 {
     return temp(LDefinition::DOUBLE);
 }

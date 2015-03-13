@@ -30,6 +30,28 @@ assertEq(f(-1), 13);
 assertEq(f(42), 0);
 assertEq(f(-1), 42);
 
+assertAsmTypeFail(USE_ASM + "var i=13; function f() { var j=i; return j|0 } return f");
+assertAsmTypeFail(USE_ASM + "var i=13.37; function f() { var j=i; return +j } return f");
+assertAsmTypeFail('global', USE_ASM + "var f32 = global.Math.fround; var i=f32(13.37); function f() { var j=i; return f32(j) } return f");
+
+assertEq(asmLink(asmCompile('global', USE_ASM + 'var i=global.Infinity; function f() { var j=i; return +j } return f'), {Infinity:Infinity})(), Infinity);
+assertEq(asmLink(asmCompile('global', USE_ASM + 'var i=global.NaN; function f() { var j=i; return +j } return f'), {NaN:NaN})(), NaN);
+
+assertEq(asmLink(asmCompile(USE_ASM + "const i=13; function f() { var j=i; return j|0 } return f"))(), 13);
+assertEq(asmLink(asmCompile(USE_ASM + "const i=13.37; function f() { var j=i; return +j } return f"))(), 13.37);
+assertEq(asmLink(asmCompile('global', USE_ASM + "var f32 = global.Math.fround; const i=f32(13.37); function f() { var j=i; return f32(j) } return f"), this)(), Math.fround(13.37));
+
+assertAsmTypeFail(USE_ASM + "function f() { var j=i; return j|0 } return f");
+assertAsmTypeFail(USE_ASM + "function i(){} function f() { var j=i; return j|0 } return f");
+assertAsmTypeFail(USE_ASM + "function f() { var j=i; return j|0 } var i = [f]; return f");
+assertAsmTypeFail('global', USE_ASM + "var i=global.Math.fround; function f() { var j=i; return j|0 } return f");
+assertAsmTypeFail('global', 'imp', USE_ASM + "var i=imp.f; function f() { var j=i; return j|0 } return f");
+assertAsmTypeFail('global', 'imp', USE_ASM + "var i=imp.i|0; function f() { var j=i; return j|0 } return f");
+assertAsmTypeFail('global', 'imp', USE_ASM + "var i=+imp.i; function f() { var j=i; return +j } return f");
+assertAsmTypeFail('global', 'imp', USE_ASM + "const i=imp.i|0; function f() { var j=i; return j|0 } return f");
+assertAsmTypeFail('global', 'imp', USE_ASM + "const i=+imp.i; function f() { var j=i; return +j } return f");
+assertAsmTypeFail('global', 'imp', 'heap', USE_ASM + "var i=new global.Float32Array(heap); function f() { var j=i; return +j } return f");
+
 assertAsmTypeFail('global', USE_ASM + "var i=global; function f() { return i|0 } return f");
 assertAsmTypeFail('global', USE_ASM + "const i=global; function f() { return i|0 } return f");
 assertAsmTypeFail('global', USE_ASM + "var i=global|0; function f() { return i|0 } return f");
@@ -101,7 +123,7 @@ var global = this;
 var ab = new ArrayBuffer(4096);
 var p = new Proxy(global,
                   {has:function(name) { f1(global, null, ab); return true},
-                   getOwnPropertyDescriptor:function(name) { return {value:Int32Array}}});
+                   getOwnPropertyDescriptor:function(name) { return {configurable:true, value:Int32Array}}});
 new Int32Array(ab)[4] = 42;
 assertEq(f1(p, null, ab)(), 42);
 

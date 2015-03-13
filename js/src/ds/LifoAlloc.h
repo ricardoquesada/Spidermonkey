@@ -28,7 +28,7 @@ namespace detail {
 
 static const size_t LIFO_ALLOC_ALIGN = 8;
 
-JS_ALWAYS_INLINE
+MOZ_ALWAYS_INLINE
 char *
 AlignPtr(void *orig)
 {
@@ -124,7 +124,7 @@ class BumpChunk
     }
 
     // Try to perform an allocation of size |n|, return null if not possible.
-    JS_ALWAYS_INLINE
+    MOZ_ALWAYS_INLINE
     void *tryAlloc(size_t n) {
         char *aligned = AlignPtr(bump);
         char *newBump = aligned + n;
@@ -133,7 +133,7 @@ class BumpChunk
             return nullptr;
 
         // Check for overflow.
-        if (JS_UNLIKELY(newBump < bump))
+        if (MOZ_UNLIKELY(newBump < bump))
             return nullptr;
 
         JS_ASSERT(canAlloc(n)); // Ensure consistency between "can" and "try".
@@ -141,17 +141,14 @@ class BumpChunk
         return aligned;
     }
 
-    void *allocInfallible(size_t n) {
-        void *result = tryAlloc(n);
-        JS_ASSERT(result);
-        return result;
-    }
-
     static BumpChunk *new_(size_t chunkSize);
     static void delete_(BumpChunk *chunk);
 };
 
 } // namespace detail
+
+void
+CrashAtUnhandlableOOM(const char *reason);
 
 // LIFO bump allocator: used for phase-oriented and fast LIFO allocations.
 //
@@ -258,7 +255,7 @@ class LifoAlloc
             freeAll();
     }
 
-    JS_ALWAYS_INLINE
+    MOZ_ALWAYS_INLINE
     void *alloc(size_t n) {
         JS_OOM_POSSIBLY_FAIL();
 
@@ -269,25 +266,24 @@ class LifoAlloc
         if (!getOrCreateChunk(n))
             return nullptr;
 
-        return latest->allocInfallible(n);
+        // Since we just created a large enough chunk, this can't fail.
+        result = latest->tryAlloc(n);
+        MOZ_ASSERT(result);
+        return result;
     }
 
-    JS_ALWAYS_INLINE
+    MOZ_ALWAYS_INLINE
     void *allocInfallible(size_t n) {
-        void *result;
-        if (latest && (result = latest->tryAlloc(n)))
+        if (void *result = alloc(n))
             return result;
-
-        mozilla::DebugOnly<BumpChunk *> chunk = getOrCreateChunk(n);
-        JS_ASSERT(chunk);
-
-        return latest->allocInfallible(n);
+        CrashAtUnhandlableOOM("LifoAlloc::allocInfallible");
+        return nullptr;
     }
 
     // Ensures that enough space exists to satisfy N bytes worth of
     // allocation requests, not necessarily contiguous. Note that this does
     // not guarantee a successful single allocation of N bytes.
-    JS_ALWAYS_INLINE
+    MOZ_ALWAYS_INLINE
     bool ensureUnusedApproximate(size_t n) {
         size_t total = 0;
         for (BumpChunk *chunk = latest; chunk; chunk = chunk->next()) {
@@ -394,12 +390,13 @@ class LifoAlloc
 
     // Doesn't perform construction; useful for lazily-initialized POD types.
     template <typename T>
-    JS_ALWAYS_INLINE
+    MOZ_ALWAYS_INLINE
     T *newPod() {
         return static_cast<T *>(alloc(sizeof(T)));
     }
 
-    JS_DECLARE_NEW_METHODS(new_, alloc, JS_ALWAYS_INLINE)
+    JS_DECLARE_NEW_METHODS(new_, alloc, MOZ_ALWAYS_INLINE)
+    JS_DECLARE_NEW_METHODS(newInfallible, allocInfallible, MOZ_ALWAYS_INLINE)
 
     // A mutable enumeration of the allocated data.
     class Enum
@@ -426,7 +423,7 @@ class LifoAlloc
         }
 
       public:
-        Enum(LifoAlloc &alloc)
+        explicit Enum(LifoAlloc &alloc)
           : alloc_(&alloc),
             chunk_(alloc.first),
             position_(static_cast<char *>(alloc.first ? alloc.first->start() : nullptr))
@@ -502,6 +499,43 @@ class LifoAllocScope
         JS_ASSERT(shouldRelease);
         lifoAlloc->release(mark);
         shouldRelease = false;
+    }
+};
+
+enum Fallibility {
+    Fallible,
+    Infallible
+};
+
+template <Fallibility fb>
+class LifoAllocPolicy
+{
+    LifoAlloc &alloc_;
+
+  public:
+    MOZ_IMPLICIT LifoAllocPolicy(LifoAlloc &alloc)
+      : alloc_(alloc)
+    {}
+    void *malloc_(size_t bytes) {
+        return fb == Fallible ? alloc_.alloc(bytes) : alloc_.allocInfallible(bytes);
+    }
+    void *calloc_(size_t bytes) {
+        void *p = malloc_(bytes);
+        if (fb == Fallible && !p)
+            return nullptr;
+        memset(p, 0, bytes);
+        return p;
+    }
+    void *realloc_(void *p, size_t oldBytes, size_t bytes) {
+        void *n = malloc_(bytes);
+        if (fb == Fallible && !n)
+            return nullptr;
+        memcpy(n, p, Min(oldBytes, bytes));
+        return n;
+    }
+    void free_(void *p) {
+    }
+    void reportAllocOverflow() const {
     }
 };
 

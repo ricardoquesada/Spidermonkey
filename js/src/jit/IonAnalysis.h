@@ -7,6 +7,8 @@
 #ifndef jit_IonAnalysis_h
 #define jit_IonAnalysis_h
 
+#ifdef JS_ION
+
 // This file declares various analysis passes that operate on MIR.
 
 #include "jit/IonAllocPolicy.h"
@@ -29,6 +31,15 @@ enum Observability {
 bool
 EliminatePhis(MIRGenerator *mir, MIRGraph &graph, Observability observe);
 
+size_t
+MarkLoopBlocks(MIRGraph &graph, MBasicBlock *header, bool *canOsr);
+
+void
+UnmarkLoopBlocks(MIRGraph &graph, MBasicBlock *header);
+
+bool
+MakeLoopsContiguous(MIRGraph &graph);
+
 bool
 EliminateDeadResumePointOperands(MIRGenerator *mir, MIRGraph &graph);
 
@@ -39,7 +50,16 @@ bool
 ApplyTypeInformation(MIRGenerator *mir, MIRGraph &graph);
 
 bool
+MakeMRegExpHoistable(MIRGraph &graph);
+
+bool
 RenumberBlocks(MIRGraph &graph);
+
+bool
+AccountForCFGChanges(MIRGenerator *mir, MIRGraph &graph, bool updateAliasAnalysis);
+
+bool
+RemoveUnmarkedBlocks(MIRGenerator *mir, MIRGraph &graph, uint32_t numMarkedBlocks);
 
 bool
 BuildDominatorTree(MIRGraph &graph);
@@ -58,9 +78,6 @@ AssertExtendedGraphCoherency(MIRGraph &graph);
 
 bool
 EliminateRedundantChecks(MIRGraph &graph);
-
-bool
-UnsplitEdges(LIRGraph *lir);
 
 class MDefinition;
 
@@ -97,7 +114,7 @@ struct LinearTerm
 class LinearSum
 {
   public:
-    LinearSum(TempAllocator &alloc)
+    explicit LinearSum(TempAllocator &alloc)
       : terms_(alloc),
         constant_(0)
     {
@@ -129,11 +146,16 @@ class LinearSum
 };
 
 bool
-AnalyzeNewScriptProperties(JSContext *cx, HandleFunction fun,
+AnalyzeNewScriptProperties(JSContext *cx, JSFunction *fun,
                            types::TypeObject *type, HandleObject baseobj,
                            Vector<types::TypeNewScript::Initializer> *initializerList);
 
+bool
+AnalyzeArgumentsUsage(JSContext *cx, JSScript *script);
+
 } // namespace jit
 } // namespace js
+
+#endif // JS_ION
 
 #endif /* jit_IonAnalysis_h */

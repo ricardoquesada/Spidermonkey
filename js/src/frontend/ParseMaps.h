@@ -37,7 +37,7 @@ typedef InlineMap<JSAtom *, DefinitionList, 24> AtomDefnListMap;
  * the list and map->vector must point to pre-allocated memory.
  */
 void
-InitAtomMap(AtomIndexMap *indices, HeapPtr<JSAtom> *atoms);
+InitAtomMap(AtomIndexMap *indices, HeapPtrAtom *atoms);
 
 /*
  * A pool that permits the reuse of the backing storage for the defn, index, or
@@ -202,7 +202,7 @@ class DefinitionSingle
 struct AtomDefnMapPtr : public AtomThingMapPtr<AtomDefnMap>
 {
     template <typename ParseHandler>
-    JS_ALWAYS_INLINE
+    MOZ_ALWAYS_INLINE
     typename ParseHandler::DefinitionNode lookupDefn(JSAtom *atom) {
         AtomDefnMap::Ptr p = map_->lookup(atom);
         return p ? p.value().get<ParseHandler>() : ParseHandler::nullDefinition();

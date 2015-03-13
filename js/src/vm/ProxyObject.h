@@ -23,7 +23,7 @@ class ProxyObject : public JSObject
     static const uint32_t EXTRA_SLOT   = PROXY_EXTRA_SLOT;
 
   public:
-    static ProxyObject *New(JSContext *cx, BaseProxyHandler *handler, HandleValue priv,
+    static ProxyObject *New(JSContext *cx, const BaseProxyHandler *handler, HandleValue priv,
                             TaggedProto proto_, JSObject *parent_,
                             const ProxyOptions &options);
 
@@ -41,14 +41,14 @@ class ProxyObject : public JSObject
         return const_cast<ProxyObject*>(this)->private_().toObjectOrNull();
     }
 
-    BaseProxyHandler *handler() {
-        return static_cast<BaseProxyHandler*>(GetReservedSlot(this, HANDLER_SLOT).toPrivate());
+    const BaseProxyHandler *handler() {
+        return static_cast<const BaseProxyHandler*>(GetReservedSlot(this, HANDLER_SLOT).toPrivate());
     }
 
-    void initHandler(BaseProxyHandler *handler);
+    void initHandler(const BaseProxyHandler *handler);
 
-    void setHandler(BaseProxyHandler *handler) {
-        SetReservedSlot(this, HANDLER_SLOT, PrivateValue(handler));
+    void setHandler(const BaseProxyHandler *handler) {
+        SetReservedSlot(this, HANDLER_SLOT, PrivateValue(const_cast<BaseProxyHandler*>(handler)));
     }
 
     static size_t offsetOfHandler() {
@@ -71,23 +71,36 @@ class ProxyObject : public JSObject
         return &getReservedSlotRef(EXTRA_SLOT + n);
     }
 
+    HeapSlot *slotOfClassSpecific(size_t n) {
+        JS_ASSERT(n >= PROXY_MINIMUM_SLOTS);
+        JS_ASSERT(n < JSCLASS_RESERVED_SLOTS(getClass()));
+        return &getReservedSlotRef(n);
+    }
+
+    static bool isValidProxyClass(const Class *clasp) {
+        // Since we can take classes from the outside, make sure that they
+        // are "sane". They have to quack enough like proxies for us to belive
+        // they should be treated as such.
+
+        // proxy_Trace is just a trivial wrapper around ProxyObject::trace for
+        // friend api exposure.
+        return clasp->isProxy() &&
+               (clasp->flags & JSCLASS_IMPLEMENTS_BARRIERS) &&
+               clasp->trace == proxy_Trace &&
+               JSCLASS_RESERVED_SLOTS(clasp) >= PROXY_MINIMUM_SLOTS;
+    }
+
   public:
     static unsigned grayLinkSlot(JSObject *obj);
 
-    void renew(JSContext *cx, BaseProxyHandler *handler, Value priv);
+    void renew(JSContext *cx, const BaseProxyHandler *handler, Value priv);
 
     static void trace(JSTracer *trc, JSObject *obj);
 
-    void nuke(BaseProxyHandler *handler);
+    void nuke(const BaseProxyHandler *handler);
 
     static const Class callableClass_;
     static const Class uncallableClass_;
-};
-
-class OuterWindowProxyObject : public ProxyObject
-{
-  public:
-    static const Class class_;
 };
 
 } // namespace js

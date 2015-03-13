@@ -20,11 +20,13 @@
 #include "vm/Runtime.h"
 #include "vm/Shape.h"
 #include "vm/String.h"
+#include "vm/Symbol.h"
 #include "vm/WrapperObject.h"
 
 using mozilla::DebugOnly;
 using mozilla::MallocSizeOf;
 using mozilla::Move;
+using mozilla::PodCopy;
 using mozilla::PodEqual;
 
 using namespace js;
@@ -42,63 +44,90 @@ MemoryReportingSundriesThreshold()
     return 8 * 1024;
 }
 
-/* static */ HashNumber
-InefficientNonFlatteningStringHashPolicy::hash(const Lookup &l)
+template <typename CharT>
+static uint32_t
+HashStringChars(JSString *s)
 {
-    ScopedJSFreePtr<jschar> ownedChars;
-    const jschar *chars;
-    if (l->hasPureChars()) {
-        chars = l->pureChars();
+    ScopedJSFreePtr<CharT> ownedChars;
+    const CharT *chars;
+    JS::AutoCheckCannotGC nogc;
+    if (s->isLinear()) {
+        chars = s->asLinear().chars<CharT>(nogc);
     } else {
         // Slowest hash function evar!
-        if (!l->copyNonPureChars(/* tcx */ nullptr, ownedChars))
+        if (!s->asRope().copyChars<CharT>(/* tcx */ nullptr, ownedChars))
             MOZ_CRASH("oom");
         chars = ownedChars;
     }
 
-    // We include the result of isShort() in the hash.  This is because it is
-    // possible for a particular string (i.e. unique char sequence) to have one
-    // or more copies as short strings and one or more copies as non-short
-    // strings, and treating them separately for the purposes of notable string
-    // detection makes things simpler.  In practice, although such collisions
-    // do happen, they are sufficiently rare that they are unlikely to have a
-    // significant effect on which strings are considered notable.
-    return mozilla::AddToHash(mozilla::HashString(chars, l->length()),
-                              l->isShort());
+    return mozilla::HashString(chars, s->length());
+}
+
+/* static */ HashNumber
+InefficientNonFlatteningStringHashPolicy::hash(const Lookup &l)
+{
+    return l->hasLatin1Chars()
+           ? HashStringChars<Latin1Char>(l)
+           : HashStringChars<jschar>(l);
+}
+
+template <typename Char1, typename Char2>
+static bool
+EqualStringsPure(JSString *s1, JSString *s2)
+{
+    if (s1->length() != s2->length())
+        return false;
+
+    const Char1 *c1;
+    ScopedJSFreePtr<Char1> ownedChars1;
+    JS::AutoCheckCannotGC nogc;
+    if (s1->isLinear()) {
+        c1 = s1->asLinear().chars<Char1>(nogc);
+    } else {
+        if (!s1->asRope().copyChars<Char1>(/* tcx */ nullptr, ownedChars1))
+            MOZ_CRASH("oom");
+        c1 = ownedChars1;
+    }
+
+    const Char2 *c2;
+    ScopedJSFreePtr<Char2> ownedChars2;
+    if (s2->isLinear()) {
+        c2 = s2->asLinear().chars<Char2>(nogc);
+    } else {
+        if (!s2->asRope().copyChars<Char2>(/* tcx */ nullptr, ownedChars2))
+            MOZ_CRASH("oom");
+        c2 = ownedChars2;
+    }
+
+    return EqualChars(c1, c2, s1->length());
 }
 
 /* static */ bool
 InefficientNonFlatteningStringHashPolicy::match(const JSString *const &k, const Lookup &l)
 {
     // We can't use js::EqualStrings, because that flattens our strings.
-    if (k->length() != l->length())
-        return false;
-
-    // Just like in hash(), we must consider isShort() for the two strings.
-    if (k->isShort() != l->isShort())
-        return false;
-
-    const jschar *c1;
-    ScopedJSFreePtr<jschar> ownedChars1;
-    if (k->hasPureChars()) {
-        c1 = k->pureChars();
-    } else {
-        if (!k->copyNonPureChars(/* tcx */ nullptr, ownedChars1))
-            MOZ_CRASH("oom");
-        c1 = ownedChars1;
+    JSString *s1 = const_cast<JSString *>(k);
+    if (k->hasLatin1Chars()) {
+        return l->hasLatin1Chars()
+               ? EqualStringsPure<Latin1Char, Latin1Char>(s1, l)
+               : EqualStringsPure<Latin1Char, jschar>(s1, l);
     }
 
-    const jschar *c2;
-    ScopedJSFreePtr<jschar> ownedChars2;
-    if (l->hasPureChars()) {
-        c2 = l->pureChars();
-    } else {
-        if (!l->copyNonPureChars(/* tcx */ nullptr, ownedChars2))
-            MOZ_CRASH("oom");
-        c2 = ownedChars2;
-    }
+    return l->hasLatin1Chars()
+           ? EqualStringsPure<jschar, Latin1Char>(s1, l)
+           : EqualStringsPure<jschar, jschar>(s1, l);
+}
 
-    return PodEqual(c1, c2, k->length());
+/* static */ HashNumber
+CStringHashPolicy::hash(const Lookup &l)
+{
+    return mozilla::HashString(l);
+}
+
+/* static */ bool
+CStringHashPolicy::match(const char *const &k, const Lookup &l)
+{
+    return strcmp(k, l) == 0;
 }
 
 } // namespace js
@@ -106,35 +135,47 @@ InefficientNonFlatteningStringHashPolicy::match(const JSString *const &k, const 
 namespace JS {
 
 NotableStringInfo::NotableStringInfo()
-  : buffer(0),
+  : StringInfo(),
+    buffer(0),
     length(0)
 {
+}
+
+template <typename CharT>
+static void
+StoreStringChars(char *buffer, size_t bufferSize, JSString *str)
+{
+    const CharT* chars;
+    ScopedJSFreePtr<CharT> ownedChars;
+    JS::AutoCheckCannotGC nogc;
+    if (str->isLinear()) {
+        chars = str->asLinear().chars<CharT>(nogc);
+    } else {
+        if (!str->asRope().copyChars<CharT>(/* tcx */ nullptr, ownedChars))
+            MOZ_CRASH("oom");
+        chars = ownedChars;
+    }
+
+    // We might truncate |str| even if it's much shorter than 1024 chars, if
+    // |str| contains unicode chars.  Since this is just for a memory reporter,
+    // we don't care.
+    PutEscapedString(buffer, bufferSize, chars, str->length(), /* quote */ 0);
 }
 
 NotableStringInfo::NotableStringInfo(JSString *str, const StringInfo &info)
   : StringInfo(info),
     length(str->length())
 {
-    size_t bufferSize = Min(str->length() + 1, size_t(4096));
+    size_t bufferSize = Min(str->length() + 1, size_t(MAX_SAVED_CHARS));
     buffer = js_pod_malloc<char>(bufferSize);
     if (!buffer) {
         MOZ_CRASH("oom");
     }
 
-    const jschar* chars;
-    ScopedJSFreePtr<jschar> ownedChars;
-    if (str->hasPureChars()) {
-        chars = str->pureChars();
-    } else {
-        if (!str->copyNonPureChars(/* tcx */ nullptr, ownedChars))
-            MOZ_CRASH("oom");
-        chars = ownedChars;
-    }
-
-    // We might truncate |str| even if it's much shorter than 4096 chars, if
-    // |str| contains unicode chars.  Since this is just for a memory reporter,
-    // we don't care.
-    PutEscapedString(buffer, bufferSize, chars, str->length(), /* quote */ 0);
+    if (str->hasLatin1Chars())
+        StoreStringChars<Latin1Char>(buffer, bufferSize, str);
+    else
+        StoreStringChars<jschar>(buffer, bufferSize, str);
 }
 
 NotableStringInfo::NotableStringInfo(NotableStringInfo &&info)
@@ -153,6 +194,38 @@ NotableStringInfo &NotableStringInfo::operator=(NotableStringInfo &&info)
     return *this;
 }
 
+NotableScriptSourceInfo::NotableScriptSourceInfo()
+  : ScriptSourceInfo(),
+    filename_(nullptr)
+{
+}
+
+NotableScriptSourceInfo::NotableScriptSourceInfo(const char *filename, const ScriptSourceInfo &info)
+  : ScriptSourceInfo(info)
+{
+    size_t bytes = strlen(filename) + 1;
+    filename_ = js_pod_malloc<char>(bytes);
+    if (!filename_)
+        MOZ_CRASH("oom");
+    PodCopy(filename_, filename, bytes);
+}
+
+NotableScriptSourceInfo::NotableScriptSourceInfo(NotableScriptSourceInfo &&info)
+  : ScriptSourceInfo(Move(info))
+{
+    filename_ = info.filename_;
+    info.filename_ = nullptr;
+}
+
+NotableScriptSourceInfo &NotableScriptSourceInfo::operator=(NotableScriptSourceInfo &&info)
+{
+    MOZ_ASSERT(this != &info, "self-move assignment is prohibited");
+    this->~NotableScriptSourceInfo();
+    new (this) NotableScriptSourceInfo(Move(info));
+    return *this;
+}
+
+
 } // namespace JS
 
 typedef HashSet<ScriptSource *, DefaultHasher<ScriptSource *>, SystemAllocPolicy> SourceSet;
@@ -162,7 +235,14 @@ struct StatsClosure
     RuntimeStats *rtStats;
     ObjectPrivateVisitor *opv;
     SourceSet seenSources;
-    StatsClosure(RuntimeStats *rt, ObjectPrivateVisitor *v) : rtStats(rt), opv(v) {}
+    bool anonymize;
+
+    StatsClosure(RuntimeStats *rt, ObjectPrivateVisitor *v, bool anon)
+      : rtStats(rt),
+        opv(v),
+        anonymize(anon)
+    {}
+
     bool init() {
         return seenSources.init();
     }
@@ -193,11 +273,14 @@ StatsZoneCallback(JSRuntime *rt, void *data, Zone *zone)
     // CollectRuntimeStats reserves enough space.
     MOZ_ALWAYS_TRUE(rtStats->zoneStatsVector.growBy(1));
     ZoneStats &zStats = rtStats->zoneStatsVector.back();
-    zStats.initStrings(rt);
+    if (!zStats.initStrings(rt))
+        MOZ_CRASH("oom");
     rtStats->initExtraZoneStats(zone, &zStats);
     rtStats->currZoneStats = &zStats;
 
-    zone->addSizeOfIncludingThis(rtStats->mallocSizeOf_, &zStats.typePool);
+    zone->addSizeOfIncludingThis(rtStats->mallocSizeOf_,
+                                 &zStats.typePool,
+                                 &zStats.baselineStubsOptimized);
 }
 
 static void
@@ -215,7 +298,6 @@ StatsCompartmentCallback(JSRuntime *rt, void *data, JSCompartment *compartment)
 
     // Measure the compartment object itself, and things hanging off it.
     compartment->addSizeOfIncludingThis(rtStats->mallocSizeOf_,
-                                        &cStats.typeInferencePendingArrays,
                                         &cStats.typeInferenceAllocationSiteTables,
                                         &cStats.typeInferenceArrayTypeTables,
                                         &cStats.typeInferenceObjectTypeTables,
@@ -224,7 +306,7 @@ StatsCompartmentCallback(JSRuntime *rt, void *data, JSCompartment *compartment)
                                         &cStats.crossCompartmentWrappersTable,
                                         &cStats.regexpCompartment,
                                         &cStats.debuggeesSet,
-                                        &cStats.baselineStubsOptimized);
+                                        &cStats.savedStacksSet);
 }
 
 static void
@@ -251,11 +333,18 @@ GetCompartmentStats(JSCompartment *comp)
     return static_cast<CompartmentStats *>(comp->compartmentStats);
 }
 
+// FineGrained is used for normal memory reporting.  CoarseGrained is used by
+// AddSizeOfTab(), which aggregates all the measurements into a handful of
+// high-level numbers, which means that fine-grained reporting would be a waste
+// of effort.
 enum Granularity {
-    FineGrained,    // Corresponds to CollectRuntimeStats()
-    CoarseGrained   // Corresponds to AddSizeOfTab()
+    FineGrained,
+    CoarseGrained
 };
 
+// The various kinds of hashing are expensive, and the results are unused when
+// doing coarse-grained measurements. Skipping them more than doubles the
+// profile speed for complex pages such as gmail.com.
 template <Granularity granularity>
 static void
 StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKind,
@@ -290,33 +379,36 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
       case JSTRACE_STRING: {
         JSString *str = static_cast<JSString *>(thing);
 
-        bool isShort = str->isShort();
-        size_t strCharsSize = str->sizeOfExcludingThis(rtStats->mallocSizeOf_);
-
-
-        if (isShort) {
-            zStats->stringsShortGCHeap += thingSize;
-            MOZ_ASSERT(strCharsSize == 0);
+        JS::StringInfo info;
+        if (str->hasLatin1Chars()) {
+            info.gcHeapLatin1 = thingSize;
+            info.mallocHeapLatin1 = str->sizeOfExcludingThis(rtStats->mallocSizeOf_);
         } else {
-            zStats->stringsNormalGCHeap += thingSize;
-            zStats->stringsNormalMallocHeap += strCharsSize;
+            info.gcHeapTwoByte = thingSize;
+            info.mallocHeapTwoByte = str->sizeOfExcludingThis(rtStats->mallocSizeOf_);
         }
+        info.numCopies = 1;
 
-        // This string hashing is expensive.  Its results are unused when doing
-        // coarse-grained measurements, and skipping it more than doubles the
-        // profile speed for complex pages such as gmail.com.
-        if (granularity == FineGrained) {
-            ZoneStats::StringsHashMap::AddPtr p = zStats->strings->lookupForAdd(str);
+        zStats->stringInfo.add(info);
+
+        // The primary use case for anonymization is automated crash submission
+        // (to help detect OOM crashes). In that case, we don't want to pay the
+        // memory cost required to do notable string detection.
+        if (granularity == FineGrained && !closure->anonymize) {
+            ZoneStats::StringsHashMap::AddPtr p = zStats->allStrings->lookupForAdd(str);
             if (!p) {
-                JS::StringInfo info(isShort, thingSize, strCharsSize);
-                zStats->strings->add(p, str, info);
+                // Ignore failure -- we just won't record the string as notable.
+                (void)zStats->allStrings->add(p, str, info);
             } else {
-                p->value().add(isShort, thingSize, strCharsSize);
+                p->value().add(info);
             }
         }
-
         break;
       }
+
+      case JSTRACE_SYMBOL:
+        zStats->symbolsGCHeap += thingSize;
+        break;
 
       case JSTRACE_SHAPE: {
         Shape *shape = static_cast<Shape *>(thing);
@@ -363,9 +455,30 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
         ScriptSource *ss = script->scriptSource();
         SourceSet::AddPtr entry = closure->seenSources.lookupForAdd(ss);
         if (!entry) {
-            closure->seenSources.add(entry, ss); // Not much to be done on failure.
-            rtStats->runtime.scriptSources += ss->sizeOfIncludingThis(rtStats->mallocSizeOf_);
+            (void)closure->seenSources.add(entry, ss); // Not much to be done on failure.
+
+            JS::ScriptSourceInfo info;  // This zeroes all the sizes.
+            ss->addSizeOfIncludingThis(rtStats->mallocSizeOf_, &info);
+            MOZ_ASSERT(info.compressed == 0 || info.uncompressed == 0);
+
+            rtStats->runtime.scriptSourceInfo.add(info);
+
+            if (granularity == FineGrained) {
+                const char* filename = ss->filename();
+                if (!filename)
+                    filename = "<no filename>";
+
+                JS::RuntimeSizes::ScriptSourcesHashMap::AddPtr p =
+                    rtStats->runtime.allScriptSources->lookupForAdd(filename);
+                if (!p) {
+                    // Ignore failure -- we just won't record the script source as notable.
+                    (void)rtStats->runtime.allScriptSources->add(p, filename, info);
+                } else {
+                    p->value().add(info);
+                }
+            }
         }
+
         break;
       }
 
@@ -376,9 +489,9 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
         break;
       }
 
-      case JSTRACE_IONCODE: {
+      case JSTRACE_JITCODE: {
 #ifdef JS_ION
-        zStats->ionCodesGCHeap += thingSize;
+        zStats->jitCodesGCHeap += thingSize;
         // The code for a script is counted in ExecutableAllocator::sizeOfCode().
 #endif
         break;
@@ -392,72 +505,102 @@ StatsCellCallback(JSRuntime *rt, void *data, void *thing, JSGCTraceKind traceKin
       }
 
       default:
-        MOZ_ASSUME_UNREACHABLE("invalid traceKind");
+        MOZ_CRASH("invalid traceKind");
     }
 
     // Yes, this is a subtraction:  see StatsArenaCallback() for details.
     zStats->unusedGCThings -= thingSize;
 }
 
-static void
+static bool
 FindNotableStrings(ZoneStats &zStats)
 {
     using namespace JS;
 
-    // You should only run FindNotableStrings once per ZoneStats object
-    // (although it's not going to break anything if you run it more than once,
-    // unless you add to |strings| in the meantime).
+    // We should only run FindNotableStrings once per ZoneStats object.
     MOZ_ASSERT(zStats.notableStrings.empty());
 
-    for (ZoneStats::StringsHashMap::Range r = zStats.strings->all(); !r.empty(); r.popFront()) {
+    for (ZoneStats::StringsHashMap::Range r = zStats.allStrings->all(); !r.empty(); r.popFront()) {
 
         JSString *str = r.front().key();
         StringInfo &info = r.front().value();
 
-        // If this string is too small, or if we can't grow the notableStrings
-        // vector, skip this string.
-        if (info.gcHeap + info.mallocHeap < NotableStringInfo::notableSize() ||
-            !zStats.notableStrings.growBy(1))
+        if (!info.isNotable())
             continue;
+
+        if (!zStats.notableStrings.growBy(1))
+            return false;
 
         zStats.notableStrings.back() = NotableStringInfo(str, info);
 
         // We're moving this string from a non-notable to a notable bucket, so
         // subtract it out of the non-notable tallies.
-        if (info.isShort) {
-            MOZ_ASSERT(zStats.stringsShortGCHeap >= info.gcHeap);
-            zStats.stringsShortGCHeap -= info.gcHeap;
-            MOZ_ASSERT(info.mallocHeap == 0);
-        } else {
-            MOZ_ASSERT(zStats.stringsNormalGCHeap >= info.gcHeap);
-            MOZ_ASSERT(zStats.stringsNormalMallocHeap >= info.mallocHeap);
-            zStats.stringsNormalGCHeap -= info.gcHeap;
-            zStats.stringsNormalMallocHeap -= info.mallocHeap;
-        }
+        zStats.stringInfo.subtract(info);
     }
+    // Delete |allStrings| now, rather than waiting for zStats's destruction,
+    // to reduce peak memory consumption during reporting.
+    js_delete(zStats.allStrings);
+    zStats.allStrings = nullptr;
+    return true;
 }
 
 bool
 ZoneStats::initStrings(JSRuntime *rt)
 {
-    strings = rt->new_<StringsHashMap>();
-    if (!strings)
+    isTotals = false;
+    allStrings = rt->new_<StringsHashMap>();
+    if (!allStrings)
         return false;
-    if (!strings->init()) {
-        js_delete(strings);
-        strings = nullptr;
+    if (!allStrings->init()) {
+        js_delete(allStrings);
+        allStrings = nullptr;
         return false;
     }
     return true;
 }
 
+static bool
+FindNotableScriptSources(JS::RuntimeSizes &runtime)
+{
+    using namespace JS;
+
+    // We should only run FindNotableScriptSources once per RuntimeSizes.
+    MOZ_ASSERT(runtime.notableScriptSources.empty());
+
+    for (RuntimeSizes::ScriptSourcesHashMap::Range r = runtime.allScriptSources->all();
+         !r.empty();
+         r.popFront())
+    {
+        const char *filename = r.front().key();
+        ScriptSourceInfo &info = r.front().value();
+
+        if (!info.isNotable())
+            continue;
+
+        if (!runtime.notableScriptSources.growBy(1))
+            return false;
+
+        runtime.notableScriptSources.back() = NotableScriptSourceInfo(filename, info);
+
+        // We're moving this script source from a non-notable to a notable
+        // bucket, so subtract its sizes from the non-notable tallies.
+        runtime.scriptSourceInfo.subtract(info);
+    }
+    // Delete |allScriptSources| now, rather than waiting for zStats's
+    // destruction, to reduce peak memory consumption during reporting.
+    js_delete(runtime.allScriptSources);
+    runtime.allScriptSources = nullptr;
+    return true;
+}
+
 JS_PUBLIC_API(bool)
-JS::CollectRuntimeStats(JSRuntime *rt, RuntimeStats *rtStats, ObjectPrivateVisitor *opv)
+JS::CollectRuntimeStats(JSRuntime *rt, RuntimeStats *rtStats, ObjectPrivateVisitor *opv,
+                        bool anonymize)
 {
     if (!rtStats->compartmentStatsVector.reserve(rt->numCompartments))
         return false;
 
-    if (!rtStats->zoneStatsVector.reserve(rt->zones.length()))
+    if (!rtStats->zoneStatsVector.reserve(rt->gc.zones.length()))
         return false;
 
     rtStats->gcHeapChunkTotal =
@@ -470,53 +613,35 @@ JS::CollectRuntimeStats(JSRuntime *rt, RuntimeStats *rtStats, ObjectPrivateVisit
                   DecommittedArenasChunkCallback);
 
     // Take the per-compartment measurements.
-    StatsClosure closure(rtStats, opv);
+    StatsClosure closure(rtStats, opv, anonymize);
     if (!closure.init())
         return false;
-    IterateZonesCompartmentsArenasCells(rt, &closure, StatsZoneCallback, StatsCompartmentCallback,
-                                        StatsArenaCallback, StatsCellCallback<FineGrained>);
+    IterateZonesCompartmentsArenasCells(rt, &closure,
+                                        StatsZoneCallback,
+                                        StatsCompartmentCallback,
+                                        StatsArenaCallback,
+                                        StatsCellCallback<FineGrained>);
 
     // Take the "explicit/js/runtime/" measurements.
     rt->addSizeOfIncludingThis(rtStats->mallocSizeOf_, &rtStats->runtime);
 
+    if (!FindNotableScriptSources(rtStats->runtime))
+        return false;
+
     ZoneStatsVector &zs = rtStats->zoneStatsVector;
     ZoneStats &zTotals = rtStats->zTotals;
 
-    // For each zone:
-    // - sum everything except its strings data into zTotals, and
-    // - find its notable strings.
-    // Also, record which zone had the biggest |strings| hashtable -- to save
-    // time and memory, we will re-use that hashtable to find the notable
-    // strings for zTotals.
-    size_t iMax = 0;
-    for (size_t i = 0; i < zs.length(); i++) {
-        zTotals.addIgnoringStrings(zs[i]);
-        FindNotableStrings(zs[i]);
-        if (zs[i].strings->count() > zs[iMax].strings->count())
-            iMax = i;
-    }
+    // We don't look for notable strings for zTotals. So we first sum all the
+    // zones' measurements to get the totals. Then we find the notable strings
+    // within each zone.
+    for (size_t i = 0; i < zs.length(); i++)
+        zTotals.addSizes(zs[i]);
 
-    // Transfer the biggest strings table to zTotals.  We can do this because:
-    // (a) we've found the notable strings for zs[IMax], and so don't need it
-    //     any more for zs, and
-    // (b) zs[iMax].strings contains a subset of the values that will end up in
-    //     zTotals.strings.
-    MOZ_ASSERT(!zTotals.strings);
-    zTotals.strings = zs[iMax].strings;
-    zs[iMax].strings = nullptr;
+    for (size_t i = 0; i < zs.length(); i++)
+        if (!FindNotableStrings(zs[i]))
+            return false;
 
-    // Add the remaining strings hashtables to zTotals, and then get the
-    // notable strings for zTotals.
-    for (size_t i = 0; i < zs.length(); i++) {
-        if (i != iMax) {
-            zTotals.addStrings(zs[i]);
-            js_delete(zs[i].strings);
-            zs[i].strings = nullptr;
-        }
-    }
-    FindNotableStrings(zTotals);
-    js_delete(zTotals.strings);
-    zTotals.strings = nullptr;
+    MOZ_ASSERT(!zTotals.allStrings);
 
     for (size_t i = 0; i < rtStats->compartmentStatsVector.length(); i++) {
         CompartmentStats &cStats = rtStats->compartmentStatsVector[i];
@@ -592,7 +717,7 @@ AddSizeOfTab(JSRuntime *rt, HandleObject obj, MallocSizeOf mallocSizeOf, ObjectP
     class SimpleJSRuntimeStats : public JS::RuntimeStats
     {
       public:
-        SimpleJSRuntimeStats(MallocSizeOf mallocSizeOf)
+        explicit SimpleJSRuntimeStats(MallocSizeOf mallocSizeOf)
           : JS::RuntimeStats(mallocSizeOf)
         {}
 
@@ -615,8 +740,9 @@ AddSizeOfTab(JSRuntime *rt, HandleObject obj, MallocSizeOf mallocSizeOf, ObjectP
     if (!rtStats.zoneStatsVector.reserve(1))
         return false;
 
-    // Take the per-compartment measurements.
-    StatsClosure closure(&rtStats, opv);
+    // Take the per-compartment measurements. No need to anonymize because
+    // these measurements will be aggregated.
+    StatsClosure closure(&rtStats, opv, /* anonymize = */ false);
     if (!closure.init())
         return false;
     IterateZoneCompartmentsArenasCells(rt, zone, &closure, StatsZoneCallback,
@@ -624,7 +750,7 @@ AddSizeOfTab(JSRuntime *rt, HandleObject obj, MallocSizeOf mallocSizeOf, ObjectP
                                        StatsCellCallback<CoarseGrained>);
 
     JS_ASSERT(rtStats.zoneStatsVector.length() == 1);
-    rtStats.zTotals.add(rtStats.zoneStatsVector[0]);
+    rtStats.zTotals.addSizes(rtStats.zoneStatsVector[0]);
 
     for (size_t i = 0; i < rtStats.compartmentStatsVector.length(); i++) {
         CompartmentStats &cStats = rtStats.compartmentStatsVector[i];

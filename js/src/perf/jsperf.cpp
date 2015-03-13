@@ -171,11 +171,17 @@ static const JSClass pm_class = {
 static bool
 pm_construct(JSContext* cx, unsigned argc, jsval* vp)
 {
+    CallArgs args = CallArgsFromVp(argc, vp);
+
     uint32_t mask;
-    if (!JS_ConvertArguments(cx, argc, JS_ARGV(cx, vp), "u", &mask))
+    if (!args.hasDefined(0)) {
+        js_ReportMissingArg(cx, args.calleev(), 0);
+        return false;
+    }
+    if (!JS::ToUint32(cx, args[0], &mask))
         return false;
 
-    JS::RootedObject obj(cx, JS_NewObjectForConstructor(cx, &pm_class, vp));
+    JS::RootedObject obj(cx, JS_NewObjectForConstructor(cx, &pm_class, args));
     if (!obj)
         return false;
 
@@ -189,7 +195,7 @@ pm_construct(JSContext* cx, unsigned argc, jsval* vp)
     }
 
     JS_SetPrivate(obj, p);
-    *vp = OBJECT_TO_JSVAL(obj);
+    args.rval().setObject(*obj);
     return true;
 }
 
@@ -224,10 +230,11 @@ GetPM(JSContext* cx, JS::HandleValue value, const char* fname)
 namespace JS {
 
 JSObject*
-RegisterPerfMeasurement(JSContext *cx, JSObject *global)
+RegisterPerfMeasurement(JSContext *cx, HandleObject globalArg)
 {
+    RootedObject global(cx, globalArg);
     RootedObject prototype(cx);
-    prototype = JS_InitClass(cx, global, nullptr /* parent */,
+    prototype = JS_InitClass(cx, global, js::NullPtr() /* parent */,
                              &pm_class, pm_construct, 1,
                              pm_props, pm_fns, 0, 0);
     if (!prototype)
@@ -239,8 +246,8 @@ RegisterPerfMeasurement(JSContext *cx, JSObject *global)
         return 0;
 
     for (const pm_const *c = pm_consts; c->name; c++) {
-        if (!JS_DefineProperty(cx, ctor, c->name, INT_TO_JSVAL(c->value),
-                               JS_PropertyStub, JS_StrictPropertyStub, PM_CATTRS))
+        if (!JS_DefineProperty(cx, ctor, c->name, c->value, PM_CATTRS,
+                               JS_PropertyStub, JS_StrictPropertyStub))
             return 0;
     }
 
@@ -255,12 +262,12 @@ RegisterPerfMeasurement(JSContext *cx, JSObject *global)
 PerfMeasurement*
 ExtractPerfMeasurement(jsval wrapper)
 {
-    if (JSVAL_IS_PRIMITIVE(wrapper))
+    if (wrapper.isPrimitive())
         return 0;
 
     // This is what JS_GetInstancePrivate does internally.  We can't
     // call JS_anything from here, because we don't have a JSContext.
-    JSObject *obj = JSVAL_TO_OBJECT(wrapper);
+    JSObject *obj = wrapper.toObjectOrNull();
     if (obj->getClass() != js::Valueify(&pm_class))
         return 0;
 

@@ -108,7 +108,7 @@ BytecodeAnalysis::init(TempAllocator &alloc, GSNCache &gsn)
             JSTryNote *tn = script_->trynotes()->vector;
             JSTryNote *tnlimit = tn + script_->trynotes()->length;
             for (; tn < tnlimit; tn++) {
-                unsigned startOffset = script_->mainOffset + tn->start;
+                unsigned startOffset = script_->mainOffset() + tn->start;
                 if (startOffset == offset + 1) {
                     unsigned catchOffset = startOffset + tn->length;
 
@@ -148,14 +148,13 @@ BytecodeAnalysis::init(TempAllocator &alloc, GSNCache &gsn)
             break;
 
           case JSOP_NAME:
-          case JSOP_CALLNAME:
           case JSOP_BINDNAME:
           case JSOP_SETNAME:
           case JSOP_DELNAME:
           case JSOP_GETALIASEDVAR:
-          case JSOP_CALLALIASEDVAR:
           case JSOP_SETALIASEDVAR:
           case JSOP_LAMBDA:
+          case JSOP_LAMBDA_ARROW:
           case JSOP_DEFFUN:
           case JSOP_DEFVAR:
           case JSOP_DEFCONST:

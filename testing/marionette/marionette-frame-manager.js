@@ -22,7 +22,7 @@ let remoteFrames = [];
  */
 function MarionetteRemoteFrame(windowId, frameId) {
   this.windowId = windowId; //outerWindowId relative to main process
-  this.frameId = frameId ? frameId : null; //actual frame relative to windowId's frames list
+  this.frameId = frameId; //actual frame relative to windowId's frames list
   this.targetFrameId = this.frameId; //assigned FrameId, used for messaging
 };
 
@@ -88,10 +88,14 @@ FrameManager.prototype = {
         this.handledModal = true;
         this.server.sendOk(this.server.command_id);
         return {value: isLocal};
+      case "MarionetteFrame:getCurrentFrameId":
+        if (this.currentRemoteFrame != null) {
+          return this.currentRemoteFrame.frameId;
+        }
     }
   },
 
-  //This is just 'switch to OOP frame'. We're handling this here so we can maintain a list of remoteFrames. 
+  //This is just 'switch to OOP frame'. We're handling this here so we can maintain a list of remoteFrames.
   switchToFrame: function FM_switchToFrame(message) {
     // Switch to a remote frame.
     let frameWindow = Services.wm.getOuterWindowWithId(message.json.win); //get the original frame window
@@ -122,11 +126,11 @@ FrameManager.prototype = {
       }
     }
 
-    // If we get here, then we need to load the frame script in this frame, 
+    // If we get here, then we need to load the frame script in this frame,
     // and set the frame's ChromeMessageSender as the active message manager the server will listen to
     this.addMessageManagerListeners(mm);
     logger.info("frame-manager load script: " + mm.toString());
-    mm.loadFrameScript(FRAME_SCRIPT, true);
+    mm.loadFrameScript(FRAME_SCRIPT, true, true);
     let aFrame = new MarionetteRemoteFrame(message.json.win, message.json.frame);
     aFrame.messageManager = Cu.getWeakReference(mm);
     remoteFrames.push(aFrame);
@@ -159,14 +163,17 @@ FrameManager.prototype = {
     messageManager.addWeakMessageListener("Marionette:ok", this.server);
     messageManager.addWeakMessageListener("Marionette:done", this.server);
     messageManager.addWeakMessageListener("Marionette:error", this.server);
+    messageManager.addWeakMessageListener("Marionette:emitTouchEvent", this.server);
     messageManager.addWeakMessageListener("Marionette:log", this.server);
-    messageManager.addWeakMessageListener("Marionette:shareData", this.server);
     messageManager.addWeakMessageListener("Marionette:register", this.server);
     messageManager.addWeakMessageListener("Marionette:runEmulatorCmd", this.server);
+    messageManager.addWeakMessageListener("Marionette:runEmulatorShell", this.server);
+    messageManager.addWeakMessageListener("Marionette:shareData", this.server);
     messageManager.addWeakMessageListener("Marionette:switchToModalOrigin", this.server);
     messageManager.addWeakMessageListener("Marionette:switchToFrame", this.server);
     messageManager.addWeakMessageListener("Marionette:switchedToFrame", this.server);
     messageManager.addWeakMessageListener("MarionetteFrame:handleModal", this);
+    messageManager.addWeakMessageListener("MarionetteFrame:getCurrentFrameId", this);
     messageManager.addWeakMessageListener("MarionetteFrame:getInterruptedState", this);
   },
 
@@ -190,9 +197,11 @@ FrameManager.prototype = {
     messageManager.removeWeakMessageListener("Marionette:shareData", this.server);
     messageManager.removeWeakMessageListener("Marionette:register", this.server);
     messageManager.removeWeakMessageListener("Marionette:runEmulatorCmd", this.server);
+    messageManager.removeWeakMessageListener("Marionette:runEmulatorShell", this.server);
     messageManager.removeWeakMessageListener("Marionette:switchToFrame", this.server);
     messageManager.removeWeakMessageListener("Marionette:switchedToFrame", this.server);
     messageManager.removeWeakMessageListener("MarionetteFrame:handleModal", this);
+    messageManager.removeWeakMessageListener("MarionetteFrame:getCurrentFrameId", this);
   },
 
 };

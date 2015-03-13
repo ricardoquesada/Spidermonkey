@@ -8,7 +8,6 @@
 #include "nsDateTimeFormatMac.h"
 #include <CoreFoundation/CFDateFormatter.h>
 #include "nsIComponentManager.h"
-#include "nsLocaleCID.h"
 #include "nsILocaleService.h"
 #include "nsCRT.h"
 #include "plstr.h"
@@ -16,7 +15,7 @@
 #include "nsTArray.h"
 
 
-NS_IMPL_ISUPPORTS1(nsDateTimeFormatMac, nsIDateTimeFormat)
+NS_IMPL_ISUPPORTS(nsDateTimeFormatMac, nsIDateTimeFormat)
 
 nsresult nsDateTimeFormatMac::Initialize(nsILocale* locale)
 {
@@ -189,12 +188,12 @@ nsresult nsDateTimeFormatMac::FormatTMTime(nsILocale* locale,
                                                   CFSTR("h"), CFSTR("H"),
                                                   CFRangeMake(0, CFStringGetLength(newFormat)),	
                                                   0);
-    NS_ASSERTION(replaceCount == 1, "Unexpected number of \"h\" occurrences");
+    NS_ASSERTION(replaceCount <= 2, "Unexpected number of \"h\" occurrences");
     replaceCount = CFStringFindAndReplace(newFormat,
                                           CFSTR("a"), CFSTR(""),
                                           CFRangeMake(0, CFStringGetLength(newFormat)),	
                                           0);
-    NS_ASSERTION(replaceCount == 1, "Unexpected number of \"a\" occurrences");
+    NS_ASSERTION(replaceCount <= 1, "Unexpected number of \"a\" occurrences");
     CFDateFormatterSetFormat(formatter, newFormat);
     CFRelease(newFormat); // note we don't own oldFormat
   }
@@ -215,18 +214,17 @@ nsresult nsDateTimeFormatMac::FormatTMTime(nsILocale* locale,
   CFStringRef formattedDate = CFDateFormatterCreateStringWithAbsoluteTime(nullptr,
                                                                           formatter,
                                                                           absTime);
-  
+
   CFIndex stringLen = CFStringGetLength(formattedDate);
-  
+
   nsAutoTArray<UniChar, 256> stringBuffer;
-  if (stringBuffer.SetLength(stringLen + 1)) {
-    CFStringGetCharacters(formattedDate, CFRangeMake(0, stringLen), stringBuffer.Elements());
-    stringOut.Assign(reinterpret_cast<PRUnichar*>(stringBuffer.Elements()), stringLen);
-  }
-  
+  stringBuffer.SetLength(stringLen + 1);
+  CFStringGetCharacters(formattedDate, CFRangeMake(0, stringLen), stringBuffer.Elements());
+  stringOut.Assign(reinterpret_cast<char16_t*>(stringBuffer.Elements()), stringLen);
+
   CFRelease(formattedDate);
   CFRelease(formatter);
-  
+
   return res;
 }
 

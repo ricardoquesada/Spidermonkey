@@ -4,7 +4,6 @@
 
 import hashlib
 import mozlog
-import socket
 import os
 import posixpath
 import re
@@ -12,7 +11,6 @@ import struct
 import StringIO
 import zlib
 
-from Zeroconf import Zeroconf, ServiceBrowser
 from functools import wraps
 
 class DMError(Exception):
@@ -48,10 +46,32 @@ class DeviceManager(object):
 
     _logcatNeedsRoot = True
 
-    def __init__(self, logLevel=mozlog.ERROR):
-        self._logger = mozlog.getLogger("DeviceManager")
+    def __init__(self, logLevel=mozlog.ERROR, deviceRoot=None):
+        try:
+            self._logger = mozlog.structured.structuredlog.get_default_logger(component="DeviceManager")
+            if not self._logger: # no global structured logger, fall back to reg logging
+                self._logger = mozlog.getLogger("DeviceManager")
+                self._logger.setLevel(logLevel)
+        except AttributeError:
+            # Structured logging doesn't work on Python 2.6
+            self._logger = None
         self._logLevel = logLevel
-        self._logger.setLevel(logLevel)
+        self._remoteIsWin = None
+        self._isDeviceRootSetup = False
+        self._deviceRoot = deviceRoot
+
+    def _log(self, data):
+        """
+        This helper function is called by ProcessHandler to log
+        the output produced by processes
+        """
+        self._logger.debug(data)
+
+    @property
+    def remoteIsWin(self):
+        if self._remoteIsWin is None:
+            self._remoteIsWin = self.getInfo("os")["os"][0] == "windows"
+        return self._remoteIsWin
 
     @property
     def logLevel(self):
@@ -157,7 +177,7 @@ class DeviceManager(object):
         with open(filename, 'w') as pngfile:
             # newer versions of screencap can write directly to a png, but some
             # older versions can't
-            tempScreenshotFile = self.getDeviceRoot() + "/ss-dm.tmp"
+            tempScreenshotFile = self.deviceRoot + "/ss-dm.tmp"
             self.shellCheckOutput(["sh", "-c", "%s > %s" %
                                    (screencap, tempScreenshotFile)],
                                   root=True)
@@ -243,7 +263,7 @@ class DeviceManager(object):
         containing = posixpath.dirname(filename)
         if not self.dirExists(containing):
             parts = filename.split('/')
-            name = "/"
+            name = "/" if not self.remoteIsWin else parts.pop(0)
             for part in parts[:-1]:
                 if part != "":
                     name = posixpath.join(name, part)
@@ -283,60 +303,57 @@ class DeviceManager(object):
         """
 
     @abstractmethod
+    def moveTree(self, source, destination):
+         """
+         Does a move of the file or directory on the device.
+
+        :param source: Path to the original file or directory
+        :param destination: Path to the destination file or directory
+         """
+
+    @abstractmethod
+    def copyTree(self, source, destination):
+         """
+         Does a copy of the file or directory on the device.
+
+        :param source: Path to the original file or directory
+        :param destination: Path to the destination file or directory
+         """
+
+    @abstractmethod
     def chmodDir(self, remoteDirname, mask="777"):
         """
         Recursively changes file permissions in a directory.
         """
 
+    @property
+    def deviceRoot(self):
+        """
+        The device root on the device filesystem for putting temporary
+        testing files.
+        """
+        # derive deviceroot value if not set
+        if not self._deviceRoot or not self._isDeviceRootSetup:
+            self._deviceRoot = self._setupDeviceRoot(self._deviceRoot)
+            self._isDeviceRootSetup = True
+
+        return self._deviceRoot
+
     @abstractmethod
+    def _setupDeviceRoot(self):
+        """
+        Sets up and returns a device root location that can be written to by tests.
+        """
+
     def getDeviceRoot(self):
         """
-        Gets the device root for the testing area on the device.
+        Get the device root on the device filesystem for putting temporary
+        testing files.
 
-        For all devices we will use / type slashes and depend on the device-agent
-        to sort those out.  The agent will return us the device location where we
-        should store things, we will then create our /tests structure relative to
-        that returned path.
-
-        Structure on the device is as follows:
-
-        ::
-
-          /tests
-              /<fennec>|<firefox>  --> approot
-              /profile
-              /xpcshell
-              /reftest
-              /mochitest
+        .. deprecated:: 0.38
+          Use the :py:attr:`deviceRoot` property instead.
         """
-
-    @abstractmethod
-    def getAppRoot(self, packageName=None):
-        """
-        Returns the app root directory.
-
-        E.g /tests/fennec or /tests/firefox
-        """
-        # TODO Support org.mozilla.firefox and B2G
-
-    def getTestRoot(self, harnessName):
-        """
-        Gets the directory location on the device for a specific test type.
-
-        :param harnessName: one of: "xpcshell", "reftest", "mochitest"
-        """
-
-        devroot = self.getDeviceRoot()
-        if (devroot == None):
-            return None
-
-        if (re.search('xpcshell', harnessName, re.I)):
-            self.testRoot = devroot + '/xpcshell'
-        elif (re.search('?(i)reftest', harnessName)):
-            self.testRoot = devroot + '/reftest'
-        elif (re.search('?(i)mochitest', harnessName)):
-            self.testRoot = devroot + '/mochitest'
-        return self.testRoot
+        return self.deviceRoot
 
     @abstractmethod
     def getTempDir(self):
@@ -350,7 +367,7 @@ class DeviceManager(object):
         """
         Executes shell command on device and returns exit code.
 
-        :param cmd: Command string to execute
+        :param cmd: Commandline list to execute
         :param outputfile: File to store output
         :param env: Environment to pass to exec command
         :param cwd: Directory to execute command from
@@ -360,12 +377,15 @@ class DeviceManager(object):
 
     def shellCheckOutput(self, cmd, env=None, cwd=None, timeout=None, root=False):
         """
-        Executes shell command on device and returns output as a string.
+        Executes shell command on device and returns output as a string. Raises if
+        the return code is non-zero.
 
+        :param cmd: Commandline list to execute
         :param env: Environment to pass to exec command
         :param cwd: Directory to execute command from
         :param timeout: specified in seconds, defaults to 'default_timeout'
         :param root: Specifies whether command requires root privileges
+        :raises: DMError
         """
         buf = StringIO.StringIO()
         retval = self.shell(cmd, buf, env=env, cwd=cwd, timeout=timeout, root=root)
@@ -429,13 +449,15 @@ class DeviceManager(object):
         """
 
     @abstractmethod
-    def reboot(self, ipAddr=None, port=30000):
+    def reboot(self, wait=False, ipAddr=None):
         """
         Reboots the device.
 
-        Some implementations may optionally support waiting for a TCP callback from
-        the device once it has restarted before returning, but this is not
-        guaranteed.
+        :param wait: block on device to come back up before returning
+        :param ipAddr: if specified, try to make the device connect to this
+                       specific IP address after rebooting (only works with
+                       SUT; if None, we try to determine a reasonable address
+                       ourselves)
         """
 
     @abstractmethod
@@ -466,21 +488,21 @@ class DeviceManager(object):
         """
 
     @abstractmethod
-    def updateApp(self, appBundlePath, processName=None, destPath=None, ipAddr=None, port=30000):
+    def updateApp(self, appBundlePath, processName=None, destPath=None,
+                  wait=False, ipAddr=None):
         """
-        Updates the application on the device.
+        Updates the application on the device and reboots.
 
         :param appBundlePath: path to the application bundle on the device
         :param processName: used to end the process if the applicaiton is
                             currently running (optional)
         :param destPath: Destination directory to where the application should
                          be installed (optional)
-        :param ipAddr: IP address to await a callback ping to let us know that
-                       the device has updated properly (defaults to current
-                       IP)
-        :param port: port to await a callback ping to let us know that the
-                     device has updated properly defaults to 30000, and counts
-                     up from there if it finds a conflict
+        :param wait: block on device to come back up before returning
+        :param ipAddr: if specified, try to make the device connect to this
+                       specific IP address after rebooting (only works with
+                       SUT; if None and wait is True, we try to determine a
+                       reasonable address ourselves)
         """
 
     @staticmethod
@@ -551,65 +573,6 @@ class DeviceManager(object):
             quotedCmd.append(arg)
 
         return " ".join(quotedCmd)
-
-
-class NetworkTools:
-    def __init__(self):
-        pass
-
-    # Utilities to get the local ip address
-    def getInterfaceIp(self, ifname):
-        if os.name != "nt":
-            import fcntl
-            import struct
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            return socket.inet_ntoa(fcntl.ioctl(
-                                    s.fileno(),
-                                    0x8915,  # SIOCGIFADDR
-                                    struct.pack('256s', ifname[:15])
-                                    )[20:24])
-        else:
-            return None
-
-    def getLanIp(self):
-        try:
-            ip = socket.gethostbyname(socket.gethostname())
-        except socket.gaierror:
-            ip = socket.gethostbyname(socket.gethostname() + ".local") # for Mac OS X
-        if (ip is None or ip.startswith("127.")) and os.name != "nt":
-            interfaces = ["eth0","eth1","eth2","wlan0","wlan1","wifi0","ath0","ath1","ppp0"]
-            for ifname in interfaces:
-                try:
-                    ip = self.getInterfaceIp(ifname)
-                    break
-                except IOError:
-                    pass
-        return ip
-
-    # Gets an open port starting with the seed by incrementing by 1 each time
-    def findOpenPort(self, ip, seed):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            connected = False
-            if isinstance(seed, basestring):
-                seed = int(seed)
-            maxportnum = seed + 5000 # We will try at most 5000 ports to find an open one
-            while not connected:
-                try:
-                    s.bind((ip, seed))
-                    connected = True
-                    s.close()
-                    break
-                except:
-                    if seed > maxportnum:
-                        self._logger.error("Automation Error: Could not find open port after checking 5000 ports")
-                        raise
-                seed += 1
-        except:
-            self._logger.error("Automation Error: Socket error trying to find open port")
-
-        return seed
 
 def _pop_last_line(file_obj):
     """

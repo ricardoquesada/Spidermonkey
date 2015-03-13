@@ -3,9 +3,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 package org.mozilla.gecko;
-import java.util.List;
-import java.util.ArrayList;
-
 import android.database.Cursor;
 
 public interface Actions {
@@ -18,6 +15,7 @@ public interface Actions {
     public interface EventExpecter {
         /** Blocks until the event has been received. Subsequent calls will return immediately. */
         public void blockForEvent();
+        public void blockForEvent(long millis, boolean failOnTimeout);
 
         /** Blocks until the event has been received and returns data associated with the event. */
         public String blockForEventData();

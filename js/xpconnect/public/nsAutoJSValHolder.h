@@ -1,4 +1,5 @@
-/* -*- Mode: c++; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -62,13 +63,9 @@ public:
    * Note that mVal may be JSVAL_NULL, which is not a problem.
    */
   bool Hold(JSRuntime* aRt) {
-    // Do we really care about different runtimes?
-    if (mRt && aRt != mRt) {
-      JS_RemoveValueRootRT(mRt, &mVal);
-      mRt = nullptr;
-    }
+    MOZ_ASSERT_IF(mRt, mRt == aRt);
 
-    if (!mRt && JS_AddNamedValueRootRT(aRt, &mVal, "nsAutoJSValHolder")) {
+    if (!mRt && JS::AddNamedValueRootRT(aRt, &mVal, "nsAutoJSValHolder")) {
       mRt = aRt;
     }
 
@@ -83,7 +80,7 @@ public:
     JS::Value oldval = mVal;
 
     if (mRt) {
-      JS_RemoveValueRootRT(mRt, &mVal); // infallible
+      JS::RemoveValueRootRT(mRt, &mVal); // infallible
       mRt = nullptr;
     }
 
@@ -108,14 +105,11 @@ public:
          : nullptr;
   }
 
-  JS::Value* ToJSValPtr() {
-    return &mVal;
-  }
-
   /**
    * Pretend to be a JS::Value.
    */
   operator JS::Value() const { return mVal; }
+  JS::Value get() const { return mVal; }
 
   nsAutoJSValHolder &operator=(JSObject* aOther) {
     return *this = OBJECT_TO_JSVAL(aOther);
@@ -123,7 +117,7 @@ public:
 
   nsAutoJSValHolder &operator=(JS::Value aOther) {
 #ifdef DEBUG
-    if (JSVAL_IS_GCTHING(aOther) && !JSVAL_IS_NULL(aOther)) {
+    if (aOther.isGCThing() && !aOther.isNull()) {
       MOZ_ASSERT(IsHeld(), "Not rooted!");
     }
 #endif
@@ -132,7 +126,7 @@ public:
   }
 
 private:
-  JS::Value mVal;
+  JS::Heap<JS::Value> mVal;
   JSRuntime* mRt;
 };
 

@@ -1,4 +1,4 @@
-../mozbase/manifestdestiny
+../mozbase/manifestparser
 ../mozbase/mozcrash
 ../mozbase/mozdevice
 ../mozbase/mozfile
@@ -11,3 +11,4 @@
 ../mozbase/mozprofile
 ../mozbase/mozrunner
 ../mozbase/moztest
+../mozbase/mozversion

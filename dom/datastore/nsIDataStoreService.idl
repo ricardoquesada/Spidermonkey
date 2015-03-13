@@ -1,0 +1,30 @@
+/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#include "nsISupports.idl"
+
+interface nsIDOMWindow;
+interface nsIPrincipal;
+
+[scriptable, uuid(43a731b9-0b5d-400a-8711-8c912c3c3572)]
+interface nsIDataStoreService : nsISupports
+{
+  void installDataStore(in unsigned long appId,
+                        in DOMString name,
+                        in DOMString originURL,
+                        in DOMString manifestURL,
+                        in boolean readOnly);
+
+  void installAccessDataStore(in unsigned long appId,
+                              in DOMString name,
+                              in DOMString originURL,
+                              in DOMString manifestURL,
+                              in boolean readOnly);
+
+  nsISupports getDataStores(in nsIDOMWindow window,
+                            in DOMString name);
+
+  boolean checkPermission(in nsIPrincipal principal);
+};

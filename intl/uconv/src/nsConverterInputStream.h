@@ -40,26 +40,24 @@ class nsConverterInputStream : public nsIConverterInputStream,
         mUnicharDataLength(0),
         mReplacementChar(DEFAULT_REPLACEMENT_CHARACTER),
         mLineBuffer(nullptr) { }
-    
-    virtual ~nsConverterInputStream() { Close(); }
 
  private:
-
+    virtual ~nsConverterInputStream() { Close(); }
 
     uint32_t Fill(nsresult *aErrorCode);
     
     nsCOMPtr<nsIUnicodeDecoder> mConverter;
     FallibleTArray<char> mByteData;
-    FallibleTArray<PRUnichar> mUnicharData;
+    FallibleTArray<char16_t> mUnicharData;
     nsCOMPtr<nsIInputStream> mInput;
 
     nsresult  mLastErrorCode;
     uint32_t  mLeftOverBytes;
     uint32_t  mUnicharDataOffset;
     uint32_t  mUnicharDataLength;
-    PRUnichar mReplacementChar;
+    char16_t mReplacementChar;
 
-    nsAutoPtr<nsLineBuffer<PRUnichar> > mLineBuffer;
+    nsAutoPtr<nsLineBuffer<char16_t> > mLineBuffer;
 };
 
 #endif

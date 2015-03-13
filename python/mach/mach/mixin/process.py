@@ -88,7 +88,7 @@ class ProcessExecutionMixin(LoggingMixin):
             if not log_name:
                 return
 
-            self.log(log_level, log_name, {'line': line.strip()}, '{line}')
+            self.log(log_level, log_name, {'line': line.rstrip()}, '{line}')
 
         use_env = {}
         if explicit_env:
@@ -118,7 +118,17 @@ class ProcessExecutionMixin(LoggingMixin):
         use_env = normalized_env
 
         if pass_thru:
-            status = subprocess.call(args, cwd=cwd, env=use_env)
+            proc = subprocess.Popen(args, cwd=cwd, env=use_env)
+            status = None
+            # Leave it to the subprocess to handle Ctrl+C. If it terminates as
+            # a result of Ctrl+C, proc.wait() will return a status code, and,
+            # we get out of the loop. If it doesn't, like e.g. gdb, we continue
+            # waiting.
+            while status is None:
+                try:
+                    status = proc.wait()
+                except KeyboardInterrupt:
+                    pass
         else:
             p = ProcessHandlerMixin(args, cwd=cwd, env=use_env,
                 processOutputLine=[handleLine], universal_newlines=True,

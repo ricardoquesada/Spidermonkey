@@ -1,4 +1,4 @@
-/* -*- Mode: Javascript; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 4 -*- */
 
 "use strict";
 
@@ -90,8 +90,8 @@ function isMatchingConstructor(destructor, edge)
     var variable = callee.Variable;
     if (variable.Kind != "Func")
         return false;
-    var name = variable.Name[0];
-    var destructorName = destructor.Exp[0].Variable.Name[0];
+    var name = readable(variable.Name[0]);
+    var destructorName = readable(destructor.Exp[0].Variable.Name[0]);
     var match = destructorName.match(/^(.*?::)~(\w+)\(/);
     if (!match) {
         printErr("Unhandled destructor syntax: " + destructorName);

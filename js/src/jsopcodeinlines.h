@@ -33,7 +33,7 @@ GetDefCount(JSScript *script, unsigned offset)
          * would pop b, c, and d to rearrange the stack to |a c[0]
          * d[1] b[2]|.
          */
-        return (pc[1] + 1);
+        return pc[1] + 1;
       default:
         return StackDefs(script, pc);
     }
@@ -45,10 +45,57 @@ GetUseCount(JSScript *script, unsigned offset)
     jsbytecode *pc = script->offsetToPC(offset);
 
     if (JSOp(*pc) == JSOP_PICK)
-        return (pc[1] + 1);
+        return pc[1] + 1;
     if (js_CodeSpec[*pc].nuses == -1)
         return StackUses(script, pc);
     return js_CodeSpec[*pc].nuses;
+}
+
+static inline JSOp
+ReverseCompareOp(JSOp op)
+{
+    switch (op) {
+      case JSOP_GT:
+        return JSOP_LT;
+      case JSOP_GE:
+        return JSOP_LE;
+      case JSOP_LT:
+        return JSOP_GT;
+      case JSOP_LE:
+        return JSOP_GE;
+      case JSOP_EQ:
+      case JSOP_NE:
+      case JSOP_STRICTEQ:
+      case JSOP_STRICTNE:
+        return op;
+      default:
+        MOZ_CRASH("unrecognized op");
+    }
+}
+
+static inline JSOp
+NegateCompareOp(JSOp op)
+{
+    switch (op) {
+      case JSOP_GT:
+        return JSOP_LE;
+      case JSOP_GE:
+        return JSOP_LT;
+      case JSOP_LT:
+        return JSOP_GE;
+      case JSOP_LE:
+        return JSOP_GT;
+      case JSOP_EQ:
+        return JSOP_NE;
+      case JSOP_NE:
+        return JSOP_EQ;
+      case JSOP_STRICTNE:
+        return JSOP_STRICTEQ;
+      case JSOP_STRICTEQ:
+        return JSOP_STRICTNE;
+      default:
+        MOZ_CRASH("unrecognized op");
+    }
 }
 
 class BytecodeRange {

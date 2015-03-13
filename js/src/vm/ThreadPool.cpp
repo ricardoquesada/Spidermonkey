@@ -6,75 +6,125 @@
 
 #include "vm/ThreadPool.h"
 
-#include "jslock.h"
+#include "mozilla/Atomics.h"
 
+#include "jslock.h"
+#include "jsnum.h" // for FIX_FPU
+
+#include "js/Utility.h"
+#include "vm/ForkJoin.h"
 #include "vm/Monitor.h"
 #include "vm/Runtime.h"
 
+#ifdef JSGC_FJGENERATIONAL
+#include "prmjtime.h"
+#endif
+
 using namespace js;
 
-/////////////////////////////////////////////////////////////////////////////
-// ThreadPoolWorker
-//
-// Each |ThreadPoolWorker| just hangs around waiting for items to be added
-// to its |worklist_|.  Whenever something is added, it gets executed.
-// Once the worker's state is set to |TERMINATING|, the worker will
-// exit as soon as its queue is empty.
+const size_t WORKER_THREAD_STACK_SIZE = 1*1024*1024;
 
-static const size_t WORKER_THREAD_STACK_SIZE = 1*1024*1024;
-
-class js::ThreadPoolWorker : public Monitor
+static inline uint32_t
+ComposeSliceBounds(uint16_t from, uint16_t to)
 {
-    const size_t workerId_;
+    MOZ_ASSERT(from <= to);
+    return (uint32_t(from) << 16) | to;
+}
 
-    // Current point in the worker's lifecycle.
-    //
-    // Modified only while holding the ThreadPoolWorker's lock.
-    enum WorkerState {
-        CREATED, ACTIVE, TERMINATING, TERMINATED
-    } state_;
+static inline void
+DecomposeSliceBounds(uint32_t bounds, uint16_t *from, uint16_t *to)
+{
+    *from = bounds >> 16;
+    *to = bounds & uint16_t(~0);
+    MOZ_ASSERT(*from <= *to);
+}
 
-    // Worklist for this thread.
-    //
-    // Modified only while holding the ThreadPoolWorker's lock.
-    js::Vector<TaskExecutor*, 4, SystemAllocPolicy> worklist_;
-
-    // The thread's main function
-    static void ThreadMain(void *arg);
-    void run();
-
-  public:
-    ThreadPoolWorker(size_t workerId);
-    ~ThreadPoolWorker();
-
-    bool init();
-
-    // Invoked from main thread; signals worker to start.
-    bool start();
-
-    // Submit work to be executed. If this returns true, you are guaranteed
-    // that the task will execute before the thread-pool terminates (barring
-    // an infinite loop in some prior task).
-    bool submit(TaskExecutor *task);
-
-    // Invoked from main thread; signals worker to terminate and blocks until
-    // termination completes.
-    void terminate();
-};
-
-ThreadPoolWorker::ThreadPoolWorker(size_t workerId)
+ThreadPoolWorker::ThreadPoolWorker(uint32_t workerId, uint32_t rngSeed, ThreadPool *pool)
   : workerId_(workerId),
+    pool_(pool),
+    sliceBounds_(0),
     state_(CREATED),
-    worklist_()
-{ }
-
-ThreadPoolWorker::~ThreadPoolWorker()
+    schedulerRNGState_(rngSeed)
 { }
 
 bool
-ThreadPoolWorker::init()
+ThreadPoolWorker::hasWork() const
 {
-    return Monitor::init();
+    uint16_t from, to;
+    DecomposeSliceBounds(sliceBounds_, &from, &to);
+    return from != to;
+}
+
+bool
+ThreadPoolWorker::popSliceFront(uint16_t *sliceId)
+{
+    uint32_t bounds;
+    uint16_t from, to;
+    do {
+        bounds = sliceBounds_;
+        DecomposeSliceBounds(bounds, &from, &to);
+        if (from == to)
+            return false;
+    } while (!sliceBounds_.compareExchange(bounds, ComposeSliceBounds(from + 1, to)));
+
+    *sliceId = from;
+    pool_->pendingSlices_--;
+    return true;
+}
+
+bool
+ThreadPoolWorker::popSliceBack(uint16_t *sliceId)
+{
+    uint32_t bounds;
+    uint16_t from, to;
+    do {
+        bounds = sliceBounds_;
+        DecomposeSliceBounds(bounds, &from, &to);
+        if (from == to)
+            return false;
+    } while (!sliceBounds_.compareExchange(bounds, ComposeSliceBounds(from, to - 1)));
+
+    *sliceId = to - 1;
+    pool_->pendingSlices_--;
+    return true;
+}
+
+void
+ThreadPoolWorker::discardSlices()
+{
+    uint32_t bounds;
+    uint16_t from, to;
+    do {
+        bounds = sliceBounds_;
+        DecomposeSliceBounds(bounds, &from, &to);
+    } while (!sliceBounds_.compareExchange(bounds, 0));
+
+    pool_->pendingSlices_ -= to - from;
+}
+
+bool
+ThreadPoolWorker::stealFrom(ThreadPoolWorker *victim, uint16_t *sliceId)
+{
+    // Instead of popping the slice from the front by incrementing sliceStart_,
+    // decrement sliceEnd_. Usually this gives us better locality.
+    if (!victim->popSliceBack(sliceId))
+        return false;
+#ifdef DEBUG
+    pool_->stolenSlices_++;
+#endif
+    return true;
+}
+
+ThreadPoolWorker *
+ThreadPoolWorker::randomWorker()
+{
+    // Perform 32-bit xorshift.
+    uint32_t x = schedulerRNGState_;
+    x ^= x << XORSHIFT_A;
+    x ^= x >> XORSHIFT_B;
+    x ^= x << XORSHIFT_C;
+    schedulerRNGState_ = x;
+    return pool_->workers_[x % pool_->numWorkers()];
 }
 
 bool
@@ -83,97 +133,120 @@ ThreadPoolWorker::start()
 #ifndef JS_THREADSAFE
     return false;
 #else
-    JS_ASSERT(state_ == CREATED);
+    if (isMainThread())
+        return true;
+
+    MOZ_ASSERT(state_ == CREATED);
 
     // Set state to active now, *before* the thread starts:
     state_ = ACTIVE;
 
-    if (!PR_CreateThread(PR_USER_THREAD,
-                         ThreadMain, this,
-                         PR_PRIORITY_NORMAL, PR_LOCAL_THREAD,
-                         PR_UNJOINABLE_THREAD,
-                         WORKER_THREAD_STACK_SIZE))
-    {
-        // If the thread failed to start, call it TERMINATED.
-        state_ = TERMINATED;
-        return false;
-    }
-
-    return true;
+    return PR_CreateThread(PR_USER_THREAD,
+                           HelperThreadMain, this,
+                           PR_PRIORITY_NORMAL, PR_GLOBAL_THREAD,
+                           PR_UNJOINABLE_THREAD,
+                           WORKER_THREAD_STACK_SIZE);
 #endif
 }
 
+#ifdef MOZ_NUWA_PROCESS
+extern "C" {
+MFBT_API bool IsNuwaProcess();
+MFBT_API void NuwaMarkCurrentThread(void (*recreate)(void *), void *arg);
+}
+#endif
+
 void
-ThreadPoolWorker::ThreadMain(void *arg)
+ThreadPoolWorker::HelperThreadMain(void *arg)
 {
-    ThreadPoolWorker *thread = (ThreadPoolWorker*) arg;
-    thread->run();
+    ThreadPoolWorker *worker = (ThreadPoolWorker*) arg;
+
+#ifdef MOZ_NUWA_PROCESS
+    if (IsNuwaProcess()) {
+        JS_ASSERT(NuwaMarkCurrentThread != nullptr);
+        NuwaMarkCurrentThread(nullptr, nullptr);
+    }
+#endif
+
+    // Set the FPU control word to be the same as the main thread's, else we
+    // might get inconsistent results from math functions.
+    FIX_FPU();
+
+    worker->helperLoop();
 }
 
 void
-ThreadPoolWorker::run()
+ThreadPoolWorker::helperLoop()
 {
+    MOZ_ASSERT(!isMainThread());
+
     // This is hokey in the extreme.  To compute the stack limit,
     // subtract the size of the stack from the address of a local
-    // variable and give a 10k buffer.  Is there a better way?
+    // variable and give a 100k buffer.  Is there a better way?
     // (Note: 2k proved to be fine on Mac, but too little on Linux)
-    uintptr_t stackLimitOffset = WORKER_THREAD_STACK_SIZE - 10*1024;
+    uintptr_t stackLimitOffset = WORKER_THREAD_STACK_SIZE - 100*1024;
     uintptr_t stackLimit = (((uintptr_t)&stackLimitOffset) +
                              stackLimitOffset * JS_STACK_GROWTH_DIRECTION);
 
-    AutoLockMonitor lock(*this);
 
     for (;;) {
-        while (!worklist_.empty()) {
-            TaskExecutor *task = worklist_.popCopy();
-            {
-                // Unlock so that new things can be added to the
-                // worklist while we are processing the current item:
-                AutoUnlockMonitor unlock(*this);
-                task->executeFromWorker(workerId_, stackLimit);
+        // Wait for work to arrive or for us to terminate.
+        {
+            AutoLockMonitor lock(*pool_);
+            while (state_ == ACTIVE && !pool_->hasWork())
+                lock.wait();
+
+            if (state_ == TERMINATED) {
+                pool_->join(lock);
+                return;
             }
+
+            pool_->activeWorkers_++;
         }
 
-        if (state_ == TERMINATING)
-            break;
+        if (!pool_->job()->executeFromWorker(this, stackLimit))
+            pool_->abortJob();
 
-        JS_ASSERT(state_ == ACTIVE);
-
-        lock.wait();
+        // Join the pool.
+        {
+            AutoLockMonitor lock(*pool_);
+            pool_->join(lock);
+        }
     }
+}
 
-    JS_ASSERT(worklist_.empty() && state_ == TERMINATING);
-    state_ = TERMINATED;
-    lock.notify();
+void
+ThreadPoolWorker::submitSlices(uint16_t sliceStart, uint16_t sliceEnd)
+{
+    MOZ_ASSERT(!hasWork());
+    sliceBounds_ = ComposeSliceBounds(sliceStart, sliceEnd);
 }
 
 bool
-ThreadPoolWorker::submit(TaskExecutor *task)
+ThreadPoolWorker::getSlice(ForkJoinContext *cx, uint16_t *sliceId)
 {
-    AutoLockMonitor lock(*this);
-    JS_ASSERT(state_ == ACTIVE);
-    if (!worklist_.append(task))
+    // First see whether we have any work ourself.
+    if (popSliceFront(sliceId))
+        return true;
+
+    // Try to steal work.
+    if (!pool_->workStealing())
         return false;
-    lock.notify();
+
+    do {
+        if (!pool_->hasWork())
+            return false;
+    } while (!stealFrom(randomWorker(), sliceId));
+
     return true;
 }
 
 void
-ThreadPoolWorker::terminate()
+ThreadPoolWorker::terminate(AutoLockMonitor &lock)
 {
-    AutoLockMonitor lock(*this);
-
-    if (state_ == CREATED) {
-        state_ = TERMINATED;
-        return;
-    } else if (state_ == ACTIVE) {
-        state_ = TERMINATING;
-        lock.notify();
-        while (state_ != TERMINATED)
-            lock.wait();
-    } else {
-        JS_ASSERT(state_ == TERMINATED);
-    }
+    MOZ_ASSERT(lock.isFor(*pool_));
+    MOZ_ASSERT(state_ != TERMINATED);
+    state_ = TERMINATED;
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -183,20 +256,71 @@ ThreadPoolWorker::terminate()
 // them down when requested.
 
 ThreadPool::ThreadPool(JSRuntime *rt)
-  : runtime_(rt)
-{
-}
+  : activeWorkers_(0),
+    joinBarrier_(nullptr),
+    job_(nullptr),
+    runtime_(rt),
+#ifdef DEBUG
+    stolenSlices_(0),
+#endif
+    pendingSlices_(0),
+    isMainThreadActive_(false),
+    chunkLock_(nullptr),
+    timeOfLastAllocation_(0),
+    freeChunks_(nullptr)
+{ }
 
 ThreadPool::~ThreadPool()
 {
     terminateWorkers();
+    if (chunkLock_)
+        clearChunkCache();
+#ifdef JS_THREADSAFE
+    if (chunkLock_)
+        PR_DestroyLock(chunkLock_);
+    if (joinBarrier_)
+        PR_DestroyCondVar(joinBarrier_);
+#endif
 }
 
-size_t
+bool
+ThreadPool::init()
+{
+#ifdef JS_THREADSAFE
+    if (!Monitor::init())
+        return false;
+    joinBarrier_ = PR_NewCondVar(lock_);
+    if (!joinBarrier_)
+        return false;
+    chunkLock_ = PR_NewLock();
+    if (!chunkLock_)
+        return false;
+#endif
+    return true;
+}
+
+uint32_t
 ThreadPool::numWorkers() const
 {
-    return runtime_->workerThreadCount();
+#ifdef JS_THREADSAFE
+    return HelperThreadState().cpuCount;
+#else
+    return 1;
+#endif
 }
+
+bool
+ThreadPool::workStealing() const
+{
+#ifdef DEBUG
+    if (char *stealEnv = getenv("JS_THREADPOOL_STEAL"))
+        return !!strtol(stealEnv, nullptr, 10);
+#endif
+
+    return true;
+}
+
+extern uint64_t random_next(uint64_t *, int);
 
 bool
 ThreadPool::lazyStartWorkers(JSContext *cx)
@@ -207,11 +331,9 @@ ThreadPool::lazyStartWorkers(JSContext *cx)
     // from this function, the workers array is either full (upon
     // success) or empty (upon failure).
 
-#ifndef JS_THREADSAFE
-    return true;
-#else
+#ifdef JS_THREADSAFE
     if (!workers_.empty()) {
-        JS_ASSERT(workers_.length() == numWorkers());
+        MOZ_ASSERT(workers_.length() == numWorkers());
         return true;
     }
 
@@ -219,18 +341,18 @@ ThreadPool::lazyStartWorkers(JSContext *cx)
     // Note that numWorkers() is the number of *desired* workers,
     // but workers_.length() is the number of *successfully
     // initialized* workers.
-    for (size_t workerId = 0; workerId < numWorkers(); workerId++) {
-        ThreadPoolWorker *worker = js_new<ThreadPoolWorker>(workerId);
-        if (!worker) {
+    uint64_t rngState = 0;
+    for (uint32_t workerId = 0; workerId < numWorkers(); workerId++) {
+        uint32_t rngSeed = uint32_t(random_next(&rngState, 32));
+        ThreadPoolWorker *worker = cx->new_<ThreadPoolWorker>(workerId, rngSeed, this);
+        if (!worker || !workers_.append(worker)) {
             terminateWorkersAndReportOOM(cx);
             return false;
         }
-        if (!worker->init() || !workers_.append(worker)) {
-            js_delete(worker);
-            terminateWorkersAndReportOOM(cx);
-            return false;
-        }
-        if (!worker->start()) {
+    }
+
+    for (uint32_t workerId = 0; workerId < numWorkers(); workerId++) {
+        if (!workers_[workerId]->start()) {
             // Note: do not delete worker here because it has been
             // added to the array and hence will be deleted by
             // |terminateWorkersAndReportOOM()|.
@@ -238,47 +360,227 @@ ThreadPool::lazyStartWorkers(JSContext *cx)
             return false;
         }
     }
+#endif
 
     return true;
-#endif
 }
 
 void
 ThreadPool::terminateWorkersAndReportOOM(JSContext *cx)
 {
     terminateWorkers();
-    JS_ASSERT(workers_.empty());
-    JS_ReportOutOfMemory(cx);
+    MOZ_ASSERT(workers_.empty());
+    js_ReportOutOfMemory(cx);
 }
 
 void
 ThreadPool::terminateWorkers()
 {
-    while (workers_.length() > 0) {
-        ThreadPoolWorker *worker = workers_.popCopy();
-        worker->terminate();
-        js_delete(worker);
+    if (workers_.length() > 0) {
+        AutoLockMonitor lock(*this);
+
+        // Signal to the workers they should quit.
+        for (uint32_t i = 0; i < workers_.length(); i++)
+            workers_[i]->terminate(lock);
+
+        // Wake up all the workers. Set the number of active workers to the
+        // current number of workers so we can make sure they all join.
+        activeWorkers_ = workers_.length() - 1;
+        lock.notifyAll();
+
+        // Wait for all workers to join.
+        waitForWorkers(lock);
+
+        while (workers_.length() > 0)
+            js_delete(workers_.popCopy());
     }
 }
 
-bool
-ThreadPool::submitAll(JSContext *cx, TaskExecutor *executor)
-{
-    JS_ASSERT(CurrentThreadCanAccessRuntime(runtime_));
-
-    if (!lazyStartWorkers(cx))
-        return false;
-
-    for (size_t id = 0; id < numWorkers(); id++) {
-        if (!workers_[id]->submit(executor))
-            return false;
-    }
-    return true;
-}
-
-bool
+void
 ThreadPool::terminate()
 {
     terminateWorkers();
-    return true;
+}
+
+void
+ThreadPool::join(AutoLockMonitor &lock)
+{
+    MOZ_ASSERT(lock.isFor(*this));
+    if (--activeWorkers_ == 0)
+        lock.notify(joinBarrier_);
+}
+
+void
+ThreadPool::waitForWorkers(AutoLockMonitor &lock)
+{
+    MOZ_ASSERT(lock.isFor(*this));
+    while (activeWorkers_ > 0)
+        lock.wait(joinBarrier_);
+    job_ = nullptr;
+}
+
+ParallelResult
+ThreadPool::executeJob(JSContext *cx, ParallelJob *job, uint16_t sliceStart, uint16_t sliceMax)
+{
+    MOZ_ASSERT(sliceStart < sliceMax);
+    MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime_));
+    MOZ_ASSERT(activeWorkers_ == 0);
+    MOZ_ASSERT(!hasWork());
+
+    if (!lazyStartWorkers(cx))
+        return TP_FATAL;
+
+    // Evenly distribute slices to the workers.
+    uint16_t numSlices = sliceMax - sliceStart;
+    uint16_t slicesPerWorker = numSlices / numWorkers();
+    uint16_t leftover = numSlices % numWorkers();
+    uint16_t sliceEnd = sliceStart;
+    for (uint32_t workerId = 0; workerId < numWorkers(); workerId++) {
+        if (leftover > 0) {
+            sliceEnd += slicesPerWorker + 1;
+            leftover--;
+        } else {
+            sliceEnd += slicesPerWorker;
+        }
+        workers_[workerId]->submitSlices(sliceStart, sliceEnd);
+        sliceStart = sliceEnd;
+    }
+    MOZ_ASSERT(leftover == 0);
+
+    // Notify the worker threads that there's work now.
+    {
+        job_ = job;
+        pendingSlices_ = numSlices;
+#ifdef DEBUG
+        stolenSlices_ = 0;
+#endif
+        AutoLockMonitor lock(*this);
+        lock.notifyAll();
+    }
+
+    // Do work on the main thread.
+    isMainThreadActive_ = true;
+    if (!job->executeFromMainThread(mainThreadWorker()))
+        abortJob();
+    isMainThreadActive_ = false;
+
+    // Wait for all threads to join. While there are no pending slices at this
+    // point, the slices themselves may not be finished processing.
+    {
+        AutoLockMonitor lock(*this);
+        waitForWorkers(lock);
+    }
+
+    // Guard against errors in the self-hosted slice processing function. If
+    // we still have work at this point, it is the user function's fault.
+    MOZ_ASSERT(!hasWork(), "User function did not process all the slices!");
+
+    // Everything went swimmingly. Give yourself a pat on the back.
+    return TP_SUCCESS;
+}
+
+void
+ThreadPool::abortJob()
+{
+    for (uint32_t workerId = 0; workerId < numWorkers(); workerId++)
+        workers_[workerId]->discardSlices();
+
+    // Spin until pendingSlices_ reaches 0.
+    //
+    // The reason for this is that while calling discardSlices() clears all
+    // workers' bounds, the pendingSlices_ cache might still be > 0 due to
+    // still-executing calls to popSliceBack or popSliceFront in other
+    // threads. When those finish, we will be sure that !hasWork(), which is
+    // important to ensure that an aborted worker does not start again due to
+    // the thread pool having more work.
+    while (hasWork());
+}
+
+// We are not using the markPagesUnused() / markPagesInUse() APIs here
+// for two reasons.  One, the free list is threaded through the
+// chunks, so some pages are actually in use.  Two, the expectation is
+// that a small number of chunks will be used intensively for a short
+// while and then be abandoned at the next GC.
+//
+// It's an open question whether it's best to map the chunk directly,
+// as now, or go via the GC's chunk pool.  Either way there's a need
+// to manage a predictable chunk cache here as we don't want chunks to
+// be deallocated during a parallel section.
+
+gc::ForkJoinNurseryChunk *
+ThreadPool::getChunk()
+{
+#ifdef JSGC_FJGENERATIONAL
+    PR_Lock(chunkLock_);
+    timeOfLastAllocation_ = PRMJ_Now()/1000000;
+    ChunkFreeList *p = freeChunks_;
+    if (p)
+        freeChunks_ = p->next;
+    PR_Unlock(chunkLock_);
+
+    if (p) {
+        // Already poisoned.
+        return reinterpret_cast<gc::ForkJoinNurseryChunk *>(p);
+    }
+    gc::ForkJoinNurseryChunk *c =
+        reinterpret_cast<gc::ForkJoinNurseryChunk *>(
+            gc::MapAlignedPages(gc::ChunkSize, gc::ChunkSize));
+    if (!c)
+        return c;
+    poisonChunk(c);
+    return c;
+#else
+    return nullptr;
+#endif
+}
+
+void
+ThreadPool::putFreeChunk(gc::ForkJoinNurseryChunk *c)
+{
+#ifdef JSGC_FJGENERATIONAL
+    poisonChunk(c);
+
+    PR_Lock(chunkLock_);
+    ChunkFreeList *p = reinterpret_cast<ChunkFreeList *>(c);
+    p->next = freeChunks_;
+    freeChunks_ = p;
+    PR_Unlock(chunkLock_);
+#endif
+}
+
+void
+ThreadPool::poisonChunk(gc::ForkJoinNurseryChunk *c)
+{
+#ifdef JSGC_FJGENERATIONAL
+#ifdef DEBUG
+    memset(c, JS_POISONED_FORKJOIN_CHUNK, gc::ChunkSize);
+#endif
+    c->trailer.runtime = nullptr;
+#endif
+}
+
+void
+ThreadPool::pruneChunkCache()
+{
+#ifdef JSGC_FJGENERATIONAL
+    if (PRMJ_Now()/1000000 - timeOfLastAllocation_ >= secondsBeforePrune)
+        clearChunkCache();
+#endif
+}
+
+void
+ThreadPool::clearChunkCache()
+{
+#ifdef JSGC_FJGENERATIONAL
+    PR_Lock(chunkLock_);
+    ChunkFreeList *p = freeChunks_;
+    freeChunks_ = nullptr;
+    PR_Unlock(chunkLock_);
+
+    while (p) {
+        ChunkFreeList *victim = p;
+        p = p->next;
+        gc::UnmapPages(victim, gc::ChunkSize);
+    }
+#endif
 }

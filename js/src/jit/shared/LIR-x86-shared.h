@@ -47,12 +47,13 @@ class LDivI : public LBinaryMath<1>
 class LDivPowTwoI : public LBinaryMath<0>
 {
     const int32_t shift_;
+    const bool negativeDivisor_;
 
   public:
     LIR_HEADER(DivPowTwoI)
 
-    LDivPowTwoI(const LAllocation &lhs, const LAllocation &lhsCopy, int32_t shift)
-      : shift_(shift)
+    LDivPowTwoI(const LAllocation &lhs, const LAllocation &lhsCopy, int32_t shift, bool negativeDivisor)
+      : shift_(shift), negativeDivisor_(negativeDivisor)
     {
         setOperand(0, lhs);
         setOperand(1, lhsCopy);
@@ -67,27 +68,42 @@ class LDivPowTwoI : public LBinaryMath<0>
     int32_t shift() const {
         return shift_;
     }
+    bool negativeDivisor() const {
+        return negativeDivisor_;
+    }
     MDiv *mir() const {
         return mir_->toDiv();
     }
 };
 
-// Division of a number by itself. Returns 1 unless the number is zero.
-class LDivSelfI : public LInstructionHelper<1, 1, 0>
+class LDivOrModConstantI : public LInstructionHelper<1, 1, 1>
 {
-  public:
-    LIR_HEADER(DivSelfI)
+    const int32_t denominator_;
 
-    LDivSelfI(const LAllocation &op) {
-        setOperand(0, op);
+  public:
+    LIR_HEADER(DivOrModConstantI)
+
+    LDivOrModConstantI(const LAllocation &lhs, int32_t denominator, const LDefinition& temp)
+    : denominator_(denominator)
+    {
+        setOperand(0, lhs);
+        setTemp(0, temp);
     }
 
-    const LAllocation *op() {
+    const LAllocation *numerator() {
         return getOperand(0);
     }
-
-    MDiv *mir() const {
-        return mir_->toDiv();
+    int32_t denominator() const {
+        return denominator_;
+    }
+    MBinaryArithInstruction *mir() const {
+        JS_ASSERT(mir_->isDiv() || mir_->isMod());
+        return static_cast<MBinaryArithInstruction *>(mir_);
+    }
+    bool canBeNegativeDividend() const {
+        if (mir_->isMod())
+            return mir_->toMod()->canBeNegativeDividend();
+        return mir_->toDiv()->canBeNegativeDividend();
     }
 };
 
@@ -109,25 +125,6 @@ class LModI : public LBinaryMath<1>
     const LDefinition *remainder() {
         return getDef(0);
     }
-    MMod *mir() const {
-        return mir_->toMod();
-    }
-};
-
-// Modulo of a number by itself. Returns 0 unless the number is zero.
-class LModSelfI : public LInstructionHelper<1, 1, 0>
-{
-  public:
-    LIR_HEADER(ModSelfI)
-
-    LModSelfI(const LAllocation &op) {
-        setOperand(0, op);
-    }
-
-    const LAllocation *op() {
-        return getOperand(0);
-    }
-
     MMod *mir() const {
         return mir_->toMod();
     }
@@ -195,7 +192,7 @@ class LPowHalfD : public LInstructionHelper<1, 1, 0>
 {
   public:
     LIR_HEADER(PowHalfD)
-    LPowHalfD(const LAllocation &input) {
+    explicit LPowHalfD(const LAllocation &input) {
         setOperand(0, input);
     }
 
@@ -277,7 +274,7 @@ class LGuardShape : public LInstructionHelper<0, 1, 0>
   public:
     LIR_HEADER(GuardShape)
 
-    LGuardShape(const LAllocation &in) {
+    explicit LGuardShape(const LAllocation &in) {
         setOperand(0, in);
     }
     const MGuardShape *mir() const {
@@ -290,18 +287,12 @@ class LGuardObjectType : public LInstructionHelper<0, 1, 0>
   public:
     LIR_HEADER(GuardObjectType)
 
-    LGuardObjectType(const LAllocation &in) {
+    explicit LGuardObjectType(const LAllocation &in) {
         setOperand(0, in);
     }
     const MGuardObjectType *mir() const {
         return mir_->toGuardObjectType();
     }
-};
-
-class LInterruptCheck : public LInstructionHelper<0, 0, 0>
-{
-  public:
-    LIR_HEADER(InterruptCheck)
 };
 
 class LMulI : public LBinaryMath<0, 1>

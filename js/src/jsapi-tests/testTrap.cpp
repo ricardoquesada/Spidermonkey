@@ -16,7 +16,7 @@ EmptyTrapHandler(JSContext *cx, JSScript *script, jsbytecode *pc, jsval *rval,
 {
     JS::RootedValue closure(cx, closureArg);
     JS_GC(JS_GetRuntime(cx));
-    if (JSVAL_IS_STRING(closure))
+    if (closure.isString())
         ++emptyTrapCallCount;
     return JSTRAP_CONTINUE;
 }
@@ -36,13 +36,13 @@ BEGIN_TEST(testTrap_gc)
     // compile
     JS::CompileOptions options(cx);
     options.setFileAndLine(__FILE__, 1);
-    JS::RootedScript script(cx, JS_CompileScript(cx, global, source,
-                                                 strlen(source), options));
+    JS::RootedScript script(cx);
+    CHECK(JS_CompileScript(cx, global, source, strlen(source), options, &script));
     CHECK(script);
 
     // execute
     JS::RootedValue v2(cx);
-    CHECK(JS_ExecuteScript(cx, global, script, v2.address()));
+    CHECK(JS_ExecuteScript(cx, global, script, &v2));
     CHECK(v2.isObject());
     CHECK_EQUAL(emptyTrapCallCount, 0);
 
@@ -63,8 +63,9 @@ BEGIN_TEST(testTrap_gc)
 
         trapClosure = JS_NewStringCopyZ(cx, trapClosureText);
         CHECK(trapClosure);
-        JS_SetTrap(cx, script, line2, EmptyTrapHandler, STRING_TO_JSVAL(trapClosure));
-        JS_SetTrap(cx, script, line6, EmptyTrapHandler, STRING_TO_JSVAL(trapClosure));
+        JS::RootedValue closureValue(cx, JS::StringValue(trapClosure));
+        JS_SetTrap(cx, script, line2, EmptyTrapHandler, closureValue);
+        JS_SetTrap(cx, script, line6, EmptyTrapHandler, closureValue);
 
         JS_GC(rt);
 
@@ -72,7 +73,7 @@ BEGIN_TEST(testTrap_gc)
     }
 
     // execute
-    CHECK(JS_ExecuteScript(cx, global, script, v2.address()));
+    CHECK(JS_ExecuteScript(cx, global, script, &v2));
     CHECK_EQUAL(emptyTrapCallCount, 11);
 
     JS_GC(rt);

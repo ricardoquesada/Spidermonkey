@@ -10,55 +10,43 @@
 #define builtin_TypedObjectConstants_h
 
 ///////////////////////////////////////////////////////////////////////////
+// Slots for typed prototypes
+
+#define JS_TYPROTO_SLOT_DESCR            0
+#define JS_TYPROTO_SLOTS                 1
+
+///////////////////////////////////////////////////////////////////////////
 // Slots for type objects
 //
 // Some slots apply to all type objects and some are specific to
-// particular kinds of type objects. Because all type objects, at
-// least for now, have a distinct class, we can assign them distinct
-// numbers of slots depending on their kind.
+// particular kinds of type objects. For simplicity we use the same
+// number of slots no matter what kind of type descriptor we are
+// working with, even though this is mildly wasteful.
 
 // Slots on all type objects
-#define JS_TYPEOBJ_SLOT_TYPE_REPR          0  // Associated Type Representation
+#define JS_DESCR_SLOT_KIND               0  // Atomized string representation
+#define JS_DESCR_SLOT_STRING_REPR        1  // Atomized string representation
+#define JS_DESCR_SLOT_ALIGNMENT          2  // Alignment in bytes
+#define JS_DESCR_SLOT_SIZE               3  // Size in bytes, if sized, else 0
+#define JS_DESCR_SLOT_OPAQUE             4  // Atomized string representation
+#define JS_DESCR_SLOT_TYPROTO            5  // Prototype for instances, if any
 
-// Slots on scalars
-#define JS_TYPEOBJ_SCALAR_SLOTS            1  // Maximum number
+// Slots on scalars, references, and x4s
+#define JS_DESCR_SLOT_TYPE               6  // Type code
 
-// Slots on references
-#define JS_TYPEOBJ_REFERENCE_SLOTS         1  // Maximum number
+// Slots on all array descriptors
+#define JS_DESCR_SLOT_ARRAY_ELEM_TYPE    6
 
-// Slots on x4s
-#define JS_TYPEOBJ_X4_SLOTS                1  // Maximum number
+// Slots on sized array descriptors
+#define JS_DESCR_SLOT_SIZED_ARRAY_LENGTH 7
 
-// Slots on array type objects
-#define JS_TYPEOBJ_SLOT_ARRAY_ELEM_TYPE    1
-#define JS_TYPEOBJ_ARRAY_SLOTS             3  // Maximum number
+// Slots on struct type objects
+#define JS_DESCR_SLOT_STRUCT_FIELD_NAMES 6
+#define JS_DESCR_SLOT_STRUCT_FIELD_TYPES 7
+#define JS_DESCR_SLOT_STRUCT_FIELD_OFFSETS 8
 
-// Slots on structs
-#define JS_TYPEOBJ_SLOT_STRUCT_FIELD_TYPES 1
-#define JS_TYPEOBJ_STRUCT_SLOTS            2  // Maximum number
-
-///////////////////////////////////////////////////////////////////////////
-// Slots for type representation objects
-//
-// Some slots apply to all type representations and some are specific
-// to particular kinds of type representations. Because all type
-// representations share the same class, however, they always have the
-// same number of slots, though not all of them will be initialized or
-// used in the same way.
-
-// Slots on *all* type representations:
-#define JS_TYPEREPR_SLOT_KIND      0 // One of the `kind` constants below
-#define JS_TYPEREPR_SLOT_SIZE      1 // Size in bytes.
-#define JS_TYPEREPR_SLOT_ALIGNMENT 2 // Alignment in bytes.
-
-// Slots on sized arrays:
-#define JS_TYPEREPR_SLOT_LENGTH    3 // Length of the array
-
-// Slots on scalars, references, and X4s:
-#define JS_TYPEREPR_SLOT_TYPE      3 // One of the constants below
-
-// Maximum number of slots for any type representation
-#define JS_TYPEREPR_SLOTS          4
+// Maximum number of slots for any descriptor
+#define JS_DESCR_SLOTS                   9
 
 // These constants are for use exclusively in JS code. In C++ code,
 // prefer TypeRepresentation::Scalar etc, which allows you to
@@ -72,9 +60,8 @@
 #define JS_TYPEREPR_X4_KIND             5
 
 // These constants are for use exclusively in JS code. In C++ code,
-// prefer ScalarTypeRepresentation::TYPE_INT8 etc, which allows
-// you to write a switch which will receive a warning if you omit a
-// case.
+// prefer Scalar::Int8 etc, which allows you to write a switch which will
+// receive a warning if you omit a case.
 #define JS_SCALARTYPEREPR_INT8          0
 #define JS_SCALARTYPEREPR_UINT8         1
 #define JS_SCALARTYPEREPR_INT16         2
@@ -101,16 +88,38 @@
 #define JS_X4TYPEREPR_FLOAT32       1
 
 ///////////////////////////////////////////////////////////////////////////
-// Slots for typed objects (actually, any TypedContents objects)
+// Slots for typed objects
 
-#define JS_DATUM_SLOT_TYPE_OBJ 0  // Type object for a given typed object
-#define JS_DATUM_SLOT_OWNER    1  // Owner of data (if null, this is owner)
-#define JS_DATUM_SLOT_LENGTH   2  // Length of array (see (*) below)
-#define JS_DATUM_SLOTS         3  // Number of slots for typed objs
 
-// (*) The JS_DATUM_SLOT_LENGTH slot stores the length for datums of
-// sized and unsized array type. The slot contains 0 for non-arrays.
-// The slot also contains 0 for *unattached* datums, no matter what
-// type they have.
+// Common to data view, typed arrays, and typed objects:
+#define JS_BUFVIEW_SLOT_BYTEOFFSET       0
+#define JS_BUFVIEW_SLOT_LENGTH           1 // see (*) below
+#define JS_BUFVIEW_SLOT_OWNER            2
+#define JS_BUFVIEW_SLOT_NEXT_VIEW        3
+
+// Specific to data view:
+#define JS_DATAVIEW_SLOT_DATA            7 // see (**) below
+#define JS_DATAVIEW_SLOTS                4 // Number of slots for data views
+
+// Specific to typed arrays:
+#define JS_TYPEDARR_SLOT_TYPE            4 // A ScalarTypeDescr::Type constant
+#define JS_TYPEDARR_SLOT_DATA            7 // see (**) below
+#define JS_TYPEDARR_SLOTS                5 // Number of slots for typed arrays
+
+// Specific to typed objects:
+#define JS_TYPEDOBJ_SLOT_DATA            7
+#define JS_TYPEDOBJ_SLOTS                4 // Number of slots for typed objs
+
+// (*) The interpretation of the JS_BUFVIEW_SLOT_LENGTH slot depends on
+// the kind of view:
+// - DataView: stores the length in bytes
+// - TypedArray: stores the array length
+// - TypedObject: for arrays, stores the array length, else 0
+
+// (**) This is the index of the slot that will be used for private data.
+// It is hardcoded here based on the GC Kind that will be assigned. It is
+// a function of the total number of slots, but it is non-trivial to encode
+// that function at compile-time, so we instead use a hardcoded constant
+// coupled with some handy assertions.
 
 #endif

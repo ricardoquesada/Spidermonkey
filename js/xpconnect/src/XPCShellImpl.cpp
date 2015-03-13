@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -31,6 +32,7 @@
 #include "nsCxPusher.h"
 #include "nsIScriptSecurityManager.h"
 #include "nsIPrincipal.h"
+#include "nsJSUtils.h"
 
 #ifdef ANDROID
 #include <android/log.h>
@@ -38,7 +40,6 @@
 
 #ifdef XP_WIN
 #include <windows.h>
-#include <shlobj.h>
 #endif
 
 // all this crap is needed to do the interactive shell stuff
@@ -52,6 +53,7 @@
 #endif
 
 #ifdef MOZ_CRASHREPORTER
+#include "nsExceptionHandler.h"
 #include "nsICrashReporter.h"
 #endif
 
@@ -69,7 +71,7 @@ public:
     ~XPCShellDirProvider() { }
 
     // The platform resource folder
-    bool SetGREDir(const char *dir);
+    void SetGREDir(nsIFile *greDir);
     void ClearGREDir() { mGREDir = nullptr; }
     // The application resource folder
     void SetAppDir(nsIFile *appFile);
@@ -121,22 +123,19 @@ GetLocationProperty(JSContext *cx, HandleObject obj, HandleId id, MutableHandleV
     //XXX: your platform should really implement this
     return false;
 #else
-    JS::RootedScript script(cx);
-    JS_DescribeScriptedCaller(cx, &script, nullptr);
-    const char *filename = JS_GetScriptFilename(cx, script);
-
-    if (filename) {
+    JS::AutoFilename filename;
+    if (JS::DescribeScriptedCaller(cx, &filename) && filename.get()) {
         nsresult rv;
         nsCOMPtr<nsIXPConnect> xpc =
             do_GetService(kXPConnectServiceContractID, &rv);
 
 #if defined(XP_WIN)
         // convert from the system codepage to UTF-16
-        int bufferSize = MultiByteToWideChar(CP_ACP, 0, filename,
+        int bufferSize = MultiByteToWideChar(CP_ACP, 0, filename.get(),
                                              -1, nullptr, 0);
         nsAutoString filenameString;
         filenameString.SetLength(bufferSize);
-        MultiByteToWideChar(CP_ACP, 0, filename,
+        MultiByteToWideChar(CP_ACP, 0, filename.get(),
                             -1, (LPWSTR)filenameString.BeginWriting(),
                             filenameString.Length());
         // remove the null terminator
@@ -144,8 +143,8 @@ GetLocationProperty(JSContext *cx, HandleObject obj, HandleId id, MutableHandleV
 
         // replace forward slashes with backslashes,
         // since nsLocalFileWin chokes on them
-        PRUnichar* start = filenameString.BeginWriting();
-        PRUnichar* end = filenameString.EndWriting();
+        char16_t* start = filenameString.BeginWriting();
+        char16_t* end = filenameString.EndWriting();
 
         while (start != end) {
             if (*start == L'/')
@@ -153,7 +152,7 @@ GetLocationProperty(JSContext *cx, HandleObject obj, HandleId id, MutableHandleV
             start++;
         }
 #elif defined(XP_UNIX)
-        NS_ConvertUTF8toUTF16 filenameString(filename);
+        NS_ConvertUTF8toUTF16 filenameString(filename.get());
 #endif
 
         nsCOMPtr<nsIFile> location;
@@ -198,7 +197,7 @@ GetLocationProperty(JSContext *cx, HandleObject obj, HandleId id, MutableHandleV
 static bool
 GetLine(JSContext *cx, char *bufp, FILE *file, const char *prompt) {
     {
-        char line[256] = { '\0' };
+        char line[4096] = { '\0' };
         fputs(prompt, gOutFile);
         fflush(gOutFile);
         if ((!fgets(line, sizeof line, file) && errno != EINTR) || feof(file))
@@ -236,7 +235,7 @@ ReadLine(JSContext *cx, unsigned argc, jsval *vp)
     unsigned int buflen = strlen(buf);
     if (buflen == 0) {
         if (feof(gInFile)) {
-            JS_SET_RVAL(cx, vp, JSVAL_NULL);
+            args.rval().setNull();
             return true;
         }
     } else if (buf[buflen - 1] == '\n') {
@@ -248,7 +247,7 @@ ReadLine(JSContext *cx, unsigned argc, jsval *vp)
     if (!str)
         return false;
 
-    JS_SET_RVAL(cx, vp, STRING_TO_JSVAL(str));
+    args.rval().setString(str);
     return true;
 }
 
@@ -256,20 +255,27 @@ static bool
 Print(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setUndefined();
 
     RootedString str(cx);
+    nsAutoCString utf8output;
+
     for (unsigned i = 0; i < args.length(); i++) {
         str = ToString(cx, args[i]);
         if (!str)
             return false;
-        JSAutoByteString strBytes(cx, str);
-        if (!strBytes)
+
+        JSAutoByteString utf8str;
+        if (!utf8str.encodeUtf8(cx, str))
             return false;
-        fprintf(gOutFile, "%s%s", i ? " " : "", strBytes.ptr());
-        fflush(gOutFile);
+
+        if (i)
+            utf8output.Append(' ');
+        utf8output.Append(utf8str.ptr(), utf8str.length());
     }
-    fputc('\n', gOutFile);
-    args.rval().setUndefined();
+    utf8output.Append('\n');
+    fputs(utf8output.get(), gOutFile);
+    fflush(gOutFile);
     return true;
 }
 
@@ -277,7 +283,6 @@ static bool
 Dump(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-
     args.rval().setUndefined();
 
     if (!args.length())
@@ -287,14 +292,22 @@ Dump(JSContext *cx, unsigned argc, jsval *vp)
     if (!str)
         return false;
 
-    JSAutoByteString bytes(cx, str);
-    if (!bytes)
+    JSAutoByteString utf8str;
+    if (!utf8str.encodeUtf8(cx, str))
         return false;
 
 #ifdef ANDROID
-    __android_log_print(ANDROID_LOG_INFO, "Gecko", "%s", bytes.ptr());
+    __android_log_print(ANDROID_LOG_INFO, "Gecko", "%s", utf8str.ptr());
 #endif
-    fputs(bytes.ptr(), gOutFile);
+#ifdef XP_WIN
+    if (IsDebuggerPresent()) {
+        nsAutoJSString wstr;
+        if (!wstr.init(cx, str))
+            return false;
+        OutputDebugStringW(wstr.get());
+    }
+#endif
+    fputs(utf8str.ptr(), gOutFile);
     fflush(gOutFile);
     return true;
 }
@@ -325,15 +338,14 @@ Load(JSContext *cx, unsigned argc, jsval *vp)
         JS::CompileOptions options(cx);
         options.setUTF8(true)
                .setFileAndLine(filename.ptr(), 1)
-               .setPrincipals(gJSPrincipals);
-        JS::RootedObject rootedObj(cx, obj);
-        JSScript *script = JS::Compile(cx, rootedObj, options, file);
+               .setCompileAndGo(true);
+        JS::Rooted<JSScript*> script(cx);
+        JS::Compile(cx, obj, options, file, &script);
         fclose(file);
         if (!script)
             return false;
 
-        JS::Rooted<JS::Value> result(cx);
-        if (!compileOnly && !JS_ExecuteScript(cx, obj, script, result.address()))
+        if (!compileOnly && !JS_ExecuteScript(cx, obj, script))
             return false;
     }
     args.rval().setUndefined();
@@ -343,19 +355,20 @@ Load(JSContext *cx, unsigned argc, jsval *vp)
 static bool
 Version(JSContext *cx, unsigned argc, jsval *vp)
 {
-    JSVersion origVersion = JS_GetVersion(cx);
-    JS_SET_RVAL(cx, vp, INT_TO_JSVAL(origVersion));
-    if (argc > 0 && JSVAL_IS_INT(JS_ARGV(cx, vp)[0]))
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setInt32(JS_GetVersion(cx));
+    if (args.get(0).isInt32())
         JS_SetVersionForCompartment(js::GetContextCompartment(cx),
-                                    JSVersion(JSVAL_TO_INT(JS_ARGV(cx, vp)[0])));
+                                    JSVersion(args[0].toInt32()));
     return true;
 }
 
 static bool
 BuildDate(JSContext *cx, unsigned argc, jsval *vp)
 {
+    CallArgs args = CallArgsFromVp(argc, vp);
     fprintf(gOutFile, "built on %s at %s\n", __DATE__, __TIME__);
-    JS_SET_RVAL(cx, vp, JSVAL_VOID);
+    args.rval().setUndefined();
     return true;
 }
 
@@ -363,7 +376,7 @@ static bool
 Quit(JSContext *cx, unsigned argc, jsval *vp)
 {
     gExitCode = 0;
-    JS_ConvertArguments(cx, argc, JS_ARGV(cx, vp),"/ i", &gExitCode);
+    JS_ConvertArguments(cx, JS::CallArgsFromVp(argc, vp),"/ i", &gExitCode);
 
     gQuitting = true;
 //    exit(0);
@@ -377,7 +390,7 @@ static bool
 IgnoreReportedErrors(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    if (argc != 1 || !args[0].isBoolean()) {
+    if (args.length() != 1 || !args[0].isBoolean()) {
         JS_ReportError(cx, "Bad arguments");
         return false;
     }
@@ -406,12 +419,13 @@ DumpXPC(JSContext *cx, unsigned argc, jsval *vp)
 static bool
 GC(JSContext *cx, unsigned argc, jsval *vp)
 {
+    CallArgs args = CallArgsFromVp(argc, vp);
     JSRuntime *rt = JS_GetRuntime(cx);
     JS_GC(rt);
 #ifdef JS_GCMETER
     js_DumpGCStats(rt, stdout);
 #endif
-    JS_SET_RVAL(cx, vp, JSVAL_VOID);
+    args.rval().setUndefined();
     return true;
 }
 
@@ -464,9 +478,10 @@ static bool
 Options(JSContext *cx, unsigned argc, jsval *vp)
 {
     JS::CallArgs args = CallArgsFromVp(argc, vp);
-    ContextOptions oldOptions = ContextOptionsRef(cx);
+    ContextOptions oldContextOptions = ContextOptionsRef(cx);
+    RuntimeOptions oldRuntimeOptions = RuntimeOptionsRef(cx);
 
-    for (unsigned i = 0; i < argc; ++i) {
+    for (unsigned i = 0; i < args.length(); ++i) {
         JSString *str = ToString(cx, args[i]);
         if (!str)
             return false;
@@ -478,9 +493,9 @@ Options(JSContext *cx, unsigned argc, jsval *vp)
         if (strcmp(opt.ptr(), "strict") == 0)
             ContextOptionsRef(cx).toggleExtraWarnings();
         else if (strcmp(opt.ptr(), "werror") == 0)
-            ContextOptionsRef(cx).toggleWerror();
+            RuntimeOptionsRef(cx).toggleWerror();
         else if (strcmp(opt.ptr(), "strict_mode") == 0)
-            ContextOptionsRef(cx).toggleStrictMode();
+            RuntimeOptionsRef(cx).toggleStrictMode();
         else {
             JS_ReportError(cx, "unknown option name '%s'. The valid names are "
                            "strict, werror, and strict_mode.", opt.ptr());
@@ -489,21 +504,21 @@ Options(JSContext *cx, unsigned argc, jsval *vp)
     }
 
     char *names = nullptr;
-    if (oldOptions.extraWarnings()) {
+    if (oldContextOptions.extraWarnings()) {
         names = JS_sprintf_append(names, "%s", "strict");
         if (!names) {
             JS_ReportOutOfMemory(cx);
             return false;
         }
     }
-    if (oldOptions.werror()) {
+    if (oldRuntimeOptions.werror()) {
         names = JS_sprintf_append(names, "%s%s", names ? "," : "", "werror");
         if (!names) {
             JS_ReportOutOfMemory(cx);
             return false;
         }
     }
-    if (names && oldOptions.strictMode()) {
+    if (names && oldRuntimeOptions.strictMode()) {
         names = JS_sprintf_append(names, "%s%s", names ? "," : "", "strict_mode");
         if (!names) {
             JS_ReportOutOfMemory(cx);
@@ -523,41 +538,44 @@ Options(JSContext *cx, unsigned argc, jsval *vp)
 static bool
 Parent(JSContext *cx, unsigned argc, jsval *vp)
 {
-    if (argc != 1) {
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() != 1) {
         JS_ReportError(cx, "Wrong number of arguments");
         return false;
     }
 
-    jsval v = JS_ARGV(cx, vp)[0];
-    if (JSVAL_IS_PRIMITIVE(v)) {
+    Value v = args[0];
+    if (v.isPrimitive()) {
         JS_ReportError(cx, "Only objects have parents!");
         return false;
     }
 
-    *vp = OBJECT_TO_JSVAL(JS_GetParent(JSVAL_TO_OBJECT(v)));
+    args.rval().setObjectOrNull(JS_GetParent(&v.toObject()));
     return true;
 }
 
 static bool
-Atob(JSContext *cx, unsigned argc, jsval *vp)
+Atob(JSContext *cx, unsigned argc, Value *vp)
 {
-    if (!argc)
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (!args.length())
         return true;
 
-    return xpc::Base64Decode(cx, JS_ARGV(cx, vp)[0], &JS_RVAL(cx, vp));
+    return xpc::Base64Decode(cx, args[0], args.rval());
 }
 
 static bool
-Btoa(JSContext *cx, unsigned argc, jsval *vp)
+Btoa(JSContext *cx, unsigned argc, Value *vp)
 {
-  if (!argc)
-      return true;
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (!args.length())
+        return true;
 
-  return xpc::Base64Encode(cx, JS_ARGV(cx, vp)[0], &JS_RVAL(cx, vp));
+  return xpc::Base64Encode(cx, args[0], args.rval());
 }
 
 static bool
-Blob(JSContext *cx, unsigned argc, jsval *vp)
+Blob(JSContext *cx, unsigned argc, Value *vp)
 {
   JS::CallArgs args = CallArgsFromVp(argc, vp);
 
@@ -583,10 +601,10 @@ Blob(JSContext *cx, unsigned argc, jsval *vp)
     return false;
   }
 
-  JSObject* global = JS::CurrentGlobalOrNull(cx);
+  JSObject *global = JS::CurrentGlobalOrNull(cx);
   rv = xpc->WrapNativeToJSVal(cx, global, native, nullptr,
                               &NS_GET_IID(nsISupports), true,
-                              args.rval().address(), nullptr);
+                              args.rval());
   if (NS_FAILED(rv)) {
     JS_ReportError(cx, "Could not wrap native object!");
     return false;
@@ -596,7 +614,7 @@ Blob(JSContext *cx, unsigned argc, jsval *vp)
 }
 
 static bool
-File(JSContext *cx, unsigned argc, jsval *vp)
+File(JSContext *cx, unsigned argc, Value *vp)
 {
   JS::CallArgs args = CallArgsFromVp(argc, vp);
 
@@ -622,10 +640,10 @@ File(JSContext *cx, unsigned argc, jsval *vp)
     return false;
   }
 
-  JSObject* global = JS::CurrentGlobalOrNull(cx);
+  JSObject *global = JS::CurrentGlobalOrNull(cx);
   rv = xpc->WrapNativeToJSVal(cx, global, native, nullptr,
                               &NS_GET_IID(nsISupports), true,
-                              args.rval().address(), nullptr);
+                              args.rval());
   if (NS_FAILED(rv)) {
     JS_ReportError(cx, "Could not wrap native object!");
     return false;
@@ -634,21 +652,24 @@ File(JSContext *cx, unsigned argc, jsval *vp)
   return true;
 }
 
-static Value sScriptedOperationCallback = UndefinedValue();
+static Maybe<PersistentRootedValue> sScriptedInterruptCallback;
 
 static bool
-XPCShellOperationCallback(JSContext *cx)
+XPCShellInterruptCallback(JSContext *cx)
 {
-    // If no operation callback was set by script, no-op.
-    if (sScriptedOperationCallback.isUndefined())
+    MOZ_ASSERT(!sScriptedInterruptCallback.empty());
+    RootedValue callback(cx, sScriptedInterruptCallback.ref());
+
+    // If no interrupt callback was set by script, no-op.
+    if (callback.isUndefined())
         return true;
 
-    JSAutoCompartment ac(cx, &sScriptedOperationCallback.toObject());
+    JSAutoCompartment ac(cx, &callback.toObject());
     RootedValue rv(cx);
-    if (!JS_CallFunctionValue(cx, nullptr, sScriptedOperationCallback,
-                              0, nullptr, rv.address()) || !rv.isBoolean())
+    if (!JS_CallFunctionValue(cx, JS::NullPtr(), callback, JS::HandleValueArray::empty(), &rv) ||
+        !rv.isBoolean())
     {
-        NS_WARNING("Scripted operation callback failed! Terminating script.");
+        NS_WARNING("Scripted interrupt callback failed! Terminating script.");
         JS_ClearPendingException(cx);
         return false;
     }
@@ -657,8 +678,10 @@ XPCShellOperationCallback(JSContext *cx)
 }
 
 static bool
-SetOperationCallback(JSContext *cx, unsigned argc, jsval *vp)
+SetInterruptCallback(JSContext *cx, unsigned argc, jsval *vp)
 {
+    MOZ_ASSERT(!sScriptedInterruptCallback.empty());
+
     // Sanity-check args.
     JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
     if (args.length() != 1) {
@@ -666,9 +689,9 @@ SetOperationCallback(JSContext *cx, unsigned argc, jsval *vp)
         return false;
     }
 
-    // Allow callers to remove the operation callback by passing undefined.
+    // Allow callers to remove the interrupt callback by passing undefined.
     if (args[0].isUndefined()) {
-        sScriptedOperationCallback = UndefinedValue();
+        sScriptedInterruptCallback.ref() = UndefinedValue();
         return true;
     }
 
@@ -678,7 +701,7 @@ SetOperationCallback(JSContext *cx, unsigned argc, jsval *vp)
         return false;
     }
 
-    sScriptedOperationCallback = args[0];
+    sScriptedInterruptCallback.ref() = args[0];
 
     return true;
 }
@@ -717,7 +740,7 @@ static const JSFunctionSpec glob_functions[] = {
     JS_FS("btoa",            Btoa,           1,0),
     JS_FS("Blob",            Blob,           2,JSFUN_CONSTRUCTOR),
     JS_FS("File",            File,           2,JSFUN_CONSTRUCTOR),
-    JS_FS("setOperationCallback", SetOperationCallback, 1,0),
+    JS_FS("setInterruptCallback", SetInterruptCallback, 1,0),
     JS_FS("simulateActivityCallback", SimulateActivityCallback, 1,0),
     JS_FS_END
 };
@@ -726,13 +749,13 @@ static bool
 env_setProperty(JSContext *cx, HandleObject obj, HandleId id, bool strict, MutableHandleValue vp)
 {
 /* XXX porting may be easy, but these don't seem to supply setenv by default */
-#if !defined XP_OS2 && !defined SOLARIS
+#if !defined SOLARIS
     JSString *valstr;
     JS::Rooted<JSString*> idstr(cx);
     int rv;
 
     RootedValue idval(cx);
-    if (!JS_IdToValue(cx, id, idval.address()))
+    if (!JS_IdToValue(cx, id, &idval))
         return false;
 
     idstr = ToString(cx, idval);
@@ -772,7 +795,7 @@ env_setProperty(JSContext *cx, HandleObject obj, HandleId id, bool strict, Mutab
         return false;
     }
     vp.set(STRING_TO_JSVAL(valstr));
-#endif /* !defined XP_OS2 && !defined SOLARIS */
+#endif /* !defined SOLARIS */
     return true;
 }
 
@@ -781,7 +804,7 @@ env_enumerate(JSContext *cx, HandleObject obj)
 {
     static bool reflected;
     char **evp, *name, *value;
-    JSString *valstr;
+    RootedString valstr(cx);
     bool ok;
 
     if (reflected)
@@ -793,12 +816,7 @@ env_enumerate(JSContext *cx, HandleObject obj)
             continue;
         *value++ = '\0';
         valstr = JS_NewStringCopyZ(cx, value);
-        if (!valstr) {
-            ok = false;
-        } else {
-            ok = JS_DefineProperty(cx, obj, name, STRING_TO_JSVAL(valstr),
-                                   nullptr, nullptr, JSPROP_ENUMERATE);
-        }
+        ok = valstr ? JS_DefineProperty(cx, obj, name, valstr, JSPROP_ENUMERATE) : false;
         value[-1] = '=';
         if (!ok)
             return false;
@@ -809,13 +827,13 @@ env_enumerate(JSContext *cx, HandleObject obj)
 }
 
 static bool
-env_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
+env_resolve(JSContext *cx, HandleObject obj, HandleId id,
             JS::MutableHandleObject objp)
 {
-    JSString *idstr, *valstr;
+    JSString *idstr;
 
     RootedValue idval(cx);
-    if (!JS_IdToValue(cx, id, idval.address()))
+    if (!JS_IdToValue(cx, id, &idval))
         return false;
 
     idstr = ToString(cx, idval);
@@ -826,11 +844,10 @@ env_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
         return false;
     const char *value = getenv(name.ptr());
     if (value) {
-        valstr = JS_NewStringCopyZ(cx, value);
+        RootedString valstr(cx, JS_NewStringCopyZ(cx, value));
         if (!valstr)
             return false;
-        if (!JS_DefinePropertyById(cx, obj, id, STRING_TO_JSVAL(valstr),
-                                   nullptr, nullptr, JSPROP_ENUMERATE)) {
+        if (!JS_DefinePropertyById(cx, obj, id, valstr, JSPROP_ENUMERATE)) {
             return false;
         }
         objp.set(obj);
@@ -864,7 +881,7 @@ static const JSErrorFormatString jsShell_ErrorFormatString[JSShellErr_Limit] = {
 };
 
 static const JSErrorFormatString *
-my_GetErrorMessage(void *userRef, const char *locale, const unsigned errorNumber)
+my_GetErrorMessage(void *userRef, const unsigned errorNumber)
 {
     if (errorNumber == 0 || errorNumber >= JSShellErr_Limit)
         return nullptr;
@@ -876,8 +893,8 @@ static void
 ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE *file,
             bool forceTTY)
 {
-    JSScript *script;
-    JS::Rooted<JS::Value> result(cx);
+    JS::RootedScript script(cx);
+    JS::RootedValue result(cx);
     int lineno, startline;
     bool ok, hitEOF;
     char *bufp, buffer[4096];
@@ -885,10 +902,7 @@ ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE
 
     if (forceTTY) {
         file = stdin;
-    } else
-#ifdef HAVE_ISATTY
-    if (!isatty(fileno(file)))
-#endif
+    } else if (!isatty(fileno(file)))
     {
         /*
          * It's not interactive - just execute it.
@@ -911,10 +925,9 @@ ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE
         JS::CompileOptions options(cx);
         options.setUTF8(true)
                .setFileAndLine(filename, 1)
-               .setPrincipals(gJSPrincipals);
-        script = JS::Compile(cx, obj, options, file);
-        if (script && !compileOnly)
-            (void)JS_ExecuteScript(cx, obj, script, result.address());
+               .setCompileAndGo(true);
+        if (JS::Compile(cx, obj, options, file, &script) && !compileOnly)
+            (void)JS_ExecuteScript(cx, obj, script, &result);
         DoEndRequest(cx);
 
         return;
@@ -948,13 +961,12 @@ ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE
         JS_ClearPendingException(cx);
         JS::CompileOptions options(cx);
         options.setFileAndLine("typein", startline)
-               .setPrincipals(gJSPrincipals);
-        script = JS_CompileScript(cx, obj, buffer, strlen(buffer), options);
-        if (script) {
+               .setCompileAndGo(true);
+        if (JS_CompileScript(cx, obj, buffer, strlen(buffer), options, &script)) {
             JSErrorReporter older;
 
             if (!compileOnly) {
-                ok = JS_ExecuteScript(cx, obj, script, result.address());
+                ok = JS_ExecuteScript(cx, obj, script, &result);
                 if (ok && result != JSVAL_VOID) {
                     /* Suppress error reports from JS::ToString(). */
                     older = JS_SetErrorReporter(cx, nullptr);
@@ -1020,16 +1032,13 @@ ProcessArgsForCompartment(JSContext *cx, char **argv, int argc)
                 return;
             break;
         case 'S':
-            ContextOptionsRef(cx).toggleWerror();
+            RuntimeOptionsRef(cx).toggleWerror();
         case 's':
             ContextOptionsRef(cx).toggleExtraWarnings();
             break;
         case 'I':
-            ContextOptionsRef(cx).toggleIon()
+            RuntimeOptionsRef(cx).toggleIon()
                                  .toggleAsmJS();
-            break;
-        case 'n':
-            ContextOptionsRef(cx).toggleTypeInference();
             break;
         }
     }
@@ -1078,20 +1087,16 @@ ProcessArgs(JSContext *cx, JS::Handle<JSObject*> obj, char **argv, int argc, XPC
      * Create arguments early and define it to root it, so it's safe from any
      * GC calls nested below, and so it is available to -f <file> arguments.
      */
-    argsObj = JS_NewArrayObject(cx, 0, nullptr);
+    argsObj = JS_NewArrayObject(cx, 0);
     if (!argsObj)
         return 1;
-    if (!JS_DefineProperty(cx, obj, "arguments", OBJECT_TO_JSVAL(argsObj),
-                           nullptr, nullptr, 0)) {
+    if (!JS_DefineProperty(cx, obj, "arguments", argsObj, 0))
         return 1;
-    }
 
     for (size_t j = 0, length = argc - i; j < length; j++) {
-        JSString *str = JS_NewStringCopyZ(cx, argv[i++]);
-        if (!str)
-            return 1;
-        if (!JS_DefineElement(cx, argsObj, j, STRING_TO_JSVAL(str),
-                              nullptr, nullptr, JSPROP_ENUMERATE)) {
+        RootedString str(cx, JS_NewStringCopyZ(cx, argv[i++]));
+        if (!str ||
+            !JS_DefineElement(cx, argsObj, j, str, JSPROP_ENUMERATE)) {
             return 1;
         }
     }
@@ -1119,7 +1124,7 @@ ProcessArgs(JSContext *cx, JS::Handle<JSObject*> obj, char **argv, int argc, XPC
         case 'x':
             break;
         case 'd':
-            xpc_ActivateDebugMode();
+            /* This used to try to turn on the debugger. */
             break;
         case 'f':
             if (++i == argc) {
@@ -1138,14 +1143,13 @@ ProcessArgs(JSContext *cx, JS::Handle<JSObject*> obj, char **argv, int argc, XPC
             break;
         case 'e':
         {
-            jsval rval;
+            RootedValue rval(cx);
 
             if (++i == argc) {
                 return usage();
             }
 
-            JS_EvaluateScriptForPrincipals(cx, obj, gJSPrincipals, argv[i],
-                                           strlen(argv[i]), "-e", 1, &rval);
+            JS_EvaluateScript(cx, obj, argv[i], strlen(argv[i]), "-e", 1, &rval);
 
             isInteractive = false;
             break;
@@ -1158,7 +1162,6 @@ ProcessArgs(JSContext *cx, JS::Handle<JSObject*> obj, char **argv, int argc, XPC
         case 's':
         case 'm':
         case 'I':
-        case 'n':
             // These options are processed in ProcessArgsForCompartment.
             break;
         case 'p':
@@ -1202,7 +1205,7 @@ public:
     TestGlobal(){}
 };
 
-NS_IMPL_ISUPPORTS2(TestGlobal, nsIXPCTestNoisy, nsIXPCScriptable)
+NS_IMPL_ISUPPORTS(TestGlobal, nsIXPCTestNoisy, nsIXPCScriptable)
 
 // The nsIXPCScriptable map declaration that will generate stubs for us...
 #define XPC_MAP_CLASSNAME           TestGlobal
@@ -1235,7 +1238,7 @@ public:
 };
 
 /* Implementation file */
-NS_IMPL_ISUPPORTS1(nsXPCFunctionThisTranslator, nsIXPCFunctionThisTranslator)
+NS_IMPL_ISUPPORTS(nsXPCFunctionThisTranslator, nsIXPCFunctionThisTranslator)
 
 nsXPCFunctionThisTranslator::nsXPCFunctionThisTranslator()
 {
@@ -1250,8 +1253,8 @@ NS_IMETHODIMP
 nsXPCFunctionThisTranslator::TranslateThis(nsISupports *aInitialThis,
                                            nsISupports **_retval)
 {
-    NS_IF_ADDREF(aInitialThis);
-    *_retval = aInitialThis;
+    nsCOMPtr<nsISupports> temp = aInitialThis;
+    temp.forget(_retval);
     return NS_OK;
 }
 
@@ -1267,7 +1270,7 @@ XPCShellErrorReporter(JSContext *cx, const char *message, JSErrorReport *rep)
         gExitCode = EXITCODE_RUNTIME_ERROR;
 
     // Delegate to the system error reporter for heavy lifting.
-    xpc::SystemErrorReporterExternal(cx, message, rep);
+    xpc::SystemErrorReporter(cx, message, rep);
 }
 
 static bool
@@ -1348,16 +1351,32 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
 
     dirprovider.SetAppFile(appFile);
 
+    nsCOMPtr<nsIFile> greDir;
     if (argc > 1 && !strcmp(argv[1], "-g")) {
         if (argc < 3)
             return usage();
 
-        if (!dirprovider.SetGREDir(argv[2])) {
-            printf("SetGREDir failed.\n");
+        rv = XRE_GetFileFromPath(argv[2], getter_AddRefs(greDir));
+        if (NS_FAILED(rv)) {
+            printf("Couldn't use given GRE dir.\n");
             return 1;
         }
+
+        dirprovider.SetGREDir(greDir);
+
         argc -= 2;
         argv += 2;
+    } else {
+        nsAutoString workingDir;
+        if (!GetCurrentWorkingDirectory(workingDir)) {
+            printf("GetCurrentWorkingDirectory failed.\n");
+            return 1;
+        }
+        rv = NS_NewLocalFile(workingDir, true, getter_AddRefs(greDir));
+        if (NS_FAILED(rv)) {
+            printf("NS_NewLocalFile failed.\n");
+            return 1;
+        }
     }
 
     if (argc > 1 && !strcmp(argv[1], "-a")) {
@@ -1395,10 +1414,15 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
     }
 
 #ifdef MOZ_CRASHREPORTER
-    // This is needed during startup and also shutdown, so keep it out
-    // of the nested scope.
-    // Special exception: will remain usable after NS_ShutdownXPCOM
-    nsCOMPtr<nsICrashReporter> crashReporter;
+    const char *val = getenv("MOZ_CRASHREPORTER");
+    if (val && *val) {
+        rv = CrashReporter::SetExceptionHandler(greDir, true);
+        if (NS_FAILED(rv)) {
+            printf("CrashReporter::SetExceptionHandler failed!\n");
+            return 1;
+        }
+        MOZ_ASSERT(CrashReporter::GetEnabled());
+    }
 #endif
 
     {
@@ -1426,14 +1450,6 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
             return 1;
         }
 
-#ifdef MOZ_CRASHREPORTER
-        const char *val = getenv("MOZ_CRASHREPORTER");
-        crashReporter = do_GetService("@mozilla.org/toolkit/crash-reporter;1");
-        if (val && *val) {
-            crashReporter->SetEnabled(true);
-        }
-#endif
-
         nsCOMPtr<nsIJSRuntimeService> rtsvc = do_GetService("@mozilla.org/js/xpc/RuntimeService;1");
         // get the JSRuntime from the runtime svc
         if (!rtsvc) {
@@ -1448,10 +1464,11 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
 
         rtsvc->RegisterContextCallback(ContextCallback);
 
-        // Override the default XPConnect operation callback. We could store the
+        // Override the default XPConnect interrupt callback. We could store the
         // old one and restore it before shutting down, but there's not really a
         // reason to bother.
-        JS_SetOperationCallback(rt, XPCShellOperationCallback);
+        sScriptedInterruptCallback.construct(rt, UndefinedValue());
+        JS_SetInterruptCallback(rt, XPCShellInterruptCallback);
 
         cx = JS_NewContext(rt, 8192);
         if (!cx) {
@@ -1513,8 +1530,10 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
             return 1;
         }
 
+        // Make the default XPCShell global use a fresh zone (rather than the
+        // System Zone) to improve cross-zone test coverage.
         JS::CompartmentOptions options;
-        options.setZone(JS::SystemZone)
+        options.setZone(JS::FreshZone)
                .setVersion(JSVERSION_LATEST);
         nsCOMPtr<nsIXPConnectJSObjectHolder> holder;
         rv = xpc->InitClassesWithNewWrappedGlobal(cx,
@@ -1532,6 +1551,11 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
                 return 1;
             }
 
+            // Even if we're building in a configuration where source is
+            // discarded, there's no reason to do that on XPCShell, and doing so
+            // might break various automation scripts.
+            JS::CompartmentOptionsRef(glob).setDiscardSource(false);
+
             backstagePass->SetGlobalObject(glob);
 
             JSAutoCompartment ac(cx, glob);
@@ -1548,7 +1572,7 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
             }
 
             JS::Rooted<JSObject*> envobj(cx);
-            envobj = JS_DefineObject(cx, glob, "environment", &env_class, nullptr, 0);
+            envobj = JS_DefineObject(cx, glob, "environment", &env_class);
             if (!envobj) {
                 JS_EndRequest(cx);
                 return 1;
@@ -1560,12 +1584,10 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
             if (GetCurrentWorkingDirectory(workingDirectory))
                 gWorkingDirectory = &workingDirectory;
 
-            JS_DefineProperty(cx, glob, "__LOCATION__", JSVAL_VOID,
-                              GetLocationProperty, nullptr, 0);
+            JS_DefineProperty(cx, glob, "__LOCATION__", JS::UndefinedHandleValue, 0,
+                              GetLocationProperty, nullptr);
 
-            JS_AddValueRoot(cx, &sScriptedOperationCallback);
             result = ProcessArgs(cx, glob, argv, argc, &dirprovider);
-            JS_RemoveValueRoot(cx, &sScriptedOperationCallback);
 
             JS_DropPrincipals(rt, gJSPrincipals);
             JS_SetAllNonReservedSlotsToUndefined(cx, glob);
@@ -1583,6 +1605,8 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
     rv = NS_ShutdownXPCOM( nullptr );
     MOZ_ASSERT(NS_SUCCEEDED(rv), "NS_ShutdownXPCOM failed");
 
+    sScriptedInterruptCallback.destroyIfConstructed();
+
 #ifdef TEST_CALL_ON_WRAPPED_JS_AFTER_SHUTDOWN
     // test of late call and release (see above)
     JSContext* bogusCX;
@@ -1599,10 +1623,8 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
 
 #ifdef MOZ_CRASHREPORTER
     // Shut down the crashreporter service to prevent leaking some strings it holds.
-    if (crashReporter) {
-        crashReporter->SetEnabled(false);
-        crashReporter = nullptr;
-    }
+    if (CrashReporter::GetEnabled())
+        CrashReporter::UnsetExceptionHandler();
 #endif
 
     NS_LogTerm();
@@ -1610,11 +1632,10 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
     return result;
 }
 
-bool
-XPCShellDirProvider::SetGREDir(const char *dir)
+void
+XPCShellDirProvider::SetGREDir(nsIFile* greDir)
 {
-    nsresult rv = XRE_GetFileFromPath(dir, getter_AddRefs(mGREDir));
-    return NS_SUCCEEDED(rv);
+    mGREDir = greDir;
 }
 
 void
@@ -1635,21 +1656,21 @@ XPCShellDirProvider::SetPluginDir(nsIFile* pluginDir)
     mPluginDir = pluginDir;
 }
 
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 XPCShellDirProvider::AddRef()
 {
     return 2;
 }
 
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 XPCShellDirProvider::Release()
 {
     return 1;
 }
 
-NS_IMPL_QUERY_INTERFACE2(XPCShellDirProvider,
-                         nsIDirectoryServiceProvider,
-                         nsIDirectoryServiceProvider2)
+NS_IMPL_QUERY_INTERFACE(XPCShellDirProvider,
+                        nsIDirectoryServiceProvider,
+                        nsIDirectoryServiceProvider2)
 
 NS_IMETHODIMP
 XPCShellDirProvider::GetFile(const char *prop, bool *persistent,
@@ -1668,46 +1689,8 @@ XPCShellDirProvider::GetFile(const char *prop, bool *persistent,
             NS_FAILED(file->AppendNative(NS_LITERAL_CSTRING("defaults"))) ||
             NS_FAILED(file->AppendNative(NS_LITERAL_CSTRING("pref"))))
             return NS_ERROR_FAILURE;
-        NS_ADDREF(*result = file);
+        file.forget(result);
         return NS_OK;
-    } else if (mAppFile && !strcmp(prop, XRE_UPDATE_ROOT_DIR)) {
-        // For xpcshell, we pretend that the update root directory is always
-        // the same as the GRE directory, except for Windows, where we immitate
-        // the algorithm defined in nsXREDirProvider::GetUpdateRootDir.
-        *persistent = true;
-#ifdef XP_WIN
-        char appData[MAX_PATH] = {'\0'};
-        char path[MAX_PATH] = {'\0'};
-        LPITEMIDLIST pItemIDList;
-        if (FAILED(SHGetSpecialFolderLocation(nullptr, CSIDL_LOCAL_APPDATA, &pItemIDList)) ||
-            FAILED(SHGetPathFromIDListA(pItemIDList, appData))) {
-            return NS_ERROR_FAILURE;
-        }
-        nsAutoString pathName;
-        pathName.AssignASCII(appData);
-        nsCOMPtr<nsIFile> localFile;
-        nsresult rv = NS_NewLocalFile(pathName, true, getter_AddRefs(localFile));
-        if (NS_FAILED(rv)) {
-            return rv;
-        }
-
-#ifdef MOZ_APP_PROFILE
-        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_PROFILE));
-#else
-        // MOZ_APP_VENDOR and MOZ_APP_BASENAME are optional.
-#ifdef MOZ_APP_VENDOR
-        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_VENDOR));
-#endif
-#ifdef MOZ_APP_BASENAME
-        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_BASENAME));
-#endif
-        // However app name is always appended.
-        localFile->AppendNative(NS_LITERAL_CSTRING(MOZ_APP_NAME));
-#endif
-        return localFile->Clone(result);
-#else
-        return mAppFile->GetParent(result);
-#endif
     }
 
     return NS_ERROR_FAILURE;

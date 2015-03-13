@@ -143,6 +143,28 @@ class ArgumentParser(argparse.ArgumentParser):
         return text
 
 
+class ContextWrapper(object):
+    def __init__(self, context, handler):
+        object.__setattr__(self, '_context', context)
+        object.__setattr__(self, '_handler', handler)
+
+    def __getattribute__(self, key):
+        try:
+            return getattr(object.__getattribute__(self, '_context'), key)
+        except AttributeError as e:
+            try:
+                ret = object.__getattribute__(self, '_handler')(self, key)
+            except AttributeError, TypeError:
+                # TypeError is in case the handler comes from old code not
+                # taking a key argument.
+                raise e
+            setattr(self, key, ret)
+            return ret
+
+    def __setattr__(self, key, value):
+        setattr(object.__getattribute__(self, '_context'), key, value)
+
+
 @CommandProvider
 class Mach(object):
     """Main mach driver type.
@@ -154,10 +176,15 @@ class Mach(object):
     behavior:
 
         populate_context_handler -- If defined, it must be a callable. The
-            callable will be called with the mach.base.CommandContext instance
-            as its single argument right before command dispatch. This allows
-            modification of the context instance and thus passing of
-            arbitrary data to command handlers.
+            callable signature is the following:
+                populate_context_handler(context, key=None)
+            It acts as a fallback getter for the mach.base.CommandContext
+            instance.
+            This allows to augment the context instance with arbitrary data
+            for use in command handlers.
+            For backwards compatibility, it is also called before command
+            dispatch without a key, allowing the context handler to add
+            attributes to the context instance.
 
         require_conditions -- If True, commands that do not have any condition
             functions applied will be skipped. Defaults to False.
@@ -189,9 +216,17 @@ To see more help for a specific command, run:
         self.logger = logging.getLogger(__name__)
         self.settings = ConfigSettings()
 
+        self.log_manager.register_structured_logger(self.logger)
+        self.global_arguments = []
         self.populate_context_handler = None
 
-        self.log_manager.register_structured_logger(self.logger)
+    def add_global_argument(self, *args, **kwargs):
+        """Register a global argument with the argument parser.
+
+        Arguments are proxied to ArgumentParser.add_argument()
+        """
+
+        self.global_arguments.append((args, kwargs))
 
     def load_commands_from_directory(self, path):
         """Scan for mach commands from modules in a directory.
@@ -335,6 +370,7 @@ To see more help for a specific command, run:
 
         if self.populate_context_handler:
             self.populate_context_handler(context)
+            context = ContextWrapper(context, self.populate_context_handler)
 
         parser = self.get_argument_parser(context)
 
@@ -559,6 +595,12 @@ To see more help for a specific command, run:
             action='store_true', default=False,
             help='Do not prefix log lines with times. By default, mach will '
                 'prefix each output line with the time since command start.')
+        global_group.add_argument('-h', '--help', dest='help',
+            action='store_true', default=False,
+            help='Show this help message.')
+
+        for args, kwargs in self.global_arguments:
+            global_group.add_argument(*args, **kwargs)
 
         # We need to be last because CommandAction swallows all remaining
         # arguments and argparse parses arguments in the order they were added.

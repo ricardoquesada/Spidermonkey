@@ -7,8 +7,6 @@
 #include "nsUCSupport.h"
 #include "mozilla/Telemetry.h"
 
-using namespace mozilla;
-
 class nsShiftJISToUnicode : public nsBasicDecoderSupport
 {
 public:
@@ -20,7 +18,7 @@ public:
  virtual ~nsShiftJISToUnicode() {}
 
  NS_IMETHOD Convert(const char * aSrc, int32_t * aSrcLength,
-     PRUnichar * aDest, int32_t * aDestLength) ;
+     char16_t * aDest, int32_t * aDestLength) ;
  NS_IMETHOD GetMaxLength(const char * aSrc, int32_t aSrcLength,
      int32_t * aDestLength) 
      {
@@ -33,7 +31,7 @@ public:
         return NS_OK;
      }
 
-  virtual PRUnichar GetCharacterForUnMapped();
+  virtual char16_t GetCharacterForUnMapped();
 
 private:
 
@@ -53,7 +51,7 @@ public:
  virtual ~nsEUCJPToUnicodeV2() {}
 
  NS_IMETHOD Convert(const char * aSrc, int32_t * aSrcLength,
-     PRUnichar * aDest, int32_t * aDestLength) ;
+     char16_t * aDest, int32_t * aDestLength) ;
  NS_IMETHOD GetMaxLength(const char * aSrc, int32_t aSrcLength,
      int32_t * aDestLength) 
      {
@@ -85,17 +83,15 @@ public:
         mGB2312Decoder = nullptr;
         mEUCKRDecoder = nullptr;
         mISO88597Decoder = nullptr;
-        Telemetry::Accumulate(Telemetry::DECODER_INSTANTIATED_ISO2022JP, true);
+        mozilla::Telemetry::Accumulate(
+          mozilla::Telemetry::DECODER_INSTANTIATED_ISO2022JP, true);
      }
  virtual ~nsISO2022JPToUnicodeV2()
      {
-        NS_IF_RELEASE(mGB2312Decoder);
-        NS_IF_RELEASE(mEUCKRDecoder);
-        NS_IF_RELEASE(mISO88597Decoder);
      }
 
  NS_IMETHOD Convert(const char * aSrc, int32_t * aSrcLength,
-     PRUnichar * aDest, int32_t * aDestLength) ;
+     char16_t * aDest, int32_t * aDestLength) ;
  NS_IMETHOD GetMaxLength(const char * aSrc, int32_t aSrcLength,
      int32_t * aDestLength) 
      {
@@ -140,8 +136,8 @@ private:
    G2_ISO88591,
    G2_ISO88597
  } G2charset;
- nsIUnicodeDecoder *mGB2312Decoder;
- nsIUnicodeDecoder *mEUCKRDecoder;
- nsIUnicodeDecoder *mISO88597Decoder;
+ nsCOMPtr<nsIUnicodeDecoder> mGB2312Decoder;
+ nsCOMPtr<nsIUnicodeDecoder> mEUCKRDecoder;
+ nsCOMPtr<nsIUnicodeDecoder> mISO88597Decoder;
 };
 #endif // nsShiftJISToUnicode_h__

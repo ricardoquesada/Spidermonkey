@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +7,7 @@
 var BUGNUMBER = 332472;
 var summary = 'new RegExp() ignores string boundaries when throwing exceptions';
 var actual = '';
-var expect = 'SyntaxError: invalid quantifier';
+var expect = true;
 
 printBugNumber(BUGNUMBER);
 printStatus (summary);
@@ -19,7 +19,7 @@ try {
 }
 catch(ex) {
   printStatus(ex);
-  actual = ex + '';
+  actual = ex instanceof SyntaxError;
 }
  
 reportCompare(expect, actual, summary);

@@ -19,17 +19,18 @@ public:
         mRealElement(aRealElement),
         mURLLength(aURLLength)
     { }
-    virtual ~URLPropertyElement() {}
 
     NS_DECL_ISUPPORTS
     NS_DECL_NSIPROPERTYELEMENT
-    
+
 private:
     nsCOMPtr<nsIPropertyElement> mRealElement;
     uint32_t mURLLength;
+
+    virtual ~URLPropertyElement() {}
 };
 
-NS_IMPL_ISUPPORTS1(URLPropertyElement, nsIPropertyElement)
+NS_IMPL_ISUPPORTS(URLPropertyElement, nsIPropertyElement)
 
 // we'll tweak the key on the way through, and remove the url prefix
 NS_IMETHODIMP
@@ -90,8 +91,7 @@ public:
 
     NS_DECL_ISUPPORTS
     NS_DECL_NSISIMPLEENUMERATOR
-    
-    virtual ~nsPropertyEnumeratorByURL() {}
+
 private:
 
     // actual enumerator of all strings from nsIProperties
@@ -102,13 +102,15 @@ private:
 
     // the url in question, pre-escaped and with the # already in it
     nsCString mURL;
+
+    virtual ~nsPropertyEnumeratorByURL() {}
 };
 
 //
 // nsStringBundleTextOverride implementation
 //
-NS_IMPL_ISUPPORTS1(nsStringBundleTextOverride,
-                   nsIStringBundleOverride)
+NS_IMPL_ISUPPORTS(nsStringBundleTextOverride,
+                  nsIStringBundleOverride)
 
 nsresult
 nsStringBundleTextOverride::Init()
@@ -225,7 +227,7 @@ nsStringBundleTextOverride::EnumerateKeysInBundle(const nsACString& aURL,
 //
 
 
-NS_IMPL_ISUPPORTS1(nsPropertyEnumeratorByURL, nsISimpleEnumerator)
+NS_IMPL_ISUPPORTS(nsPropertyEnumeratorByURL, nsISimpleEnumerator)
 
 NS_IMETHODIMP
 nsPropertyEnumeratorByURL::GetNext(nsISupports **aResult)

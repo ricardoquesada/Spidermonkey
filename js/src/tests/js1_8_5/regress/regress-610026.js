@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 4 -*- */
 /*
  * Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/licenses/publicdomain/
@@ -12,7 +12,7 @@ var actual;
  * with 2^19 blocks, then test 2^20 - 1 blocks, finally test the limit.
  */
 var s = "{}";
-for (var i = 0; i < 19; i++)
+for (var i = 0; i < 21; i++)
     s += s;
 
 try {

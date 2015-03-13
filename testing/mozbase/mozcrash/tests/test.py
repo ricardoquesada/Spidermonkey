@@ -86,6 +86,7 @@ class TestCrash(unittest.TestCase):
         Test that dump_save_path works.
         """
         open(os.path.join(self.tempdir, "test.dmp"), "w").write("foo")
+        open(os.path.join(self.tempdir, "test.extra"), "w").write("bar")
         save_path = os.path.join(self.tempdir, "saved")
         os.mkdir(save_path)
         self.stdouts.append(["this is some output"])
@@ -95,12 +96,14 @@ class TestCrash(unittest.TestCase):
                                                 dump_save_path=save_path,
                                                 quiet=True))
         self.assert_(os.path.isfile(os.path.join(save_path, "test.dmp")))
+        self.assert_(os.path.isfile(os.path.join(save_path, "test.extra")))
 
     def test_save_path_not_present(self):
         """
         Test that dump_save_path works when the directory doesn't exist.
         """
         open(os.path.join(self.tempdir, "test.dmp"), "w").write("foo")
+        open(os.path.join(self.tempdir, "test.extra"), "w").write("bar")
         save_path = os.path.join(self.tempdir, "saved")
         self.stdouts.append(["this is some output"])
         self.assert_(mozcrash.check_for_crashes(self.tempdir,
@@ -109,6 +112,7 @@ class TestCrash(unittest.TestCase):
                                                 dump_save_path=save_path,
                                                 quiet=True))
         self.assert_(os.path.isfile(os.path.join(save_path, "test.dmp")))
+        self.assert_(os.path.isfile(os.path.join(save_path, "test.extra")))
 
     def test_save_path_isfile(self):
         """
@@ -116,6 +120,7 @@ class TestCrash(unittest.TestCase):
         but a file with the same name exists.
         """
         open(os.path.join(self.tempdir, "test.dmp"), "w").write("foo")
+        open(os.path.join(self.tempdir, "test.extra"), "w").write("bar")
         save_path = os.path.join(self.tempdir, "saved")
         open(save_path, "w").write("junk")
         self.stdouts.append(["this is some output"])
@@ -125,12 +130,14 @@ class TestCrash(unittest.TestCase):
                                                 dump_save_path=save_path,
                                                 quiet=True))
         self.assert_(os.path.isfile(os.path.join(save_path, "test.dmp")))
+        self.assert_(os.path.isfile(os.path.join(save_path, "test.extra")))
 
     def test_save_path_envvar(self):
         """
         Test that the MINDUMP_SAVE_PATH environment variable works.
         """
         open(os.path.join(self.tempdir, "test.dmp"), "w").write("foo")
+        open(os.path.join(self.tempdir, "test.extra"), "w").write("bar")
         save_path = os.path.join(self.tempdir, "saved")
         os.mkdir(save_path)
         self.stdouts.append(["this is some output"])
@@ -141,6 +148,7 @@ class TestCrash(unittest.TestCase):
                                                 quiet=True))
         del os.environ['MINIDUMP_SAVE_PATH']
         self.assert_(os.path.isfile(os.path.join(save_path, "test.dmp")))
+        self.assert_(os.path.isfile(os.path.join(save_path, "test.extra")))
 
     def test_symbol_path_url(self):
         """
@@ -167,6 +175,44 @@ class TestCrash(unittest.TestCase):
                                                 symbol_url,
                                                 stackwalk_binary=self.stackwalk,
                                                 quiet=True))
+
+class TestJavaException(unittest.TestCase):
+       def setUp(self):
+               self.test_log = ["01-30 20:15:41.937 E/GeckoAppShell( 1703): >>> REPORTING UNCAUGHT EXCEPTION FROM THREAD 9 (\"GeckoBackgroundThread\")",
+                       "01-30 20:15:41.937 E/GeckoAppShell( 1703): java.lang.NullPointerException",
+                       "01-30 20:15:41.937 E/GeckoAppShell( 1703):    at org.mozilla.gecko.GeckoApp$21.run(GeckoApp.java:1833)",
+                       "01-30 20:15:41.937 E/GeckoAppShell( 1703):    at android.os.Handler.handleCallback(Handler.java:587)"]
+
+       def test_uncaught_exception(self):
+               """
+               Test for an exception which should be caught
+               """
+               self.assert_(mozcrash.check_for_java_exception(self.test_log, quiet=True))
+
+       def test_fatal_exception(self):
+               """
+               Test for an exception which should be caught
+               """
+               fatal_log = list(self.test_log)
+               fatal_log[0] = "01-30 20:15:41.937 E/GeckoAppShell( 1703): >>> FATAL EXCEPTION FROM THREAD 9 (\"GeckoBackgroundThread\")"
+               self.assert_(mozcrash.check_for_java_exception(fatal_log, quiet=True))
+
+       def test_truncated_exception(self):
+               """
+               Test for an exception which should be caught which
+               was truncated
+               """
+               truncated_log = list(self.test_log)
+               truncated_log[0], truncated_log[1] = truncated_log[1], truncated_log[0]
+               self.assert_(mozcrash.check_for_java_exception(truncated_log, quiet=True))
+
+       def test_unchecked_exception(self):
+               """
+               Test for an exception which should not be caught
+               """
+               passable_log = list(self.test_log)
+               passable_log[0] = "01-30 20:15:41.937 E/GeckoAppShell( 1703): >>> NOT-SO-BAD EXCEPTION FROM THREAD 9 (\"GeckoBackgroundThread\")"
+               self.assert_(not mozcrash.check_for_java_exception(passable_log, quiet=True))
 
 if __name__ == '__main__':
     unittest.main()

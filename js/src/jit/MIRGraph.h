@@ -26,7 +26,7 @@ class MDefinitionIterator;
 
 typedef InlineListIterator<MInstruction> MInstructionIterator;
 typedef InlineListReverseIterator<MInstruction> MInstructionReverseIterator;
-typedef InlineForwardListIterator<MPhi> MPhiIterator;
+typedef InlineListIterator<MPhi> MPhiIterator;
 typedef InlineForwardListIterator<MResumePoint> MResumePointIterator;
 
 class LBlock;
@@ -43,15 +43,16 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     };
 
   private:
-    MBasicBlock(MIRGraph &graph, CompileInfo &info, jsbytecode *pc, Kind kind);
+    MBasicBlock(MIRGraph &graph, CompileInfo &info, const BytecodeSite &site, Kind kind);
     bool init();
     void copySlots(MBasicBlock *from);
-    bool inherit(TempAllocator &alloc, BytecodeAnalysis *analysis, MBasicBlock *pred, uint32_t popped);
+    bool inherit(TempAllocator &alloc, BytecodeAnalysis *analysis, MBasicBlock *pred,
+                 uint32_t popped, unsigned stackPhiCount = 0);
     bool inheritResumePoint(MBasicBlock *pred);
     void assertUsesAreNotWithin(MUseIterator use, MUseIterator end);
 
-    // Does this block do something that forces it to terminate early?
-    bool earlyAbort_;
+    // This block cannot be reached by any means.
+    bool unreachable_;
 
     // Pushes a copy of a local variable or argument.
     void pushVariable(uint32_t slot);
@@ -68,34 +69,37 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     // Creates a new basic block for a MIR generator. If |pred| is not nullptr,
     // its slots and stack depth are initialized from |pred|.
     static MBasicBlock *New(MIRGraph &graph, BytecodeAnalysis *analysis, CompileInfo &info,
-                            MBasicBlock *pred, jsbytecode *entryPc, Kind kind);
+                            MBasicBlock *pred, const BytecodeSite &site, Kind kind);
     static MBasicBlock *NewPopN(MIRGraph &graph, CompileInfo &info,
-                                MBasicBlock *pred, jsbytecode *entryPc, Kind kind, uint32_t popn);
+                                MBasicBlock *pred, const BytecodeSite &site, Kind kind, uint32_t popn);
     static MBasicBlock *NewWithResumePoint(MIRGraph &graph, CompileInfo &info,
-                                           MBasicBlock *pred, jsbytecode *entryPc,
+                                           MBasicBlock *pred, const BytecodeSite &site,
                                            MResumePoint *resumePoint);
     static MBasicBlock *NewPendingLoopHeader(MIRGraph &graph, CompileInfo &info,
-                                             MBasicBlock *pred, jsbytecode *entryPc);
+                                             MBasicBlock *pred, const BytecodeSite &site,
+                                             unsigned loopStateSlots);
     static MBasicBlock *NewSplitEdge(MIRGraph &graph, CompileInfo &info, MBasicBlock *pred);
-    static MBasicBlock *NewAbortPar(MIRGraph &graph, CompileInfo &info,
-                                    MBasicBlock *pred, jsbytecode *entryPc,
-                                    MResumePoint *resumePoint);
     static MBasicBlock *NewAsmJS(MIRGraph &graph, CompileInfo &info,
                                  MBasicBlock *pred, Kind kind);
 
-    bool dominates(MBasicBlock *other);
+    bool dominates(const MBasicBlock *other) const {
+        return other->domIndex() - domIndex() < numDominated();
+    }
 
     void setId(uint32_t id) {
         id_ = id;
     }
-    void setEarlyAbort() {
-        earlyAbort_ = true;
+
+    // Mark this block (and only this block) as unreachable.
+    void setUnreachable() {
+        JS_ASSERT(!unreachable_);
+        setUnreachableUnchecked();
     }
-    void clearEarlyAbort() {
-        earlyAbort_ = false;
+    void setUnreachableUnchecked() {
+        unreachable_ = true;
     }
-    bool earlyAbort() {
-        return earlyAbort_;
+    bool unreachable() const {
+        return unreachable_;
     }
     // Move the definition to the top of the stack.
     void pick(int32_t depth);
@@ -111,6 +115,7 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
 
     // Increase the number of slots available
     bool increaseSlots(size_t num);
+    bool ensureHasSlots(size_t num);
 
     // Initializes a slot value; must not be called for normal stack
     // operations, as it will not create new SSA names for copies.
@@ -184,9 +189,8 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     void replacePredecessor(MBasicBlock *old, MBasicBlock *split);
     void replaceSuccessor(size_t pos, MBasicBlock *split);
 
-    // Removes `pred` from the predecessor list.  `pred` should not be
-    // the final predecessor. If this block defines phis, removes the
-    // entry for `pred` and updates the indices of later entries.
+    // Removes `pred` from the predecessor list. If this block defines phis,
+    // removes the entry for `pred` and updates the indices of later entries.
     // This may introduce redundant phis if the new block has fewer
     // than two predecessors.
     void removePredecessor(MBasicBlock *pred);
@@ -207,8 +211,11 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     // Propagates phis placed in a loop header down to this successor block.
     void inheritPhis(MBasicBlock *header);
 
+    // Propagates backedge slots into phis operands of the loop header.
+    bool inheritPhisFromBackedge(MBasicBlock *backedge, bool *hadTypeChange);
+
     // Compute the types for phis in this block according to their inputs.
-    void specializePhis();
+    bool specializePhis();
 
     void insertBefore(MInstruction *at, MInstruction *ins);
     void insertAfter(MInstruction *at, MInstruction *ins);
@@ -226,6 +233,7 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     MInstructionReverseIterator discardAt(MInstructionReverseIterator &iter);
     MDefinitionIterator discardDefAt(MDefinitionIterator &iter);
     void discardAllInstructions();
+    void discardAllInstructionsStartingAt(MInstructionIterator &iter);
     void discardAllPhiOperands();
     void discardAllPhis();
     void discardAllResumePoints(bool discardEntry = true);
@@ -272,11 +280,19 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     MBasicBlock *getPredecessor(uint32_t i) const {
         return predecessors_[i];
     }
+#ifdef DEBUG
+    bool hasLastIns() const {
+        return !instructions_.empty() && instructions_.rbegin()->isControlInstruction();
+    }
+#endif
     MControlInstruction *lastIns() const {
-        return lastIns_;
+        return instructions_.rbegin()->toControlInstruction();
     }
     MPhiIterator phisBegin() const {
         return phis_.begin();
+    }
+    MPhiIterator phisBegin(MPhi *at) const {
+        return phis_.begin(at);
     }
     MPhiIterator phisEnd() const {
         return phis_.end();
@@ -358,17 +374,15 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
         return mark_;
     }
     void mark() {
+        MOZ_ASSERT(!mark_, "Marking already-marked block");
+        markUnchecked();
+    }
+    void markUnchecked() {
         mark_ = true;
     }
     void unmark() {
+        MOZ_ASSERT(mark_, "Unarking unmarked block");
         mark_ = false;
-    }
-    void makeStart(MStart *start) {
-        add(start);
-        start_ = start;
-    }
-    MStart *start() const {
-        return start_;
     }
 
     MBasicBlock *immediateDominator() const {
@@ -397,7 +411,10 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
         return immediatelyDominated_.end();
     }
 
+    // Return the number of blocks dominated by this block. All blocks
+    // dominate at least themselves, so this will always be non-zero.
     size_t numDominated() const {
+        JS_ASSERT(numDominated_ != 0);
         return numDominated_;
     }
 
@@ -405,7 +422,11 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
         numDominated_ += n;
     }
 
+    // Add |child| to this block's immediately-dominated set.
     bool addImmediatelyDominatedBlock(MBasicBlock *child);
+
+    // Remove |child| from this block's immediately-dominated set.
+    void removeImmediatelyDominatedBlock(MBasicBlock *child);
 
     // This function retrieves the internal instruction associated with a
     // slot, and should not be used for normal stack operations. It is an
@@ -414,6 +435,9 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
 
     MResumePoint *entryResumePoint() const {
         return entryResumePoint_;
+    }
+    void clearEntryResumePoint() {
+        entryResumePoint_ = nullptr;
     }
     MResumePoint *callerResumePoint() {
         return entryResumePoint()->caller();
@@ -451,15 +475,6 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     MBasicBlock *getSuccessor(size_t index) const;
     size_t getSuccessorIndex(MBasicBlock *) const;
 
-    // Specifies the closest loop header dominating this block.
-    void setLoopHeader(MBasicBlock *loop) {
-        JS_ASSERT(loop->isLoopHeader());
-        loopHeader_ = loop;
-    }
-    MBasicBlock *loopHeader() const {
-        return loopHeader_;
-    }
-
     void setLoopDepth(uint32_t loopDepth) {
         loopDepth_ = loopDepth;
     }
@@ -468,7 +483,7 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     }
 
     bool strict() const {
-        return info_.script()->strict;
+        return info_.script()->strict();
     }
 
     void dumpStack(FILE *fp);
@@ -478,12 +493,18 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
 
     // Track bailouts by storing the current pc in MIR instruction added at this
     // cycle. This is also used for tracking calls when profiling.
-    void updateTrackedPc(jsbytecode *pc) {
-        trackedPc_ = pc;
+    void updateTrackedSite(const BytecodeSite &site) {
+        JS_ASSERT(site.tree() == trackedSite_.tree());
+        trackedSite_ = site;
     }
-
-    jsbytecode *trackedPc() {
-        return trackedPc_;
+    const BytecodeSite &trackedSite() const {
+        return trackedSite_;
+    }
+    jsbytecode *trackedPc() const {
+        return trackedSite_.pc();
+    }
+    InlineScriptTree *trackedTree() const {
+        return trackedSite_.tree();
     }
 
   private:
@@ -491,31 +512,28 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     CompileInfo &info_; // Each block originates from a particular script.
     InlineList<MInstruction> instructions_;
     Vector<MBasicBlock *, 1, IonAllocPolicy> predecessors_;
-    InlineForwardList<MPhi> phis_;
+    InlineList<MPhi> phis_;
     InlineForwardList<MResumePoint> resumePoints_;
     FixedList<MDefinition *> slots_;
     uint32_t stackPosition_;
-    MControlInstruction *lastIns_;
-    jsbytecode *pc_;
     uint32_t id_;
     uint32_t domIndex_; // Index in the dominator tree.
+    uint32_t numDominated_;
+    jsbytecode *pc_;
     LBlock *lir_;
-    MStart *start_;
     MResumePoint *entryResumePoint_;
     MBasicBlock *successorWithPhis_;
     uint32_t positionInPhiSuccessor_;
-    Kind kind_;
     uint32_t loopDepth_;
+    Kind kind_ : 8;
 
     // Utility mark for traversal algorithms.
     bool mark_;
 
     Vector<MBasicBlock *, 1, IonAllocPolicy> immediatelyDominated_;
     MBasicBlock *immediateDominator_;
-    size_t numDominated_;
-    MBasicBlock *loopHeader_;
 
-    jsbytecode *trackedPc_;
+    BytecodeSite trackedSite_;
 
 #if defined (JS_ION_PERF)
     unsigned lineno_;
@@ -549,7 +567,7 @@ class MIRGraph
     bool hasTryBlock_;
 
   public:
-    MIRGraph(TempAllocator *alloc)
+    explicit MIRGraph(TempAllocator *alloc)
       : alloc_(alloc),
         returnAccumulator_(nullptr),
         blockIdGen_(0),
@@ -586,15 +604,6 @@ class MIRGraph
     MBasicBlock *entryBlock() {
         return *blocks_.begin();
     }
-
-    void clearBlockList() {
-        blocks_.clear();
-        blockIdGen_ = 0;
-        numBlocks_ = 0;
-    }
-    void resetInstructionNumber() {
-        idGen_ = 0;
-    }
     MBasicBlockIterator begin() {
         return blocks_.begin();
     }
@@ -606,6 +615,9 @@ class MIRGraph
     }
     PostorderIterator poBegin() {
         return blocks_.rbegin();
+    }
+    PostorderIterator poBegin(MBasicBlock *at) {
+        return blocks_.rbegin(at);
     }
     PostorderIterator poEnd() {
         return blocks_.rend();
@@ -621,10 +633,16 @@ class MIRGraph
     }
     void removeBlocksAfter(MBasicBlock *block);
     void removeBlock(MBasicBlock *block);
+    void removeBlockIncludingPhis(MBasicBlock *block);
     void moveBlockToEnd(MBasicBlock *block) {
         JS_ASSERT(block->id());
         blocks_.remove(block);
         blocks_.pushBack(block);
+    }
+    void moveBlockBefore(MBasicBlock *at, MBasicBlock *block) {
+        JS_ASSERT(block->id());
+        blocks_.remove(block);
+        blocks_.insertBefore(at, block);
     }
     size_t numBlocks() const {
         return numBlocks_;
@@ -633,16 +651,13 @@ class MIRGraph
         return blockIdGen_;
     }
     void allocDefinitionId(MDefinition *ins) {
-        // This intentionally starts above 0. The id 0 is in places used to
-        // indicate a failure to perform an operation on an instruction.
-        idGen_ += 2;
-        ins->setId(idGen_);
+        ins->setId(idGen_++);
     }
-    uint32_t getMaxInstructionId() {
+    uint32_t getNumInstructionIds() {
         return idGen_;
     }
     MResumePoint *entryResumePoint() {
-        return blocks_.begin()->entryResumePoint();
+        return entryBlock()->entryResumePoint();
     }
 
     void copyIds(const MIRGraph &other) {
@@ -673,10 +688,10 @@ class MIRGraph
     }
 
     // The per-thread context. So as not to modify the calling convention for
-    // parallel code, we obtain the current slice from thread-local storage.
-    // This helper method will lazilly insert an MForkJoinSlice instruction in
-    // the entry block and return the definition.
-    MDefinition *forkJoinSlice();
+    // parallel code, we obtain the current ForkJoinContext from thread-local
+    // storage.  This helper method will lazilly insert an MForkJoinContext
+    // instruction in the entry block and return the definition.
+    MDefinition *forkJoinContext();
 
     void dump(FILE *fp);
     void dump();
@@ -714,7 +729,7 @@ class MDefinitionIterator
     }
 
   public:
-    MDefinitionIterator(MBasicBlock *block)
+    explicit MDefinitionIterator(MBasicBlock *block)
       : block_(block),
         phiIter_(block->phisBegin()),
         iter_(block->begin())

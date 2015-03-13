@@ -1,0 +1,33 @@
+# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# vim: set filetype=python:
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+EXTRA_JS_MODULES += [
+    'Accounts.jsm',
+    'AndroidLog.jsm',
+    'ContactService.jsm',
+    'dbg-browser-actors.js',
+    'FireflyApp.jsm',
+    'HelperApps.jsm',
+    'Home.jsm',
+    'HomeProvider.jsm',
+    'JNI.jsm',
+    'LightweightThemeConsumer.jsm',
+    'MediaPlayerApp.jsm',
+    'Messaging.jsm',
+    'Notifications.jsm',
+    'OrderedBroadcast.jsm',
+    'Prompt.jsm',
+    'Sanitizer.jsm',
+    'SharedPreferences.jsm',
+    'SimpleServiceDiscovery.jsm',
+    'SSLExceptions.jsm',
+    'WebappManagerWorker.js',
+]
+
+EXTRA_PP_JS_MODULES += [
+    'RokuApp.jsm',
+    'WebappManager.jsm',
+]

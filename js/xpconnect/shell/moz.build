@@ -23,7 +23,17 @@ if CONFIG['MOZ_SHARK']:
     DEFINES['MOZ_SHARK'] = True
 if CONFIG['MOZ_CALLGRIND']:
     DEFINES['MOZ_CALLGRIND'] = True
-if CONFIG['MOZ_VTUNE']:
-    DEFINES['MOZ_VTUNE'] = True
 
 include('/ipc/chromium/chromium-config.mozbuild')
+
+LOCAL_INCLUDES += [
+    '/toolkit/xre',
+]
+
+if CONFIG['_MSC_VER']:
+    # Always enter a Windows program through wmain, whether or not we're
+    # a console application.
+    WIN32_EXE_LDFLAGS += ['-ENTRY:wmainCRTStartup']
+
+if CONFIG['OS_ARCH'] == 'WINNT':
+    RCINCLUDE = 'xpcshell.rc'

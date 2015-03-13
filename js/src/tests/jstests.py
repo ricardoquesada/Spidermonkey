@@ -5,13 +5,15 @@ The JS Shell Test Harness.
 See the adjacent README.txt for more details.
 """
 
+from __future__ import print_function
+
 import os, sys, textwrap
 from os.path import abspath, dirname, realpath
 from copy import copy
 from subprocess import list2cmdline, call
 
 from lib.results import NullTestOutput
-from lib.tests import TestCase
+from lib.tests import TestCase, TBPL_FLAGS
 from lib.results import ResultsSink
 from lib.progressbar import ProgressBar
 
@@ -86,8 +88,9 @@ def parse_args():
                           help='Set maximum time a test is allows to run (in seconds).')
     harness_og.add_option('-a', '--args', dest='shell_args', default='',
                           help='Extra args to pass to the JS shell.')
-    harness_og.add_option('--jitflags', default='',
-                          help='Example: --jitflags=m,amd to run each test with -m, -a -m -d [default=%default]')
+    harness_og.add_option('--jitflags', default='', help="Obsolete. Does nothing.")
+    harness_og.add_option('--tbpl', action='store_true',
+                          help='Runs each test in all configurations tbpl tests.')
     harness_og.add_option('-g', '--debug', action='store_true', help='Run a test in debugger.')
     harness_og.add_option('--debugger', default='gdb -q --args', help='Debugger command.')
     harness_og.add_option('-J', '--jorendb', action='store_true', help='Run under JS debugger.')
@@ -194,7 +197,7 @@ def parse_args():
             options.show_output = True
         try:
             options.output_fp = open(options.output_file, 'w')
-        except IOError, ex:
+        except IOError as ex:
             raise SystemExit("Failed to open output file: " + str(ex))
 
     options.show = options.show_cmd or options.show_output
@@ -205,16 +208,6 @@ def parse_args():
                              options.hide_progress)
 
     return (options, requested_paths, excluded_paths)
-
-def parse_jitflags(op_jitflags):
-    jitflags = [ [ '-' + flag for flag in flags ]
-                 for flags in op_jitflags.split(',') ]
-    for flags in jitflags:
-        for flag in flags:
-            if flag not in ('-m', '-a', '-p', '-d', '-n'):
-                print('Invalid jit flag: "%s"'%flag)
-                sys.exit(1)
-    return jitflags
 
 def load_tests(options, requested_paths, excluded_paths):
     """
@@ -236,41 +229,33 @@ def load_tests(options, requested_paths, excluded_paths):
         xul_tester = manifest.XULInfoTester(xul_info, options.js_shell)
 
     test_dir = dirname(abspath(__file__))
-    test_list = manifest.load(test_dir, xul_tester)
+    test_list = manifest.load(test_dir, requested_paths, excluded_paths, xul_tester)
     skip_list = []
 
     if options.make_manifests:
         manifest.make_manifests(options.make_manifests, test_list)
         sys.exit()
 
-    # Create a new test list. Apply each JIT configuration to every test.
-    if options.jitflags:
+    # Create a new test list. Apply each TBPL configuration to every test.
+    if options.tbpl:
         new_test_list = []
-        jitflags_list = parse_jitflags(options.jitflags)
+        flags_list = TBPL_FLAGS
         for test in test_list:
-            for jitflags in jitflags_list:
+            for jitflags in flags_list:
                 tmp_test = copy(test)
                 tmp_test.options = copy(test.options)
                 tmp_test.options.extend(jitflags)
                 new_test_list.append(tmp_test)
         test_list = new_test_list
 
+    if options.jitflags:
+        print("Warning: the --jitflags option is obsolete and does nothing now.")
+
     if options.test_file:
         paths = set()
         for test_file in options.test_file:
             paths |= set([ line.strip() for line in open(test_file).readlines()])
         test_list = [ _ for _ in test_list if _.path in paths ]
-
-    if requested_paths:
-        def p(path):
-            for arg in requested_paths:
-                if path.find(arg) != -1:
-                    return True
-            return False
-        test_list = [ _ for _ in test_list if p(_.path) ]
-
-    if options.exclude_file:
-        test_list = [_ for _ in test_list if _.path not in excluded_paths]
 
     if options.no_extensions:
         pattern = os.sep + 'extensions' + os.sep
@@ -297,7 +282,7 @@ def main():
     skip_list, test_list = load_tests(options, requested_paths, excluded_paths)
 
     if not test_list:
-        print 'no tests selected'
+        print('no tests selected')
         return 1
 
     test_dir = dirname(abspath(__file__))
@@ -311,7 +296,7 @@ def main():
 
         cmd = test_list[0].get_command(TestCase.js_cmd_prefix)
         if options.show_cmd:
-            print list2cmdline(cmd)
+            print(list2cmdline(cmd))
         if test_dir not in ('', '.'):
             os.chdir(test_dir)
         call(cmd)

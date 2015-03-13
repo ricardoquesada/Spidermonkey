@@ -26,11 +26,17 @@ class TestText(MarionetteTestCase):
         self.marionette.navigate(test_html)
         l = self.marionette.find_element("name", "myInput")
         self.assertEqual("asdf", self.marionette.execute_script("return arguments[0].value;", [l]))
+
+        # Set caret position to the middle of the input text.
+        self.marionette.execute_script(
+            """var el = arguments[0];
+            el.selectionStart = el.selectionEnd = el.value.length / 2;""",
+            script_args=[l])
+
         l.send_keys("o")
-        self.assertEqual("asdfo", self.marionette.execute_script("return arguments[0].value;", [l]))
+        self.assertEqual("asodf", self.marionette.execute_script("return arguments[0].value;", [l]))
 
     def test_send_keys_to_type_input(self):
-        return # <input type=number> is disabled for v28
         test_html = self.marionette.absolute_url("html5/test_html_inputs.html")
         self.marionette.navigate(test_html)
         num_input = self.marionette.find_element('id', 'number')
@@ -213,4 +219,3 @@ class TestText(MarionetteTestCase):
         element = self.marionette.find_element("id", "keyReporter")
         element.send_keys(1234)
         self.assertEqual(element.get_attribute("value"), "1234")
-

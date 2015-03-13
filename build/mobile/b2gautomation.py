@@ -2,18 +2,20 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
+import datetime
 import mozcrash
 import threading
 import os
+import posixpath
 import Queue
 import re
 import shutil
+import signal
 import tempfile
 import time
 import traceback
 
 from automation import Automation
-from devicemanager import NetworkTools
 from mozprocess import ProcessHandlerMixin
 
 
@@ -76,7 +78,7 @@ class B2GRemoteAutomation(Automation):
             Automation.installExtension(self, extensionSource, profileDir, extensionID)
 
     # Set up what we need for the remote environment
-    def environment(self, env=None, xrePath=None, crashreporter=True):
+    def environment(self, env=None, xrePath=None, crashreporter=True, debugger=False):
         # Because we are running remote, we don't want to mimic the local env
         # so no copying of os.environ
         if env is None:
@@ -129,10 +131,6 @@ class B2GRemoteAutomation(Automation):
 
         return app, args
 
-    def getLanIp(self):
-        nettools = NetworkTools()
-        return nettools.getLanIp()
-
     def waitForFinish(self, proc, utilityPath, timeout, maxTime, startTime,
                       debuggerInfo, symbolsPath):
         """ Wait for tests to finish (as evidenced by a signature string
@@ -140,11 +138,9 @@ class B2GRemoteAutomation(Automation):
             output.
         """
         timeout = timeout or 120
-        responseDueBy = time.time() + timeout
         while True:
-            currentlog = proc.stdout
+            currentlog = proc.getStdoutLines(timeout)
             if currentlog:
-                responseDueBy = time.time() + timeout
                 print currentlog
                 # Match the test filepath from the last TEST-START line found in the new
                 # log content. These lines are in the form:
@@ -155,11 +151,23 @@ class B2GRemoteAutomation(Automation):
                 if hasattr(self, 'logFinish') and self.logFinish in currentlog:
                     return 0
             else:
-                if time.time() > responseDueBy:
-                    self.log.info("TEST-UNEXPECTED-FAIL | %s | application timed "
-                                  "out after %d seconds with no output",
-                                  self.lastTestSeen, int(timeout))
+                self.log.info("TEST-UNEXPECTED-FAIL | %s | application timed "
+                              "out after %d seconds with no output",
+                              self.lastTestSeen, int(timeout))
+                self._devicemanager.killProcess('/system/b2g/b2g', sig=signal.SIGABRT)
+
+                timeout = 10 # seconds
+                starttime = datetime.datetime.now()
+                while datetime.datetime.now() - starttime < datetime.timedelta(seconds=timeout):
+                    if not self._devicemanager.processExist('/system/b2g/b2g'):
+                        break
+                    time.sleep(1)
+                else:
+                    print "timed out after %d seconds waiting for b2g process to exit" % timeout
                     return 1
+
+                self.checkForCrashes(None, symbolsPath)
+                return 1
 
     def getDeviceStatus(self, serial=None):
         # Get the current status of the device.  If we know the device
@@ -186,7 +194,7 @@ class B2GRemoteAutomation(Automation):
         time.sleep(10)
         self._devicemanager._checkCmd(['shell', 'start', 'b2g'])
         if self._is_emulator:
-            self.marionette.emulator.wait_for_port()
+            self.marionette.emulator.wait_for_port(self.marionette.port)
 
     def rebootDevice(self):
         # find device's current status and serial number
@@ -236,6 +244,11 @@ class B2GRemoteAutomation(Automation):
         self._devicemanager._runCmd(['shell', 'stop', 'b2g'])
         time.sleep(5)
 
+        # For some reason user.js in the profile doesn't get picked up.
+        # Manually copy it over to prefs.js. See bug 1009730 for more details.
+        self._devicemanager.moveTree(posixpath.join(self._remoteProfile, 'user.js'),
+                                     posixpath.join(self._remoteProfile, 'prefs.js'))
+
         # relaunch b2g inside b2g instance
         instance = self.B2GInstance(self._devicemanager, env=env)
 
@@ -249,7 +262,7 @@ class B2GRemoteAutomation(Automation):
                                            'tcp:%s' % self.marionette.port])
 
         if self._is_emulator:
-            self.marionette.emulator.wait_for_port()
+            self.marionette.emulator.wait_for_port(self.marionette.port)
         else:
             time.sleep(5)
 
@@ -257,17 +270,6 @@ class B2GRemoteAutomation(Automation):
         session = self.marionette.start_session()
         if 'b2g' not in session:
             raise Exception("bad session value %s returned by start_session" % session)
-
-        if self._is_emulator:
-            # Disable offline status management (bug 777145), otherwise the network
-            # will be 'offline' when the mochitests start.  Presumably, the network
-            # won't be offline on a real device, so we only do this for emulators.
-            self.marionette.set_context(self.marionette.CONTEXT_CHROME)
-            self.marionette.execute_script("""
-                Components.utils.import("resource://gre/modules/Services.jsm");
-                Services.io.manageOfflineStatus = false;
-                Services.io.offline = false;
-                """)
 
         if self.context_chrome:
             self.marionette.set_context(self.marionette.CONTEXT_CHROME)
@@ -329,16 +331,22 @@ class B2GRemoteAutomation(Automation):
             # a dummy value to make the automation happy
             return 0
 
-        @property
-        def stdout(self):
+        def getStdoutLines(self, timeout):
             # Return any lines in the queue used by the
             # b2g process handler.
             lines = []
+            # get all of the lines that are currently available
             while True:
                 try:
                     lines.append(self.queue.get_nowait())
                 except Queue.Empty:
                     break
+
+            # wait 'timeout' for any additional lines
+            try:
+                lines.append(self.queue.get(True, timeout))
+            except Queue.Empty:
+                pass
             return '\n'.join(lines)
 
         def wait(self, timeout=None):

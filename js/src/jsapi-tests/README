@@ -35,12 +35,12 @@ Here is a sample test:
 
     BEGIN_TEST(testIntString_bug515273)
     {
-        jsval v;
-        EVAL("'42';", &v);
+        RootedValue v(cx);
 
-        JSString *str = JSVAL_TO_STRING(v);
-        const char *bytes = JS_GetStringBytes(str);
-        CHECK(strcmp(bytes, "42") == 0);
+        EVAL("'42';", &v);
+        JSString *str = v.toString();
+        CHECK(JS_StringHasBeenInterned(cx, str));
+        CHECK(JS_FlatStringEqualsAscii(JS_ASSERT_STRING_IS_FLAT(str), "42"));
         return true;
     }
     END_TEST(testIntString_bug515273)
@@ -89,7 +89,19 @@ tests.h:
         false, failing the test.
 
         This is like CHECK(sameValue(a, b)) but with a more detailed error
-        message. See sameValue below.
+        message on failure. See sameValue below.
+
+    CHECK_EQUAL(const T &a, const U &b);
+
+        CHECK(a == b), but with a more detailed error message.
+
+    CHECK_NULL(const T *ptr);
+
+        CHECK(ptr == nullptr), but with a more detailed error message.
+
+        (This is here because CHECK_EQUAL(ptr, nullptr) fails to compile on GCC
+        2.5 and before.)
+
 
     bool knownFail;
 

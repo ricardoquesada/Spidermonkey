@@ -24,6 +24,7 @@ from mozbuild.util import (
     shell_quote,
     StrictOrderingOnAppendList,
 )
+import mozpack.path as mozpath
 from .sandbox_symbols import FinalTargetValue
 
 
@@ -40,10 +41,12 @@ class TreeMetadata(object):
 class ReaderSummary(TreeMetadata):
     """A summary of what the reader did."""
 
-    def __init__(self, total_file_count, total_execution_time):
+    def __init__(self, total_file_count, total_sandbox_execution_time,
+        total_emitter_execution_time):
         TreeMetadata.__init__(self)
         self.total_file_count = total_file_count
-        self.total_execution_time = total_execution_time
+        self.total_sandbox_execution_time = total_sandbox_execution_time
+        self.total_emitter_execution_time = total_emitter_execution_time
 
 
 class SandboxDerived(TreeMetadata):
@@ -78,6 +81,8 @@ class SandboxDerived(TreeMetadata):
         self.srcdir = sandbox['SRCDIR']
         self.objdir = sandbox['OBJDIR']
 
+        self.config = sandbox.config
+
 
 class DirectoryTraversal(SandboxDerived):
     """Describes how directory traversal for building should work.
@@ -99,8 +104,6 @@ class DirectoryTraversal(SandboxDerived):
         'test_tool_dirs',
         'tier_dirs',
         'tier_static_dirs',
-        'external_make_dirs',
-        'parallel_external_make_dirs',
     )
 
     def __init__(self, sandbox):
@@ -113,8 +116,6 @@ class DirectoryTraversal(SandboxDerived):
         self.test_tool_dirs = []
         self.tier_dirs = OrderedDict()
         self.tier_static_dirs = OrderedDict()
-        self.external_make_dirs = []
-        self.parallel_external_make_dirs = []
 
 
 class BaseConfigSubstitution(SandboxDerived):
@@ -169,7 +170,7 @@ class XPIDLFile(SandboxDerived):
         SandboxDerived.__init__(self, sandbox)
 
         self.source_path = source
-        self.basename = os.path.basename(source)
+        self.basename = mozpath.basename(source)
         self.module = module
 
 class Defines(SandboxDerived):
@@ -184,10 +185,11 @@ class Defines(SandboxDerived):
     def get_defines(self):
         for define, value in self.defines.iteritems():
             if value is True:
-                defstr = define
+                yield('-D%s' % define)
+            elif value is False:
+                yield('-U%s' % define)
             else:
-                defstr = '%s=%s' % (define, shell_quote(value))
-            yield('-D%s' % defstr)
+                yield('-D%s=%s' % (define, shell_quote(value)))
 
 class Exports(SandboxDerived):
     """Sandbox container object for EXPORTS, which is a HierarchicalStringList.
@@ -202,6 +204,24 @@ class Exports(SandboxDerived):
         SandboxDerived.__init__(self, sandbox)
         self.exports = exports
         self.dist_install = dist_install
+
+class Resources(SandboxDerived):
+    """Sandbox container object for RESOURCE_FILES, which is a HierarchicalStringList,
+    with an extra ``.preprocess`` property on each entry.
+
+    The local defines plus anything in ACDEFINES are stored in ``defines`` as a
+    dictionary, for any files that need preprocessing.
+    """
+    __slots__ = ('resources', 'defines')
+
+    def __init__(self, sandbox, resources, defines=None):
+        SandboxDerived.__init__(self, sandbox)
+        self.resources = resources
+        defs = {}
+        defs.update(sandbox.config.defines)
+        if defines:
+            defs.update(defines)
+        self.defines = defs
 
 
 class IPDLFile(SandboxDerived):
@@ -290,6 +310,20 @@ class GeneratedWebIDLFile(SandboxDerived):
 
         self.basename = path
 
+
+class ExampleWebIDLInterface(SandboxDerived):
+    """An individual WebIDL interface to generate."""
+
+    __slots__ = (
+        'name',
+    )
+
+    def __init__(self, sandbox, name):
+        SandboxDerived.__init__(self, sandbox)
+
+        self.name = name
+
+
 class BaseProgram(SandboxDerived):
     """Sandbox container object for programs, which is a unicode string.
 
@@ -358,8 +392,14 @@ class TestManifest(SandboxDerived):
         'flavor',
 
         # Maps source filename to destination filename. The destination
-        # path is relative from the tests root directory.
+        # path is relative from the tests root directory. Values are 2-tuples
+        # of (destpath, is_test_file) where the 2nd item is True if this
+        # item represents a test file (versus a support file).
         'installs',
+
+        # A list of pattern matching installs to perform. Entries are
+        # (base, pattern, dest).
+        'pattern_installs',
 
         # Where all files for this manifest flavor are installed in the unified
         # test package directory.
@@ -383,6 +423,9 @@ class TestManifest(SandboxDerived):
         # The relative path of the parsed manifest within the srcdir.
         'manifest_relpath',
 
+        # The relative path of the parsed manifest within the objdir.
+        'manifest_obj_relpath',
+
         # If this manifest is a duplicate of another one, this is the
         # manifestparser.TestManifest of the other one.
         'dupe_manifest',
@@ -393,13 +436,15 @@ class TestManifest(SandboxDerived):
         SandboxDerived.__init__(self, sandbox)
 
         self.path = path
-        self.directory = os.path.dirname(path)
+        self.directory = mozpath.dirname(path)
         self.manifest = manifest
         self.flavor = flavor
         self.install_prefix = install_prefix
         self.manifest_relpath = relpath
+        self.manifest_obj_relpath = relpath
         self.dupe_manifest = dupe_manifest
         self.installs = {}
+        self.pattern_installs = []
         self.tests = []
         self.external_installs = set()
 
@@ -427,6 +472,53 @@ class GeneratedInclude(SandboxDerived):
         SandboxDerived.__init__(self, sandbox)
 
         self.path = path
+
+
+class PerSourceFlag(SandboxDerived):
+    """Describes compiler flags specified for individual source files."""
+
+    __slots__ = (
+        'file_name',
+        'flags',
+    )
+
+    def __init__(self, sandbox, file_name, flags):
+        SandboxDerived.__init__(self, sandbox)
+
+        self.file_name = file_name
+        self.flags = flags
+
+
+class JARManifest(SandboxDerived):
+    """Describes an individual JAR manifest file and how to process it.
+
+    This class isn't very useful for optimizing backends yet because we don't
+    capture defines. We can't capture defines safely until all of them are
+    defined in moz.build and not Makefile.in files.
+    """
+    __slots__ = (
+        'path',
+    )
+
+    def __init__(self, sandbox, path):
+        SandboxDerived.__init__(self, sandbox)
+
+        self.path = path
+
+
+class JavaScriptModules(SandboxDerived):
+    """Describes a JavaScript module."""
+
+    __slots__ = (
+        'modules',
+        'flavor',
+    )
+
+    def __init__(self, sandbox, modules, flavor):
+        super(JavaScriptModules, self).__init__(sandbox)
+
+        self.modules = modules
+        self.flavor = flavor
 
 
 class SandboxWrapped(SandboxDerived):
@@ -502,3 +594,66 @@ class InstallationTarget(SandboxDerived):
         return FinalTargetValue(dict(
             XPI_NAME=self.xpiname,
             DIST_SUBDIR=self.subdir)) == self.target
+
+
+class ClassPathEntry(object):
+    """Represents a classpathentry in an Android Eclipse project."""
+
+    __slots__ = (
+        'dstdir',
+        'srcdir',
+        'path',
+        'exclude_patterns',
+        'ignore_warnings',
+    )
+
+    def __init__(self):
+        self.dstdir = None
+        self.srcdir = None
+        self.path = None
+        self.exclude_patterns = []
+        self.ignore_warnings = False
+
+
+class AndroidEclipseProjectData(object):
+    """Represents an Android Eclipse project."""
+
+    __slots__ = (
+        'name',
+        'package_name',
+        'is_library',
+        'res',
+        'assets',
+        'libs',
+        'manifest',
+        'recursive_make_targets',
+        'extra_jars',
+        'included_projects',
+        'referenced_projects',
+        '_classpathentries',
+        'filtered_resources',
+    )
+
+    def __init__(self, name):
+        self.name = name
+        self.is_library = False
+        self.manifest = None
+        self.res = None
+        self.assets = None
+        self.libs = []
+        self.recursive_make_targets = []
+        self.extra_jars = []
+        self.included_projects = []
+        self.referenced_projects = []
+        self._classpathentries = []
+        self.filtered_resources = []
+
+    def add_classpathentry(self, path, srcdir, dstdir, exclude_patterns=[], ignore_warnings=False):
+        cpe = ClassPathEntry()
+        cpe.srcdir = srcdir
+        cpe.dstdir = dstdir
+        cpe.path = path
+        cpe.exclude_patterns = list(exclude_patterns)
+        cpe.ignore_warnings = ignore_warnings
+        self._classpathentries.append(cpe)
+        return cpe

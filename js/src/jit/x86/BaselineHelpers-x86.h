@@ -72,7 +72,7 @@ EmitChangeICReturnAddress(MacroAssembler &masm, Register reg)
 }
 
 inline void
-EmitTailCallVM(IonCode *target, MacroAssembler &masm, uint32_t argSize)
+EmitTailCallVM(JitCode *target, MacroAssembler &masm, uint32_t argSize)
 {
     // We assume during this that R0 and R1 have been pushed.
 
@@ -87,7 +87,7 @@ EmitTailCallVM(IonCode *target, MacroAssembler &masm, uint32_t argSize)
     masm.store32(ebx, Address(BaselineFrameReg, BaselineFrame::reverseOffsetOfFrameSize()));
 
     // Push frame descriptor and perform the tail call.
-    masm.makeFrameDescriptor(eax, IonFrame_BaselineJS);
+    masm.makeFrameDescriptor(eax, JitFrame_BaselineJS);
     masm.push(eax);
     masm.push(BaselineTailCallReg);
     masm.jmp(target);
@@ -102,11 +102,11 @@ EmitCreateStubFrameDescriptor(MacroAssembler &masm, Register reg)
     masm.addl(Imm32(sizeof(void *) * 2), reg);
     masm.subl(BaselineStackReg, reg);
 
-    masm.makeFrameDescriptor(reg, IonFrame_BaselineStub);
+    masm.makeFrameDescriptor(reg, JitFrame_BaselineStub);
 }
 
 inline void
-EmitCallVM(IonCode *target, MacroAssembler &masm)
+EmitCallVM(JitCode *target, MacroAssembler &masm)
 {
     EmitCreateStubFrameDescriptor(masm, eax);
     masm.push(eax);
@@ -135,7 +135,7 @@ EmitEnterStubFrame(MacroAssembler &masm, Register scratch)
     // if needed.
 
     // Push frame descriptor and return address.
-    masm.makeFrameDescriptor(scratch, IonFrame_BaselineJS);
+    masm.makeFrameDescriptor(scratch, JitFrame_BaselineJS);
     masm.push(scratch);
     masm.push(BaselineTailCallReg);
 
@@ -222,7 +222,7 @@ EmitUnstowICValues(MacroAssembler &masm, int values, bool discard = false)
 }
 
 inline void
-EmitCallTypeUpdateIC(MacroAssembler &masm, IonCode *code, uint32_t objectOffset)
+EmitCallTypeUpdateIC(MacroAssembler &masm, JitCode *code, uint32_t objectOffset)
 {
     // R0 contains the value that needs to be typechecked.
     // The object we're updating is a boxed Value on the stack, at offset

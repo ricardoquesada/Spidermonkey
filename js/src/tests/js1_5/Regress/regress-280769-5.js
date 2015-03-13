@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,9 +22,13 @@ var re = new RegExp(prefix+"0?"+suffix);  // re is /aaa...aaa0?111/
 
 var str_to_match = prefix+suffix;  // str_to_match is "aaa...aaa111"
 
-var index = str_to_match.search(re);
+try {
+  var index = str_to_match.search(re);
 
-expect = 0;
-actual = index;
+  expect = 0;
+  actual = index;
 
-reportCompare(expect, actual, summary);
+  reportCompare(expect, actual, summary);
+} catch (e) {
+  reportCompare(true, e instanceof Error, actual, summary);
+}

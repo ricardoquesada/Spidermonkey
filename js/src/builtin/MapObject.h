@@ -22,7 +22,7 @@ namespace js {
  * All values except ropes are hashable as-is.
  */
 class HashableValue {
-    EncapsulatedValue value;
+    PreBarrieredValue value;
 
   public:
     struct Hasher {
@@ -42,12 +42,12 @@ class HashableValue {
     Value get() const { return value.get(); }
 };
 
-class AutoHashableValueRooter : private AutoGCRooter
+class AutoHashableValueRooter : private JS::AutoGCRooter
 {
   public:
     explicit AutoHashableValueRooter(JSContext *cx
                                      MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-        : AutoGCRooter(cx, HASHABLEVALUE)
+        : JS::AutoGCRooter(cx, HASHABLEVALUE)
         {
             MOZ_GUARD_OBJECT_NOTIFIER_INIT;
         }
@@ -60,7 +60,9 @@ class AutoHashableValueRooter : private AutoGCRooter
         return value;
     }
 
-    friend void AutoGCRooter::trace(JSTracer *trc);
+    Value get() const { return value.get(); }
+
+    friend void JS::AutoGCRooter::trace(JSTracer *trc);
     void trace(JSTracer *trc);
 
   private:
@@ -89,6 +91,12 @@ class MapObject : public JSObject {
 
     static JSObject *initClass(JSContext *cx, JSObject *obj);
     static const Class class_;
+
+    // Entries is every key followed by value.
+    static bool entries(JSContext *cx, HandleObject obj, JS::AutoValueVector *entries);
+    static bool set(JSContext *cx, HandleObject obj, HandleValue key, HandleValue value);
+    static MapObject* create(JSContext *cx);
+
   private:
     static const JSPropertySpec properties[];
     static const JSFunctionSpec methods[];
@@ -127,6 +135,11 @@ class SetObject : public JSObject {
     enum IteratorKind { Values, Entries };
     static JSObject *initClass(JSContext *cx, JSObject *obj);
     static const Class class_;
+
+    static bool keys(JSContext *cx, HandleObject obj, JS::AutoValueVector *keys);
+    static bool add(JSContext *cx, HandleObject obj, HandleValue key);
+    static SetObject* create(JSContext *cx);
+
   private:
     static const JSPropertySpec properties[];
     static const JSFunctionSpec methods[];

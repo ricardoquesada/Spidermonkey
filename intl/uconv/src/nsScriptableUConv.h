@@ -8,6 +8,9 @@
 #define __nsScriptableUConv_h_
 
 #include "nsIScriptableUConv.h"
+#include "nsCOMPtr.h"
+#include "nsIUnicodeDecoder.h"
+#include "nsIUnicodeEncoder.h"
 
 class nsScriptableUnicodeConverter : public nsIScriptableUnicodeConverter
 {
@@ -16,9 +19,10 @@ public:
   NS_DECL_NSISCRIPTABLEUNICODECONVERTER
 
   nsScriptableUnicodeConverter();
-  virtual ~nsScriptableUnicodeConverter();
 
 protected:
+  virtual ~nsScriptableUnicodeConverter();
+
   nsCString mCharset;
   nsCOMPtr<nsIUnicodeEncoder> mEncoder;
   nsCOMPtr<nsIUnicodeDecoder> mDecoder;

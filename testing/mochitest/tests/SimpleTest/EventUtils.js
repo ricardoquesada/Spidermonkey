@@ -7,6 +7,7 @@
  *  sendKey
  *  synthesizeMouse
  *  synthesizeMouseAtCenter
+ *  synthesizePointer
  *  synthesizeWheel
  *  synthesizeKey
  *  synthesizeNativeKey
@@ -226,6 +227,12 @@ function synthesizeTouch(aTarget, aOffsetX, aOffsetY, aEvent, aWindow)
   synthesizeTouchAtPoint(rect.left + aOffsetX, rect.top + aOffsetY,
        aEvent, aWindow);
 }
+function synthesizePointer(aTarget, aOffsetX, aOffsetY, aEvent, aWindow)
+{
+  var rect = aTarget.getBoundingClientRect();
+  return synthesizePointerAtPoint(rect.left + aOffsetX, rect.top + aOffsetY,
+       aEvent, aWindow);
+}
 
 /*
  * Synthesize a mouse event at a particular point in aWindow.
@@ -249,9 +256,13 @@ function synthesizeMouseAtPoint(left, top, aEvent, aWindow)
     var modifiers = _parseModifiers(aEvent);
     var pressure = ("pressure" in aEvent) ? aEvent.pressure : 0;
     var inputSource = ("inputSource" in aEvent) ? aEvent.inputSource : 0;
+    var synthesized = ("isSynthesized" in aEvent) ? aEvent.isSynthesized : true;
 
     if (("type" in aEvent) && aEvent.type) {
-      defaultPrevented = utils.sendMouseEvent(aEvent.type, left, top, button, clickCount, modifiers, false, pressure, inputSource);
+      defaultPrevented = utils.sendMouseEvent(aEvent.type, left, top, button,
+                                              clickCount, modifiers, false,
+                                              pressure, inputSource,
+                                              synthesized);
     }
     else {
       utils.sendMouseEvent("mousedown", left, top, button, clickCount, modifiers, false, pressure, inputSource);
@@ -282,6 +293,34 @@ function synthesizeTouchAtPoint(left, top, aEvent, aWindow)
     }
   }
 }
+function synthesizePointerAtPoint(left, top, aEvent, aWindow)
+{
+  var utils = _getDOMWindowUtils(aWindow);
+  var defaultPrevented = false;
+
+  if (utils) {
+    var button = aEvent.button || 0;
+    var clickCount = aEvent.clickCount || 1;
+    var modifiers = _parseModifiers(aEvent);
+    var pressure = ("pressure" in aEvent) ? aEvent.pressure : 0;
+    var inputSource = ("inputSource" in aEvent) ? aEvent.inputSource : 0;
+    var synthesized = ("isSynthesized" in aEvent) ? aEvent.isSynthesized : true;
+
+    if (("type" in aEvent) && aEvent.type) {
+      defaultPrevented = utils.sendPointerEventToWindow(aEvent.type, left, top, button,
+                                                        clickCount, modifiers, false,
+                                                        pressure, inputSource,
+                                                        synthesized);
+    }
+    else {
+      utils.sendPointerEventToWindow("pointerdown", left, top, button, clickCount, modifiers, false, pressure, inputSource);
+      utils.sendPointerEventToWindow("pointerup", left, top, button, clickCount, modifiers, false, pressure, inputSource);
+    }
+  }
+
+  return defaultPrevented;
+}
+
 // Call synthesizeMouse with coordinates at the center of aTarget.
 function synthesizeMouseAtCenter(aTarget, aEvent, aWindow)
 {
@@ -303,8 +342,9 @@ function synthesizeTouchAtCenter(aTarget, aEvent, aWindow)
  *
  * aEvent is an object which may contain the properties:
  *   shiftKey, ctrlKey, altKey, metaKey, accessKey, deltaX, deltaY, deltaZ,
- *   deltaMode, lineOrPageDeltaX, lineOrPageDeltaY, isMomentum, isPixelOnlyDevice,
- *   isCustomizedByPrefs, expectedOverflowDeltaX, expectedOverflowDeltaY
+ *   deltaMode, lineOrPageDeltaX, lineOrPageDeltaY, isMomentum,
+ *   isNoLineOrPageDelta, isCustomizedByPrefs, expectedOverflowDeltaX,
+ *   expectedOverflowDeltaY
  *
  * deltaMode must be defined, others are ok even if undefined.
  *
@@ -322,9 +362,8 @@ function synthesizeWheel(aTarget, aOffsetX, aOffsetY, aEvent, aWindow)
 
   var modifiers = _parseModifiers(aEvent);
   var options = 0;
-  if (aEvent.isPixelOnlyDevice &&
-      (aEvent.deltaMode == WheelEvent.DOM_DELTA_PIXEL)) {
-    options |= utils.WHEEL_EVENT_CAUSED_BY_PIXEL_ONLY_DEVICE;
+  if (aEvent.isNoLineOrPageDelta) {
+    options |= utils.WHEEL_EVENT_CAUSED_BY_NO_LINE_OR_PAGE_DELTA_DEVICE;
   }
   if (aEvent.isMomentum) {
     options |= utils.WHEEL_EVENT_CAUSED_BY_MOMENTUM;
@@ -350,8 +389,7 @@ function synthesizeWheel(aTarget, aOffsetX, aOffsetY, aEvent, aWindow)
       options |= utils.WHEEL_EVENT_EXPECTED_OVERFLOW_DELTA_Y_NEGATIVE;
     }
   }
-  var isPixelOnlyDevice =
-    aEvent.isPixelOnlyDevice && aEvent.deltaMode == WheelEvent.DOM_DELTA_PIXEL;
+  var isNoLineOrPageDelta = aEvent.isNoLineOrPageDelta;
 
   // Avoid the JS warnings "reference to undefined property"
   if (!aEvent.deltaX) {
@@ -498,7 +536,7 @@ function isKeypressFiredKey(aDOMKeyCode)
  * actual keypress by the user, typically the focused element.
  *
  * aKey should be either a character or a keycode starting with VK_ such as
- * VK_ENTER.
+ * VK_RETURN.
  *
  * aEvent is an object which may contain the properties:
  *   shiftKey, ctrlKey, altKey, metaKey, accessKey, type, location
@@ -620,10 +658,47 @@ function _parseNativeModifiers(aModifiers)
     modifiers |=
       (navigator.platform.indexOf("Mac") == 0) ? 0x00008000 : 0x00000800;
   }
+  if (aModifiers.altGrKey) {
+    modifiers |=
+      (navigator.platform.indexOf("Win") == 0) ? 0x00002800 : 0x00001000;
+  }
   return modifiers;
 }
 
-const KEYBOARD_LAYOUT_EN_US = 0;
+// Mac: Any unused number is okay for adding new keyboard layout.
+//      When you add new keyboard layout here, you need to modify
+//      TISInputSourceWrapper::InitByLayoutID().
+// Win: These constants can be found by inspecting registry keys under
+//      HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Keyboard Layouts
+
+const KEYBOARD_LAYOUT_ARABIC =
+  { name: "Arabic",             Mac: 6,    Win: 0x00000401 };
+const KEYBOARD_LAYOUT_BRAZILIAN_ABNT =
+  { name: "Brazilian ABNT",     Mac: null, Win: 0x00000416 };
+const KEYBOARD_LAYOUT_DVORAK_QWERTY =
+  { name: "Dvorak-QWERTY",      Mac: 4,    Win: null       };
+const KEYBOARD_LAYOUT_EN_US =
+  { name: "US",                 Mac: 0,    Win: 0x00000409 };
+const KEYBOARD_LAYOUT_FRENCH =
+  { name: "French",             Mac: 7,    Win: 0x0000040C };
+const KEYBOARD_LAYOUT_GREEK =
+  { name: "Greek",              Mac: 1,    Win: 0x00000408 };
+const KEYBOARD_LAYOUT_GERMAN =
+  { name: "German",             Mac: 2,    Win: 0x00000407 };
+const KEYBOARD_LAYOUT_HEBREW =
+  { name: "Hebrew",             Mac: 8,    Win: 0x0000040D };
+const KEYBOARD_LAYOUT_JAPANESE =
+  { name: "Japanese",           Mac: null, Win: 0x00000411 };
+const KEYBOARD_LAYOUT_LITHUANIAN =
+  { name: "Lithuanian",         Mac: 9,    Win: 0x00010427 };
+const KEYBOARD_LAYOUT_NORWEGIAN =
+  { name: "Norwegian",          Mac: 10,   Win: 0x00000414 };
+const KEYBOARD_LAYOUT_SPANISH =
+  { name: "Spanish",            Mac: 11,   Win: 0x0000040A };
+const KEYBOARD_LAYOUT_SWEDISH =
+  { name: "Swedish",            Mac: 3,    Win: 0x0000041D };
+const KEYBOARD_LAYOUT_THAI =
+  { name: "Thai",               Mac: 5,    Win: 0x0002041E };
 
 /**
  * synthesizeNativeKey() dispatches native key event on active window.
@@ -651,24 +726,13 @@ function synthesizeNativeKey(aKeyboardLayout, aNativeKeyCode, aModifiers,
   if (!utils) {
     return false;
   }
-  var nativeKeyboardLayout;
+  var nativeKeyboardLayout = null;
   if (navigator.platform.indexOf("Mac") == 0) {
-    switch (aKeyboardLayout) {
-      case KEYBOARD_LAYOUT_EN_US:
-        nativeKeyboardLayout = 0;
-        break;
-      default:
-        return false;
-    }
+    nativeKeyboardLayout = aKeyboardLayout.Mac;
   } else if (navigator.platform.indexOf("Win") == 0) {
-    switch (aKeyboardLayout) {
-      case KEYBOARD_LAYOUT_EN_US:
-        nativeKeyboardLayout = 0x409;
-        break;
-      default:
-        return false;
-    }
-  } else {
+    nativeKeyboardLayout = aKeyboardLayout.Win;
+  }
+  if (nativeKeyboardLayout === null) {
     return false;
   }
   utils.sendNativeKeyEvent(nativeKeyboardLayout, aNativeKeyCode,
@@ -881,8 +945,21 @@ function synthesizeText(aEvent, aWindow)
   compositionString.setString(aEvent.composition.string);
   if (aEvent.composition.clauses[0].length) {
     for (var i = 0; i < aEvent.composition.clauses.length; i++) {
-      compositionString.appendClause(aEvent.composition.clauses[i].length,
-                                     aEvent.composition.clauses[i].attr);
+      switch (aEvent.composition.clauses[i].attr) {
+        case compositionString.ATTR_RAWINPUT:
+        case compositionString.ATTR_SELECTEDRAWTEXT:
+        case compositionString.ATTR_CONVERTEDTEXT:
+        case compositionString.ATTR_SELECTEDCONVERTEDTEXT:
+          compositionString.appendClause(aEvent.composition.clauses[i].length,
+                                         aEvent.composition.clauses[i].attr);
+          break;
+        case 0:
+          // Ignore dummy clause for the argument.
+          break;
+        default:
+          throw new Error("invalid clause attribute specified");
+          break;
+      }
     }
   }
 
@@ -892,6 +969,14 @@ function synthesizeText(aEvent, aWindow)
 
   compositionString.dispatchEvent();
 }
+
+// Must be synchronized with nsIDOMWindowUtils.
+const QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK          = 0x0000;
+const QUERY_CONTENT_FLAG_USE_XP_LINE_BREAK              = 0x0001;
+
+const SELECTION_SET_FLAG_USE_NATIVE_LINE_BREAK          = 0x0000;
+const SELECTION_SET_FLAG_USE_XP_LINE_BREAK              = 0x0001;
+const SELECTION_SET_FLAG_REVERSE                        = 0x0002;
 
 /**
  * Synthesize a query selected text event.
@@ -907,7 +992,28 @@ function synthesizeQuerySelectedText(aWindow)
     return null;
   }
 
-  return utils.sendQueryContentEvent(utils.QUERY_SELECTED_TEXT, 0, 0, 0, 0);
+  return utils.sendQueryContentEvent(utils.QUERY_SELECTED_TEXT, 0, 0, 0, 0,
+                                     QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK);
+}
+
+/**
+ * Synthesize a query caret rect event.
+ *
+ * @param aOffset  The caret offset.  0 means left side of the first character
+ *                 in the selection root.
+ * @param aWindow  Optional (If null, current |window| will be used)
+ * @return         An nsIQueryContentEventResult object.  If this failed,
+ *                 the result might be null.
+ */
+function synthesizeQueryCaretRect(aOffset, aWindow)
+{
+  var utils = _getDOMWindowUtils(aWindow);
+  if (!utils) {
+    return null;
+  }
+  return utils.sendQueryContentEvent(utils.QUERY_CARET_RECT,
+                                     aOffset, 0, 0, 0,
+                                     QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK);
 }
 
 /**
@@ -928,5 +1034,6 @@ function synthesizeSelectionSet(aOffset, aLength, aReverse, aWindow)
   if (!utils) {
     return false;
   }
-  return utils.sendSelectionSetEvent(aOffset, aLength, aReverse);
+  var flags = aReverse ? SELECTION_SET_FLAG_REVERSE : 0;
+  return utils.sendSelectionSetEvent(aOffset, aLength, flags);
 }

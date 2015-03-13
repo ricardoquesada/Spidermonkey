@@ -30,26 +30,8 @@ function synthesizeQueryTextContent(aOffset, aLength, aWindow)
     return nullptr;
   }
   return utils.sendQueryContentEvent(utils.QUERY_TEXT_CONTENT,
-                                     aOffset, aLength, 0, 0);
-}
-
-/**
- * Synthesize a query caret rect event.
- *
- * @param aOffset  The caret offset.  0 means left side of the first character
- *                 in the selection root.
- * @param aWindow  Optional (If null, current |window| will be used)
- * @return         An nsIQueryContentEventResult object.  If this failed,
- *                 the result might be null.
- */
-function synthesizeQueryCaretRect(aOffset, aWindow)
-{
-  var utils = _getDOMWindowUtils(aWindow);
-  if (!utils) {
-    return nullptr;
-  }
-  return utils.sendQueryContentEvent(utils.QUERY_CARET_RECT,
-                                     aOffset, 0, 0, 0);
+                                     aOffset, aLength, 0, 0,
+                                     QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK);
 }
 
 /**
@@ -70,7 +52,8 @@ function synthesizeQueryTextRect(aOffset, aLength, aWindow)
     return nullptr;
   }
   return utils.sendQueryContentEvent(utils.QUERY_TEXT_RECT,
-                                     aOffset, aLength, 0, 0);
+                                     aOffset, aLength, 0, 0,
+                                     QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK);
 }
 
 /**
@@ -86,7 +69,8 @@ function synthesizeQueryEditorRect(aWindow)
   if (!utils) {
     return nullptr;
   }
-  return utils.sendQueryContentEvent(utils.QUERY_EDITOR_RECT, 0, 0, 0, 0);
+  return utils.sendQueryContentEvent(utils.QUERY_EDITOR_RECT, 0, 0, 0, 0,
+                                     QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK);
 }
 
 /**
@@ -104,7 +88,8 @@ function synthesizeCharAtPoint(aX, aY, aWindow)
     return nullptr;
   }
   return utils.sendQueryContentEvent(utils.QUERY_CHARACTER_AT_POINT,
-                                     0, 0, aX, aY);
+                                     0, 0, aX, aY,
+                                     QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK);
 }
 
 /**

@@ -8,6 +8,7 @@
 #define jit_RegisterAllocator_h
 
 #include "mozilla/Attributes.h"
+#include "mozilla/MathAlgorithms.h"
 
 #include "jit/LIR.h"
 #include "jit/MIRGenerator.h"
@@ -97,8 +98,8 @@ struct AllocationIntegrityState
         typedef IntegrityItem Lookup;
         static HashNumber hash(const IntegrityItem &item) {
             HashNumber hash = item.alloc.hash();
-            hash = JS_ROTATE_LEFT32(hash, 4) ^ item.vreg;
-            hash = JS_ROTATE_LEFT32(hash, 4) ^ HashNumber(item.block->mir()->id());
+            hash = mozilla::RotateLeft(hash, 4) ^ item.vreg;
+            hash = mozilla::RotateLeft(hash, 4) ^ HashNumber(item.block->mir()->id());
             return hash;
         }
         static bool match(const IntegrityItem &one, const IntegrityItem &two) {
@@ -137,7 +138,7 @@ struct AllocationIntegrityState
 class CodePosition
 {
   private:
-    MOZ_CONSTEXPR CodePosition(const uint32_t &bits)
+    MOZ_CONSTEXPR explicit CodePosition(uint32_t bits)
       : bits_(bits)
     { }
 
@@ -169,7 +170,7 @@ class CodePosition
         return bits_ >> INSTRUCTION_SHIFT;
     }
 
-    uint32_t pos() const {
+    uint32_t bits() const {
         return bits_;
     }
 
@@ -177,28 +178,33 @@ class CodePosition
         return (SubPosition)(bits_ & SUBPOSITION_MASK);
     }
 
-    bool operator <(const CodePosition &other) const {
+    bool operator <(CodePosition other) const {
         return bits_ < other.bits_;
     }
 
-    bool operator <=(const CodePosition &other) const {
+    bool operator <=(CodePosition other) const {
         return bits_ <= other.bits_;
     }
 
-    bool operator !=(const CodePosition &other) const {
+    bool operator !=(CodePosition other) const {
         return bits_ != other.bits_;
     }
 
-    bool operator ==(const CodePosition &other) const {
+    bool operator ==(CodePosition other) const {
         return bits_ == other.bits_;
     }
 
-    bool operator >(const CodePosition &other) const {
+    bool operator >(CodePosition other) const {
         return bits_ > other.bits_;
     }
 
-    bool operator >=(const CodePosition &other) const {
+    bool operator >=(CodePosition other) const {
         return bits_ >= other.bits_;
+    }
+
+    uint32_t operator -(CodePosition other) const {
+        JS_ASSERT(bits_ >= other.bits_);
+        return bits_ - other.bits_;
     }
 
     CodePosition previous() const {
@@ -249,34 +255,36 @@ class InstructionData
 // Structure to track all moves inserted next to instructions in a graph.
 class InstructionDataMap
 {
-    InstructionData *insData_;
-    uint32_t numIns_;
+    FixedList<InstructionData> insData_;
 
   public:
     InstructionDataMap()
-      : insData_(nullptr),
-        numIns_(0)
+      : insData_()
     { }
 
     bool init(MIRGenerator *gen, uint32_t numInstructions) {
-        insData_ = gen->allocate<InstructionData>(numInstructions);
-        numIns_ = numInstructions;
-        if (!insData_)
+        if (!insData_.init(gen->alloc(), numInstructions))
             return false;
-        memset(insData_, 0, sizeof(InstructionData) * numInstructions);
+        memset(&insData_[0], 0, sizeof(InstructionData) * numInstructions);
         return true;
     }
 
-    InstructionData &operator[](const CodePosition &pos) {
-        JS_ASSERT(pos.ins() < numIns_);
-        return insData_[pos.ins()];
+    InstructionData &operator[](CodePosition pos) {
+        return operator[](pos.ins());
+    }
+    const InstructionData &operator[](CodePosition pos) const {
+        return operator[](pos.ins());
     }
     InstructionData &operator[](LInstruction *ins) {
-        JS_ASSERT(ins->id() < numIns_);
-        return insData_[ins->id()];
+        return operator[](ins->id());
+    }
+    const InstructionData &operator[](LInstruction *ins) const {
+        return operator[](ins->id());
     }
     InstructionData &operator[](uint32_t ins) {
-        JS_ASSERT(ins < numIns_);
+        return insData_[ins];
+    }
+    const InstructionData &operator[](uint32_t ins) const {
         return insData_[ins];
     }
 };
@@ -307,14 +315,15 @@ class RegisterAllocator
     {
         if (FramePointer != InvalidReg && mir->instrumentedProfiling())
             allRegisters_.take(AnyRegister(FramePointer));
-#if defined(JS_CPU_X64)
+#if defined(JS_CODEGEN_X64)
         if (mir->compilingAsmJS())
             allRegisters_.take(AnyRegister(HeapReg));
-#elif defined(JS_CPU_ARM)
+#elif defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_MIPS)
         if (mir->compilingAsmJS()) {
             allRegisters_.take(AnyRegister(HeapReg));
             allRegisters_.take(AnyRegister(GlobalReg));
-            allRegisters_.take(AnyRegister(NANReg));
+            // Need to remove both NANReg, and its aliases.
+            allRegisters_.takeAllAliasedUnchecked(AnyRegister(NANReg));
         }
 #endif
     }
@@ -325,19 +334,37 @@ class RegisterAllocator
         return mir->alloc();
     }
 
-    static CodePosition outputOf(uint32_t pos) {
+    CodePosition outputOf(uint32_t pos) const {
+        // All phis in a block write their outputs after all of them have
+        // read their inputs. Consequently, it doesn't make sense to talk
+        // about code positions in the middle of a series of phis.
+        if (insData[pos].ins()->isPhi()) {
+            while (insData[pos + 1].ins()->isPhi())
+                ++pos;
+        }
         return CodePosition(pos, CodePosition::OUTPUT);
     }
-    static CodePosition outputOf(const LInstruction *ins) {
-        return CodePosition(ins->id(), CodePosition::OUTPUT);
+    CodePosition outputOf(const LInstruction *ins) const {
+        return outputOf(ins->id());
     }
-    static CodePosition inputOf(uint32_t pos) {
+    CodePosition inputOf(uint32_t pos) const {
+        // All phis in a block read their inputs before any of them write their
+        // outputs. Consequently, it doesn't make sense to talk about code
+        // positions in the middle of a series of phis.
+        if (insData[pos].ins()->isPhi()) {
+            while (pos > 0 && insData[pos - 1].ins()->isPhi())
+                --pos;
+        }
         return CodePosition(pos, CodePosition::INPUT);
     }
-    static CodePosition inputOf(const LInstruction *ins) {
-        // Phi nodes "use" their inputs before the beginning of the block.
-        JS_ASSERT(!ins->isPhi());
-        return CodePosition(ins->id(), CodePosition::INPUT);
+    CodePosition inputOf(const LInstruction *ins) const {
+        return inputOf(ins->id());
+    }
+    CodePosition entryOf(const LBlock *block) {
+        return inputOf(block->firstId());
+    }
+    CodePosition exitOf(const LBlock *block) {
+        return outputOf(block->lastId());
     }
 
     LMoveGroup *getInputMoveGroup(uint32_t ins);
@@ -364,12 +391,14 @@ class RegisterAllocator
 
         return outputOf(ins);
     }
+
+    void dumpInstructions();
 };
 
 static inline AnyRegister
 GetFixedRegister(const LDefinition *def, const LUse *use)
 {
-    return def->type() == LDefinition::DOUBLE
+    return def->isFloatReg()
            ? AnyRegister(FloatRegister::FromCode(use->registerCode()))
            : AnyRegister(Register::FromCode(use->registerCode()));
 }

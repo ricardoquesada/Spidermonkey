@@ -161,13 +161,14 @@ class jsvalTypeCache(object):
         self.BOOLEAN   = d['JSVAL_TYPE_BOOLEAN']
         self.MAGIC     = d['JSVAL_TYPE_MAGIC']
         self.STRING    = d['JSVAL_TYPE_STRING']
+        self.SYMBOL    = d['JSVAL_TYPE_SYMBOL']
         self.NULL      = d['JSVAL_TYPE_NULL']
         self.OBJECT    = d['JSVAL_TYPE_OBJECT']
 
         # Let self.magic_names be an array whose i'th element is the name of
         # the i'th magic value.
         d = gdb.types.make_enum_dict(gdb.lookup_type('JSWhyMagic'))
-        self.magic_names = range(max(d.itervalues()) + 1)
+        self.magic_names = list(range(max(d.values()) + 1))
         for (k,v) in d.items(): self.magic_names[v] = k
 
         # Choose an unboxing scheme for this architecture.
@@ -203,6 +204,8 @@ class jsval_layout(object):
                 return '$jsmagic(%d)' % (value,)
         elif tag == self.jtc.STRING:
             value = self.box.as_address().cast(self.cache.JSString_ptr_t)
+        elif tag == self.jtc.SYMBOL:
+            value = self.box.as_address().cast(self.cache.JSSymbol_ptr_t)
         elif tag == self.jtc.NULL:
             return 'JSVAL_NULL'
         elif tag == self.jtc.OBJECT:

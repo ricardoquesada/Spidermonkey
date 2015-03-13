@@ -25,17 +25,18 @@ class nsSampleWordBreaker : public nsIWordBreaker
 public:
 
   nsSampleWordBreaker() ;
-  virtual ~nsSampleWordBreaker() ;
 
-  bool BreakInBetween(const PRUnichar* aText1 , uint32_t aTextLen1,
-                        const PRUnichar* aText2 , uint32_t aTextLen2);
-  nsWordRange FindWord(const PRUnichar* aText1 , uint32_t aTextLen1,
+  bool BreakInBetween(const char16_t* aText1 , uint32_t aTextLen1,
+                        const char16_t* aText2 , uint32_t aTextLen2);
+  nsWordRange FindWord(const char16_t* aText1 , uint32_t aTextLen1,
                        uint32_t aOffset);
 
-  int32_t NextWord(const PRUnichar* aText, uint32_t aLen, uint32_t aPos);
+  int32_t NextWord(const char16_t* aText, uint32_t aLen, uint32_t aPos);
 
 protected:
-  uint8_t  GetClass(PRUnichar aChar);
+  uint8_t  GetClass(char16_t aChar);
+
+  virtual ~nsSampleWordBreaker();
 };
 
 #endif  /* nsSampleWordBreaker_h__ */

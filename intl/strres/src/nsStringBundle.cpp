@@ -13,7 +13,6 @@
 #include "nsIMutableArray.h"
 #include "nsArrayEnumerator.h"
 #include "nscore.h"
-#include "nsHashtable.h"
 #include "nsMemory.h"
 #include "nsNetUtil.h"
 #include "nsIObserverService.h"
@@ -56,10 +55,10 @@ nsStringBundle::LoadProperties()
   if (mAttemptedLoad) {
     if (mLoaded)
       return NS_OK;
-      
+
     return NS_ERROR_UNEXPECTED;
   }
-  
+
   mAttemptedLoad = true;
 
   nsresult rv;
@@ -76,7 +75,7 @@ nsStringBundle::LoadProperties()
 
   // It's a string bundle.  We expect a text/plain type, so set that as hint
   channel->SetContentType(NS_LITERAL_CSTRING("text/plain"));
-  
+
   nsCOMPtr<nsIInputStream> in;
   rv = channel->Open(getter_AddRefs(in));
   if (NS_FAILED(rv)) return rv;
@@ -87,25 +86,25 @@ nsStringBundle::LoadProperties()
   static NS_DEFINE_CID(kPersistentPropertiesCID, NS_IPERSISTENTPROPERTIES_CID);
   mProps = do_CreateInstance(kPersistentPropertiesCID, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
-  
+
   mAttemptedLoad = mLoaded = true;
   rv = mProps->Load(in);
 
   mLoaded = NS_SUCCEEDED(rv);
-  
+
   return rv;
 }
 
 
 nsresult
 nsStringBundle::GetStringFromID(int32_t aID, nsAString& aResult)
-{  
+{
   ReentrantMonitorAutoEnter automon(mReentrantMonitor);
   nsAutoCString name;
   name.AppendInt(aID, 10);
 
   nsresult rv;
-  
+
   // try override first
   if (mOverrideStrings) {
     rv = mOverrideStrings->GetStringFromName(mPropertiesURL,
@@ -113,15 +112,8 @@ nsStringBundle::GetStringFromID(int32_t aID, nsAString& aResult)
                                              aResult);
     if (NS_SUCCEEDED(rv)) return rv;
   }
-  
-  rv = mProps->GetStringProperty(name, aResult);
 
-#ifdef DEBUG_tao_
-  char *s = ToNewCString(aResult);
-  printf("\n** GetStringFromID: aResult=%s, len=%d\n", s?s:"null", 
-         aResult.Length());
-  if (s) nsMemory::Free(s);
-#endif /* DEBUG_tao_ */
+  rv = mProps->GetStringProperty(name, aResult);
 
   return rv;
 }
@@ -139,24 +131,16 @@ nsStringBundle::GetStringFromName(const nsAString& aName,
                                              aResult);
     if (NS_SUCCEEDED(rv)) return rv;
   }
-  
+
   rv = mProps->GetStringProperty(NS_ConvertUTF16toUTF8(aName), aResult);
-#ifdef DEBUG_tao_
-  char *s = ToNewCString(aResult),
-       *ss = ToNewCString(aName);
-  printf("\n** GetStringFromName: aName=%s, aResult=%s, len=%d\n", 
-         ss?ss:"null", s?s:"null", aResult.Length());
-  if (s)  nsMemory::Free(s);
-  if (ss) nsMemory::Free(ss);
-#endif /* DEBUG_tao_ */
   return rv;
 }
 
 NS_IMETHODIMP
 nsStringBundle::FormatStringFromID(int32_t aID,
-                                   const PRUnichar **aParams,
+                                   const char16_t **aParams,
                                    uint32_t aLength,
-                                   PRUnichar ** aResult)
+                                   char16_t ** aResult)
 {
   nsAutoString idStr;
   idStr.AppendInt(aID, 10);
@@ -166,10 +150,10 @@ nsStringBundle::FormatStringFromID(int32_t aID,
 
 // this function supports at most 10 parameters.. see below for why
 NS_IMETHODIMP
-nsStringBundle::FormatStringFromName(const PRUnichar *aName,
-                                     const PRUnichar **aParams,
+nsStringBundle::FormatStringFromName(const char16_t *aName,
+                                     const char16_t **aParams,
                                      uint32_t aLength,
-                                     PRUnichar **aResult)
+                                     char16_t **aResult)
 {
   NS_ENSURE_ARG_POINTER(aName);
   NS_ASSERTION(aParams && aLength, "FormatStringFromName() without format parameters: use GetStringFromName() instead");
@@ -178,25 +162,25 @@ nsStringBundle::FormatStringFromName(const PRUnichar *aName,
   nsresult rv;
   rv = LoadProperties();
   if (NS_FAILED(rv)) return rv;
-  
+
   nsAutoString formatStr;
   rv = GetStringFromName(nsDependentString(aName), formatStr);
   if (NS_FAILED(rv)) return rv;
 
   return FormatString(formatStr.get(), aParams, aLength, aResult);
 }
-                                     
 
-NS_IMPL_ISUPPORTS1(nsStringBundle, nsIStringBundle)
+
+NS_IMPL_ISUPPORTS(nsStringBundle, nsIStringBundle)
 
 /* void GetStringFromID (in long aID, out wstring aResult); */
 NS_IMETHODIMP
-nsStringBundle::GetStringFromID(int32_t aID, PRUnichar **aResult)
+nsStringBundle::GetStringFromID(int32_t aID, char16_t **aResult)
 {
   nsresult rv;
   rv = LoadProperties();
   if (NS_FAILED(rv)) return rv;
-  
+
   *aResult = nullptr;
   nsAutoString tmpstr;
 
@@ -210,8 +194,8 @@ nsStringBundle::GetStringFromID(int32_t aID, PRUnichar **aResult)
 }
 
 /* void GetStringFromName (in wstring aName, out wstring aResult); */
-NS_IMETHODIMP 
-nsStringBundle::GetStringFromName(const PRUnichar *aName, PRUnichar **aResult)
+NS_IMETHODIMP
+nsStringBundle::GetStringFromName(const char16_t *aName, char16_t **aResult)
 {
   NS_ENSURE_ARG_POINTER(aName);
   NS_ENSURE_ARG_POINTER(aResult);
@@ -228,7 +212,7 @@ nsStringBundle::GetStringFromName(const PRUnichar *aName, PRUnichar **aResult)
   {
 #if 0
     // it is not uncommon for apps to request a string name which may not exist
-    // so be quiet about it. 
+    // so be quiet about it.
     NS_WARNING("String missing from string bundle");
     printf("  '%s' missing from bundle %s\n", NS_ConvertUTF16toUTF8(aName).get(), mPropertiesURL.get());
 #endif
@@ -247,7 +231,7 @@ nsStringBundle::GetCombinedEnumeration(nsIStringBundleOverride* aOverrideStrings
 {
   nsCOMPtr<nsISupports> supports;
   nsCOMPtr<nsIPropertyElement> propElement;
-  
+
   nsresult rv;
 
   nsCOMPtr<nsIMutableArray> resultArray =
@@ -258,7 +242,7 @@ nsStringBundle::GetCombinedEnumeration(nsIStringBundleOverride* aOverrideStrings
   nsCOMPtr<nsISimpleEnumerator> overrideEnumerator;
   rv = aOverrideStrings->EnumerateKeysInBundle(mPropertiesURL,
                                                getter_AddRefs(overrideEnumerator));
-  
+
   bool hasMore;
   rv = overrideEnumerator->HasMoreElements(&hasMore);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -304,7 +288,7 @@ nsStringBundle::GetCombinedEnumeration(nsIStringBundleOverride* aOverrideStrings
 
   return resultArray->Enumerate(aResult);
 }
-                                
+
 
 NS_IMETHODIMP
 nsStringBundle::GetSimpleEnumeration(nsISimpleEnumerator** elements)
@@ -315,17 +299,17 @@ nsStringBundle::GetSimpleEnumeration(nsISimpleEnumerator** elements)
   nsresult rv;
   rv = LoadProperties();
   if (NS_FAILED(rv)) return rv;
-  
+
   if (mOverrideStrings)
       return GetCombinedEnumeration(mOverrideStrings, elements);
-  
+
   return mProps->Enumerate(elements);
 }
 
 nsresult
-nsStringBundle::FormatString(const PRUnichar *aFormatStr,
-                             const PRUnichar **aParams, uint32_t aLength,
-                             PRUnichar **aResult)
+nsStringBundle::FormatString(const char16_t *aFormatStr,
+                             const char16_t **aParams, uint32_t aLength,
+                             char16_t **aResult)
 {
   NS_ENSURE_ARG_POINTER(aResult);
   NS_ENSURE_ARG(aLength <= 10); // enforce 10-parameter limit
@@ -336,7 +320,7 @@ nsStringBundle::FormatString(const PRUnichar *aFormatStr,
   // Don't believe me? See:
   //   http://www.eskimo.com/~scs/C-faq/q15.13.html
   // -alecf
-  PRUnichar *text = 
+  char16_t *text =
     nsTextFormatter::smprintf(aFormatStr,
                               aLength >= 1 ? aParams[0] : nullptr,
                               aLength >= 2 ? aParams[1] : nullptr,
@@ -365,7 +349,7 @@ nsStringBundle::FormatString(const PRUnichar *aFormatStr,
   return *aResult ? NS_OK : NS_ERROR_OUT_OF_MEMORY;
 }
 
-NS_IMPL_ISUPPORTS1(nsExtensibleStringBundle, nsIStringBundle)
+NS_IMPL_ISUPPORTS(nsExtensibleStringBundle, nsIStringBundle)
 
 nsExtensibleStringBundle::nsExtensibleStringBundle()
 {
@@ -374,7 +358,7 @@ nsExtensibleStringBundle::nsExtensibleStringBundle()
 
 nsresult
 nsExtensibleStringBundle::Init(const char * aCategory,
-                               nsIStringBundleService* aBundleService) 
+                               nsIStringBundleService* aBundleService)
 {
 
   nsresult rv;
@@ -413,11 +397,11 @@ nsExtensibleStringBundle::Init(const char * aCategory,
   return rv;
 }
 
-nsExtensibleStringBundle::~nsExtensibleStringBundle() 
+nsExtensibleStringBundle::~nsExtensibleStringBundle()
 {
 }
 
-nsresult nsExtensibleStringBundle::GetStringFromID(int32_t aID, PRUnichar ** aResult)
+nsresult nsExtensibleStringBundle::GetStringFromID(int32_t aID, char16_t ** aResult)
 {
   nsresult rv;
   const uint32_t size = mBundles.Count();
@@ -433,8 +417,8 @@ nsresult nsExtensibleStringBundle::GetStringFromID(int32_t aID, PRUnichar ** aRe
   return NS_ERROR_FAILURE;
 }
 
-nsresult nsExtensibleStringBundle::GetStringFromName(const PRUnichar *aName,
-                                                     PRUnichar ** aResult)
+nsresult nsExtensibleStringBundle::GetStringFromName(const char16_t *aName,
+                                                     char16_t ** aResult)
 {
   nsresult rv;
   const uint32_t size = mBundles.Count();
@@ -452,9 +436,9 @@ nsresult nsExtensibleStringBundle::GetStringFromName(const PRUnichar *aName,
 
 NS_IMETHODIMP
 nsExtensibleStringBundle::FormatStringFromID(int32_t aID,
-                                             const PRUnichar ** aParams,
+                                             const char16_t ** aParams,
                                              uint32_t aLength,
-                                             PRUnichar ** aResult)
+                                             char16_t ** aResult)
 {
   nsAutoString idStr;
   idStr.AppendInt(aID, 10);
@@ -462,10 +446,10 @@ nsExtensibleStringBundle::FormatStringFromID(int32_t aID,
 }
 
 NS_IMETHODIMP
-nsExtensibleStringBundle::FormatStringFromName(const PRUnichar *aName,
-                                               const PRUnichar ** aParams,
+nsExtensibleStringBundle::FormatStringFromName(const char16_t *aName,
+                                               const char16_t ** aParams,
                                                uint32_t aLength,
-                                               PRUnichar ** aResult)
+                                               char16_t ** aResult)
 {
   nsXPIDLString formatStr;
   nsresult rv;
@@ -487,38 +471,37 @@ nsresult nsExtensibleStringBundle::GetSimpleEnumeration(nsISimpleEnumerator ** a
 
 #define MAX_CACHED_BUNDLES 16
 
-struct bundleCacheEntry_t : public LinkedListElement<bundleCacheEntry_t> {
-  nsCStringKey *mHashKey;
-  // do not use a nsCOMPtr - this is a struct not a class!
-  nsIStringBundle* mBundle;
+struct bundleCacheEntry_t MOZ_FINAL : public LinkedListElement<bundleCacheEntry_t> {
+  nsCString mHashKey;
+  nsCOMPtr<nsIStringBundle> mBundle;
+
+  bundleCacheEntry_t()
+  {
+    MOZ_COUNT_CTOR(bundleCacheEntry_t);
+  }
+
+  ~bundleCacheEntry_t()
+  {
+    MOZ_COUNT_DTOR(bundleCacheEntry_t);
+  }
 };
 
 
 nsStringBundleService::nsStringBundleService() :
-  mBundleMap(MAX_CACHED_BUNDLES, true)
+  mBundleMap(MAX_CACHED_BUNDLES)
 {
-#ifdef DEBUG_tao_
-  printf("\n++ nsStringBundleService::nsStringBundleService ++\n");
-#endif
-
-  PL_InitArenaPool(&mCacheEntryPool, "srEntries",
-                   sizeof(bundleCacheEntry_t)*MAX_CACHED_BUNDLES,
-                   sizeof(bundleCacheEntry_t));
-
   mErrorService = do_GetService(kErrorServiceCID);
   NS_ASSERTION(mErrorService, "Couldn't get error service");
-
 }
 
-NS_IMPL_ISUPPORTS3(nsStringBundleService,
-                   nsIStringBundleService,
-                   nsIObserver,
-                   nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsStringBundleService,
+                  nsIStringBundleService,
+                  nsIObserver,
+                  nsISupportsWeakReference)
 
 nsStringBundleService::~nsStringBundleService()
 {
   flushBundleCache();
-  PL_FinishArenaPool(&mCacheEntryPool);
 }
 
 nsresult
@@ -536,14 +519,14 @@ nsStringBundleService::Init()
   // at some point we probably want to make this a category, and
   // support multiple overrides
   mOverrideStrings = do_GetService(NS_STRINGBUNDLETEXTOVERRIDE_CONTRACTID);
-  
+
   return NS_OK;
 }
 
 NS_IMETHODIMP
 nsStringBundleService::Observe(nsISupports* aSubject,
                                const char* aTopic,
-                               const PRUnichar* aSomeData)
+                               const char16_t* aSomeData)
 {
   if (strcmp("memory-pressure", aTopic) == 0 ||
       strcmp("profile-do-change", aTopic) == 0 ||
@@ -552,11 +535,11 @@ nsStringBundleService::Observe(nsISupports* aSubject,
     flushBundleCache();
   }
   else if (strcmp("xpcom-category-entry-added", aTopic) == 0 &&
-           NS_LITERAL_STRING("xpcom-autoregistration").Equals(aSomeData)) 
+           NS_LITERAL_STRING("xpcom-autoregistration").Equals(aSomeData))
   {
     mOverrideStrings = do_GetService(NS_STRINGBUNDLETEXTOVERRIDE_CONTRACTID);
   }
-  
+
   return NS_OK;
 }
 
@@ -564,14 +547,11 @@ void
 nsStringBundleService::flushBundleCache()
 {
   // release all bundles in the cache
-  mBundleMap.Reset();
-  
-  while (!mBundleCache.isEmpty()) {
-    bundleCacheEntry_t *cacheEntry = mBundleCache.popFirst();
+  mBundleMap.Clear();
 
-    recycleEntry(cacheEntry);
+  while (!mBundleCache.isEmpty()) {
+    delete mBundleCache.popFirst();
   }
-  PL_FreeArenaPool(&mCacheEntryPool);
 }
 
 NS_IMETHODIMP
@@ -585,27 +565,20 @@ nsresult
 nsStringBundleService::getStringBundle(const char *aURLSpec,
                                        nsIStringBundle **aResult)
 {
-  nsCStringKey completeKey(aURLSpec);
+  nsDependentCString key(aURLSpec);
+  bundleCacheEntry_t* cacheEntry = mBundleMap.Get(key);
 
-  bundleCacheEntry_t* cacheEntry =
-    (bundleCacheEntry_t*)mBundleMap.Get(&completeKey);
-  
   if (cacheEntry) {
     // cache hit!
     // remove it from the list, it will later be reinserted
     // at the head of the list
     cacheEntry->remove();
-    
+
   } else {
 
     // hasn't been cached, so insert it into the hash table
-    nsStringBundle* bundle = new nsStringBundle(aURLSpec, mOverrideStrings);
-    if (!bundle) return NS_ERROR_OUT_OF_MEMORY;
-    NS_ADDREF(bundle);
-    
-    cacheEntry = insertIntoCache(bundle, &completeKey);
-    NS_RELEASE(bundle);         // cache should now be holding a ref
-                                // in the cacheEntry
+    nsRefPtr<nsStringBundle> bundle = new nsStringBundle(aURLSpec, mOverrideStrings);
+    cacheEntry = insertIntoCache(bundle.forget(), key);
   }
 
   // at this point the cacheEntry should exist in the hashtable,
@@ -621,67 +594,41 @@ nsStringBundleService::getStringBundle(const char *aURLSpec,
 }
 
 bundleCacheEntry_t *
-nsStringBundleService::insertIntoCache(nsIStringBundle* aBundle,
-                                       nsCStringKey* aHashKey)
+nsStringBundleService::insertIntoCache(already_AddRefed<nsIStringBundle> aBundle,
+                                       nsCString &aHashKey)
 {
   bundleCacheEntry_t *cacheEntry;
-  
+
   if (mBundleMap.Count() < MAX_CACHED_BUNDLES) {
     // cache not full - create a new entry
-    
-    void *cacheEntryArena;
-    PL_ARENA_ALLOCATE(cacheEntryArena, &mCacheEntryPool, sizeof(bundleCacheEntry_t));
-    cacheEntry = new (cacheEntryArena) bundleCacheEntry_t();
-      
+    cacheEntry = new bundleCacheEntry_t();
   } else {
     // cache is full
     // take the last entry in the list, and recycle it.
     cacheEntry = mBundleCache.getLast();
-      
+
     // remove it from the hash table and linked list
-    NS_ASSERTION(mBundleMap.Exists(cacheEntry->mHashKey),
+    NS_ASSERTION(mBundleMap.Contains(cacheEntry->mHashKey),
                  "Element will not be removed!");
-#ifdef DEBUG_alecf
-    NS_WARNING(nsPrintfCString("Booting %s to make room for %s\n",
-                               cacheEntry->mHashKey->GetString(),
-                               aHashKey->GetString()).get());
-#endif
     mBundleMap.Remove(cacheEntry->mHashKey);
     cacheEntry->remove();
-
-    // free up excess memory
-    recycleEntry(cacheEntry);
   }
-    
+
   // at this point we have a new cacheEntry that doesn't exist
   // in the hashtable, so set up the cacheEntry
+  cacheEntry->mHashKey = aHashKey;
   cacheEntry->mBundle = aBundle;
-  NS_ADDREF(cacheEntry->mBundle);
 
-  cacheEntry->mHashKey = (nsCStringKey*)aHashKey->Clone();
-  
   // insert the entry into the cache and map, make it the MRU
   mBundleMap.Put(cacheEntry->mHashKey, cacheEntry);
 
   return cacheEntry;
 }
 
-void
-nsStringBundleService::recycleEntry(bundleCacheEntry_t *aEntry)
-{
-  delete aEntry->mHashKey;
-  NS_RELEASE(aEntry->mBundle);
-}
-
 NS_IMETHODIMP
-nsStringBundleService::CreateBundle(const char* aURLSpec, 
+nsStringBundleService::CreateBundle(const char* aURLSpec,
                                     nsIStringBundle** aResult)
 {
-#ifdef DEBUG_tao_
-  printf("\n++ nsStringBundleService::CreateBundle ++\n");
-  printf("\n** nsStringBundleService::CreateBundle: %s\n", aURLSpec ? aURLSpec : "null");
-#endif
-
   return getStringBundle(aURLSpec,aResult);
 }
 
@@ -690,20 +637,16 @@ nsStringBundleService::CreateExtensibleBundle(const char* aCategory,
                                               nsIStringBundle** aResult)
 {
   NS_ENSURE_ARG_POINTER(aResult);
+  *aResult = nullptr;
 
-  nsresult res;
+  nsRefPtr<nsExtensibleStringBundle> bundle = new nsExtensibleStringBundle();
 
-  nsExtensibleStringBundle * bundle = new nsExtensibleStringBundle();
-  if (!bundle) return NS_ERROR_OUT_OF_MEMORY;
-
-  res = bundle->Init(aCategory, this);
+  nsresult res = bundle->Init(aCategory, this);
   if (NS_FAILED(res)) {
-    delete bundle;
     return res;
   }
 
   res = bundle->QueryInterface(NS_GET_IID(nsIStringBundle), (void**) aResult);
-  if (NS_FAILED(res)) delete bundle;
 
   return res;
 }
@@ -712,34 +655,22 @@ nsStringBundleService::CreateExtensibleBundle(const char* aCategory,
 
 nsresult
 nsStringBundleService::FormatWithBundle(nsIStringBundle* bundle, nsresult aStatus,
-                                        uint32_t argCount, PRUnichar** argArray,
-                                        PRUnichar* *result)
+                                        uint32_t argCount, char16_t** argArray,
+                                        char16_t* *result)
 {
   nsresult rv;
   nsXPIDLCString key;
 
-  // then find a key into the string bundle for that particular error:
-  rv = mErrorService->GetErrorStringBundleKey(aStatus, getter_Copies(key));
-
-  // first try looking up the error message with the string key:
-  if (NS_SUCCEEDED(rv)) {
-    rv = bundle->FormatStringFromName(NS_ConvertASCIItoUTF16(key).get(),
-                                      (const PRUnichar**)argArray, 
-                                      argCount, result);
-  }
-
-  // if the string key fails, try looking up the error message with the int key:
-  if (NS_FAILED(rv)) {
-    uint16_t code = NS_ERROR_GET_CODE(aStatus);
-    rv = bundle->FormatStringFromID(code, (const PRUnichar**)argArray, argCount, result);
-  }
+  // try looking up the error message with the int key:
+  uint16_t code = NS_ERROR_GET_CODE(aStatus);
+  rv = bundle->FormatStringFromID(code, (const char16_t**)argArray, argCount, result);
 
   // If the int key fails, try looking up the default error message. E.g. print:
   //   An unknown error has occurred (0x804B0003).
   if (NS_FAILED(rv)) {
     nsAutoString statusStr;
     statusStr.AppendInt(static_cast<uint32_t>(aStatus), 16);
-    const PRUnichar* otherArgArray[1];
+    const char16_t* otherArgArray[1];
     otherArgArray[0] = statusStr.get();
     uint16_t code = NS_ERROR_GET_CODE(NS_ERROR_FAILURE);
     rv = bundle->FormatStringFromID(code, otherArgArray, 1, result);
@@ -750,8 +681,8 @@ nsStringBundleService::FormatWithBundle(nsIStringBundle* bundle, nsresult aStatu
 
 NS_IMETHODIMP
 nsStringBundleService::FormatStatusMessage(nsresult aStatus,
-                                           const PRUnichar* aStatusArg,
-                                           PRUnichar* *result)
+                                           const char16_t* aStatusArg,
+                                           char16_t* *result)
 {
   nsresult rv;
   uint32_t i, argCount = 0;
@@ -771,20 +702,20 @@ nsStringBundleService::FormatStatusMessage(nsresult aStatus,
 
   // format the arguments:
   const nsDependentString args(aStatusArg);
-  argCount = args.CountChar(PRUnichar('\n')) + 1;
+  argCount = args.CountChar(char16_t('\n')) + 1;
   NS_ENSURE_ARG(argCount <= 10); // enforce 10-parameter limit
-  PRUnichar* argArray[10];
+  char16_t* argArray[10];
 
-  // convert the aStatusArg into a PRUnichar array
+  // convert the aStatusArg into a char16_t array
   if (argCount == 1) {
     // avoid construction for the simple case:
-    argArray[0] = (PRUnichar*)aStatusArg;
+    argArray[0] = (char16_t*)aStatusArg;
   }
   else if (argCount > 1) {
     int32_t offset = 0;
     for (i = 0; i < argCount; i++) {
       int32_t pos = args.FindChar('\n', offset);
-      if (pos == -1) 
+      if (pos == -1)
         pos = args.Length();
       argArray[i] = ToNewUnicode(Substring(args, offset, pos - offset));
       if (argArray[i] == nullptr) {
@@ -797,7 +728,7 @@ nsStringBundleService::FormatStatusMessage(nsresult aStatus,
   }
 
   // find the string bundle for the error's module:
-  rv = mErrorService->GetErrorStringBundle(NS_ERROR_GET_MODULE(aStatus), 
+  rv = mErrorService->GetErrorStringBundle(NS_ERROR_GET_MODULE(aStatus),
                                            getter_Copies(stringBundleURL));
   if (NS_SUCCEEDED(rv)) {
     rv = getStringBundle(stringBundleURL, getter_AddRefs(bundle));
@@ -821,4 +752,3 @@ done:
   }
   return rv;
 }
-

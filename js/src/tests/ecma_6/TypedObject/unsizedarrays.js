@@ -14,25 +14,28 @@ function runTests() {
   print(BUGNUMBER + ": " + summary);
 
   (function SimpleArrayOfTwoObjects() {
+    print("SimpleArrayOfTwoObjects");
     var Objects = new ArrayType(ObjectType);
-    var objects2 = new Objects(2, [{f: "Hello"},
-                                   {f: "World"}]);
+    var objects2 = new Objects([{f: "Hello"},
+                                {f: "World"}]);
     assertEq(objects2[0].f, "Hello");
     assertEq(objects2[1].f, "World");
     assertEq(objects2.length, 2);
   })();
 
   (function EmbedUnsizedArraysBad() {
+    print("EmbedUnsizedArraysBad");
     var Objects = new ArrayType(ObjectType);
     assertThrows(() => new ArrayType(Objects));
     assertThrows(() => new StructType({f: Objects}));
   })();
 
   (function MultipleSizes() {
+    print("MultipleSizes");
     var Uints = new ArrayType(uint32);
     var Point = new StructType({values: new ArrayType(uint32).dimension(3)});
 
-    var uints = new Uints(3, [0, 1, 2]);
+    var uints = new Uints([0, 1, 2]);
     var point = new Point({values: uints});
 
     assertEq(uints.length, point.values.length);

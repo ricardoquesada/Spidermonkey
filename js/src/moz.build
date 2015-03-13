@@ -4,8 +4,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DIRS += ['config']
-
 if CONFIG['DEHYDRA_PATH']:
     DIRS += ['analysis-tests']
 
@@ -18,22 +16,24 @@ if not CONFIG['JS_DISABLE_SHELL']:
 
 TEST_DIRS += ['jsapi-tests', 'tests', 'gdb']
 
-mfbt_root = '../../mfbt'
-LOCAL_INCLUDES += ['%s/double-conversion' % mfbt_root]
+LOCAL_INCLUDES += ['../../mfbt/double-conversion']
 
-if CONFIG['JS_STANDALONE']:
-    LIBRARY_NAME = 'mozjs-%s' % CONFIG['MOZILLA_SYMBOLVERSION']
-
-    # When building standalone, we need to include mfbt sources, and to declare
-    # "exported" mfbt symbols on its behalf when we use its headers.
-    include('%s/common.mozbuild' % mfbt_root)
-else:
-    LIBRARY_NAME = 'mozjs'
+LIBRARY_NAME = CONFIG['JS_LIBRARY_NAME']
 
 CONFIGURE_SUBST_FILES += [
     'devtools/rootAnalysis/Makefile',
     'js-confdefs.h',
+    'js-config',
+    'js.pc',
 ]
+
+if CONFIG['JS_STANDALONE']:
+    DEFINES['IMPL_MFBT'] = True
+else:
+    CONFIGURE_SUBST_FILES += [
+        '../../config/autoconf-js.mk',
+        '../../config/emptyvars-js.mk',
+    ]
 
 CONFIGURE_DEFINE_FILES += [
     'js-config.h',
@@ -77,17 +77,21 @@ EXPORTS.js += [
     '../public/LegacyIntTypes.h',
     '../public/MemoryMetrics.h',
     '../public/OldDebugAPI.h',
+    '../public/Principals.h',
     '../public/ProfilingStack.h',
     '../public/PropertyKey.h',
     '../public/RequiredDefines.h',
     '../public/RootingAPI.h',
     '../public/SliceBudget.h',
     '../public/StructuredClone.h',
-    '../public/Tracer.h',
+    '../public/TracingAPI.h',
     '../public/TypeDecls.h',
+    '../public/UbiNode.h',
+    '../public/UbiNodeTraverse.h',
     '../public/Utility.h',
     '../public/Value.h',
     '../public/Vector.h',
+    '../public/WeakMapPtr.h',
 ]
 
 UNIFIED_SOURCES += [
@@ -96,12 +100,11 @@ UNIFIED_SOURCES += [
     'builtin/Intl.cpp',
     'builtin/MapObject.cpp',
     'builtin/Object.cpp',
-    'builtin/ParallelArray.cpp',
     'builtin/Profilers.cpp',
-    'builtin/RegExp.cpp',
+    'builtin/SIMD.cpp',
+    'builtin/SymbolObject.cpp',
     'builtin/TestingFunctions.cpp',
     'builtin/TypedObject.cpp',
-    'builtin/TypeRepresentation.cpp',
     'devtools/sharkctl.cpp',
     'ds/LifoAlloc.cpp',
     'frontend/BytecodeCompiler.cpp',
@@ -112,6 +115,8 @@ UNIFIED_SOURCES += [
     'frontend/ParseNode.cpp',
     'frontend/TokenStream.cpp',
     'gc/Barrier.cpp',
+    'gc/ForkJoinNursery.cpp',
+    'gc/GCTrace.cpp',
     'gc/Iteration.cpp',
     'gc/Marking.cpp',
     'gc/Memory.cpp',
@@ -122,8 +127,13 @@ UNIFIED_SOURCES += [
     'gc/Tracer.cpp',
     'gc/Verifier.cpp',
     'gc/Zone.cpp',
+    'irregexp/RegExpAST.cpp',
+    'irregexp/RegExpEngine.cpp',
+    'irregexp/RegExpInterpreter.cpp',
+    'irregexp/RegExpMacroAssembler.cpp',
+    'irregexp/RegExpParser.cpp',
+    'irregexp/RegExpStack.cpp',
     'jsalloc.cpp',
-    'jsanalyze.cpp',
     'jsapi.cpp',
     'jsbool.cpp',
     'jscntxt.cpp',
@@ -151,52 +161,58 @@ UNIFIED_SOURCES += [
     'jsstr.cpp',
     'jswatchpoint.cpp',
     'jsweakmap.cpp',
-    'jsworkers.cpp',
     'jswrapper.cpp',
     'perf/jsperf.cpp',
     'prmjtime.cpp',
     'vm/ArgumentsObject.cpp',
+    'vm/ArrayBufferObject.cpp',
     'vm/CallNonGenericMethod.cpp',
     'vm/CharacterEncoding.cpp',
+    'vm/Compression.cpp',
     'vm/DateTime.cpp',
     'vm/Debugger.cpp',
+    'vm/DebuggerMemory.cpp',
     'vm/ErrorObject.cpp',
     'vm/ForkJoin.cpp',
     'vm/GlobalObject.cpp',
+    'vm/HelperThreads.cpp',
     'vm/Id.cpp',
     'vm/Interpreter.cpp',
     'vm/MemoryMetrics.cpp',
     'vm/Monitor.cpp',
     'vm/ObjectImpl.cpp',
     'vm/OldDebugAPI.cpp',
+    'vm/PIC.cpp',
     'vm/Probes.cpp',
     'vm/PropertyKey.cpp',
     'vm/ProxyObject.cpp',
     'vm/RegExpObject.cpp',
     'vm/RegExpStatics.cpp',
     'vm/Runtime.cpp',
+    'vm/SavedStacks.cpp',
     'vm/ScopeObject.cpp',
     'vm/SelfHosting.cpp',
     'vm/Shape.cpp',
+    'vm/SharedArrayObject.cpp',
     'vm/SPSProfiler.cpp',
     'vm/Stack.cpp',
     'vm/String.cpp',
     'vm/StringBuffer.cpp',
     'vm/StructuredClone.cpp',
+    'vm/Symbol.cpp',
     'vm/ThreadPool.cpp',
     'vm/TypedArrayObject.cpp',
+    'vm/UbiNode.cpp',
     'vm/Unicode.cpp',
     'vm/Value.cpp',
-    'vm/Xdr.cpp',
-    'yarr/PageBlock.cpp',
-    'yarr/YarrCanonicalizeUCS2.cpp',
-    'yarr/YarrInterpreter.cpp',
-    'yarr/YarrPattern.cpp',
-    'yarr/YarrSyntaxChecker.cpp',
+    'vm/WeakMapPtr.cpp',
+    'vm/Xdr.cpp'
 ]
 
 # jsarray.cpp and jsatom.cpp cannot be built in unified mode because
 # xpcshell is broken during packaging when compiled with gcc-4.8.2
+# builtin/RegExp.cpp cannot be built in unified mode because it is built
+# without PGO
 # frontend/Parser.cpp cannot be built in unified mode because of explicit
 # template instantiations.
 # jsmath.cpp cannot be built in unified mode because it needs to pull rand_s
@@ -204,6 +220,7 @@ UNIFIED_SOURCES += [
 # jsutil.cpp cannot be built in unified mode because it is needed for
 # check-vanilla-allocations.
 SOURCES += [
+    'builtin/RegExp.cpp',
     'frontend/Parser.cpp',
     'jsarray.cpp',
     'jsatom.cpp',
@@ -223,13 +240,15 @@ if CONFIG['MOZ_INSTRUMENTS']:
 
 if CONFIG['ENABLE_TRACE_LOGGING']:
     SOURCES += [
-        'TraceLogging.cpp',
+        'vm/TraceLogging.cpp',
     ]
 
 if CONFIG['ENABLE_ION']:
     UNIFIED_SOURCES += [
+        'irregexp/NativeRegExpMacroAssembler.cpp',
         'jit/AliasAnalysis.cpp',
         'jit/AsmJS.cpp',
+        'jit/AsmJSFrameIterator.cpp',
         'jit/AsmJSLink.cpp',
         'jit/AsmJSModule.cpp',
         'jit/AsmJSSignalHandlers.cpp',
@@ -237,6 +256,7 @@ if CONFIG['ENABLE_ION']:
         'jit/Bailouts.cpp',
         'jit/BaselineBailouts.cpp',
         'jit/BaselineCompiler.cpp',
+        'jit/BaselineDebugModeOSR.cpp',
         'jit/BaselineFrame.cpp',
         'jit/BaselineFrameInfo.cpp',
         'jit/BaselineIC.cpp',
@@ -255,7 +275,9 @@ if CONFIG['ENABLE_ION']:
         'jit/IonCaches.cpp',
         'jit/IonFrames.cpp',
         'jit/IonMacroAssembler.cpp',
+        'jit/IonOptimizationLevels.cpp',
         'jit/IonSpewer.cpp',
+        'jit/JitOptions.cpp',
         'jit/JSONSpewer.cpp',
         'jit/LICM.cpp',
         'jit/LinearScan.cpp',
@@ -270,30 +292,33 @@ if CONFIG['ENABLE_ION']:
         'jit/ParallelSafetyAnalysis.cpp',
         'jit/PerfSpewer.cpp',
         'jit/RangeAnalysis.cpp',
+        'jit/Recover.cpp',
         'jit/RegisterAllocator.cpp',
+        'jit/RematerializedFrame.cpp',
         'jit/Safepoints.cpp',
+        'jit/ScalarReplacement.cpp',
         'jit/shared/BaselineCompiler-shared.cpp',
         'jit/shared/CodeGenerator-shared.cpp',
         'jit/shared/Lowering-shared.cpp',
         'jit/Snapshots.cpp',
         'jit/StupidAllocator.cpp',
+        'jit/TypedObjectPrediction.cpp',
         'jit/TypePolicy.cpp',
-        'jit/TypeRepresentationSet.cpp',
         'jit/UnreachableCodeElimination.cpp',
         'jit/ValueNumbering.cpp',
         'jit/VMFunctions.cpp',
     ]
-    if CONFIG['TARGET_CPU'].find('86') != -1:
+    if CONFIG['JS_CODEGEN_X86'] or CONFIG['JS_CODEGEN_X64']:
         UNIFIED_SOURCES += [
             'jit/shared/Assembler-x86-shared.cpp',
             'jit/shared/BaselineCompiler-x86-shared.cpp',
             'jit/shared/BaselineIC-x86-shared.cpp',
             'jit/shared/CodeGenerator-x86-shared.cpp',
-            'jit/shared/IonFrames-x86-shared.cpp',
             'jit/shared/Lowering-x86-shared.cpp',
+            'jit/shared/MacroAssembler-x86-shared.cpp',
             'jit/shared/MoveEmitter-x86-shared.cpp',
         ]
-        if CONFIG['TARGET_CPU'] == 'x86_64':
+        if CONFIG['JS_CODEGEN_X64']:
             UNIFIED_SOURCES += [
                 'jit/x64/Assembler-x64.cpp',
                 'jit/x64/Bailouts-x64.cpp',
@@ -315,7 +340,7 @@ if CONFIG['ENABLE_ION']:
                 'jit/x86/MacroAssembler-x86.cpp',
                 'jit/x86/Trampoline-x86.cpp',
             ]
-    elif CONFIG['TARGET_CPU'].find('arm') != -1:
+    elif CONFIG['JS_CODEGEN_ARM']:
         UNIFIED_SOURCES += [
             'jit/arm/Architecture-arm.cpp',
             'jit/arm/Assembler-arm.cpp',
@@ -323,46 +348,46 @@ if CONFIG['ENABLE_ION']:
             'jit/arm/BaselineCompiler-arm.cpp',
             'jit/arm/BaselineIC-arm.cpp',
             'jit/arm/CodeGenerator-arm.cpp',
-            'jit/arm/IonFrames-arm.cpp',
             'jit/arm/Lowering-arm.cpp',
             'jit/arm/MacroAssembler-arm.cpp',
             'jit/arm/MoveEmitter-arm.cpp',
             'jit/arm/Trampoline-arm.cpp',
         ]
+        if CONFIG['JS_ARM_SIMULATOR']:
+            UNIFIED_SOURCES += [
+                'jit/arm/Simulator-arm.cpp'
+            ]
 
 if CONFIG['OS_ARCH'] == 'WINNT':
     SOURCES += [
         'assembler/jit/ExecutableAllocatorWin.cpp',
-        'yarr/OSAllocatorWin.cpp',
     ]
-elif CONFIG['OS_ARCH'] == 'OS2':
-    SOURCES += [
-        'assembler/jit/ExecutableAllocatorOS2.cpp',
-        'yarr/OSAllocatorOS2.cpp',
-    ]
+    # _CRT_RAND_S must be #defined before #including stdlib.h to get rand_s()
+    DEFINES['_CRT_RAND_S'] = True
 else:
     SOURCES += [
         'assembler/jit/ExecutableAllocatorPosix.cpp',
-        'yarr/OSAllocatorPosix.cpp',
     ]
 
-if CONFIG['ENABLE_ION'] or CONFIG['ENABLE_YARR_JIT']:
-    SOURCES += [
-        'assembler/assembler/ARMAssembler.cpp',
-        'assembler/assembler/MacroAssemblerARM.cpp',
-        'assembler/assembler/MacroAssemblerX86Common.cpp',
-    ]
-
-if CONFIG['ENABLE_YARR_JIT']:
-    SOURCES += [
-        'yarr/YarrJIT.cpp'
-    ]
+if CONFIG['ENABLE_ION']:
+    if CONFIG['JS_CODEGEN_X86'] or CONFIG['JS_CODEGEN_X64']:
+        SOURCES += [
+            'assembler/assembler/MacroAssemblerX86Common.cpp',
+        ]
+    elif CONFIG['JS_CODEGEN_ARM']:
+        SOURCES += [
+            'assembler/assembler/MacroAssemblerARM.cpp',
+        ]
 
 if CONFIG['JS_HAS_CTYPES']:
     SOURCES += [
         'ctypes/CTypes.cpp',
         'ctypes/Library.cpp',
     ]
+    if not CONFIG['MOZ_NATIVE_FFI']:
+        GENERATED_INCLUDES += [
+            'ctypes/libffi/include',
+        ]
 
 if CONFIG['MOZ_VTUNE']:
     SOURCES += [
@@ -373,16 +398,19 @@ if CONFIG['HAVE_LINUX_PERF_EVENT_H']:
     SOURCES += [
         'perf/pm_linux.cpp'
     ]
+    SOURCES['perf/pm_linux.cpp'].flags += [CONFIG['LINUX_HEADERS_INCLUDES']]
 else:
     SOURCES += [
         'perf/pm_stub.cpp'
     ]
 
-MSVC_ENABLE_PGO = True
+# Disable PGO for MSVC 2010 due to unpredictable performance, see
+# bug 1030706.
+if CONFIG['_MSC_VER'] != '1600':
+    MSVC_ENABLE_PGO = True
 
 HOST_SOURCES += [
     'jskwgen.cpp',
-    'jsoplengen.cpp',
 ]
 
 HOST_SIMPLE_PROGRAMS += [
@@ -406,10 +434,15 @@ if CONFIG['MOZ_ETW']:
     GENERATED_FILES = [
         'ETWProvider.h',
     ]
+    # This will get the ETW provider resources into the library mozjs.dll
+    RESFILE = 'ETWProvider.res'
 
 if CONFIG['NIGHTLY_BUILD']:
     DEFINES['ENABLE_PARALLEL_JS'] = True
     DEFINES['ENABLE_BINARYDATA'] = True
+    DEFINES['ENABLE_SHARED_ARRAY_BUFFER'] = True
+    if CONFIG['ENABLE_ION'] and CONFIG['JSGC_GENERATIONAL_CONFIGURED'] and CONFIG['JS_THREADSAFE_CONFIGURED']:
+        DEFINES['JSGC_FJGENERATIONAL'] = True
 
 DEFINES['EXPORT_JS_API'] = True
 
@@ -423,3 +456,18 @@ if CONFIG['JS_HAS_CTYPES']:
 
 if CONFIG['MOZ_LINKER']:
     DEFINES['MOZ_LINKER'] = True
+
+if CONFIG['_MSC_VER']:
+    if CONFIG['CPU_ARCH'] == 'x86':
+        SOURCES['builtin/RegExp.cpp'].no_pgo = True # Bug 772303
+    elif CONFIG['CPU_ARCH'] == 'x86_64' and CONFIG['JS_HAS_CTYPES']:
+        SOURCES['ctypes/CTypes.cpp'].no_pgo = True # Bug 810661
+    # Prevent floating point errors caused by VC++ optimizations
+    # XXX We should add this to CXXFLAGS, too?
+    CFLAGS += ['-fp:precise']
+
+# Needed to "configure" it correctly.  Unfortunately these
+# flags wind up being applied to all code in js/src, not just
+# the code in js/src/assembler.
+DEFINES['USE_SYSTEM_MALLOC'] = 1
+DEFINES['ENABLE_ASSEMBLER'] = 1

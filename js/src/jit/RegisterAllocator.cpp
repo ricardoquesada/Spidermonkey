@@ -42,7 +42,7 @@ AllocationIntegrityState::record()
             virtualRegisters[vreg] = phi->getDef(0);
             if (!info.outputs.append(*phi->getDef(0)))
                 return false;
-            for (size_t k = 0; k < phi->numOperands(); k++) {
+            for (size_t k = 0, kend = phi->numOperands(); k < kend; k++) {
                 if (!info.inputs.append(*phi->getOperand(k)))
                     return false;
             }
@@ -232,9 +232,9 @@ AllocationIntegrityState::checkIntegrity(LBlock *block, LInstruction *ins,
         const InstructionInfo &info = blocks[block->mir()->id()].phis[i];
         LPhi *phi = block->getPhi(i);
         if (info.outputs[0].virtualRegister() == vreg) {
-            for (size_t j = 0; j < phi->numOperands(); j++) {
+            for (size_t j = 0, jend = phi->numOperands(); j < jend; j++) {
                 uint32_t newvreg = info.inputs[j].toUse()->virtualRegister();
-                LBlock *predecessor = graph.getBlock(block->mir()->getPredecessor(j)->id());
+                LBlock *predecessor = block->mir()->getPredecessor(j)->lir();
                 if (!addPredecessor(predecessor, newvreg, alloc))
                     return false;
             }
@@ -244,8 +244,8 @@ AllocationIntegrityState::checkIntegrity(LBlock *block, LInstruction *ins,
 
     // No phi which defined the vreg we are tracking, follow back through all
     // predecessors with the existing vreg.
-    for (size_t i = 0; i < block->mir()->numPredecessors(); i++) {
-        LBlock *predecessor = graph.getBlock(block->mir()->getPredecessor(i)->id());
+    for (size_t i = 0, iend = block->mir()->numPredecessors(); i < iend; i++) {
+        LBlock *predecessor = block->mir()->getPredecessor(i)->lir();
         if (!addPredecessor(predecessor, vreg, alloc))
             return false;
     }
@@ -268,6 +268,7 @@ AllocationIntegrityState::checkSafepointAllocation(LInstruction *ins,
         AnyRegister reg = alloc.toRegister();
         if (populateSafepoints)
             safepoint->addLiveRegister(reg);
+
         JS_ASSERT(safepoint->liveRegs().has(reg));
     }
 
@@ -359,7 +360,7 @@ void
 AllocationIntegrityState::dump()
 {
 #ifdef DEBUG
-    fprintf(stderr, "Register Allocation:\n");
+    fprintf(stderr, "Register Allocation Integrity State:\n");
 
     for (size_t blockIndex = 0; blockIndex < graph.numBlocks(); blockIndex++) {
         LBlock *block = graph.getBlock(blockIndex);
@@ -373,16 +374,16 @@ AllocationIntegrityState::dump()
         for (size_t i = 0; i < block->numPhis(); i++) {
             const InstructionInfo &info = blocks[blockIndex].phis[i];
             LPhi *phi = block->getPhi(i);
-            CodePosition output(phi->id(), CodePosition::OUTPUT);
+            CodePosition input(block->getPhi(0)->id(), CodePosition::INPUT);
+            CodePosition output(block->getPhi(block->numPhis() - 1)->id(), CodePosition::OUTPUT);
 
-            // Don't print the inputOf for phi nodes, since it's never used.
-            fprintf(stderr, "[,%u Phi [def v%u %s] <-",
-                    output.pos(),
-                    info.outputs[0].virtualRegister(),
-                    phi->getDef(0)->output()->toString());
+            fprintf(stderr, "[%u,%u Phi] [def %s] ",
+                    input.bits(),
+                    output.bits(),
+                    phi->getDef(0)->toString());
             for (size_t j = 0; j < phi->numOperands(); j++)
-                fprintf(stderr, " %s", info.inputs[j].toString());
-            fprintf(stderr, "]\n");
+                fprintf(stderr, " [use %s]", info.inputs[j].toString());
+            fprintf(stderr, "\n");
         }
 
         for (LInstructionIterator iter = block->begin(); iter != block->end(); iter++) {
@@ -394,7 +395,7 @@ AllocationIntegrityState::dump()
 
             fprintf(stderr, "[");
             if (input != CodePosition::MIN)
-                fprintf(stderr, "%u,%u ", input.pos(), output.pos());
+                fprintf(stderr, "%u,%u ", input.bits(), output.bits());
             fprintf(stderr, "%s]", ins->opName());
 
             if (ins->isMoveGroup()) {
@@ -408,30 +409,27 @@ AllocationIntegrityState::dump()
                 continue;
             }
 
+            for (size_t i = 0; i < ins->numDefs(); i++)
+                fprintf(stderr, " [def %s]", ins->getDef(i)->toString());
+
             for (size_t i = 0; i < ins->numTemps(); i++) {
                 LDefinition *temp = ins->getTemp(i);
                 if (!temp->isBogusTemp())
                     fprintf(stderr, " [temp v%u %s]", info.temps[i].virtualRegister(),
-                           temp->output()->toString());
-            }
-
-            for (size_t i = 0; i < ins->numDefs(); i++) {
-                LDefinition *def = ins->getDef(i);
-                fprintf(stderr, " [def v%u %s]", info.outputs[i].virtualRegister(),
-                       def->output()->toString());
+                           temp->toString());
             }
 
             size_t index = 0;
             for (LInstruction::InputIterator alloc(*ins); alloc.more(); alloc.next()) {
                 fprintf(stderr, " [use %s", info.inputs[index++].toString());
-                fprintf(stderr, " %s]", alloc->toString());
+                if (!alloc->isConstant())
+                    fprintf(stderr, " %s", alloc->toString());
+                fprintf(stderr, "]");
             }
 
             fprintf(stderr, "\n");
         }
     }
-
-    fprintf(stderr, "\nIntermediate Allocations:\n\n");
 
     // Print discovered allocations at the ends of blocks, in the order they
     // were discovered.
@@ -444,10 +442,14 @@ AllocationIntegrityState::dump()
         seenOrdered[item.index] = item;
     }
 
-    for (size_t i = 0; i < seenOrdered.length(); i++) {
-        IntegrityItem item = seenOrdered[i];
-        fprintf(stderr, "block %u reg v%u alloc %s\n",
-               item.block->mir()->id(), item.vreg, item.alloc.toString());
+    if (!seenOrdered.empty()) {
+        fprintf(stderr, "Intermediate Allocations:\n");
+
+        for (size_t i = 0; i < seenOrdered.length(); i++) {
+            IntegrityItem item = seenOrdered[i];
+            fprintf(stderr, "  block %u reg v%u alloc %s\n",
+                   item.block->mir()->id(), item.vreg, item.alloc.toString());
+        }
     }
 
     fprintf(stderr, "\n");
@@ -510,4 +512,69 @@ RegisterAllocator::getMoveGroupAfter(uint32_t ins)
     else
         data->block()->insertAfter(data->ins(), moves);
     return moves;
+}
+
+void
+RegisterAllocator::dumpInstructions()
+{
+#ifdef DEBUG
+    fprintf(stderr, "Instructions:\n");
+
+    for (size_t blockIndex = 0; blockIndex < graph.numBlocks(); blockIndex++) {
+        LBlock *block = graph.getBlock(blockIndex);
+        MBasicBlock *mir = block->mir();
+
+        fprintf(stderr, "\nBlock %lu", static_cast<unsigned long>(blockIndex));
+        for (size_t i = 0; i < mir->numSuccessors(); i++)
+            fprintf(stderr, " [successor %u]", mir->getSuccessor(i)->id());
+        fprintf(stderr, "\n");
+
+        for (size_t i = 0; i < block->numPhis(); i++) {
+            LPhi *phi = block->getPhi(i);
+
+            fprintf(stderr, "[%u,%u Phi] [def %s]",
+                    inputOf(phi).bits(),
+                    outputOf(phi).bits(),
+                    phi->getDef(0)->toString());
+            for (size_t j = 0; j < phi->numOperands(); j++)
+                fprintf(stderr, " [use %s]", phi->getOperand(j)->toString());
+            fprintf(stderr, "\n");
+        }
+
+        for (LInstructionIterator iter = block->begin(); iter != block->end(); iter++) {
+            LInstruction *ins = *iter;
+
+            fprintf(stderr, "[");
+            if (ins->id() != 0)
+                fprintf(stderr, "%u,%u ", inputOf(ins).bits(), outputOf(ins).bits());
+            fprintf(stderr, "%s]", ins->opName());
+
+            if (ins->isMoveGroup()) {
+                LMoveGroup *group = ins->toMoveGroup();
+                for (int i = group->numMoves() - 1; i >= 0; i--) {
+                    // Use two printfs, as LAllocation::toString is not reentant.
+                    fprintf(stderr, " [%s", group->getMove(i).from()->toString());
+                    fprintf(stderr, " -> %s]", group->getMove(i).to()->toString());
+                }
+                fprintf(stderr, "\n");
+                continue;
+            }
+
+            for (size_t i = 0; i < ins->numDefs(); i++)
+                fprintf(stderr, " [def %s]", ins->getDef(i)->toString());
+
+            for (size_t i = 0; i < ins->numTemps(); i++) {
+                LDefinition *temp = ins->getTemp(i);
+                if (!temp->isBogusTemp())
+                    fprintf(stderr, " [temp %s]", temp->toString());
+            }
+
+            for (LInstruction::InputIterator alloc(*ins); alloc.more(); alloc.next())
+                fprintf(stderr, " [use %s]", alloc->toString());
+
+            fprintf(stderr, "\n");
+        }
+    }
+    fprintf(stderr, "\n");
+#endif // DEBUG
 }

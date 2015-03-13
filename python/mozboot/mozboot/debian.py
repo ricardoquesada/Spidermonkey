@@ -26,6 +26,7 @@ class DebianBootstrapper(BaseBootstrapper):
         'mercurial',
         'mesa-common-dev',
         'python-dev',
+        'python-setuptools',
         'unzip',
         'uuid',
         'yasm',
@@ -42,9 +43,10 @@ class DebianBootstrapper(BaseBootstrapper):
         self.version = version
         self.dist_id = dist_id
 
+        self.packages = self.COMMON_PACKAGES + self.DISTRO_PACKAGES
+
     def install_system_packages(self):
-        packages = self.COMMON_PACKAGES + self.DISTRO_PACKAGES
-        self.apt_install(*packages)
+        self.apt_install(*self.packages)
 
     def _update_package_manager(self):
         self.run_as_root(['apt-get', 'update'])

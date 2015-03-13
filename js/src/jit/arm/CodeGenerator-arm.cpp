@@ -18,6 +18,7 @@
 #include "jit/MIR.h"
 #include "jit/MIRGraph.h"
 #include "vm/Shape.h"
+#include "vm/TraceLogging.h"
 
 #include "jsscriptinlines.h"
 
@@ -39,39 +40,59 @@ CodeGeneratorARM::CodeGeneratorARM(MIRGenerator *gen, LIRGraph *graph, MacroAsse
 bool
 CodeGeneratorARM::generatePrologue()
 {
-    if (gen->compilingAsmJS()) {
-        masm.Push(lr);
-        // Note that this automatically sets MacroAssembler::framePushed().
-        masm.reserveStack(frameDepth_);
-    } else {
-        // Note that this automatically sets MacroAssembler::framePushed().
-        masm.reserveStack(frameSize());
-        masm.checkStackAlignment();
+    JS_ASSERT(!gen->compilingAsmJS());
+
+    // Note that this automatically sets MacroAssembler::framePushed().
+    masm.reserveStack(frameSize());
+    masm.checkStackAlignment();
+    return true;
+}
+
+bool
+CodeGeneratorARM::generateAsmJSPrologue(Label *stackOverflowLabel)
+{
+    JS_ASSERT(gen->compilingAsmJS());
+
+    // See comment in Assembler-shared.h about AsmJSFrameSize.
+    masm.push(lr);
+
+    // The asm.js over-recursed handler wants to be able to assume that SP
+    // points to the return address, so perform the check after pushing lr but
+    // before pushing frameDepth.
+    if (!omitOverRecursedCheck()) {
+        masm.branchPtr(Assembler::AboveOrEqual,
+                       AsmJSAbsoluteAddress(AsmJSImm_StackLimit),
+                       StackPointer,
+                       stackOverflowLabel);
     }
 
+    // Note that this automatically sets MacroAssembler::framePushed().
+    masm.reserveStack(frameDepth_);
+    masm.checkStackAlignment();
     return true;
 }
 
 bool
 CodeGeneratorARM::generateEpilogue()
 {
-    masm.bind(&returnLabel_); 
-#if JS_TRACE_LOGGING
-    masm.tracelogStop();
-#endif
-    if (gen->compilingAsmJS()) {
-        // Pop the stack we allocated at the start of the function.
-        masm.freeStack(frameDepth_);
-        masm.Pop(pc);
-        JS_ASSERT(masm.framePushed() == 0);
-        //masm.as_bkpt();
-    } else {
-        // Pop the stack we allocated at the start of the function.
-        masm.freeStack(frameSize());
-        JS_ASSERT(masm.framePushed() == 0);
-        masm.ma_pop(pc);
+    masm.bind(&returnLabel_);
+
+#ifdef JS_TRACE_LOGGING
+    if (!gen->compilingAsmJS() && gen->info().executionMode() == SequentialExecution) {
+        if (!emitTracelogStopEvent(TraceLogger::IonMonkey))
+            return false;
+        if (!emitTracelogScriptStop())
+            return false;
     }
-    masm.dumpPool();
+#endif
+
+    if (gen->compilingAsmJS())
+        masm.freeStack(frameDepth_);
+    else
+        masm.freeStack(frameSize());
+    JS_ASSERT(masm.framePushed() == 0);
+    masm.pop(pc);
+    masm.flushBuffer();
     return true;
 }
 
@@ -157,7 +178,7 @@ CodeGeneratorARM::generateOutOfLineCode()
         // Push the frame size, so the handler can recover the IonScript.
         masm.ma_mov(Imm32(frameSize()), lr);
 
-        IonCode *handler = gen->jitRuntime()->getGenericBailoutHandler();
+        JitCode *handler = gen->jitRuntime()->getGenericBailoutHandler(gen->info().executionMode());
         masm.branch(handler);
     }
 
@@ -167,22 +188,6 @@ CodeGeneratorARM::generateOutOfLineCode()
 bool
 CodeGeneratorARM::bailoutIf(Assembler::Condition condition, LSnapshot *snapshot)
 {
-    CompileInfo &info = snapshot->mir()->block()->info();
-    switch (info.executionMode()) {
-
-      case ParallelExecution: {
-        // in parallel mode, make no attempt to recover, just signal an error.
-        OutOfLineAbortPar *ool = oolAbortPar(ParallelBailoutUnsupported,
-                                             snapshot->mir()->block(),
-                                             snapshot->mir()->pc());
-        masm.ma_b(ool->entry(), condition);
-        return true;
-      }
-      case SequentialExecution:
-        break;
-      default:
-        MOZ_ASSUME_UNREACHABLE("No such execution mode");
-    }
     if (!encode(snapshot))
         return false;
 
@@ -193,7 +198,7 @@ CodeGeneratorARM::bailoutIf(Assembler::Condition condition, LSnapshot *snapshot)
                  frameClass_.frameSize() == masm.framePushed());
 
     if (assignBailoutId(snapshot)) {
-        uint8_t *code = deoptTable_->raw() + snapshot->bailoutId() * BAILOUT_TABLE_ENTRY_SIZE;
+        uint8_t *code = Assembler::BailoutTableStart(deoptTable_->raw()) + snapshot->bailoutId() * BAILOUT_TABLE_ENTRY_SIZE;
         masm.ma_b(code, Relocation::HARDCODED, condition);
         return true;
     }
@@ -217,23 +222,6 @@ CodeGeneratorARM::bailoutFrom(Label *label, LSnapshot *snapshot)
     JS_ASSERT(label->used());
     JS_ASSERT(!label->bound());
 
-    CompileInfo &info = snapshot->mir()->block()->info();
-    switch (info.executionMode()) {
-
-      case ParallelExecution: {
-        // in parallel mode, make no attempt to recover, just signal an error.
-        OutOfLineAbortPar *ool = oolAbortPar(ParallelBailoutUnsupported,
-                                             snapshot->mir()->block(),
-                                             snapshot->mir()->pc());
-        masm.retarget(label, ool->entry());
-        return true;
-      }
-      case SequentialExecution:
-        break;
-      default:
-        MOZ_ASSUME_UNREACHABLE("No such execution mode");
-    }
-
     if (!encode(snapshot))
         return false;
 
@@ -242,23 +230,8 @@ CodeGeneratorARM::bailoutFrom(Label *label, LSnapshot *snapshot)
     // isn't properly aligned to the static frame size.
     JS_ASSERT_IF(frameClass_ != FrameSizeClass::None(),
                  frameClass_.frameSize() == masm.framePushed());
-    // This involves retargeting a label, which I've declared is always going
-    // to be a pc-relative branch to an absolute address!
-    // With no assurance that this is going to be a local branch, I am wary to
-    // implement this.  Moreover, If it isn't a local branch, it will be large
-    // and possibly slow.  I believe that the correct way to handle this is to
-    // subclass label into a fatlabel, where we generate enough room for a load
-    // before the branch
-#if 0
-    if (assignBailoutId(snapshot)) {
-        uint8_t *code = deoptTable_->raw() + snapshot->bailoutId() * BAILOUT_TABLE_ENTRY_SIZE;
-        masm.retarget(label, code, Relocation::HARDCODED);
-        return true;
-    }
-#endif
-    // We could not use a jump table, either because all bailout IDs were
-    // reserved, or a jump table is not optimal for this frame size or
-    // platform. Whatever, we will generate a lazy bailout.
+
+    // On ARM we don't use a bailout table.
     OutOfLineBailout *ool = new(alloc()) OutOfLineBailout(snapshot, masm.framePushed());
     if (!addOutOfLineCode(ool)) {
         return false;
@@ -281,8 +254,8 @@ bool
 CodeGeneratorARM::visitOutOfLineBailout(OutOfLineBailout *ool)
 {
     masm.ma_mov(Imm32(ool->snapshot()->snapshotOffset()), ScratchRegister);
-    masm.ma_push(ScratchRegister);
-    masm.ma_push(ScratchRegister);
+    masm.ma_push(ScratchRegister); // BailoutStack::padding_
+    masm.ma_push(ScratchRegister); // BailoutStack::snapshotOffset_
     masm.ma_b(&deoptLabel_);
     return true;
 }
@@ -302,18 +275,22 @@ CodeGeneratorARM::visitMinMaxD(LMinMaxD *ins)
     Label nan, equal, returnSecond, done;
 
     masm.compareDouble(first, second);
-    masm.ma_b(&nan, Assembler::VFP_Unordered); // first or second is NaN, result is NaN.
-    masm.ma_b(&equal, Assembler::VFP_Equal); // make sure we handle -0 and 0 right.
+    // First or second is NaN, result is NaN.
+    masm.ma_b(&nan, Assembler::VFP_Unordered);
+    // Make sure we handle -0 and 0 right.
+    masm.ma_b(&equal, Assembler::VFP_Equal);
     masm.ma_b(&returnSecond, cond);
     masm.ma_b(&done);
 
     // Check for zero.
     masm.bind(&equal);
-    masm.compareDouble(first, InvalidFloatReg);
-    masm.ma_b(&done, Assembler::VFP_NotEqualOrUnordered); // first wasn't 0 or -0, so just return it.
+    masm.compareDouble(first, NoVFPRegister);
+    // First wasn't 0 or -0, so just return it.
+    masm.ma_b(&done, Assembler::VFP_NotEqualOrUnordered);
     // So now both operands are either -0 or 0.
     if (ins->mir()->isMax()) {
-        masm.ma_vadd(second, first, first); // -0 + -0 = -0 and -0 + 0 = 0.
+        // -0 + -0 = -0 and -0 + 0 = 0.
+        masm.ma_vadd(second, first, first);
     } else {
         masm.ma_vneg(first, first);
         masm.ma_vsub(first, second, first);
@@ -430,11 +407,11 @@ CodeGeneratorARM::visitMulI(LMulI *ins)
             break;
           case 0:
             masm.ma_mov(Imm32(0), ToRegister(dest));
-            return true; // escape overflow check;
+            return true; // Escape overflow check;
           case 1:
-            // nop
+            // Nop
             masm.ma_mov(ToRegister(lhs), ToRegister(dest));
-            return true; // escape overflow check;
+            return true; // Escape overflow check;
           case 2:
             masm.ma_add(ToRegister(lhs), ToRegister(lhs), ToRegister(dest), SetCond);
             // Overflow is handled later.
@@ -444,17 +421,19 @@ CodeGeneratorARM::visitMulI(LMulI *ins)
             if (constant > 0) {
                 // Try shift and add sequences for a positive constant.
                 if (!mul->canOverflow()) {
-                    // If it cannot overflow, we can do lots of optimizations
+                    // If it cannot overflow, we can do lots of optimizations.
                     Register src = ToRegister(lhs);
                     uint32_t shift = FloorLog2(constant);
                     uint32_t rest = constant - (1 << shift);
-                    // See if the constant has one bit set, meaning it can be encoded as a bitshift
+                    // See if the constant has one bit set, meaning it can be
+                    // encoded as a bitshift.
                     if ((1 << shift) == constant) {
                         masm.ma_lsl(Imm32(shift), src, ToRegister(dest));
                         handled = true;
                     } else {
-                        // If the constant cannot be encoded as (1<<C1), see if it can be encoded as
-                        // (1<<C1) | (1<<C2), which can be computed using an add and a shift
+                        // If the constant cannot be encoded as (1 << C1), see
+                        // if it can be encoded as (1 << C1) | (1 << C2), which
+                        // can be computed using an add and a shift.
                         uint32_t shift_rest = FloorLog2(rest);
                         if ((1u << shift_rest) == rest) {
                             masm.as_add(ToRegister(dest), src, lsl(src, shift-shift_rest));
@@ -471,9 +450,9 @@ CodeGeneratorARM::visitMulI(LMulI *ins)
                     if ((1 << shift) == constant) {
                         // dest = lhs * pow(2,shift)
                         masm.ma_lsl(Imm32(shift), ToRegister(lhs), ToRegister(dest));
-                        // At runtime, check (lhs == dest >> shift), if this does not hold,
-                        // some bits were lost due to overflow, and the computation should
-                        // be resumed as a double.
+                        // At runtime, check (lhs == dest >> shift), if this
+                        // does not hold, some bits were lost due to overflow,
+                        // and the computation should be resumed as a double.
                         masm.as_cmp(ToRegister(lhs), asr(ToRegister(dest), shift));
                         c = Assembler::NotEqual;
                         handled = true;
@@ -489,19 +468,19 @@ CodeGeneratorARM::visitMulI(LMulI *ins)
             }
           }
         }
-        // Bailout on overflow
+        // Bailout on overflow.
         if (mul->canOverflow() && !bailoutIf(c, ins->snapshot()))
             return false;
     } else {
         Assembler::Condition c = Assembler::Overflow;
 
-        //masm.imull(ToOperand(rhs), ToRegister(lhs));
+        // masm.imull(ToOperand(rhs), ToRegister(lhs));
         if (mul->canOverflow())
             c = masm.ma_check_mul(ToRegister(lhs), ToRegister(rhs), ToRegister(dest), c);
         else
             masm.ma_mul(ToRegister(lhs), ToRegister(rhs), ToRegister(dest));
 
-        // Bailout on overflow
+        // Bailout on overflow.
         if (mul->canOverflow() && !bailoutIf(c, ins->snapshot()))
             return false;
 
@@ -529,9 +508,12 @@ CodeGeneratorARM::divICommon(MDiv *mir, Register lhs, Register rhs, Register out
     if (mir->canBeNegativeOverflow()) {
         // Handle INT32_MIN / -1;
         // The integer division will give INT32_MIN, but we want -(double)INT32_MIN.
-        masm.ma_cmp(lhs, Imm32(INT32_MIN)); // sets EQ if lhs == INT32_MIN
-        masm.ma_cmp(rhs, Imm32(-1), Assembler::Equal); // if EQ (LHS == INT32_MIN), sets EQ if rhs == -1
-        if (mir->isTruncated()) {
+
+        // Sets EQ if lhs == INT32_MIN.
+        masm.ma_cmp(lhs, Imm32(INT32_MIN));
+        // If EQ (LHS == INT32_MIN), sets EQ if rhs == -1.
+        masm.ma_cmp(rhs, Imm32(-1), Assembler::Equal);
+        if (mir->canTruncateOverflow()) {
             // (-INT32_MIN)|0 = INT32_MIN
             Label skip;
             masm.ma_b(&skip, Assembler::NotEqual);
@@ -545,24 +527,11 @@ CodeGeneratorARM::divICommon(MDiv *mir, Register lhs, Register rhs, Register out
         }
     }
 
-    // 0/X (with X < 0) is bad because both of these values *should* be doubles, and
-    // the result should be -0.0, which cannot be represented in integers.
-    // X/0 is bad because it will give garbage (or abort), when it should give
-    // either \infty, -\infty or NAN.
-
-    // Prevent 0 / X (with X < 0) and X / 0
-    // testing X / Y.  Compare Y with 0.
-    // There are three cases: (Y < 0), (Y == 0) and (Y > 0)
-    // If (Y < 0), then we compare X with 0, and bail if X == 0
-    // If (Y == 0), then we simply want to bail.  Since this does not set
-    // the flags necessary for LT to trigger, we don't test X, and take the
-    // bailout because the EQ flag is set.
-    // if (Y > 0), we don't set EQ, and we don't trigger LT, so we don't take the bailout.
-    if (mir->canBeDivideByZero() || mir->canBeNegativeZero()) {
+    // Handle divide by zero.
+    if (mir->canBeDivideByZero()) {
         masm.ma_cmp(rhs, Imm32(0));
-        masm.ma_cmp(lhs, Imm32(0), Assembler::LessThan);
-        if (mir->isTruncated()) {
-            // Infinity|0 == 0 and -0|0 == 0
+        if (mir->canTruncateInfinities()) {
+            // Infinity|0 == 0
             Label skip;
             masm.ma_b(&skip, Assembler::NotEqual);
             masm.ma_mov(Imm32(0), output);
@@ -575,13 +544,25 @@ CodeGeneratorARM::divICommon(MDiv *mir, Register lhs, Register rhs, Register out
         }
     }
 
+    // Handle negative 0.
+    if (!mir->canTruncateNegativeZero() && mir->canBeNegativeZero()) {
+        Label nonzero;
+        masm.ma_cmp(lhs, Imm32(0));
+        masm.ma_b(&nonzero, Assembler::NotEqual);
+        masm.ma_cmp(rhs, Imm32(0));
+        JS_ASSERT(mir->fallible());
+        if (!bailoutIf(Assembler::LessThan, snapshot))
+            return false;
+        masm.bind(&nonzero);
+    }
+
     return true;
 }
 
 bool
 CodeGeneratorARM::visitDivI(LDivI *ins)
 {
-    // Extract the registers from this instruction
+    // Extract the registers from this instruction.
     Register lhs = ToRegister(ins->lhs());
     Register rhs = ToRegister(ins->rhs());
     Register temp = ToRegister(ins->getTemp(0));
@@ -592,7 +573,7 @@ CodeGeneratorARM::visitDivI(LDivI *ins)
     if (!divICommon(mir, lhs, rhs, output, ins->snapshot(), done))
         return false;
 
-    if (mir->isTruncated()) {
+    if (mir->canTruncateRemainder()) {
         masm.ma_sdiv(lhs, rhs, output);
     } else {
         masm.ma_sdiv(lhs, rhs, ScratchRegister);
@@ -609,14 +590,14 @@ CodeGeneratorARM::visitDivI(LDivI *ins)
 }
 
 extern "C" {
-    extern int __aeabi_idivmod(int,int);
-    extern int __aeabi_uidivmod(int,int);
+    extern MOZ_EXPORT int64_t __aeabi_idivmod(int,int);
+    extern MOZ_EXPORT int64_t __aeabi_uidivmod(int,int);
 }
 
 bool
 CodeGeneratorARM::visitSoftDivI(LSoftDivI *ins)
 {
-    // Extract the registers from this instruction
+    // Extract the registers from this instruction.
     Register lhs = ToRegister(ins->lhs());
     Register rhs = ToRegister(ins->rhs());
     Register output = ToRegister(ins->output());
@@ -634,7 +615,7 @@ CodeGeneratorARM::visitSoftDivI(LSoftDivI *ins)
     else
         masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, __aeabi_idivmod));
     // idivmod returns the quotient in r0, and the remainder in r1.
-    if (!mir->isTruncated()) {
+    if (!mir->canTruncateRemainder()) {
         JS_ASSERT(mir->fallible());
         masm.ma_cmp(r1, Imm32(0));
         if (!bailoutIf(Assembler::NonZero, ins->snapshot()))
@@ -690,19 +671,20 @@ bool
 CodeGeneratorARM::modICommon(MMod *mir, Register lhs, Register rhs, Register output,
                              LSnapshot *snapshot, Label &done)
 {
-    // 0/X (with X < 0) is bad because both of these values *should* be doubles, and
-    // the result should be -0.0, which cannot be represented in integers.
+    // 0/X (with X < 0) is bad because both of these values *should* be doubles,
+    // and the result should be -0.0, which cannot be represented in integers.
     // X/0 is bad because it will give garbage (or abort), when it should give
     // either \infty, -\infty or NAN.
 
     // Prevent 0 / X (with X < 0) and X / 0
-    // testing X / Y.  Compare Y with 0.
-    // There are three cases: (Y < 0), (Y == 0) and (Y > 0)
-    // If (Y < 0), then we compare X with 0, and bail if X == 0
-    // If (Y == 0), then we simply want to bail.  Since this does not set
-    // the flags necessary for LT to trigger, we don't test X, and take the
-    // bailout because the EQ flag is set.
-    // if (Y > 0), we don't set EQ, and we don't trigger LT, so we don't take the bailout.
+    // testing X / Y. Compare Y with 0.
+    // There are three cases: (Y < 0), (Y == 0) and (Y > 0).
+    // If (Y < 0), then we compare X with 0, and bail if X == 0.
+    // If (Y == 0), then we simply want to bail. Since this does not set the
+    // flags necessary for LT to trigger, we don't test X, and take the bailout
+    // because the EQ flag is set.
+    // If (Y > 0), we don't set EQ, and we don't trigger LT, so we don't take
+    // the bailout.
     if (mir->canBeDivideByZero() || mir->canBeNegativeDividend()) {
         masm.ma_cmp(rhs, Imm32(0));
         masm.ma_cmp(lhs, Imm32(0), Assembler::LessThan);
@@ -732,7 +714,7 @@ CodeGeneratorARM::visitModI(LModI *ins)
     Register callTemp = ToRegister(ins->callTemp());
     MMod *mir = ins->mir();
 
-    // save the lhs in case we end up with a 0 that should be a -0.0 because lhs < 0.
+    // Save the lhs in case we end up with a 0 that should be a -0.0 because lhs < 0.
     masm.ma_mov(lhs, callTemp);
 
     Label done;
@@ -741,7 +723,7 @@ CodeGeneratorARM::visitModI(LModI *ins)
 
     masm.ma_smod(lhs, rhs, output);
 
-    // If X%Y == 0 and X < 0, then we *actually* wanted to return -0.0
+    // If X%Y == 0 and X < 0, then we *actually* wanted to return -0.0.
     if (mir->canBeNegativeDividend()) {
         if (mir->isTruncated()) {
             // -0.0|0 == 0
@@ -763,7 +745,7 @@ CodeGeneratorARM::visitModI(LModI *ins)
 bool
 CodeGeneratorARM::visitSoftModI(LSoftModI *ins)
 {
-    // Extract the registers from this instruction
+    // Extract the registers from this instruction.
     Register lhs = ToRegister(ins->lhs());
     Register rhs = ToRegister(ins->rhs());
     Register output = ToRegister(ins->output());
@@ -771,15 +753,17 @@ CodeGeneratorARM::visitSoftModI(LSoftModI *ins)
     MMod *mir = ins->mir();
     Label done;
 
-    // save the lhs in case we end up with a 0 that should be a -0.0 because lhs < 0.
+    // Save the lhs in case we end up with a 0 that should be a -0.0 because lhs < 0.
     JS_ASSERT(callTemp.code() > r3.code() && callTemp.code() < r12.code());
     masm.ma_mov(lhs, callTemp);
 
     // Prevent INT_MIN % -1;
     // The integer division will give INT_MIN, but we want -(double)INT_MIN.
     if (mir->canBeNegativeDividend()) {
-        masm.ma_cmp(lhs, Imm32(INT_MIN)); // sets EQ if lhs == INT_MIN
-        masm.ma_cmp(rhs, Imm32(-1), Assembler::Equal); // if EQ (LHS == INT_MIN), sets EQ if rhs == -1
+        // Sets EQ if lhs == INT_MIN
+        masm.ma_cmp(lhs, Imm32(INT_MIN));
+        // If EQ (LHS == INT_MIN), sets EQ if rhs == -1
+        masm.ma_cmp(rhs, Imm32(-1), Assembler::Equal);
         if (mir->isTruncated()) {
             // (INT_MIN % -1)|0 == 0
             Label skip;
@@ -830,11 +814,12 @@ CodeGeneratorARM::visitModPowTwoI(LModPowTwoI *ins)
     Register out = ToRegister(ins->getDef(0));
     MMod *mir = ins->mir();
     Label fin;
-    // bug 739870, jbramley has a different sequence that may help with speed here
+    // bug 739870, jbramley has a different sequence that may help with speed
+    // here.
     masm.ma_mov(in, out, SetCond);
     masm.ma_b(&fin, Assembler::Zero);
     masm.ma_rsb(Imm32(0), out, NoSetCond, Assembler::Signed);
-    masm.ma_and(Imm32((1<<ins->shift())-1), out);
+    masm.ma_and(Imm32((1 << ins->shift()) - 1), out);
     masm.ma_rsb(Imm32(0), out, SetCond, Assembler::Signed);
     if (mir->canBeNegativeDividend()) {
         if (!mir->isTruncated()) {
@@ -854,9 +839,10 @@ CodeGeneratorARM::visitModMaskI(LModMaskI *ins)
 {
     Register src = ToRegister(ins->getOperand(0));
     Register dest = ToRegister(ins->getDef(0));
-    Register tmp = ToRegister(ins->getTemp(0));
+    Register tmp1 = ToRegister(ins->getTemp(0));
+    Register tmp2 = ToRegister(ins->getTemp(1));
     MMod *mir = ins->mir();
-    masm.ma_mod_mask(src, dest, tmp, ins->shift());
+    masm.ma_mod_mask(src, dest, tmp1, tmp2, ins->shift());
     if (mir->canBeNegativeDividend()) {
         if (!mir->isTruncated()) {
             JS_ASSERT(mir->fallible());
@@ -873,9 +859,8 @@ CodeGeneratorARM::visitBitNotI(LBitNotI *ins)
 {
     const LAllocation *input = ins->getOperand(0);
     const LDefinition *dest = ins->getDef(0);
-    // this will not actually be true on arm.
-    // We can not an imm8m in order to get a wider range
-    // of numbers
+    // This will not actually be true on arm. We can not an imm8m in order to
+    // get a wider range of numbers
     JS_ASSERT(!input->isConstant());
 
     masm.ma_mvn(ToRegister(input), ToRegister(dest));
@@ -888,7 +873,7 @@ CodeGeneratorARM::visitBitOpI(LBitOpI *ins)
     const LAllocation *lhs = ins->getOperand(0);
     const LAllocation *rhs = ins->getOperand(1);
     const LDefinition *dest = ins->getDef(0);
-    // all of these bitops should be either imm32's, or integer registers.
+    // All of these bitops should be either imm32's, or integer registers.
     switch (ins->bitop()) {
       case JSOP_BITOR:
         if (rhs->isConstant())
@@ -955,8 +940,8 @@ CodeGeneratorARM::visitShiftI(LShiftI *ins)
         }
     } else {
         // The shift amounts should be AND'ed into the 0-31 range since arm
-        // shifts by the lower byte of the register (it will attempt to shift
-        // by 250 if you ask it to).
+        // shifts by the lower byte of the register (it will attempt to shift by
+        // 250 if you ask it to).
         masm.ma_and(Imm32(0x1F), ToRegister(rhs), dest);
 
         switch (ins->bitop()) {
@@ -1016,21 +1001,20 @@ CodeGeneratorARM::visitPowHalfD(LPowHalfD *ins)
     Label done;
 
     // Masm.pow(-Infinity, 0.5) == Infinity.
-    masm.ma_vimm(NegativeInfinity(), ScratchFloatReg);
-    masm.compareDouble(input, ScratchFloatReg);
-    masm.ma_vneg(ScratchFloatReg, output, Assembler::Equal);
+    masm.ma_vimm(NegativeInfinity<double>(), ScratchDoubleReg);
+    masm.compareDouble(input, ScratchDoubleReg);
+    masm.ma_vneg(ScratchDoubleReg, output, Assembler::Equal);
     masm.ma_b(&done, Assembler::Equal);
 
-    // Math.pow(-0, 0.5) == 0 == Math.pow(0, 0.5). Adding 0 converts any -0 to 0.
-    masm.ma_vimm(0.0, ScratchFloatReg);
-    masm.ma_vadd(ScratchFloatReg, input, output);
+    // Math.pow(-0, 0.5) == 0 == Math.pow(0, 0.5).
+    // Adding 0 converts any -0 to 0.
+    masm.ma_vimm(0.0, ScratchDoubleReg);
+    masm.ma_vadd(ScratchDoubleReg, input, output);
     masm.ma_vsqrt(output, output);
 
     masm.bind(&done);
     return true;
 }
-
-typedef MoveResolver::MoveOperand MoveOperand;
 
 MoveOperand
 CodeGeneratorARM::toMoveOperand(const LAllocation *a) const
@@ -1039,14 +1023,8 @@ CodeGeneratorARM::toMoveOperand(const LAllocation *a) const
         return MoveOperand(ToRegister(a));
     if (a->isFloatReg())
         return MoveOperand(ToFloatRegister(a));
-    JS_ASSERT((ToStackOffset(a) & 3) == 0);
     int32_t offset = ToStackOffset(a);
-
-    // The way the stack slots work, we assume that everything from depth == 0 downwards is writable
-    // however, since our frame is included in this, ensure that the frame gets skipped
-    if (gen->compilingAsmJS())
-        offset -= AlignmentMidPrologue;
-
+    JS_ASSERT((offset & 3) == 0);
     return MoveOperand(StackPointer, offset);
 }
 
@@ -1084,7 +1062,7 @@ CodeGeneratorARM::visitOutOfLineTableSwitch(OutOfLineTableSwitch *ool)
 
     size_t numCases = mir->numCases();
     for (size_t i = 0; i < numCases; i++) {
-        LBlock *caseblock = mir->getCase(numCases - 1 - i)->lir();
+        LBlock *caseblock = skipTrivialBlocks(mir->getCase(numCases - 1 - i))->lir();
         Label *caseheader = caseblock->label();
         uint32_t caseoffset = caseheader->offset();
 
@@ -1100,48 +1078,51 @@ CodeGeneratorARM::visitOutOfLineTableSwitch(OutOfLineTableSwitch *ool)
 }
 
 bool
-CodeGeneratorARM::emitTableSwitchDispatch(MTableSwitch *mir, const Register &index,
-                                          const Register &base)
+CodeGeneratorARM::emitTableSwitchDispatch(MTableSwitch *mir, Register index, Register base)
 {
-    // the code generated by this is utter hax.
-    // the end result looks something like:
+    // The code generated by this is utter hax.
+    // The end result looks something like:
     // SUBS index, input, #base
     // RSBSPL index, index, #max
     // LDRPL pc, pc, index lsl 2
     // B default
 
     // If the range of targets in N through M, we first subtract off the lowest
-    // case (N), which both shifts the arguments into the range 0 to (M-N) with
-    // and sets the MInus flag if the argument was out of range on the low end.
+    // case (N), which both shifts the arguments into the range 0 to (M - N)
+    // with and sets the MInus flag if the argument was out of range on the low
+    // end.
 
     // Then we a reverse subtract with the size of the jump table, which will
     // reverse the order of range (It is size through 0, rather than 0 through
-    // size).  The main purpose of this is that we set the same flag as the lower
-    // bound check for the upper bound check.  Lastly, we do this conditionally
+    // size). The main purpose of this is that we set the same flag as the lower
+    // bound check for the upper bound check. Lastly, we do this conditionally
     // on the previous check succeeding.
 
     // Then we conditionally load the pc offset by the (reversed) index (times
-    // the address size) into the pc, which branches to the correct case.
-    // NOTE: when we go to read the pc, the value that we get back is the pc of
-    // the current instruction *PLUS 8*.  This means that ldr foo, [pc, +0]
-    // reads $pc+8.  In other words, there is an empty word after the branch into
-    // the switch table before the table actually starts.  Since the only other
-    // unhandled case is the default case (both out of range high and out of range low)
-    // I then insert a branch to default case into the extra slot, which ensures
-    // we don't attempt to execute the address table.
-    Label *defaultcase = mir->getDefault()->lir()->label();
+    // the address size) into the pc, which branches to the correct case. NOTE:
+    // when we go to read the pc, the value that we get back is the pc of the
+    // current instruction *PLUS 8*. This means that ldr foo, [pc, +0] reads
+    // $pc+8. In other words, there is an empty word after the branch into the
+    // switch table before the table actually starts. Since the only other
+    // unhandled case is the default case (both out of range high and out of
+    // range low) I then insert a branch to default case into the extra slot,
+    // which ensures we don't attempt to execute the address table.
+    Label *defaultcase = skipTrivialBlocks(mir->getDefault())->lir()->label();
 
     int32_t cases = mir->numCases();
-    // Lower value with low value
+    // Lower value with low value.
     masm.ma_sub(index, Imm32(mir->low()), index, SetCond);
     masm.ma_rsb(index, Imm32(cases - 1), index, SetCond, Assembler::NotSigned);
-    AutoForbidPools afp(&masm);
+    // Inhibit pools within the following sequence because we are indexing into
+    // a pc relative table. The region will have one instruction for ma_ldr, one
+    // for ma_b, and each table case takes one word.
+    AutoForbidPools afp(&masm, 1 + 1 + cases);
     masm.ma_ldr(DTRAddr(pc, DtrRegImmShift(index, LSL, 2)), pc, Offset, Assembler::NotSigned);
     masm.ma_b(defaultcase);
 
-    // To fill in the CodeLabels for the case entries, we need to first
-    // generate the case entries (we don't yet know their offsets in the
-    // instruction stream).
+    // To fill in the CodeLabels for the case entries, we need to first generate
+    // the case entries (we don't yet know their offsets in the instruction
+    // stream).
     OutOfLineTableSwitch *ool = new(alloc()) OutOfLineTableSwitch(alloc(), mir);
     for (int32_t i = 0; i < cases; i++) {
         CodeLabel cl;
@@ -1232,25 +1213,64 @@ CodeGeneratorARM::visitFloorF(LFloorF *lir)
 }
 
 bool
+CodeGeneratorARM::visitCeil(LCeil *lir)
+{
+    FloatRegister input = ToFloatRegister(lir->input());
+    Register output = ToRegister(lir->output());
+    Label bail;
+    masm.ceil(input, output, &bail);
+    if (!bailoutFrom(&bail, lir->snapshot()))
+        return false;
+    return true;
+}
+
+bool
+CodeGeneratorARM::visitCeilF(LCeilF *lir)
+{
+    FloatRegister input = ToFloatRegister(lir->input());
+    Register output = ToRegister(lir->output());
+    Label bail;
+    masm.ceilf(input, output, &bail);
+    if (!bailoutFrom(&bail, lir->snapshot()))
+        return false;
+    return true;
+}
+
+bool
 CodeGeneratorARM::visitRound(LRound *lir)
 {
     FloatRegister input = ToFloatRegister(lir->input());
     Register output = ToRegister(lir->output());
     FloatRegister tmp = ToFloatRegister(lir->temp());
     Label bail;
-    // Output is either correct, or clamped.  All -0 cases have been translated to a clamped
-    // case.a
+    // Output is either correct, or clamped. All -0 cases have been translated
+    // to a clamped case.
     masm.round(input, output, &bail, tmp);
     if (!bailoutFrom(&bail, lir->snapshot()))
         return false;
     return true;
 }
 
-void
-CodeGeneratorARM::emitRoundDouble(const FloatRegister &src, const Register &dest, Label *fail)
+bool
+CodeGeneratorARM::visitRoundF(LRoundF *lir)
 {
-    masm.ma_vcvt_F64_I32(src, ScratchFloatReg);
-    masm.ma_vxfer(ScratchFloatReg, dest);
+    FloatRegister input = ToFloatRegister(lir->input());
+    Register output = ToRegister(lir->output());
+    FloatRegister tmp = ToFloatRegister(lir->temp());
+    Label bail;
+    // Output is either correct, or clamped. All -0 cases have been translated
+    // to a clamped case.
+    masm.roundf(input, output, &bail, tmp);
+    if (!bailoutFrom(&bail, lir->snapshot()))
+        return false;
+    return true;
+}
+
+void
+CodeGeneratorARM::emitRoundDouble(FloatRegister src, Register dest, Label *fail)
+{
+    masm.ma_vcvt_F64_I32(src, ScratchDoubleReg);
+    masm.ma_vxfer(ScratchDoubleReg, dest);
     masm.ma_cmp(dest, Imm32(0x7fffffff));
     masm.ma_cmp(dest, Imm32(0x80000000), Assembler::NotEqual);
     masm.ma_b(fail, Assembler::Equal);
@@ -1336,9 +1356,9 @@ CodeGeneratorARM::visitBox(LBox *box)
 
     JS_ASSERT(!box->getOperand(0)->isConstant());
 
-    // On x86, the input operand and the output payload have the same
-    // virtual register. All that needs to be written is the type tag for
-    // the type definition.
+    // On x86, the input operand and the output payload have the same virtual
+    // register. All that needs to be written is the type tag for the type
+    // definition.
     masm.ma_mov(Imm32(MIRTypeToTag(box->type())), ToRegister(type));
     return true;
 }
@@ -1352,8 +1372,8 @@ CodeGeneratorARM::visitBoxFloatingPoint(LBoxFloatingPoint *box)
 
     FloatRegister reg = ToFloatRegister(in);
     if (box->type() == MIRType_Float32) {
-        masm.convertFloatToDouble(reg, ScratchFloatReg);
-        reg = ScratchFloatReg;
+        masm.convertFloat32ToDouble(reg, ScratchFloat32Reg);
+        reg = ScratchFloat32Reg;
     }
 
     //masm.as_vxfer(ToRegister(payload), ToRegister(type),
@@ -1411,11 +1431,10 @@ CodeGeneratorARM::visitTestDAndBranch(LTestDAndBranch *test)
 
     MBasicBlock *ifTrue = test->ifTrue();
     MBasicBlock *ifFalse = test->ifFalse();
-    // If the compare set the  0 bit, then the result
-    // is definately false.
+    // If the compare set the 0 bit, then the result is definately false.
     jumpToBlock(ifFalse, Assembler::Zero);
-    // it is also false if one of the operands is NAN, which is
-    // shown as Overflow.
+    // It is also false if one of the operands is NAN, which is shown as
+    // Overflow.
     jumpToBlock(ifFalse, Assembler::Overflow);
     jumpToBlock(ifTrue);
     return true;
@@ -1430,11 +1449,10 @@ CodeGeneratorARM::visitTestFAndBranch(LTestFAndBranch *test)
 
     MBasicBlock *ifTrue = test->ifTrue();
     MBasicBlock *ifFalse = test->ifFalse();
-    // If the compare set the  0 bit, then the result
-    // is definately false.
+    // If the compare set the 0 bit, then the result is definately false.
     jumpToBlock(ifFalse, Assembler::Zero);
-    // it is also false if one of the operands is NAN, which is
-    // shown as Overflow.
+    // It is also false if one of the operands is NAN, which is shown as
+    // Overflow.
     jumpToBlock(ifFalse, Assembler::Overflow);
     jumpToBlock(ifTrue);
     return true;
@@ -1626,36 +1644,28 @@ CodeGeneratorARM::visitNotI(LNotI *ins)
 bool
 CodeGeneratorARM::visitNotD(LNotD *ins)
 {
-    // Since this operation is not, we want to set a bit if
-    // the double is falsey, which means 0.0, -0.0 or NaN.
-    // when comparing with 0, an input of 0 will set the Z bit (30)
-    // and NaN will set the V bit (28) of the APSR.
+    // Since this operation is not, we want to set a bit if the double is
+    // falsey, which means 0.0, -0.0 or NaN. When comparing with 0, an input of
+    // 0 will set the Z bit (30) and NaN will set the V bit (28) of the APSR.
     FloatRegister opd = ToFloatRegister(ins->input());
     Register dest = ToRegister(ins->output());
 
-    // Do the compare
+    // Do the compare.
     masm.ma_vcmpz(opd);
     // TODO There are three variations here to compare performance-wise.
     bool nocond = true;
     if (nocond) {
-        // Load the value into the dest register
+        // Load the value into the dest register.
         masm.as_vmrs(dest);
         masm.ma_lsr(Imm32(28), dest, dest);
-        masm.ma_alu(dest, lsr(dest, 2), dest, op_orr); // 28 + 2 = 30
+        // 28 + 2 = 30
+        masm.ma_alu(dest, lsr(dest, 2), dest, OpOrr);
         masm.ma_and(Imm32(1), dest);
     } else {
         masm.as_vmrs(pc);
         masm.ma_mov(Imm32(0), dest);
         masm.ma_mov(Imm32(1), dest, NoSetCond, Assembler::Equal);
         masm.ma_mov(Imm32(1), dest, NoSetCond, Assembler::Overflow);
-#if 0
-        masm.as_vmrs(ToRegister(dest));
-        // Mask out just the two bits we care about.  If neither bit is set,
-        // the dest is already zero
-        masm.ma_and(Imm32(0x50000000), dest, dest, Assembler::SetCond);
-        // If it is non-zero, then force it to be 1.
-        masm.ma_mov(Imm32(1), dest, NoSetCond, Assembler::NotEqual);
-#endif
     }
     return true;
 }
@@ -1663,164 +1673,30 @@ CodeGeneratorARM::visitNotD(LNotD *ins)
 bool
 CodeGeneratorARM::visitNotF(LNotF *ins)
 {
-    // Since this operation is not, we want to set a bit if
-    // the double is falsey, which means 0.0, -0.0 or NaN.
-    // when comparing with 0, an input of 0 will set the Z bit (30)
-    // and NaN will set the V bit (28) of the APSR.
+    // Since this operation is not, we want to set a bit if the double is
+    // falsey, which means 0.0, -0.0 or NaN. When comparing with 0, an input of
+    // 0 will set the Z bit (30) and NaN will set the V bit (28) of the APSR.
     FloatRegister opd = ToFloatRegister(ins->input());
     Register dest = ToRegister(ins->output());
 
-    // Do the compare
+    // Do the compare.
     masm.ma_vcmpz_f32(opd);
     // TODO There are three variations here to compare performance-wise.
     bool nocond = true;
     if (nocond) {
-        // Load the value into the dest register
+        // Load the value into the dest register.
         masm.as_vmrs(dest);
         masm.ma_lsr(Imm32(28), dest, dest);
-        masm.ma_alu(dest, lsr(dest, 2), dest, op_orr); // 28 + 2 = 30
+        // 28 + 2 = 30
+        masm.ma_alu(dest, lsr(dest, 2), dest, OpOrr);
         masm.ma_and(Imm32(1), dest);
     } else {
         masm.as_vmrs(pc);
         masm.ma_mov(Imm32(0), dest);
         masm.ma_mov(Imm32(1), dest, NoSetCond, Assembler::Equal);
         masm.ma_mov(Imm32(1), dest, NoSetCond, Assembler::Overflow);
-#if 0
-        masm.as_vmrs(ToRegister(dest));
-        // Mask out just the two bits we care about.  If neither bit is set,
-        // the dest is already zero
-        masm.ma_and(Imm32(0x50000000), dest, dest, Assembler::SetCond);
-        // If it is non-zero, then force it to be 1.
-        masm.ma_mov(Imm32(1), dest, NoSetCond, Assembler::NotEqual);
-#endif
     }
     return true;
-}
-
-bool
-CodeGeneratorARM::visitLoadSlotV(LLoadSlotV *load)
-{
-    const ValueOperand out = ToOutValue(load);
-    Register base = ToRegister(load->input());
-    int32_t offset = load->mir()->slot() * sizeof(js::Value);
-
-    masm.loadValue(Address(base, offset), out);
-    return true;
-}
-
-bool
-CodeGeneratorARM::visitLoadSlotT(LLoadSlotT *load)
-{
-    Register base = ToRegister(load->input());
-    int32_t offset = load->mir()->slot() * sizeof(js::Value);
-
-    if (load->mir()->type() == MIRType_Double)
-        masm.loadInt32OrDouble(Operand(base, offset), ToFloatRegister(load->output()));
-    else
-        masm.ma_ldr(Operand(base, offset + NUNBOX32_PAYLOAD_OFFSET), ToRegister(load->output()));
-    return true;
-}
-
-bool
-CodeGeneratorARM::visitStoreSlotT(LStoreSlotT *store)
-{
-
-    Register base = ToRegister(store->slots());
-    int32_t offset = store->mir()->slot() * sizeof(js::Value);
-
-    const LAllocation *value = store->value();
-    MIRType valueType = store->mir()->value()->type();
-
-    if (store->mir()->needsBarrier())
-        emitPreBarrier(Address(base, offset), store->mir()->slotType());
-
-    if (valueType == MIRType_Double) {
-        masm.ma_vstr(ToFloatRegister(value), Operand(base, offset));
-        return true;
-    }
-
-    // Store the type tag if needed.
-    if (valueType != store->mir()->slotType())
-        masm.storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), Operand(base, offset));
-
-    // Store the payload.
-    if (value->isConstant())
-        masm.storePayload(*value->toConstant(), Operand(base, offset));
-    else
-        masm.storePayload(ToRegister(value), Operand(base, offset));
-
-    return true;
-}
-
-bool
-CodeGeneratorARM::visitLoadElementT(LLoadElementT *load)
-{
-    Register base = ToRegister(load->elements());
-    if (load->mir()->type() == MIRType_Double) {
-        FloatRegister fpreg = ToFloatRegister(load->output());
-        if (load->index()->isConstant()) {
-            Address source(base, ToInt32(load->index()) * sizeof(Value));
-            if (load->mir()->loadDoubles())
-                masm.loadDouble(source, fpreg);
-            else
-                masm.loadInt32OrDouble(source, fpreg);
-        } else {
-            Register index = ToRegister(load->index());
-            if (load->mir()->loadDoubles())
-                masm.loadDouble(BaseIndex(base, index, TimesEight), fpreg);
-            else
-                masm.loadInt32OrDouble(base, index, fpreg);
-        }
-    } else {
-        if (load->index()->isConstant()) {
-            Address source(base, ToInt32(load->index()) * sizeof(Value));
-            masm.load32(source, ToRegister(load->output()));
-        } else {
-            masm.ma_ldr(DTRAddr(base, DtrRegImmShift(ToRegister(load->index()), LSL, 3)),
-                        ToRegister(load->output()));
-        }
-    }
-    JS_ASSERT(!load->mir()->needsHoleCheck());
-    return true;
-}
-
-void
-CodeGeneratorARM::storeElementTyped(const LAllocation *value, MIRType valueType, MIRType elementType,
-                                    const Register &elements, const LAllocation *index)
-{
-    if (index->isConstant()) {
-        Address dest = Address(elements, ToInt32(index) * sizeof(Value));
-        if (valueType == MIRType_Double) {
-            masm.ma_vstr(ToFloatRegister(value), Operand(dest));
-            return;
-        }
-
-        // Store the type tag if needed.
-        if (valueType != elementType)
-            masm.storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), dest);
-
-        // Store the payload.
-        if (value->isConstant())
-            masm.storePayload(*value->toConstant(), dest);
-        else
-            masm.storePayload(ToRegister(value), dest);
-    } else {
-        Register indexReg = ToRegister(index);
-        if (valueType == MIRType_Double) {
-            masm.ma_vstr(ToFloatRegister(value), elements, indexReg);
-            return;
-        }
-
-        // Store the type tag if needed.
-        if (valueType != elementType)
-            masm.storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), elements, indexReg);
-
-        // Store the payload.
-        if (value->isConstant())
-            masm.storePayload(*value->toConstant(), elements, indexReg);
-        else
-            masm.storePayload(ToRegister(value), elements, indexReg);
-    }
 }
 
 bool
@@ -1863,62 +1739,27 @@ CodeGeneratorARM::visitGuardClass(LGuardClass *guard)
 }
 
 bool
-CodeGeneratorARM::visitImplicitThis(LImplicitThis *lir)
-{
-    Register callee = ToRegister(lir->callee());
-    const ValueOperand out = ToOutValue(lir);
-
-    // The implicit |this| is always |undefined| if the function's environment
-    // is the current global.
-    masm.ma_ldr(DTRAddr(callee, DtrOffImm(JSFunction::offsetOfEnvironment())), out.typeReg());
-    masm.ma_cmp(out.typeReg(), ImmGCPtr(&gen->info().script()->global()));
-
-    // TODO: OOL stub path.
-    if (!bailoutIf(Assembler::NotEqual, lir->snapshot()))
-        return false;
-
-    masm.moveValue(UndefinedValue(), out);
-    return true;
-}
-
-bool
-CodeGeneratorARM::visitInterruptCheck(LInterruptCheck *lir)
-{
-    OutOfLineCode *ool = oolCallVM(InterruptCheckInfo, lir, (ArgList()), StoreNothing());
-    if (!ool)
-        return false;
-
-    void *interrupt = (void*)GetIonContext()->runtime->addressOfInterrupt();
-    masm.load32(AbsoluteAddress(interrupt), lr);
-    masm.ma_cmp(lr, Imm32(0));
-    masm.ma_b(ool->entry(), Assembler::NonZero);
-    masm.bind(ool->rejoin());
-    return true;
-}
-
-bool
 CodeGeneratorARM::generateInvalidateEpilogue()
 {
-    // Ensure that there is enough space in the buffer for the OsiPoint
-    // patching to occur. Otherwise, we could overwrite the invalidation
-    // epilogue.
-    for (size_t i = 0; i < sizeof(void *); i+= Assembler::nopSize())
+    // Ensure that there is enough space in the buffer for the OsiPoint patching
+    // to occur. Otherwise, we could overwrite the invalidation epilogue.
+    for (size_t i = 0; i < sizeof(void *); i += Assembler::NopSize())
         masm.nop();
 
     masm.bind(&invalidate_);
 
-    // Push the return address of the point that we bailed out at onto the stack
+    // Push the return address of the point that we bailed out at onto the stack.
     masm.Push(lr);
 
     // Push the Ion script onto the stack (when we determine what that pointer is).
     invalidateEpilogueData_ = masm.pushWithPatch(ImmWord(uintptr_t(-1)));
-    IonCode *thunk = gen->jitRuntime()->getInvalidationThunk();
+    JitCode *thunk = gen->jitRuntime()->getInvalidationThunk();
 
     masm.branch(thunk);
 
-    // We should never reach this point in JIT code -- the invalidation thunk should
-    // pop the invalidated JS frame and return directly to its caller.
-    masm.assume_unreachable("Should have returned directly to its caller instead of here.");
+    // We should never reach this point in JIT code -- the invalidation thunk
+    // should pop the invalidated JS frame and return directly to its caller.
+    masm.assumeUnreachable("Should have returned directly to its caller instead of here.");
     return true;
 }
 
@@ -1960,14 +1801,14 @@ CodeGeneratorARM::visitAsmJSLoadHeap(LAsmJSLoadHeap *ins)
     int size;
     bool isFloat = false;
     switch (mir->viewType()) {
-      case ArrayBufferView::TYPE_INT8:    isSigned = true;  size =  8; break;
-      case ArrayBufferView::TYPE_UINT8:   isSigned = false; size =  8; break;
-      case ArrayBufferView::TYPE_INT16:   isSigned = true;  size = 16; break;
-      case ArrayBufferView::TYPE_UINT16:  isSigned = false; size = 16; break;
-      case ArrayBufferView::TYPE_INT32:
-      case ArrayBufferView::TYPE_UINT32:  isSigned = true;  size = 32; break;
-      case ArrayBufferView::TYPE_FLOAT64: isFloat = true;   size = 64; break;
-      case ArrayBufferView::TYPE_FLOAT32: isFloat = true;   size = 32; break;
+      case Scalar::Int8:    isSigned = true;  size =  8; break;
+      case Scalar::Uint8:   isSigned = false; size =  8; break;
+      case Scalar::Int16:   isSigned = true;  size = 16; break;
+      case Scalar::Uint16:  isSigned = false; size = 16; break;
+      case Scalar::Int32:
+      case Scalar::Uint32:  isSigned = true;  size = 32; break;
+      case Scalar::Float64: isFloat = true;   size = 64; break;
+      case Scalar::Float32: isFloat = true;   size = 32; break;
       default: MOZ_ASSUME_UNREACHABLE("unexpected array type");
     }
 
@@ -1979,12 +1820,10 @@ CodeGeneratorARM::visitAsmJSLoadHeap(LAsmJSLoadHeap *ins)
         JS_ASSERT(ptrImm >= 0);
         if (isFloat) {
             VFPRegister vd(ToFloatRegister(ins->output()));
-            if (size == 32) {
+            if (size == 32)
                 masm.ma_vldr(Operand(HeapReg, ptrImm), vd.singleOverlay(), Assembler::Always);
-                masm.as_vcvt(vd, vd.singleOverlay(), false, Assembler::Always);
-            } else {
+            else
                 masm.ma_vldr(Operand(HeapReg, ptrImm), vd, Assembler::Always);
-            }
         }  else {
             masm.ma_dataTransferN(IsLoad, size, isSigned, HeapReg, Imm32(ptrImm),
                                   ToRegister(ins->output()), Offset, Assembler::Always);
@@ -1997,12 +1836,10 @@ CodeGeneratorARM::visitAsmJSLoadHeap(LAsmJSLoadHeap *ins)
     if (mir->skipBoundsCheck()) {
         if (isFloat) {
             VFPRegister vd(ToFloatRegister(ins->output()));
-            if (size == 32) {
+            if (size == 32)
                 masm.ma_vldr(vd.singleOverlay(), HeapReg, ptrReg, 0, Assembler::Always);
-                masm.as_vcvt(vd, vd.singleOverlay(), false, Assembler::Always);
-            } else {
+            else
                 masm.ma_vldr(vd, HeapReg, ptrReg, 0, Assembler::Always);
-            }
         } else {
             masm.ma_dataTransferN(IsLoad, size, isSigned, HeapReg, ptrReg,
                                   ToRegister(ins->output()), Offset, Assembler::Always);
@@ -2013,12 +1850,12 @@ CodeGeneratorARM::visitAsmJSLoadHeap(LAsmJSLoadHeap *ins)
     BufferOffset bo = masm.ma_BoundsCheck(ptrReg);
     if (isFloat) {
         FloatRegister dst = ToFloatRegister(ins->output());
-        masm.ma_vmov(NANReg, dst, Assembler::AboveOrEqual);
         VFPRegister vd(dst);
         if (size == 32) {
+            masm.convertDoubleToFloat32(NANReg, dst, Assembler::AboveOrEqual);
             masm.ma_vldr(vd.singleOverlay(), HeapReg, ptrReg, 0, Assembler::Below);
-            masm.as_vcvt(vd, vd.singleOverlay(), false, Assembler::Below);
         } else {
+            masm.ma_vmov(NANReg, dst, Assembler::AboveOrEqual);
             masm.ma_vldr(vd, HeapReg, ptrReg, 0, Assembler::Below);
         }
     } else {
@@ -2026,7 +1863,8 @@ CodeGeneratorARM::visitAsmJSLoadHeap(LAsmJSLoadHeap *ins)
         masm.ma_mov(Imm32(0), d, NoSetCond, Assembler::AboveOrEqual);
         masm.ma_dataTransferN(IsLoad, size, isSigned, HeapReg, ptrReg, d, Offset, Assembler::Below);
     }
-    return gen->noteHeapAccess(AsmJSHeapAccess(bo.getOffset()));
+    masm.append(AsmJSHeapAccess(bo.getOffset()));
+    return true;
 }
 
 bool
@@ -2037,14 +1875,14 @@ CodeGeneratorARM::visitAsmJSStoreHeap(LAsmJSStoreHeap *ins)
     int size;
     bool isFloat = false;
     switch (mir->viewType()) {
-      case ArrayBufferView::TYPE_INT8:
-      case ArrayBufferView::TYPE_UINT8:   isSigned = false; size = 8; break;
-      case ArrayBufferView::TYPE_INT16:
-      case ArrayBufferView::TYPE_UINT16:  isSigned = false; size = 16; break;
-      case ArrayBufferView::TYPE_INT32:
-      case ArrayBufferView::TYPE_UINT32:  isSigned = true;  size = 32; break;
-      case ArrayBufferView::TYPE_FLOAT64: isFloat  = true;  size = 64; break;
-      case ArrayBufferView::TYPE_FLOAT32: isFloat = true;   size = 32; break;
+      case Scalar::Int8:
+      case Scalar::Uint8:   isSigned = false; size = 8; break;
+      case Scalar::Int16:
+      case Scalar::Uint16:  isSigned = false; size = 16; break;
+      case Scalar::Int32:
+      case Scalar::Uint32:  isSigned = true;  size = 32; break;
+      case Scalar::Float64: isFloat  = true;  size = 64; break;
+      case Scalar::Float32: isFloat = true;   size = 32; break;
       default: MOZ_ASSUME_UNREACHABLE("unexpected array type");
     }
     const LAllocation *ptr = ins->ptr();
@@ -2054,12 +1892,10 @@ CodeGeneratorARM::visitAsmJSStoreHeap(LAsmJSStoreHeap *ins)
         JS_ASSERT(ptrImm >= 0);
         if (isFloat) {
             VFPRegister vd(ToFloatRegister(ins->value()));
-            if (size == 32) {
-                masm.as_vcvt(VFPRegister(ScratchFloatReg).singleOverlay(), vd, false, Assembler::Always);
-                masm.ma_vstr(VFPRegister(ScratchFloatReg).singleOverlay(), Operand(HeapReg, ptrImm), Assembler::Always);
-            } else {
+            if (size == 32)
+                masm.ma_vstr(vd.singleOverlay(), Operand(HeapReg, ptrImm), Assembler::Always);
+            else
                 masm.ma_vstr(vd, Operand(HeapReg, ptrImm), Assembler::Always);
-            }
         } else {
             masm.ma_dataTransferN(IsStore, size, isSigned, HeapReg, Imm32(ptrImm),
                                   ToRegister(ins->value()), Offset, Assembler::Always);
@@ -2074,7 +1910,7 @@ CodeGeneratorARM::visitAsmJSStoreHeap(LAsmJSStoreHeap *ins)
         if (isFloat) {
             VFPRegister vd(ToFloatRegister(ins->value()));
             if (size == 32)
-                masm.storeFloat(vd, HeapReg, ptrReg, Assembler::Always);
+                masm.ma_vstr(vd.singleOverlay(), HeapReg, ptrReg, 0, Assembler::Always);
             else
                 masm.ma_vstr(vd, HeapReg, ptrReg, 0, Assembler::Always);
         } else {
@@ -2088,14 +1924,15 @@ CodeGeneratorARM::visitAsmJSStoreHeap(LAsmJSStoreHeap *ins)
     if (isFloat) {
         VFPRegister vd(ToFloatRegister(ins->value()));
         if (size == 32)
-            masm.storeFloat(vd, HeapReg, ptrReg, Assembler::Below);
+            masm.ma_vstr(vd.singleOverlay(), HeapReg, ptrReg, 0, Assembler::Below);
         else
             masm.ma_vstr(vd, HeapReg, ptrReg, 0, Assembler::Below);
     } else {
         masm.ma_dataTransferN(IsStore, size, isSigned, HeapReg, ptrReg,
                               ToRegister(ins->value()), Offset, Assembler::Below);
     }
-    return gen->noteHeapAccess(AsmJSHeapAccess(bo.getOffset()));
+    masm.append(AsmJSHeapAccess(bo.getOffset()));
+    return true;
 }
 
 bool
@@ -2239,10 +2076,14 @@ CodeGeneratorARM::visitAsmJSLoadGlobalVar(LAsmJSLoadGlobalVar *ins)
 {
     const MAsmJSLoadGlobalVar *mir = ins->mir();
     unsigned addr = mir->globalDataOffset();
-    if (mir->type() == MIRType_Int32)
+    if (mir->type() == MIRType_Int32) {
         masm.ma_dtr(IsLoad, GlobalReg, Imm32(addr), ToRegister(ins->output()));
-    else
+    } else if (mir->type() == MIRType_Float32) {
+        VFPRegister vd(ToFloatRegister(ins->output()));
+        masm.ma_vldr(Operand(GlobalReg, addr), vd.singleOverlay());
+    } else {
         masm.ma_vldr(Operand(GlobalReg, addr), ToFloatRegister(ins->output()));
+    }
     return true;
 }
 
@@ -2252,12 +2093,16 @@ CodeGeneratorARM::visitAsmJSStoreGlobalVar(LAsmJSStoreGlobalVar *ins)
     const MAsmJSStoreGlobalVar *mir = ins->mir();
 
     MIRType type = mir->value()->type();
-    JS_ASSERT(type == MIRType_Int32 || type == MIRType_Double);
+    JS_ASSERT(IsNumberType(type));
     unsigned addr = mir->globalDataOffset();
-    if (mir->value()->type() == MIRType_Int32)
+    if (mir->value()->type() == MIRType_Int32) {
         masm.ma_dtr(IsStore, GlobalReg, Imm32(addr), ToRegister(ins->value()));
-    else
+    } else if (mir->value()->type() == MIRType_Float32) {
+        VFPRegister vd(ToFloatRegister(ins->value()));
+        masm.ma_vstr(vd.singleOverlay(), Operand(GlobalReg, addr));
+    } else {
         masm.ma_vstr(ToFloatRegister(ins->value()), Operand(GlobalReg, addr));
+    }
     return true;
 }
 
@@ -2309,4 +2154,16 @@ CodeGeneratorARM::visitNegF(LNegF *ins)
     FloatRegister input = ToFloatRegister(ins->input());
     masm.ma_vneg_f32(input, ToFloatRegister(ins->output()));
     return true;
+}
+
+bool
+CodeGeneratorARM::visitForkJoinGetSlice(LForkJoinGetSlice *ins)
+{
+    MOZ_ASSUME_UNREACHABLE("NYI");
+}
+
+JitCode *
+JitRuntime::generateForkJoinGetSliceStub(JSContext *cx)
+{
+    MOZ_ASSUME_UNREACHABLE("NYI");
 }

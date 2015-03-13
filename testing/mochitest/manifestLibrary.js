@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -19,7 +19,8 @@ function parseTestManifest(testManifest, params, callback) {
   // For mochitest-plain, we define lists as an array of testnames.
   for (var obj of testManifest['tests']) {
     var path = obj['path'];
-    if (obj.disabled) {
+    // Note that obj.disabled may be "". We still want to skip in that case.
+    if ("disabled" in obj) {
       dump("TEST-SKIPPED | " + path + " | " + obj.disabled + "\n");
       continue;
     }
@@ -42,9 +43,14 @@ function getTestManifest(url, params, callback) {
   req.onload = function() {
     if (req.readyState == 4) {
       if (req.status == 200) {
-        parseTestManifest(JSON.parse(req.responseText), params, callback);
+        try {
+          parseTestManifest(JSON.parse(req.responseText), params, callback);
+        } catch (e) {
+          dump("TEST-UNEXPECTED-FAIL: setup.js | error parsing " + url + " (" + e + ")\n");
+          throw e;
+        }
       } else {
-        dump("TEST-ERROR: setup.js | error loading " + url + "\n");
+        dump("TEST-UNEXPECTED-FAIL: setup.js | error loading " + url + "\n");
         callback({});
       }
     }
@@ -140,4 +146,3 @@ function filterTests(filter, testList, runOnly) {
   }
   return refilteredTests;
 }
-

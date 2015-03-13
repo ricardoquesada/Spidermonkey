@@ -20,6 +20,7 @@ from __future__ import unicode_literals
 from collections import OrderedDict
 from mozbuild.util import (
     HierarchicalStringList,
+    HierarchicalStringListWithFlagsFactory,
     StrictOrderingOnAppendList,
     StrictOrderingOnAppendListWithFlagsFactory,
 )
@@ -76,7 +77,14 @@ VARIABLES = {
         directory and merge into an APK file.
         """, 'export'),
 
-    'SOURCES': (StrictOrderingOnAppendListWithFlagsFactory({'no_pgo': bool}), list,
+    'ANDROID_ECLIPSE_PROJECT_TARGETS': (dict, dict,
+        """Defines Android Eclipse project targets.
+
+        This variable should not be populated directly. Instead, it should
+        populated by calling add_android_eclipse{_library}_project().
+        """, 'export'),
+
+    'SOURCES': (StrictOrderingOnAppendListWithFlagsFactory({'no_pgo': bool, 'flags': list}), list,
         """Source code files.
 
         This variable contains a list of source code files to compile.
@@ -149,6 +157,13 @@ VARIABLES = {
            })
         """, None),
 
+    'DELAYLOAD_DLLS': (list, list,
+        """Delay-loaded DLLs.
+
+        This variable contains a list of DLL files which the module being linked
+        should load lazily.  This only has an effect when building with MSVC.
+        """, 'binaries'),
+
     'DIRS': (list, list,
         """Child directories to descend into looking for build frontend files.
 
@@ -163,9 +178,10 @@ VARIABLES = {
         delimiters.
         """, None),
 
-    'EXPORT_LIBRARY': (bool, bool,
-        """Install the library to the static libraries folder.
-        """, None),
+    'DISABLE_STL_WRAPPING': (bool, bool,
+        """Disable the wrappers for STL which allow it to work with C++ exceptions
+        disabled.
+        """, 'binaries'),
 
     'EXTRA_COMPONENTS': (StrictOrderingOnAppendList, list,
         """Additional component files to distribute.
@@ -188,6 +204,18 @@ VARIABLES = {
         This variable contains a list of files to copy into
         ``$(FINAL_TARGET)/$(JS_MODULES_PATH)``, after preprocessing.
         ``JS_MODULES_PATH`` defaults to ``modules`` if left undefined.
+        """, 'libs'),
+
+    'TESTING_JS_MODULES': (HierarchicalStringList, list,
+        """JavaScript modules to install in the test-only destination.
+
+        Some JavaScript modules (JSMs) are test-only and not distributed
+        with Firefox. This variable defines them.
+
+        To install modules in a subdirectory, use properties of this
+        variable to control the final destination. e.g.
+
+        ``TESTING_JS_MODULES.foo += ['module.jsm']``.
         """, 'libs'),
 
     'EXTRA_PP_COMPONENTS': (StrictOrderingOnAppendList, list,
@@ -222,6 +250,13 @@ VARIABLES = {
 
     'FORCE_STATIC_LIB': (bool, bool,
         """Whether the library in this directory is a static library.
+        """, None),
+
+    'USE_STATIC_LIBS': (bool, bool,
+        """Whether the code in this directory is a built against the static
+        runtime library.
+
+        This variable only has an effect when building with MSVC.
         """, None),
 
     'GENERATED_INCLUDES' : (StrictOrderingOnAppendList, list,
@@ -287,12 +322,6 @@ VARIABLES = {
         A list of libraries and flags to include when linking.
         """, None),
 
-    'LIBXUL_LIBRARY': (bool, bool,
-        """Whether the library in this directory is linked into libxul.
-
-        Implies ``MOZILLA_INTERNAL_API`` and ``FORCE_STATIC_LIB``.
-        """, None),
-
     'LOCAL_INCLUDES': (StrictOrderingOnAppendList, list,
         """Additional directories to be searched for include files by the compiler.
         """, None),
@@ -314,6 +343,57 @@ VARIABLES = {
 
         This variable contains a list of system libaries to link against.
         """, None),
+    'RCFILE': (unicode, unicode,
+        """The program .rc file.
+
+        This variable can only be used on Windows.
+        """, None),
+
+    'RESFILE': (unicode, unicode,
+        """The program .res file.
+
+        This variable can only be used on Windows.
+        """, None),
+
+    'RCINCLUDE': (unicode, unicode,
+        """The resource script file to be included in the default .res file.
+
+        This variable can only be used on Windows.
+        """, None),
+
+    'DEFFILE': (unicode, unicode,
+        """The program .def (module definition) file.
+
+        This variable can only be used on Windows.
+        """, None),
+
+    'LD_VERSION_SCRIPT': (unicode, unicode,
+        """The linker version script for shared libraries.
+
+        This variable can only be used on Linux.
+        """, None),
+
+    'RESOURCE_FILES': (HierarchicalStringListWithFlagsFactory({'preprocess': bool}), list,
+        """List of resources to be exported, and in which subdirectories.
+
+        ``RESOURCE_FILES`` is used to list the resource files to be exported to
+        ``dist/bin/res``, but it can be used for other files as well. This variable
+        behaves as a list when appending filenames for resources in the top-level
+        directory. Files can also be appended to a field to indicate which
+        subdirectory they should be exported to. For example, to export
+        ``foo.res`` to the top-level directory, and ``bar.res`` to ``fonts/``,
+        append to ``RESOURCE_FILES`` like so::
+
+           RESOURCE_FILES += ['foo.res']
+           RESOURCE_FILES.fonts += ['bar.res']
+
+        Added files also have a 'preprocess' attribute, which will cause the
+        affected file to be run through the preprocessor, using any ``DEFINES``
+        set. It is used like this::
+
+           RESOURCE_FILES.fonts += ['baz.res.in']
+           RESOURCE_FILES.fonts['baz.res.in'].preprocess = True
+        """, None),
 
     'SDK_LIBRARY': (StrictOrderingOnAppendList, list,
         """Elements of the distributed SDK.
@@ -331,6 +411,14 @@ VARIABLES = {
         If the configuration token ``BIN_SUFFIX`` is set, its value will be
         automatically appended to each name. If a name already ends with
         ``BIN_SUFFIX``, the name will remain unchanged.
+        """, 'binaries'),
+
+    'SONAME': (unicode, unicode,
+        """The soname of the shared object currently being linked
+
+        soname is the "logical name" of a shared object, often used to provide
+        version backwards compatibility. This variable makes sense only for
+        shared objects, and is supported only on some unix platforms.
         """, 'binaries'),
 
     'HOST_SIMPLE_PROGRAMS': (StrictOrderingOnAppendList, list,
@@ -382,18 +470,6 @@ VARIABLES = {
 
         This variable is typically not populated directly. Instead, it is
         populated by calling add_tier_dir().
-        """, None),
-
-    'EXTERNAL_MAKE_DIRS': (list, list,
-        """Directories that build with make but don't use moz.build files.
-
-        This is like ``DIRS`` except it implies that ``make`` is used to build the
-        directory and that the directory does not define itself with moz.build
-        files.
-        """, None),
-
-    'PARALLEL_EXTERNAL_MAKE_DIRS': (list, list,
-        """Parallel version of ``EXTERNAL_MAKE_DIRS``.
         """, None),
 
     'CONFIGURE_SUBST_FILES': (StrictOrderingOnAppendList, list,
@@ -451,6 +527,14 @@ VARIABLES = {
         If present, some files defined by other variables won't be
         distributed/shipped with the produced build.
         """, None),
+
+    'JAR_MANIFESTS': (StrictOrderingOnAppendList, list,
+        """JAR manifest files that should be processed as part of the build.
+
+        JAR manifests are files in the tree that define how to package files
+        into JARs and how chrome registration is performed. For more info,
+        see :ref:`jar_manifests`.
+        """, 'libs'),
 
     # IDL Generation.
     'XPIDL_SOURCES': (StrictOrderingOnAppendList, list,
@@ -514,6 +598,14 @@ VARIABLES = {
          These will be preprocessed before being parsed and converted.
          """, 'export'),
 
+    'WEBIDL_EXAMPLE_INTERFACES': (StrictOrderingOnAppendList, list,
+        """Names of example WebIDL interfaces to build as part of the build.
+
+        Names in this list correspond to WebIDL interface names defined in
+        WebIDL files included in the build from one of the \*WEBIDL_FILES
+        variables.
+        """, 'export'),
+
     # Test declaration.
     'A11Y_MANIFESTS': (StrictOrderingOnAppendList, list,
         """List of manifest files defining a11y tests.
@@ -521,6 +613,12 @@ VARIABLES = {
 
     'BROWSER_CHROME_MANIFESTS': (StrictOrderingOnAppendList, list,
         """List of manifest files defining browser chrome tests.
+        """, None),
+
+    'CRASHTEST_MANIFESTS': (StrictOrderingOnAppendList, list,
+        """List of manifest files defining crashtests.
+
+        These are commonly named crashtests.list.
         """, None),
 
     'METRO_CHROME_MANIFESTS': (StrictOrderingOnAppendList, list,
@@ -537,6 +635,12 @@ VARIABLES = {
 
     'MOCHITEST_WEBAPPRT_CHROME_MANIFESTS': (StrictOrderingOnAppendList, list,
         """List of manifest files defining webapprt mochitest chrome tests.
+        """, None),
+
+    'REFTEST_MANIFESTS': (StrictOrderingOnAppendList, list,
+        """List of manifest files defining reftests.
+
+        These are commonly named reftest.list.
         """, None),
 
     'WEBRTC_SIGNALLING_TEST_MANIFESTS': (StrictOrderingOnAppendList, list,
@@ -571,6 +675,115 @@ VARIABLES = {
         neither are present, the result is dist/bin. If XPI_NAME is present, the
         result is dist/xpi-stage/$(XPI_NAME). If DIST_SUBDIR is present, then
         the $(DIST_SUBDIR) directory of the otherwise default value is used.
+        """, 'libs'),
+
+    'GYP_DIRS': (StrictOrderingOnAppendListWithFlagsFactory({
+            'variables': dict,
+            'input': unicode,
+            'sandbox_vars': dict,
+            'non_unified_sources': StrictOrderingOnAppendList,
+        }), list,
+        """Defines a list of object directories handled by gyp configurations.
+
+        Elements of this list give the relative object directory. For each
+        element of the list, GYP_DIRS may be accessed as a dictionary
+        (GYP_DIRS[foo]). The object this returns has attributes that need to be
+        set to further specify gyp processing:
+            - input, gives the path to the root gyp configuration file for that
+              object directory.
+            - variables, a dictionary containing variables and values to pass
+              to the gyp processor.
+            - sandbox_vars, a dictionary containing variables and values to
+              pass to the mozbuild processor on top of those derived from gyp
+              configuration.
+            - non_unified_sources, a list containing sources files, relative to
+              the current moz.build, that should be excluded from source file
+              unification.
+
+        Typical use looks like:
+            GYP_DIRS += ['foo', 'bar']
+            GYP_DIRS['foo'].input = 'foo/foo.gyp'
+            GYP_DIRS['foo'].variables = {
+                'foo': 'bar',
+                (...)
+            }
+            (...)
+        """, None),
+
+    'SPHINX_TREES': (dict, dict,
+        """Describes what the Sphinx documentation tree will look like.
+
+        Keys are relative directories inside the final Sphinx documentation
+        tree to install files into. Values are directories (relative to this
+        file) whose content to copy into the Sphinx documentation tree.
+        """, None),
+
+    'SPHINX_PYTHON_PACKAGE_DIRS': (StrictOrderingOnAppendList, list,
+        """Directories containing Python packages that Sphinx documents.
+        """, None),
+
+    'CFLAGS': (list, list,
+        """Flags passed to the C compiler for all of the C source files
+           declared in this directory.
+
+           Note that the ordering of flags matters here, these flags will be
+           added to the compiler's command line in the same order as they
+           appear in the moz.build file.
+        """, 'binaries'),
+
+    'CXXFLAGS': (list, list,
+        """Flags passed to the C++ compiler for all of the C++ source files
+           declared in this directory.
+
+           Note that the ordering of flags matters here; these flags will be
+           added to the compiler's command line in the same order as they
+           appear in the moz.build file.
+        """, 'binaries'),
+
+    'CMFLAGS': (list, list,
+        """Flags passed to the Objective-C compiler for all of the Objective-C
+           source files declared in this directory.
+
+           Note that the ordering of flags matters here; these flags will be
+           added to the compiler's command line in the same order as they
+           appear in the moz.build file.
+        """, 'binaries'),
+
+    'CMMFLAGS': (list, list,
+        """Flags passed to the Objective-C++ compiler for all of the
+           Objective-C++ source files declared in this directory.
+
+           Note that the ordering of flags matters here; these flags will be
+           added to the compiler's command line in the same order as they
+           appear in the moz.build file.
+        """, 'binaries'),
+
+    'LDFLAGS': (list, list,
+        """Flags passed to the linker when linking all of the libraries and
+           executables declared in this directory.
+
+           Note that the ordering of flags matters here; these flags will be
+           added to the linker's command line in the same order as they
+           appear in the moz.build file.
+        """, 'libs'),
+
+    'EXTRA_DSO_LDOPTS': (list, list,
+        """Flags passed to the linker when linking a shared library.
+
+           Note that the ordering of flags matter here, these flags will be
+           added to the linker's command line in the same order as they
+           appear in the moz.build file.
+        """, 'libs'),
+
+    'WIN32_EXE_LDFLAGS': (list, list,
+        """Flags passed to the linker when linking a Windows .exe executable
+           declared in this directory.
+
+           Note that the ordering of flags matter here, these flags will be
+           added to the linker's command line in the same order as they
+           appear in the moz.build file.
+
+           This variable only has an effect on Windows.
         """, 'libs'),
 }
 
@@ -621,6 +834,33 @@ FUNCTIONS = {
 
         This returns a rich Java JAR type, described at
         :py:class:`mozbuild.frontend.data.JavaJarData`.
+        """),
+
+    'add_android_eclipse_project': ('_add_android_eclipse_project', (str, str),
+        """Declare an Android Eclipse project.
+
+        This is one of the supported ways to populate the
+        ANDROID_ECLIPSE_PROJECT_TARGETS variable.
+
+        The parameters are:
+        * name - project name.
+        * manifest - path to AndroidManifest.xml.
+
+        This returns a rich Android Eclipse project type, described at
+        :py:class:`mozbuild.frontend.data.AndroidEclipseProjectData`.
+        """),
+
+    'add_android_eclipse_library_project': ('_add_android_eclipse_library_project', (str,),
+        """Declare an Android Eclipse library project.
+
+        This is one of the supported ways to populate the
+        ANDROID_ECLIPSE_PROJECT_TARGETS variable.
+
+        The parameters are:
+        * name - project name.
+
+        This returns a rich Android Eclipse project type, described at
+        :py:class:`mozbuild.frontend.data.AndroidEclipseProjectData`.
         """),
 
     'add_tier_dir': ('_add_tier_directory', (str, [str, list], bool, bool),

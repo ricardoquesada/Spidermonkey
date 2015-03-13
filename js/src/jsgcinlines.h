@@ -9,7 +9,9 @@
 
 #include "jsgc.h"
 
+#include "gc/GCTrace.h"
 #include "gc/Zone.h"
+#include "vm/ForkJoin.h"
 
 namespace js {
 
@@ -22,13 +24,13 @@ class Shape;
  */
 struct AutoMarkInDeadZone
 {
-    AutoMarkInDeadZone(JS::Zone *zone)
+    explicit AutoMarkInDeadZone(JS::Zone *zone)
       : zone(zone),
         scheduled(zone->scheduledForDestruction)
     {
-        JSRuntime *rt = zone->runtimeFromMainThread();
-        if (rt->gcManipulatingDeadZones && zone->scheduledForDestruction) {
-            rt->gcObjectsMarkedInDeadZones++;
+        gc::GCRuntime &gc = zone->runtimeFromMainThread()->gc;
+        if (gc.isManipulatingDeadZones() && zone->scheduledForDestruction) {
+            gc.incObjectsMarkedInDeadZone();
             zone->scheduledForDestruction = false;
         }
     }
@@ -42,8 +44,8 @@ struct AutoMarkInDeadZone
     bool scheduled;
 };
 
-inline Allocator *const
-ThreadSafeContext::allocator()
+inline Allocator *
+ThreadSafeContext::allocator() const
 {
     JS_ASSERT_IF(isJSContext(), &asJSContext()->zone()->allocator == allocator_);
     return allocator_;
@@ -53,11 +55,20 @@ template <typename T>
 inline bool
 ThreadSafeContext::isThreadLocal(T thing) const
 {
-    if (!isForkJoinSlice())
+    if (!isForkJoinContext())
         return true;
 
-    if (!IsInsideNursery(runtime_, thing) &&
-        allocator_->arenas.containsArena(runtime_, thing->arenaHeader()))
+#ifdef JSGC_FJGENERATIONAL
+    ForkJoinContext *cx = static_cast<ForkJoinContext*>(const_cast<ThreadSafeContext*>(this));
+    if (cx->nursery().isInsideNewspace(thing))
+        return true;
+#endif
+
+    // Global invariant
+    JS_ASSERT(!IsInsideNursery(thing));
+
+    // The thing is not in the nursery, but is it in the private tenured area?
+    if (allocator_->arenas.containsArena(runtime_, thing->arenaHeader()))
     {
         // GC should be suppressed in preparation for mutating thread local
         // objects, as we don't want to trip any barriers.
@@ -91,178 +102,287 @@ ShouldNurseryAllocate(const Nursery &nursery, AllocKind kind, InitialHeap heap)
 }
 #endif
 
+#ifdef JSGC_FJGENERATIONAL
+inline bool
+ShouldFJNurseryAllocate(const ForkJoinNursery &nursery, AllocKind kind, InitialHeap heap)
+{
+    return IsFJNurseryAllocable(kind) && heap != TenuredHeap;
+}
+#endif
+
 inline JSGCTraceKind
 GetGCThingTraceKind(const void *thing)
 {
     JS_ASSERT(thing);
     const Cell *cell = static_cast<const Cell *>(thing);
 #ifdef JSGC_GENERATIONAL
-    if (IsInsideNursery(cell->runtimeFromMainThread(), cell))
+    if (IsInsideNursery(cell))
         return JSTRACE_OBJECT;
 #endif
     return MapAllocToTraceKind(cell->tenuredGetAllocKind());
 }
 
-static inline void
-GCPoke(JSRuntime *rt)
+inline void
+GCRuntime::poke()
 {
-    rt->gcPoke = true;
+    poked = true;
 
 #ifdef JS_GC_ZEAL
     /* Schedule a GC to happen "soon" after a GC poke. */
-    if (rt->gcZeal() == js::gc::ZealPokeValue)
-        rt->gcNextScheduled = 1;
+    if (zealMode == ZealPokeValue)
+        nextScheduled = 1;
 #endif
 }
 
 class ArenaIter
 {
     ArenaHeader *aheader;
-    ArenaHeader *remainingHeader;
+    ArenaHeader *unsweptHeader;
+    ArenaHeader *sweptHeader;
 
   public:
     ArenaIter() {
-        init();
+        aheader = nullptr;
+        unsweptHeader = nullptr;
+        sweptHeader = nullptr;
     }
 
     ArenaIter(JS::Zone *zone, AllocKind kind) {
         init(zone, kind);
     }
 
-    void init() {
-        aheader = nullptr;
-        remainingHeader = nullptr;
-    }
-
-    void init(ArenaHeader *aheaderArg) {
-        aheader = aheaderArg;
-        remainingHeader = nullptr;
-    }
-
-    void init(JS::Zone *zone, AllocKind kind) {
-        aheader = zone->allocator.arenas.getFirstArena(kind);
-        remainingHeader = zone->allocator.arenas.getFirstArenaToSweep(kind);
+    void init(Allocator *allocator, AllocKind kind) {
+        aheader = allocator->arenas.getFirstArena(kind);
+        unsweptHeader = allocator->arenas.getFirstArenaToSweep(kind);
+        sweptHeader = allocator->arenas.getFirstSweptArena(kind);
+        if (!unsweptHeader) {
+            unsweptHeader = sweptHeader;
+            sweptHeader = nullptr;
+        }
         if (!aheader) {
-            aheader = remainingHeader;
-            remainingHeader = nullptr;
+            aheader = unsweptHeader;
+            unsweptHeader = sweptHeader;
+            sweptHeader = nullptr;
         }
     }
 
-    bool done() {
+    void init(JS::Zone *zone, AllocKind kind) {
+        init(&zone->allocator, kind);
+    }
+
+    bool done() const {
         return !aheader;
     }
 
-    ArenaHeader *get() {
+    ArenaHeader *get() const {
         return aheader;
     }
 
     void next() {
+        JS_ASSERT(!done());
         aheader = aheader->next;
         if (!aheader) {
-            aheader = remainingHeader;
-            remainingHeader = nullptr;
+            aheader = unsweptHeader;
+            unsweptHeader = sweptHeader;
+            sweptHeader = nullptr;
         }
     }
 };
 
-class CellIterImpl
+class ArenaCellIterImpl
 {
+    // These three are set in initUnsynchronized().
     size_t firstThingOffset;
     size_t thingSize;
-    ArenaIter aiter;
-    FreeSpan firstSpan;
-    const FreeSpan *span;
+#ifdef DEBUG
+    bool isInited;
+#endif
+
+    // These three are set in reset() (which is called by init()).
+    FreeSpan span;
     uintptr_t thing;
-    Cell *cell;
+    uintptr_t limit;
 
-  protected:
-    CellIterImpl() {
-    }
-
-    void initSpan(JS::Zone *zone, AllocKind kind) {
-        JS_ASSERT(zone->allocator.arenas.isSynchronizedFreeList(kind));
-        firstThingOffset = Arena::firstThingOffset(kind);
-        thingSize = Arena::thingSize(kind);
-        firstSpan.initAsEmpty();
-        span = &firstSpan;
-        thing = span->first;
-    }
-
-    void init(ArenaHeader *singleAheader) {
-        initSpan(singleAheader->zone, singleAheader->getAllocKind());
-        aiter.init(singleAheader);
-        next();
-        aiter.init();
-    }
-
-    void init(JS::Zone *zone, AllocKind kind) {
-        initSpan(zone, kind);
-        aiter.init(zone, kind);
-        next();
+    // Upon entry, |thing| points to any thing (free or used) and finds the
+    // first used thing, which may be |thing|.
+    void moveForwardIfFree() {
+        JS_ASSERT(!done());
+        JS_ASSERT(thing);
+        // Note: if |span| is empty, this test will fail, which is what we want
+        // -- |span| being empty means that we're past the end of the last free
+        // thing, all the remaining things in the arena are used, and we'll
+        // never need to move forward.
+        if (thing == span.first) {
+            thing = span.last + thingSize;
+            span = *span.nextSpan();
+        }
     }
 
   public:
-    bool done() const {
-        return !cell;
+    ArenaCellIterImpl()
+      : firstThingOffset(0)     // Squelch
+      , thingSize(0)            //   warnings
+    {
     }
 
-    template<typename T> T *get() const {
-        JS_ASSERT(!done());
-        return static_cast<T *>(cell);
+    void initUnsynchronized(ArenaHeader *aheader) {
+        AllocKind kind = aheader->getAllocKind();
+#ifdef DEBUG
+        isInited = true;
+#endif
+        firstThingOffset = Arena::firstThingOffset(kind);
+        thingSize = Arena::thingSize(kind);
+        reset(aheader);
+    }
+
+    void init(ArenaHeader *aheader) {
+#ifdef DEBUG
+        AllocKind kind = aheader->getAllocKind();
+        JS_ASSERT(aheader->zone->allocator.arenas.isSynchronizedFreeList(kind));
+#endif
+        initUnsynchronized(aheader);
+    }
+
+    // Use this to move from an Arena of a particular kind to another Arena of
+    // the same kind.
+    void reset(ArenaHeader *aheader) {
+        JS_ASSERT(isInited);
+        span = aheader->getFirstFreeSpan();
+        uintptr_t arenaAddr = aheader->arenaAddress();
+        thing = arenaAddr + firstThingOffset;
+        limit = arenaAddr + ArenaSize;
+        moveForwardIfFree();
+    }
+
+    bool done() const {
+        return thing == limit;
     }
 
     Cell *getCell() const {
         JS_ASSERT(!done());
-        return cell;
+        return reinterpret_cast<Cell *>(thing);
+    }
+
+    template<typename T> T *get() const {
+        JS_ASSERT(!done());
+        return static_cast<T *>(getCell());
     }
 
     void next() {
-        for (;;) {
-            if (thing != span->first)
-                break;
-            if (JS_LIKELY(span->hasNext())) {
-                thing = span->last + thingSize;
-                span = span->nextSpan();
-                break;
-            }
-            if (aiter.done()) {
-                cell = nullptr;
-                return;
-            }
-            ArenaHeader *aheader = aiter.get();
-            firstSpan = aheader->getFirstFreeSpan();
-            span = &firstSpan;
-            thing = aheader->arenaAddress() | firstThingOffset;
-            aiter.next();
-        }
-        cell = reinterpret_cast<Cell *>(thing);
+        MOZ_ASSERT(!done());
         thing += thingSize;
+        if (thing < limit)
+            moveForwardIfFree();
     }
 };
 
-class CellIterUnderGC : public CellIterImpl
+class ArenaCellIterUnderGC : public ArenaCellIterImpl
 {
   public:
-    CellIterUnderGC(JS::Zone *zone, AllocKind kind) {
-        JS_ASSERT(zone->runtimeFromAnyThread()->isHeapBusy());
-        init(zone, kind);
-    }
-
-    CellIterUnderGC(ArenaHeader *aheader) {
+    explicit ArenaCellIterUnderGC(ArenaHeader *aheader) {
         JS_ASSERT(aheader->zone->runtimeFromAnyThread()->isHeapBusy());
         init(aheader);
     }
 };
 
-class CellIter : public CellIterImpl
+class ArenaCellIterUnderFinalize : public ArenaCellIterImpl
 {
+  public:
+    explicit ArenaCellIterUnderFinalize(ArenaHeader *aheader) {
+        initUnsynchronized(aheader);
+    }
+};
+
+class ZoneCellIterImpl
+{
+    ArenaIter arenaIter;
+    ArenaCellIterImpl cellIter;
+
+  protected:
+    ZoneCellIterImpl() {}
+
+    void init(JS::Zone *zone, AllocKind kind) {
+        JS_ASSERT(zone->allocator.arenas.isSynchronizedFreeList(kind));
+        arenaIter.init(zone, kind);
+        if (!arenaIter.done())
+            cellIter.init(arenaIter.get());
+    }
+
+  public:
+    bool done() const {
+        return arenaIter.done();
+    }
+
+    template<typename T> T *get() const {
+        JS_ASSERT(!done());
+        return cellIter.get<T>();
+    }
+
+    Cell *getCell() const {
+        JS_ASSERT(!done());
+        return cellIter.getCell();
+    }
+
+    void next() {
+        JS_ASSERT(!done());
+        cellIter.next();
+        if (cellIter.done()) {
+            JS_ASSERT(!arenaIter.done());
+            arenaIter.next();
+            if (!arenaIter.done())
+                cellIter.reset(arenaIter.get());
+        }
+    }
+};
+
+class ZoneCellIterUnderGC : public ZoneCellIterImpl
+{
+  public:
+    ZoneCellIterUnderGC(JS::Zone *zone, AllocKind kind) {
+#ifdef JSGC_GENERATIONAL
+        JS_ASSERT(zone->runtimeFromAnyThread()->gc.nursery.isEmpty());
+#endif
+        JS_ASSERT(zone->runtimeFromAnyThread()->isHeapBusy());
+        init(zone, kind);
+    }
+};
+
+/* In debug builds, assert that no allocation occurs. */
+class AutoAssertNoAlloc
+{
+#ifdef JS_DEBUG
+    GCRuntime *gc;
+
+  public:
+    AutoAssertNoAlloc() : gc(nullptr) {}
+    explicit AutoAssertNoAlloc(JSRuntime *rt) : gc(nullptr) {
+        disallowAlloc(rt);
+    }
+    void disallowAlloc(JSRuntime *rt) {
+        JS_ASSERT(!gc);
+        gc = &rt->gc;
+        gc->disallowAlloc();
+    }
+    ~AutoAssertNoAlloc() {
+        if (gc)
+            gc->allowAlloc();
+    }
+#else
+  public:
+    AutoAssertNoAlloc() {}
+    explicit AutoAssertNoAlloc(JSRuntime *) {}
+    void disallowAlloc(JSRuntime *rt) {}
+#endif
+};
+
+class ZoneCellIter : public ZoneCellIterImpl
+{
+    AutoAssertNoAlloc noAlloc;
     ArenaLists *lists;
     AllocKind kind;
-#ifdef DEBUG
-    size_t *counter;
-#endif
+
   public:
-    CellIter(JS::Zone *zone, AllocKind kind)
+    ZoneCellIter(JS::Zone *zone, AllocKind kind)
       : lists(&zone->allocator.arenas),
         kind(kind)
     {
@@ -277,24 +397,28 @@ class CellIter : public CellIterImpl
         {
             gc::FinishBackgroundFinalize(zone->runtimeFromMainThread());
         }
+
+#ifdef JSGC_GENERATIONAL
+        /* Evict the nursery before iterating so we can see all things. */
+        JSRuntime *rt = zone->runtimeFromMainThread();
+        if (!rt->gc.nursery.isEmpty())
+            MinorGC(rt, JS::gcreason::EVICT_NURSERY);
+#endif
+
         if (lists->isSynchronizedFreeList(kind)) {
             lists = nullptr;
         } else {
             JS_ASSERT(!zone->runtimeFromMainThread()->isHeapBusy());
             lists->copyFreeListToArena(kind);
         }
-#ifdef DEBUG
-        counter = &zone->runtimeFromAnyThread()->noGCOrAllocationCheck;
-        ++*counter;
-#endif
+
+        /* Assert that no GCs can occur while a ZoneCellIter is live. */
+        noAlloc.disallowAlloc(zone->runtimeFromMainThread());
+
         init(zone, kind);
     }
 
-    ~CellIter() {
-#ifdef DEBUG
-        JS_ASSERT(*counter > 0);
-        --*counter;
-#endif
+    ~ZoneCellIter() {
         if (lists)
             lists->clearFreeListInArena(kind);
     }
@@ -306,7 +430,7 @@ class GCZonesIter
     ZonesIter zone;
 
   public:
-    GCZonesIter(JSRuntime *rt) : zone(rt, WithAtoms) {
+    explicit GCZonesIter(JSRuntime *rt) : zone(rt, WithAtoms) {
         if (!zone->isCollecting())
             next();
     }
@@ -337,9 +461,9 @@ class GCZoneGroupIter {
     JS::Zone *current;
 
   public:
-    GCZoneGroupIter(JSRuntime *rt) {
+    explicit GCZoneGroupIter(JSRuntime *rt) {
         JS_ASSERT(rt->isHeapBusy());
-        current = rt->gcCurrentZoneGroup;
+        current = rt->gc.getCurrentZoneGroup();
     }
 
     bool done() const { return !current; }
@@ -365,153 +489,328 @@ typedef CompartmentsIterT<GCZoneGroupIter> GCCompartmentGroupIter;
  * Attempt to allocate a new GC thing out of the nursery. If there is not enough
  * room in the nursery or there is an OOM, this method will return nullptr.
  */
-template <typename T, AllowGC allowGC>
-inline T *
-TryNewNurseryGCThing(ThreadSafeContext *cxArg, size_t thingSize)
+template <AllowGC allowGC>
+inline JSObject *
+TryNewNurseryObject(JSContext *cx, size_t thingSize, size_t nDynamicSlots)
 {
-    /* TODO: Integrate PJS with generational GC. */
-    JSContext *cx = cxArg->asJSContext();
-
     JS_ASSERT(!IsAtomsCompartment(cx->compartment()));
     JSRuntime *rt = cx->runtime();
-    Nursery &nursery = rt->gcNursery;
-    T *t = static_cast<T *>(nursery.allocate(thingSize));
-    if (t)
-        return t;
+    Nursery &nursery = rt->gc.nursery;
+    JSObject *obj = nursery.allocateObject(cx, thingSize, nDynamicSlots);
+    if (obj)
+        return obj;
     if (allowGC && !rt->mainThread.suppressGC) {
         MinorGC(cx, JS::gcreason::OUT_OF_NURSERY);
 
         /* Exceeding gcMaxBytes while tenuring can disable the Nursery. */
         if (nursery.isEnabled()) {
-            t = static_cast<T *>(nursery.allocate(thingSize));
-            JS_ASSERT(t);
-            return t;
+            JSObject *obj = nursery.allocateObject(cx, thingSize, nDynamicSlots);
+            JS_ASSERT(obj);
+            return obj;
         }
     }
     return nullptr;
 }
 #endif /* JSGC_GENERATIONAL */
 
+#ifdef JSGC_FJGENERATIONAL
+template <AllowGC allowGC>
+inline JSObject *
+TryNewNurseryObject(ForkJoinContext *cx, size_t thingSize, size_t nDynamicSlots)
+{
+    ForkJoinNursery &nursery = cx->nursery();
+    bool tooLarge = false;
+    JSObject *obj = nursery.allocateObject(thingSize, nDynamicSlots, tooLarge);
+    if (obj)
+        return obj;
+
+    if (!tooLarge && allowGC) {
+        nursery.minorGC();
+        obj = nursery.allocateObject(thingSize, nDynamicSlots, tooLarge);
+        if (obj)
+            return obj;
+    }
+
+    return nullptr;
+}
+#endif /* JSGC_FJGENERATIONAL */
+
+static inline bool
+PossiblyFail()
+{
+    JS_OOM_POSSIBLY_FAIL();
+    return true;
+}
+
+template <AllowGC allowGC>
+static inline bool
+CheckAllocatorState(ThreadSafeContext *cx, AllocKind kind)
+{
+    if (!cx->isJSContext())
+        return true;
+
+    JSContext *ncx = cx->asJSContext();
+    JSRuntime *rt = ncx->runtime();
+#if defined(JS_GC_ZEAL) || defined(DEBUG)
+    JS_ASSERT_IF(rt->isAtomsCompartment(ncx->compartment()),
+                 kind == FINALIZE_STRING ||
+                 kind == FINALIZE_FAT_INLINE_STRING ||
+                 kind == FINALIZE_SYMBOL ||
+                 kind == FINALIZE_JITCODE);
+    JS_ASSERT(!rt->isHeapBusy());
+    JS_ASSERT(rt->gc.isAllocAllowed());
+#endif
+
+    // Crash if we perform a GC action when it is not safe.
+    if (allowGC && !rt->mainThread.suppressGC)
+        JS::AutoAssertOnGC::VerifyIsSafeToGC(rt);
+
+    // For testing out of memory conditions
+    if (!PossiblyFail()) {
+        js_ReportOutOfMemory(cx);
+        return false;
+    }
+
+    if (allowGC) {
+#ifdef JS_GC_ZEAL
+        if (rt->gc.needZealousGC())
+            js::gc::RunDebugGC(ncx);
+#endif
+
+        if (rt->interrupt) {
+            // Invoking the interrupt callback can fail and we can't usefully
+            // handle that here. Just check in case we need to collect instead.
+            js::gc::GCIfNeeded(ncx);
+        }
+    }
+
+    return true;
+}
+
+template <typename T>
+static inline void
+CheckIncrementalZoneState(ThreadSafeContext *cx, T *t)
+{
+#ifdef DEBUG
+    if (!cx->isJSContext())
+        return;
+
+    Zone *zone = cx->asJSContext()->zone();
+    JS_ASSERT_IF(t && zone->wasGCStarted() && (zone->isGCMarking() || zone->isGCSweeping()),
+                 t->arenaHeader()->allocatedDuringIncremental);
+#endif
+}
+
 /*
- * Allocates a new GC thing. After a successful allocation the caller must
+ * Allocate a new GC thing. After a successful allocation the caller must
  * fully initialize the thing before calling any function that can potentially
  * trigger GC. This will ensure that GC tracing never sees junk values stored
  * in the partially initialized thing.
  */
-template <typename T, AllowGC allowGC>
-inline T *
-NewGCThing(ThreadSafeContext *cx, AllocKind kind, size_t thingSize, InitialHeap heap)
+
+template <AllowGC allowGC>
+inline JSObject *
+AllocateObject(ThreadSafeContext *cx, AllocKind kind, size_t nDynamicSlots, InitialHeap heap)
 {
-    JS_ASSERT(thingSize == js::gc::Arena::thingSize(kind));
+    size_t thingSize = Arena::thingSize(kind);
 
-    if (cx->isJSContext()) {
-        JSContext *ncx = cx->asJSContext();
-#ifdef JS_GC_ZEAL
-        JSRuntime *rt = ncx->runtime();
-#endif
-        JS_ASSERT_IF(rt->isAtomsCompartment(ncx->compartment()),
-                     kind == FINALIZE_STRING ||
-                     kind == FINALIZE_SHORT_STRING ||
-                     kind == FINALIZE_IONCODE);
-        JS_ASSERT(!rt->isHeapBusy());
-        JS_ASSERT(!rt->noGCOrAllocationCheck);
+    JS_ASSERT(thingSize == Arena::thingSize(kind));
+    JS_ASSERT(thingSize >= sizeof(JSObject));
+    static_assert(sizeof(JSObject) >= CellSize,
+                  "All allocations must be at least the allocator-imposed minimum size.");
 
-        /* For testing out of memory conditions */
-        JS_OOM_POSSIBLY_FAIL_REPORT(ncx);
-
-#ifdef JS_GC_ZEAL
-        if (rt->needZealousGC() && allowGC)
-            js::gc::RunDebugGC(ncx);
-#endif
-
-        if (allowGC)
-            MaybeCheckStackRoots(ncx);
-    }
+    if (!CheckAllocatorState<allowGC>(cx, kind))
+        return nullptr;
 
 #ifdef JSGC_GENERATIONAL
-    if (cx->hasNursery() && ShouldNurseryAllocate(cx->nursery(), kind, heap)) {
-        T *t = TryNewNurseryGCThing<T, allowGC>(cx, thingSize);
-        if (t)
-            return t;
+    if (cx->isJSContext() &&
+        ShouldNurseryAllocate(cx->asJSContext()->nursery(), kind, heap)) {
+        JSObject *obj = TryNewNurseryObject<allowGC>(cx->asJSContext(), thingSize, nDynamicSlots);
+        if (obj)
+            return obj;
     }
 #endif
+#ifdef JSGC_FJGENERATIONAL
+    if (cx->isForkJoinContext() &&
+        ShouldFJNurseryAllocate(cx->asForkJoinContext()->nursery(), kind, heap))
+    {
+        JSObject *obj =
+            TryNewNurseryObject<allowGC>(cx->asForkJoinContext(), thingSize, nDynamicSlots);
+        if (obj)
+            return obj;
+    }
+#endif
+
+    HeapSlot *slots = nullptr;
+    if (nDynamicSlots) {
+        slots = cx->pod_malloc<HeapSlot>(nDynamicSlots);
+        if (MOZ_UNLIKELY(!slots))
+            return nullptr;
+        js::Debug_SetSlotRangeToCrashOnTouch(slots, nDynamicSlots);
+    }
+
+    JSObject *obj = static_cast<JSObject *>(cx->allocator()->arenas.allocateFromFreeList(kind, thingSize));
+    if (!obj)
+        obj = static_cast<JSObject *>(js::gc::ArenaLists::refillFreeList<allowGC>(cx, kind));
+
+    if (obj)
+        obj->setInitialSlots(slots);
+    else
+        js_free(slots);
+
+    CheckIncrementalZoneState(cx, obj);
+    js::gc::TraceTenuredAlloc(obj, kind);
+    return obj;
+}
+
+template <typename T, AllowGC allowGC>
+inline T *
+AllocateNonObject(ThreadSafeContext *cx)
+{
+    static_assert(sizeof(T) >= CellSize,
+                  "All allocations must be at least the allocator-imposed minimum size.");
+
+    AllocKind kind = MapTypeToFinalizeKind<T>::kind;
+    size_t thingSize = sizeof(T);
+
+    JS_ASSERT(thingSize == Arena::thingSize(kind));
+    if (!CheckAllocatorState<allowGC>(cx, kind))
+        return nullptr;
 
     T *t = static_cast<T *>(cx->allocator()->arenas.allocateFromFreeList(kind, thingSize));
     if (!t)
         t = static_cast<T *>(js::gc::ArenaLists::refillFreeList<allowGC>(cx, kind));
 
-#ifdef DEBUG
-    if (cx->isJSContext()) {
-        Zone *zone = cx->asJSContext()->zone();
-        JS_ASSERT_IF(t && zone->wasGCStarted() && (zone->isGCMarking() || zone->isGCSweeping()),
-                     t->arenaHeader()->allocatedDuringIncremental);
-    }
-#endif
-
+    CheckIncrementalZoneState(cx, t);
+    js::gc::TraceTenuredAlloc(t, kind);
     return t;
 }
 
+/*
+ * When allocating for initialization from a cached object copy, we will
+ * potentially destroy the cache entry we want to copy if we allow GC. On the
+ * other hand, since these allocations are extremely common, we don't want to
+ * delay GC from these allocation sites. Instead we allow the GC, but still
+ * fail the allocation, forcing the non-cached path.
+ *
+ * Observe this won't be used for ForkJoin allocation, as it takes a JSContext*
+ */
+template <AllowGC allowGC>
+inline JSObject *
+AllocateObjectForCacheHit(JSContext *cx, AllocKind kind, InitialHeap heap)
+{
+#ifdef JSGC_GENERATIONAL
+    if (ShouldNurseryAllocate(cx->nursery(), kind, heap)) {
+        size_t thingSize = Arena::thingSize(kind);
+
+        JS_ASSERT(thingSize == Arena::thingSize(kind));
+        if (!CheckAllocatorState<NoGC>(cx, kind))
+            return nullptr;
+
+        JSObject *obj = TryNewNurseryObject<NoGC>(cx, thingSize, 0);
+        if (!obj && allowGC) {
+            MinorGC(cx, JS::gcreason::OUT_OF_NURSERY);
+            return nullptr;
+        }
+        return obj;
+    }
+#endif
+
+    JSObject *obj = AllocateObject<NoGC>(cx, kind, 0, heap);
+    if (!obj && allowGC) {
+        MaybeGC(cx);
+        return nullptr;
+    }
+
+    return obj;
+}
+
+inline bool
+IsInsideGGCNursery(const js::gc::Cell *cell)
+{
+#ifdef JSGC_GENERATIONAL
+    if (!cell)
+        return false;
+    uintptr_t addr = uintptr_t(cell);
+    addr &= ~js::gc::ChunkMask;
+    addr |= js::gc::ChunkLocationOffset;
+    uint32_t location = *reinterpret_cast<uint32_t *>(addr);
+    JS_ASSERT(location != 0);
+    return location & js::gc::ChunkLocationBitNursery;
+#else
+    return false;
+#endif
+}
+
 } /* namespace gc */
-} /* namespace js */
 
 template <js::AllowGC allowGC>
 inline JSObject *
-js_NewGCObject(js::ThreadSafeContext *cx, js::gc::AllocKind kind, js::gc::InitialHeap heap)
+NewGCObject(js::ThreadSafeContext *cx, js::gc::AllocKind kind, size_t nDynamicSlots, js::gc::InitialHeap heap)
 {
     JS_ASSERT(kind >= js::gc::FINALIZE_OBJECT0 && kind <= js::gc::FINALIZE_OBJECT_LAST);
-    return js::gc::NewGCThing<JSObject, allowGC>(cx, kind, js::gc::Arena::thingSize(kind), heap);
+    return js::gc::AllocateObject<allowGC>(cx, kind, nDynamicSlots, heap);
+}
+
+template <js::AllowGC allowGC>
+inline jit::JitCode *
+NewJitCode(js::ThreadSafeContext *cx)
+{
+    return gc::AllocateNonObject<jit::JitCode, allowGC>(cx);
+}
+
+inline
+types::TypeObject *
+NewTypeObject(js::ThreadSafeContext *cx)
+{
+    return gc::AllocateNonObject<types::TypeObject, js::CanGC>(cx);
 }
 
 template <js::AllowGC allowGC>
 inline JSString *
-js_NewGCString(js::ThreadSafeContext *cx)
+NewGCString(js::ThreadSafeContext *cx)
 {
-    return js::gc::NewGCThing<JSString, allowGC>(cx, js::gc::FINALIZE_STRING,
-                                                 sizeof(JSString), js::gc::TenuredHeap);
+    return js::gc::AllocateNonObject<JSString, allowGC>(cx);
 }
 
 template <js::AllowGC allowGC>
-inline JSShortString *
-js_NewGCShortString(js::ThreadSafeContext *cx)
+inline JSFatInlineString *
+NewGCFatInlineString(js::ThreadSafeContext *cx)
 {
-    return js::gc::NewGCThing<JSShortString, allowGC>(cx, js::gc::FINALIZE_SHORT_STRING,
-                                                      sizeof(JSShortString), js::gc::TenuredHeap);
+    return js::gc::AllocateNonObject<JSFatInlineString, allowGC>(cx);
 }
 
 inline JSExternalString *
-js_NewGCExternalString(js::ThreadSafeContext *cx)
+NewGCExternalString(js::ThreadSafeContext *cx)
 {
-    return js::gc::NewGCThing<JSExternalString, js::CanGC>(cx, js::gc::FINALIZE_EXTERNAL_STRING,
-                                                           sizeof(JSExternalString), js::gc::TenuredHeap);
+    return js::gc::AllocateNonObject<JSExternalString, js::CanGC>(cx);
 }
+
+} /* namespace js */
 
 inline JSScript *
 js_NewGCScript(js::ThreadSafeContext *cx)
 {
-    return js::gc::NewGCThing<JSScript, js::CanGC>(cx, js::gc::FINALIZE_SCRIPT,
-                                                   sizeof(JSScript), js::gc::TenuredHeap);
+    return js::gc::AllocateNonObject<JSScript, js::CanGC>(cx);
 }
 
 inline js::LazyScript *
 js_NewGCLazyScript(js::ThreadSafeContext *cx)
 {
-    return js::gc::NewGCThing<js::LazyScript, js::CanGC>(cx, js::gc::FINALIZE_LAZY_SCRIPT,
-                                                         sizeof(js::LazyScript), js::gc::TenuredHeap);
+    return js::gc::AllocateNonObject<js::LazyScript, js::CanGC>(cx);
 }
 
 inline js::Shape *
 js_NewGCShape(js::ThreadSafeContext *cx)
 {
-    return js::gc::NewGCThing<js::Shape, js::CanGC>(cx, js::gc::FINALIZE_SHAPE,
-                                                    sizeof(js::Shape), js::gc::TenuredHeap);
+    return js::gc::AllocateNonObject<js::Shape, js::CanGC>(cx);
 }
 
 template <js::AllowGC allowGC>
 inline js::BaseShape *
 js_NewGCBaseShape(js::ThreadSafeContext *cx)
 {
-    return js::gc::NewGCThing<js::BaseShape, allowGC>(cx, js::gc::FINALIZE_BASE_SHAPE,
-                                                      sizeof(js::BaseShape), js::gc::TenuredHeap);
+    return js::gc::AllocateNonObject<js::BaseShape, allowGC>(cx);
 }
 
 #endif /* jsgcinlines_h */

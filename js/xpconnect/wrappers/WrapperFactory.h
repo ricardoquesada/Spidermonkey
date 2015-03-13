@@ -1,7 +1,6 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99 ft=cpp:
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -54,31 +53,18 @@ class WrapperFactory {
     static JSObject *Rewrap(JSContext *cx,
                             JS::HandleObject existing,
                             JS::HandleObject obj,
-                            JS::HandleObject wrappedProto,
                             JS::HandleObject parent,
                             unsigned flags);
 
-    // Wrap an object for same-compartment access.
-    static JSObject *WrapForSameCompartment(JSContext *cx,
-                                            JS::HandleObject obj);
-
     // Wrap wrapped object into a waiver wrapper and then re-wrap it.
     static bool WaiveXrayAndWrap(JSContext *cx, JS::MutableHandleValue vp);
-
-    // Wrap a (same compartment) object in a SOW.
-    static JSObject *WrapSOWObject(JSContext *cx, JSObject *obj);
-
-    // Return true if this is a Components object.
-    static bool IsComponentsObject(JSObject *obj);
-
-    // Wrap a (same compartment) Components object.
-    static JSObject *WrapComponentsObject(JSContext *cx, JS::HandleObject obj);
+    static bool WaiveXrayAndWrap(JSContext *cx, JS::MutableHandleObject object);
 
     // Returns true if the wrapper is in not shadowing mode for the id.
     static bool XrayWrapperNotShadowing(JSObject *wrapper, jsid id);
 };
 
-extern js::Wrapper XrayWaiver;
+extern const js::Wrapper XrayWaiver;
 
 }
 

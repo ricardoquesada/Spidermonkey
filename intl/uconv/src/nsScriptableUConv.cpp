@@ -4,16 +4,18 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsString.h"
-#include "nsICharsetConverterManager.h"
 #include "nsIScriptableUConv.h"
 #include "nsScriptableUConv.h"
 #include "nsIStringStream.h"
 #include "nsComponentManagerUtils.h"
-#include "nsCharsetAlias.h"
-#include "nsServiceManagerUtils.h"
+#include "nsIUnicodeDecoder.h"
+#include "nsIUnicodeEncoder.h"
+#include "mozilla/dom/EncodingUtils.h"
+
+using mozilla::dom::EncodingUtils;
 
 /* Implementation file */
-NS_IMPL_ISUPPORTS1(nsScriptableUnicodeConverter, nsIScriptableUnicodeConverter)
+NS_IMPL_ISUPPORTS(nsScriptableUnicodeConverter, nsIScriptableUnicodeConverter)
 
 nsScriptableUnicodeConverter::nsScriptableUnicodeConverter()
 : mIsInternal(false)
@@ -63,7 +65,9 @@ nsScriptableUnicodeConverter::ConvertFromUnicode(const nsAString& aSrc,
   nsresult rv = ConvertFromUnicodeWithLength(aSrc, &len, &str);
   if (NS_SUCCEEDED(rv)) {
     // No Adopt on nsACString :(
-    _retval.Assign(str, len);
+    if (!_retval.Assign(str, len, mozilla::fallible_t())) {
+      rv = NS_ERROR_OUT_OF_MEMORY;
+    }
     moz_free(str);
   }
   return rv;
@@ -100,7 +104,9 @@ nsScriptableUnicodeConverter::Finish(nsACString& _retval)
   nsresult rv = FinishWithLength(&str, &len);
   if (NS_SUCCEEDED(rv)) {
     // No Adopt on nsACString :(
-    _retval.Assign(str, len);
+    if (!_retval.Assign(str, len, mozilla::fallible_t())) {
+      rv = NS_ERROR_OUT_OF_MEMORY;
+    }
     moz_free(str);
   }
   return rv;
@@ -135,7 +141,7 @@ nsScriptableUnicodeConverter::ConvertFromByteArray(const uint8_t* aData,
                               inLength, &outLength);
   if (NS_SUCCEEDED(rv))
   {
-    PRUnichar* buf = (PRUnichar*)moz_malloc((outLength+1)*sizeof(PRUnichar));
+    char16_t* buf = (char16_t*)moz_malloc((outLength+1)*sizeof(char16_t));
     if (!buf)
       return NS_ERROR_OUT_OF_MEMORY;
 
@@ -144,7 +150,9 @@ nsScriptableUnicodeConverter::ConvertFromByteArray(const uint8_t* aData,
     if (NS_SUCCEEDED(rv))
     {
       buf[outLength] = 0;
-      _retval.Assign(buf, outLength);
+      if (!_retval.Assign(buf, outLength, mozilla::fallible_t())) {
+        rv = NS_ERROR_OUT_OF_MEMORY;
+      }
     }
     moz_free(buf);
     return rv;
@@ -247,44 +255,68 @@ nsScriptableUnicodeConverter::SetIsInternal(const bool aIsInternal)
 nsresult
 nsScriptableUnicodeConverter::InitConverter()
 {
-  nsresult rv = NS_OK;
   mEncoder = nullptr;
+  mDecoder = nullptr;
 
-  nsCOMPtr<nsICharsetConverterManager> ccm = do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv);
-  if (NS_FAILED(rv) || !ccm) {
-    return rv;
+  nsAutoCString encoding;
+  if (mIsInternal) {
+    // For compatibility with legacy extensions, let's try to see if the label
+    // happens to be ASCII-case-insensitively an encoding. This should allow
+    // for things like "utf-7" and "x-Mac-Hebrew".
+    nsAutoCString contractId;
+    nsAutoCString label(mCharset);
+    EncodingUtils::TrimSpaceCharacters(label);
+    // Let's try in lower case if we didn't get an decoder. E.g. x-mac-ce
+    // and x-imap4-modified-utf7 are all lower case.
+    ToLowerCase(label);
+    if (label.EqualsLiteral("replacement")) {
+      // reject "replacement"
+      return NS_ERROR_UCONV_NOCONV;
+    }
+    contractId.AssignLiteral(NS_UNICODEENCODER_CONTRACTID_BASE);
+    contractId.Append(label);
+    mEncoder = do_CreateInstance(contractId.get());
+    contractId.AssignLiteral(NS_UNICODEDECODER_CONTRACTID_BASE);
+    contractId.Append(label);
+    mDecoder = do_CreateInstance(contractId.get());
+    if (!mDecoder) {
+      // The old code seemed to want both a decoder and an encoder. Since some
+      // internal encodings will be decoder-only in the future, let's relax
+      // this. Note that the other methods check mEncoder for null anyway.
+      // Let's try the upper case. E.g. UTF-7 and ISO-2022-CN have upper
+      // case Gecko-canonical names.
+      ToUpperCase(label);
+      contractId.AssignLiteral(NS_UNICODEENCODER_CONTRACTID_BASE);
+      contractId.Append(label);
+      mEncoder = do_CreateInstance(contractId.get());
+      contractId.AssignLiteral(NS_UNICODEDECODER_CONTRACTID_BASE);
+      contractId.Append(label);
+      mDecoder = do_CreateInstance(contractId.get());
+      // If still no decoder, use the normal non-internal case below.
+    }
   }
 
-  // get an unicode converter
-  rv = ccm->GetUnicodeEncoder(mCharset.get(), getter_AddRefs(mEncoder));
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  rv = mEncoder->SetOutputErrorBehavior(nsIUnicodeEncoder::kOnError_Replace, nullptr, (PRUnichar)'?');
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  nsAutoCString charset;
-  rv = mIsInternal ? nsCharsetAlias::GetPreferredInternal(mCharset, charset)
-                   : nsCharsetAlias::GetPreferred(mCharset, charset);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  rv = ccm->GetUnicodeDecoderRaw(charset.get(), getter_AddRefs(mDecoder));
-  if (NS_FAILED(rv)) {
-    return rv;
+  if (!mDecoder) {
+    if (!EncodingUtils::FindEncodingForLabelNoReplacement(mCharset, encoding)) {
+      return NS_ERROR_UCONV_NOCONV;
+    }
+    mEncoder = EncodingUtils::EncoderForEncoding(encoding);
+    mDecoder = EncodingUtils::DecoderForEncoding(encoding);
   }
 
   // The UTF-8 decoder used to throw regardless of the error behavior.
   // Simulating the old behavior for compatibility with legacy callers
   // (including addons). If callers want a control over the behavior,
   // they should switch to TextDecoder.
-  if (charset.EqualsLiteral("UTF-8")) {
+  if (encoding.EqualsLiteral("UTF-8")) {
     mDecoder->SetInputErrorBehavior(nsIUnicodeDecoder::kOnError_Signal);
   }
 
-  return rv ;
+  if (!mEncoder) {
+    return NS_OK;
+  }
+
+  return mEncoder->SetOutputErrorBehavior(nsIUnicodeEncoder::kOnError_Replace,
+                                          nullptr,
+                                          (char16_t)'?');
 }

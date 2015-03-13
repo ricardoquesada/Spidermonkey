@@ -6,13 +6,18 @@
 
 from __future__ import with_statement
 import sys, os, unittest, tempfile, shutil
+import mozinfo
+
 from StringIO import StringIO
 from xml.etree.ElementTree import ElementTree
 
 from mozbuild.base import MozbuildObject
+os.environ.pop('MOZ_OBJDIR', None)
 build_obj = MozbuildObject.from_environment()
 
 from runxpcshelltests import XPCShellTests
+
+mozinfo.find_and_update_from_json()
 
 objdir = build_obj.topobjdir.encode("utf-8")
 xpcshellBin = os.path.join(objdir, "dist", "bin", "xpcshell")
@@ -72,7 +77,7 @@ add_test(function test_child_simple () {
 '''
 
 ADD_TASK_SINGLE = '''
-Components.utils.import("resource://gre/modules/commonjs/sdk/core/promise.js");
+Components.utils.import("resource://gre/modules/Promise.jsm");
 
 function run_test() { run_next_test(); }
 
@@ -83,7 +88,7 @@ add_task(function test_task() {
 '''
 
 ADD_TASK_MULTIPLE = '''
-Components.utils.import("resource://gre/modules/commonjs/sdk/core/promise.js");
+Components.utils.import("resource://gre/modules/Promise.jsm");
 
 function run_test() { run_next_test(); }
 
@@ -97,7 +102,7 @@ add_task(function test_2() {
 '''
 
 ADD_TASK_REJECTED = '''
-Components.utils.import("resource://gre/modules/commonjs/sdk/core/promise.js");
+Components.utils.import("resource://gre/modules/Promise.jsm");
 
 function run_test() { run_next_test(); }
 
@@ -107,7 +112,7 @@ add_task(function test_failing() {
 '''
 
 ADD_TASK_FAILURE_INSIDE = '''
-Components.utils.import("resource://gre/modules/commonjs/sdk/core/promise.js");
+Components.utils.import("resource://gre/modules/Promise.jsm");
 
 function run_test() { run_next_test(); }
 
@@ -115,6 +120,42 @@ add_task(function test() {
   let result = yield Promise.resolve(false);
 
   do_check_true(result);
+});
+'''
+
+ADD_TASK_RUN_NEXT_TEST = '''
+function run_test() { run_next_test(); }
+
+add_task(function () {
+  Assert.ok(true);
+
+  run_next_test();
+});
+'''
+
+ADD_TASK_STACK_TRACE = '''
+Components.utils.import("resource://gre/modules/Promise.jsm", this);
+
+function run_test() { run_next_test(); }
+
+add_task(function* this_test_will_fail() {
+  for (let i = 0; i < 10; ++i) {
+    yield Promise.resolve();
+  }
+  Assert.ok(false);
+});
+'''
+
+ADD_TASK_STACK_TRACE_WITHOUT_STAR = '''
+Components.utils.import("resource://gre/modules/Promise.jsm", this);
+
+function run_test() { run_next_test(); }
+
+add_task(function this_test_will_fail() {
+  for (let i = 0; i < 10; ++i) {
+    yield Promise.resolve();
+  }
+  Assert.ok(false);
 });
 '''
 
@@ -168,6 +209,49 @@ function run_test() {
 };
 '''
 
+# A test for asynchronous cleanup functions
+ASYNC_CLEANUP = '''
+function run_test() {
+  Components.utils.import("resource://gre/modules/Promise.jsm", this);
+
+  // The list of checkpoints in the order we encounter them.
+  let checkpoints = [];
+
+  // Cleanup tasks, in reverse order
+  do_register_cleanup(function cleanup_checkout() {
+    do_check_eq(checkpoints.join(""), "1234");
+    do_print("At this stage, the test has succeeded");
+    do_throw("Throwing an error to force displaying the log");
+  });
+
+  do_register_cleanup(function sync_cleanup_2() {
+    checkpoints.push(4);
+  });
+
+  do_register_cleanup(function async_cleanup_2() {
+    let deferred = Promise.defer();
+    do_execute_soon(deferred.resolve);
+    return deferred.promise.then(function() {
+      checkpoints.push(3);
+    });
+  });
+
+  do_register_cleanup(function sync_cleanup() {
+    checkpoints.push(2);
+  });
+
+  do_register_cleanup(function async_cleanup() {
+    let deferred = Promise.defer();
+    do_execute_soon(deferred.resolve);
+    return deferred.promise.then(function() {
+      checkpoints.push(1);
+    });
+  });
+
+}
+'''
+
+
 class XPCShellTestsTests(unittest.TestCase):
     """
     Yes, these are unit tests for a unit test harness.
@@ -219,7 +303,7 @@ tail =
         self.assertEquals(expected,
                           self.x.runTests(xpcshellBin,
                                           manifest=self.manifest,
-                                          mozInfo={},
+                                          mozInfo=mozinfo.info,
                                           shuffle=shuffle,
                                           testsRootDir=self.tempdir,
                                           verbose=verbose,
@@ -453,6 +537,19 @@ tail =
         self.assertEquals(1, self.x.passCount)
         self.assertEquals(0, self.x.failCount)
 
+    def testLogCorrectFileName(self):
+        """
+        Make sure a meaningful filename and line number is logged
+        by a passing test.
+        """
+        self.writeFile("test_add_test_simple.js", ADD_TEST_SIMPLE)
+        self.writeManifest(["test_add_test_simple.js"])
+
+        self.assertTestResult(True, verbose=True)
+        self.assertInLog("true == true")
+        self.assertNotInLog("[do_check_true :")
+        self.assertInLog("[test_simple : 5]")
+
     def testAddTestFailing(self):
         """
         Ensure add_test() with a failing test is reported.
@@ -515,6 +612,50 @@ tail =
         self.assertEquals(1, self.x.testCount)
         self.assertEquals(0, self.x.passCount)
         self.assertEquals(1, self.x.failCount)
+
+    def testAddTaskRunNextTest(self):
+        """
+        Calling run_next_test() from inside add_task() results in failure.
+        """
+        self.writeFile("test_add_task_run_next_test.js",
+            ADD_TASK_RUN_NEXT_TEST)
+        self.writeManifest(["test_add_task_run_next_test.js"])
+
+        self.assertTestResult(False)
+        self.assertEquals(1, self.x.testCount)
+        self.assertEquals(0, self.x.passCount)
+        self.assertEquals(1, self.x.failCount)
+
+    def testAddTaskStackTrace(self):
+        """
+        Ensuring that calling Assert.ok(false) from inside add_task()
+        results in a human-readable stack trace.
+        """
+        self.writeFile("test_add_task_stack_trace.js",
+            ADD_TASK_STACK_TRACE)
+        self.writeManifest(["test_add_task_stack_trace.js"])
+
+        self.assertTestResult(False)
+        self.assertInLog("this_test_will_fail")
+        self.assertInLog("run_next_test")
+        self.assertInLog("run_test")
+        self.assertNotInLog("Task.jsm")
+
+    def testAddTaskStackTraceWithoutStar(self):
+        """
+        Ensuring that calling Assert.ok(false) from inside add_task()
+        results in a human-readable stack trace. This variant uses deprecated
+        `function()` syntax instead of now standard `function*()`.
+        """
+        self.writeFile("test_add_task_stack_trace_without_star.js",
+            ADD_TASK_STACK_TRACE)
+        self.writeManifest(["test_add_task_stack_trace_without_star.js"])
+
+        self.assertTestResult(False)
+        self.assertInLog("this_test_will_fail")
+        self.assertInLog("run_next_test")
+        self.assertInLog("run_test")
+        self.assertNotInLog("Task.jsm")
 
     def testMissingHeadFile(self):
         """
@@ -699,6 +840,18 @@ tail =
         self.assertInLog("Diagnostic: TypeError: generator function run_test returns a value at")
         self.assertInLog("test_error.js:4")
         self.assertNotInLog("TEST-PASS")
+
+    def testAsyncCleanup(self):
+        """
+        Check that do_register_cleanup handles nicely cleanup tasks that
+        return a promise
+        """
+        self.writeFile("test_asyncCleanup.js", ASYNC_CLEANUP)
+        self.writeManifest(["test_asyncCleanup.js"])
+        self.assertTestResult(False)
+        self.assertInLog("\"1234\" == \"1234\"")
+        self.assertInLog("At this stage, the test has succeeded")
+        self.assertInLog("Throwing an error to force displaying the log")
 
 if __name__ == "__main__":
     unittest.main()

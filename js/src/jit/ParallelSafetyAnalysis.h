@@ -11,7 +11,7 @@
 
 namespace js {
 
-class StackFrame;
+class InterpreterFrame;
 
 namespace jit {
 
@@ -20,14 +20,11 @@ class AutoDestroyAllocator;
 
 // Determines whether a function is compatible for parallel execution.
 // Removes basic blocks containing unsafe MIR operations from the
-// graph and replaces them with MAbortPar blocks.
+// graph and replaces them with MBail blocks.
 class ParallelSafetyAnalysis
 {
     MIRGenerator *mir_;
     MIRGraph &graph_;
-
-    bool removeResumePointOperands();
-    void replaceOperandsOnResumePoint(MResumePoint *resumePoint, MDefinition *withDef);
 
   public:
     ParallelSafetyAnalysis(MIRGenerator *mir,

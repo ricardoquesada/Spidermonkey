@@ -5,40 +5,44 @@
 
 #include "nsConverterInputStream.h"
 #include "nsIInputStream.h"
-#include "nsICharsetConverterManager.h"
 #include "nsReadLine.h"
 #include "nsStreamUtils.h"
-#include "nsServiceManagerUtils.h"
 #include <algorithm>
+#include "mozilla/dom/EncodingUtils.h"
+
+using mozilla::dom::EncodingUtils;
 
 #define CONVERTER_BUFFER_SIZE 8192
 
-NS_IMPL_ISUPPORTS3(nsConverterInputStream, nsIConverterInputStream,
-                   nsIUnicharInputStream, nsIUnicharLineInputStream)
+NS_IMPL_ISUPPORTS(nsConverterInputStream, nsIConverterInputStream,
+                  nsIUnicharInputStream, nsIUnicharLineInputStream)
 
 
 NS_IMETHODIMP
 nsConverterInputStream::Init(nsIInputStream* aStream,
                              const char *aCharset,
                              int32_t aBufferSize,
-                             PRUnichar aReplacementChar)
+                             char16_t aReplacementChar)
 {
-    static NS_DEFINE_CID(kCharsetConverterManagerCID, NS_ICHARSETCONVERTERMANAGER_CID);
-
-    if (!aCharset)
-        aCharset = "UTF-8";
-
-    nsresult rv;
+    nsAutoCString label;
+    if (!aCharset) {
+        label.AssignLiteral("UTF-8");
+    } else {
+        label = aCharset;
+    }
 
     if (aBufferSize <=0) aBufferSize=CONVERTER_BUFFER_SIZE;
     
     // get the decoder
-    nsCOMPtr<nsICharsetConverterManager> ccm =
-        do_GetService(kCharsetConverterManagerCID, &rv);
-    if (NS_FAILED(rv)) return rv;
-
-    rv = ccm->GetUnicodeDecoder(aCharset ? aCharset : "ISO-8859-1", getter_AddRefs(mConverter));
-    if (NS_FAILED(rv)) return rv;
+    nsAutoCString encoding;
+    if (label.EqualsLiteral("UTF-16")) {
+        // Compat with old test cases. Unclear if any extensions really care.
+        encoding.Assign(label);
+    } else if (!EncodingUtils::FindEncodingForLabelNoReplacement(label,
+                                                                 encoding)) {
+      return NS_ERROR_UCONV_NOCONV;
+    }
+    mConverter = EncodingUtils::DecoderForEncoding(encoding);
  
     // set up our buffers
     if (!mByteData.SetCapacity(aBufferSize) ||
@@ -69,7 +73,7 @@ nsConverterInputStream::Close()
 }
 
 NS_IMETHODIMP
-nsConverterInputStream::Read(PRUnichar* aBuf,
+nsConverterInputStream::Read(char16_t* aBuf,
                              uint32_t aCount,
                              uint32_t *aReadCount)
 {
@@ -87,7 +91,7 @@ nsConverterInputStream::Read(PRUnichar* aBuf,
     readCount = aCount;
   }
   memcpy(aBuf, mUnicharData.Elements() + mUnicharDataOffset,
-         readCount * sizeof(PRUnichar));
+         readCount * sizeof(char16_t));
   mUnicharDataOffset += readCount;
   *aReadCount = readCount;
   return NS_OK;
@@ -153,7 +157,7 @@ nsConverterInputStream::ReadString(uint32_t aCount, nsAString& aString,
   if (readCount > aCount) {
     readCount = aCount;
   }
-  const PRUnichar* buf = mUnicharData.Elements() + mUnicharDataOffset;
+  const char16_t* buf = mUnicharData.Elements() + mUnicharDataOffset;
   aString.Assign(buf, readCount);
   mUnicharDataOffset += readCount;
   *aReadCount = readCount;
@@ -235,7 +239,7 @@ NS_IMETHODIMP
 nsConverterInputStream::ReadLine(nsAString& aLine, bool* aResult)
 {
   if (!mLineBuffer) {
-    mLineBuffer = new nsLineBuffer<PRUnichar>;
+    mLineBuffer = new nsLineBuffer<char16_t>;
   }
   return NS_ReadLine(this, mLineBuffer.get(), aLine, aResult);
 }

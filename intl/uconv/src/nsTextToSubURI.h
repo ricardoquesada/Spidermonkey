@@ -6,6 +6,7 @@
 #define nsTextToSubURI_h__
 
 #include "nsITextToSubURI.h"
+#include "nsString.h"
 
 //==============================================================
 class nsTextToSubURI: public nsITextToSubURI {
@@ -14,9 +15,10 @@ class nsTextToSubURI: public nsITextToSubURI {
 
 public:
   nsTextToSubURI();
-  virtual ~nsTextToSubURI();
 
 private:
+  virtual ~nsTextToSubURI();
+
   // IRI is "Internationalized Resource Identifiers"
   // http://www.ietf.org/internet-drafts/draft-duerst-iri-01.txt
   // 

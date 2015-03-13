@@ -14,7 +14,7 @@ log = mozlog.getLogger('cppunittests')
 
 class CPPUnitTests(object):
     # Time (seconds) to wait for test process to complete
-    TEST_PROC_TIMEOUT = 1200
+    TEST_PROC_TIMEOUT = 900
     # Time (seconds) in which process will be killed if it produces no output.
     TEST_PROC_NO_OUTPUT_TIMEOUT = 300
 
@@ -93,7 +93,10 @@ class CPPUnitTests(object):
         # Use llvm-symbolizer for ASan if available/required
         llvmsym = os.path.join(self.xre_path, "llvm-symbolizer")
         if os.path.isfile(llvmsym):
-          env["ASAN_SYMBOLIZER_PATH"] = llvmsym
+            env["ASAN_SYMBOLIZER_PATH"] = llvmsym
+            log.info("ASan using symbolizer at %s", llvmsym)
+        else:
+            log.info("Failed to find ASan symbolizer at %s", llvmsym)
 
         return env
 
@@ -145,7 +148,9 @@ class CPPUnittestOptions(OptionParser):
 def extract_unittests_from_args(args, manifest_file):
     """Extract unittests from args, expanding directories as needed"""
     progs = []
-    skipped_progs = set()
+
+    # Known files commonly packaged with the cppunittests that are not tests
+    skipped_progs = set(['.mkdir.done', 'remotecppunittests.py', 'runcppunittests.py', 'runcppunittests.pyc'])
 
     if manifest_file:
         skipped_progs.add(os.path.basename(manifest_file))
@@ -162,8 +167,7 @@ def extract_unittests_from_args(args, manifest_file):
         elif p not in skipped_progs:
             progs.append(os.path.abspath(p))
 
-    #filter out python files packaged with the unit tests
-    return filter(lambda x: not x.endswith('.py') and not x.endswith('.pyc'), progs)
+    return progs
 
 def main():
     parser = CPPUnittestOptions()

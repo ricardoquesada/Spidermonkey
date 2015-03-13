@@ -10,6 +10,7 @@ import math
 import os
 import os.path
 import random
+import re
 import shutil
 import signal
 import socket
@@ -71,13 +72,33 @@ import manifestparser
 import mozcrash
 import mozinfo
 
-# ---------------------------------------------------------------
-#TODO: replace this with json.loads when Python 2.6 is required.
-def parse_json(j):
-    """
-    Awful hack to parse a restricted subset of JSON strings into Python dicts.
-    """
-    return eval(j, {'true':True,'false':False,'null':None})
+# --------------------------------------------------------------
+
+# TODO: perhaps this should be in a more generally shared location?
+# This regex matches all of the C0 and C1 control characters
+# (U+0000 through U+001F; U+007F; U+0080 through U+009F),
+# except TAB (U+0009), CR (U+000D), LF (U+000A) and backslash (U+005C).
+# A raw string is deliberately not used.
+_cleanup_encoding_re = re.compile(u'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\\\\]')
+def _cleanup_encoding_repl(m):
+    c = m.group(0)
+    return '\\\\' if c == '\\' else '\\x{0:02X}'.format(ord(c))
+def cleanup_encoding(s):
+    """S is either a byte or unicode string.  Either way it may
+       contain control characters, unpaired surrogates, reserved code
+       points, etc.  If it is a byte string, it is assumed to be
+       UTF-8, but it may not be *correct* UTF-8.  Produce a byte
+       string that can safely be dumped into a (generally UTF-8-coded)
+       logfile."""
+    if not isinstance(s, unicode):
+        s = s.decode('utf-8', 'replace')
+    if s.endswith('\n'):
+        # A new line is always added by head.js to delimit messages,
+        # however consumers will want to supply their own.
+        s = s[:-1]
+    # Replace all C0 and C1 control characters with \xNN escapes.
+    s = _cleanup_encoding_re.sub(_cleanup_encoding_repl, s)
+    return s.encode('utf-8', 'backslashreplace')
 
 """ Control-C handling """
 gotSIGINT = False
@@ -211,11 +232,13 @@ class XPCShellTestThread(Thread):
 
         return proc.communicate()
 
-    def launchProcess(self, cmd, stdout, stderr, env, cwd):
+    def launchProcess(self, cmd, stdout, stderr, env, cwd, timeout=None):
         """
           Simple wrapper to launch a process.
           On a remote system, this is more complex and we need to overload this function.
         """
+        # timeout is needed by remote and b2g xpcshell to extend the
+        # devicemanager.shell() timeout. It is not used in this function.
         if HAVE_PSUTIL:
             popen_func = psutil.Popen
         else:
@@ -243,11 +266,11 @@ class XPCShellTestThread(Thread):
                       - set("%s=%s" % i for i in os.environ.iteritems()))
         self.log.info("TEST-INFO | %s | environment: %s" % (name, list(changedEnv)))
 
-    def testTimeout(self, test_file, processPID):
+    def testTimeout(self, test_file, proc):
         if not self.retry:
             self.log.error("TEST-UNEXPECTED-FAIL | %s | Test timed out" % test_file)
         self.done = True
-        Automation().killAndGetStackNoScreenshot(processPID, self.appPath, self.debuggerInfo)
+        Automation().killAndGetStackNoScreenshot(proc.pid, self.appPath, self.debuggerInfo)
 
     def buildCmdTestFile(self, name):
         """
@@ -337,8 +360,10 @@ class XPCShellTestThread(Thread):
 
                 yield path
 
-        return (list(sanitize_list(test_object['head'], 'head')),
-                list(sanitize_list(test_object['tail'], 'tail')))
+        headlist = test_object['head'] if 'head' in test_object else ''
+        taillist = test_object['tail'] if 'tail' in test_object else ''
+        return (list(sanitize_list(headlist, 'head')),
+                list(sanitize_list(taillist, 'tail')))
 
     def buildXpcsCmd(self, testdir):
         """
@@ -356,7 +381,6 @@ class XPCShellTestThread(Thread):
             '-a', self.appPath,
             '-r', self.httpdManifest,
             '-m',
-            '-n',
             '-s',
             '-e', 'const _HTTPD_JS_PATH = "%s";' % self.httpdJSPath,
             '-e', 'const _HEAD_JS_PATH = "%s";' % self.headJSPath
@@ -458,8 +482,8 @@ class XPCShellTestThread(Thread):
     def report_message(self, line):
         """ Reports a message to a consumer, both as a strucutured and
         human-readable log message. """
-        message = self.message_from_line(line)
 
+        message = cleanup_encoding(self.message_from_line(line))
         if message.endswith('\n'):
             # A new line is always added by head.js to delimit messages,
             # however consumers will want to supply their own.
@@ -532,7 +556,7 @@ class XPCShellTestThread(Thread):
         # class notation).
         if self.tests_root_dir is not None:
             self.tests_root_dir = os.path.normpath(self.tests_root_dir)
-            if self.test_object['here'].find(self.tests_root_dir) != 0:
+            if os.path.normpath(self.test_object['here']).find(self.tests_root_dir) != 0:
                 raise Exception('tests_root_dir is not a parent path of %s' %
                     self.test_object['here'])
             relpath = self.test_object['here'][len(self.tests_root_dir):].lstrip('/\\')
@@ -587,7 +611,7 @@ class XPCShellTestThread(Thread):
 
         testTimer = None
         if not self.interactive and not self.debuggerInfo:
-            testTimer = Timer(testTimeoutInterval, lambda: self.testTimeout(name, proc.pid))
+            testTimer = Timer(testTimeoutInterval, lambda: self.testTimeout(name, proc))
             testTimer.start()
 
         proc = None
@@ -601,7 +625,7 @@ class XPCShellTestThread(Thread):
 
             startTime = time.time()
             proc = self.launchProcess(completeCmd,
-                stdout=self.pStdout, stderr=self.pStderr, env=self.env, cwd=test_dir)
+                stdout=self.pStdout, stderr=self.pStderr, env=self.env, cwd=test_dir, timeout=testTimeoutInterval)
 
             if self.interactive:
                 self.log.info("TEST-INFO | %s | Process ID: %d" % (name, proc.pid))
@@ -753,7 +777,7 @@ class XPCShellTests(object):
                     return wrapped
                 setattr(self.log, fun_name, wrap(unwrapped))
 
-        self.nodeProc = None
+        self.nodeProc = {}
 
     def buildTestList(self):
         """
@@ -762,16 +786,24 @@ class XPCShellTests(object):
 
           if we are chunking tests, it will be done here as well
         """
-        mp = manifestparser.TestManifest(strict=False)
-        if self.manifest is None:
-            for testdir in self.testdirs:
-                if testdir:
-                    mp.read(os.path.join(testdir, 'xpcshell.ini'))
+        if isinstance(self.manifest, manifestparser.TestManifest):
+            mp = self.manifest
         else:
-            mp.read(self.manifest)
+            mp = manifestparser.TestManifest(strict=False)
+            if self.manifest is None:
+                for testdir in self.testdirs:
+                    if testdir:
+                        mp.read(os.path.join(testdir, 'xpcshell.ini'))
+            else:
+                mp.read(self.manifest)
+
         self.buildTestPath()
 
-        self.alltests = mp.active_tests(**mozinfo.info)
+        try:
+            self.alltests = mp.active_tests(**mozinfo.info)
+        except TypeError:
+            sys.stderr.write("*** offending mozinfo.info: %s\n" % repr(mozinfo.info))
+            raise
 
         if self.singleFile is None and self.totalChunks > 1:
             self.chunkTests()
@@ -781,32 +813,14 @@ class XPCShellTests(object):
           Split the list of tests up into [totalChunks] pieces and filter the
           self.alltests based on thisChunk, so we only run a subset.
         """
-        totalTests = 0
-        for dir in self.alltests:
-            totalTests += len(self.alltests[dir])
-
+        totalTests = len(self.alltests)
         testsPerChunk = math.ceil(totalTests / float(self.totalChunks))
         start = int(round((self.thisChunk-1) * testsPerChunk))
-        end = start + testsPerChunk
-        currentCount = 0
-
-        templist = {}
-        for dir in self.alltests:
-            startPosition = 0
-            dirCount = len(self.alltests[dir])
-            endPosition = dirCount
-            if currentCount < start and currentCount + dirCount >= start:
-                startPosition = int(start - currentCount)
-            if currentCount + dirCount > end:
-                endPosition = int(end - currentCount)
-            if end - currentCount < 0 or (currentCount + dirCount < start):
-                endPosition = 0
-
-            if startPosition is not endPosition:
-                templist[dir] = self.alltests[dir][startPosition:endPosition]
-            currentCount += dirCount
-
-        self.alltests = templist
+        end = int(start + testsPerChunk)
+        if end > totalTests:
+            end = totalTests
+        self.log.info("Running tests %d-%d/%d", start+1, end, totalTests)
+        self.alltests = self.alltests[start:end]
 
     def setAbsPath(self):
         """
@@ -847,6 +861,8 @@ class XPCShellTests(object):
         # Capturing backtraces is very slow on some platforms, and it's
         # disabled by automation.py too
         self.env["NS_TRACE_MALLOC_DISABLE_STACKS"] = "1"
+        # Don't permit remote connections.
+        self.env["MOZ_DISABLE_NONLOCAL_CONNECTIONS"] = "1"
 
     def buildEnvironment(self):
         """
@@ -875,7 +891,7 @@ class XPCShellTests(object):
                 self.env["ASAN_SYMBOLIZER_PATH"] = llvmsym
                 self.log.info("INFO | runxpcshelltests.py | ASan using symbolizer at %s", llvmsym)
             else:
-                self.log.info("INFO | runxpcshelltests.py | ASan symbolizer binary not found: %s", llvmsym)
+                self.log.info("TEST-UNEXPECTED-FAIL | runxpcshelltests.py | Failed to find ASan symbolizer at %s", llvmsym)
 
         return self.env
 
@@ -946,27 +962,30 @@ class XPCShellTests(object):
 
         if nodeBin:
             self.log.info('Found node at %s' % (nodeBin,))
+
+            def startServer(name, serverJs):
+                if os.path.exists(serverJs):
+                    # OK, we found our SPDY server, let's try to get it running
+                    self.log.info('Found %s at %s' % (name, serverJs))
+                    try:
+                        # We pipe stdin to node because the spdy server will exit when its
+                        # stdin reaches EOF
+                        process = Popen([nodeBin, serverJs], stdin=PIPE, stdout=PIPE,
+                                stderr=STDOUT, env=self.env, cwd=os.getcwd())
+                        self.nodeProc[name] = process
+
+                        # Check to make sure the server starts properly by waiting for it to
+                        # tell us it's started
+                        msg = process.stdout.readline()
+                        if 'server listening' in msg:
+                            nodeMozInfo['hasNode'] = True
+                    except OSError, e:
+                        # This occurs if the subprocess couldn't be started
+                        self.log.error('Could not run %s server: %s' % (name, str(e)))
+
             myDir = os.path.split(os.path.abspath(__file__))[0]
-            mozSpdyJs = os.path.join(myDir, 'moz-spdy', 'moz-spdy.js')
-
-            if os.path.exists(mozSpdyJs):
-                # OK, we found our SPDY server, let's try to get it running
-                self.log.info('Found moz-spdy at %s' % (mozSpdyJs,))
-                stdout, stderr = self.getPipes()
-                try:
-                    # We pipe stdin to node because the spdy server will exit when its
-                    # stdin reaches EOF
-                    self.nodeProc = Popen([nodeBin, mozSpdyJs], stdin=PIPE, stdout=PIPE,
-                            stderr=STDOUT, env=self.env, cwd=os.getcwd())
-
-                    # Check to make sure the server starts properly by waiting for it to
-                    # tell us it's started
-                    msg = self.nodeProc.stdout.readline()
-                    if msg.startswith('SPDY server listening'):
-                        nodeMozInfo['hasNode'] = True
-                except OSError, e:
-                    # This occurs if the subprocess couldn't be started
-                    self.log.error('Could not run node SPDY server: %s' % (str(e),))
+            startServer('moz-spdy', os.path.join(myDir, 'moz-spdy', 'moz-spdy.js'))
+            startServer('moz-http2', os.path.join(myDir, 'moz-http2', 'moz-http2.js'))
 
         mozinfo.update(nodeMozInfo)
 
@@ -974,10 +993,9 @@ class XPCShellTests(object):
         """
           Shut down our node process, if it exists
         """
-        if self.nodeProc:
-            self.log.info('Node SPDY server shutting down ...')
-            # moz-spdy exits when its stdin reaches EOF, so force that to happen here
-            self.nodeProc.communicate()
+        for name, proc in self.nodeProc.iteritems():
+            self.log.info('Node %s server shutting down ...' % name)
+            proc.terminate()
 
     def writeXunitResults(self, results, name=None, filename=None, fh=None):
         """
@@ -1271,7 +1289,18 @@ class XPCShellTests(object):
             if not os.path.isfile(mozInfoFile):
                 self.log.error("Error: couldn't find mozinfo.json at '%s'. Perhaps you need to use --build-info-json?" % mozInfoFile)
                 return False
-            self.mozInfo = parse_json(open(mozInfoFile).read())
+            self.mozInfo = json.load(open(mozInfoFile))
+
+        # mozinfo.info is used as kwargs.  Some builds are done with
+        # an older Python that can't handle Unicode keys in kwargs.
+        # All of the keys in question should be ASCII.
+        fixedInfo = {}
+        for k, v in self.mozInfo.items():
+            if isinstance(k, unicode):
+                k = k.encode('ascii')
+            fixedInfo[k] = v
+        self.mozInfo = fixedInfo
+
         mozinfo.update(self.mozInfo)
 
         # buildEnvironment() needs mozInfo, so we call it after mozInfo is initialized.

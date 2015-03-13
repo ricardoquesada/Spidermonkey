@@ -30,8 +30,9 @@ here = os.path.dirname(os.path.abspath(__file__))
 # all python packages
 mozbase_packages = [i for i in os.listdir(here)
                     if os.path.exists(os.path.join(here, i, 'setup.py'))]
-extra_packages = ["sphinx", # documentation: https://wiki.mozilla.org/Auto-tools/Projects/Mozbase#Documentation
-                  "mock",   # testing: https://wiki.mozilla.org/Auto-tools/Projects/Mozbase#Tests
+test_packages = [ "mock" # testing: https://wiki.mozilla.org/Auto-tools/Projects/Mozbase#Tests
+                  ]
+extra_packages = [ "sphinx" # documentation: https://wiki.mozilla.org/Auto-tools/Projects/Mozbase#Documentation
                   ]
 
 def cycle_check(order, dependencies):
@@ -192,10 +193,10 @@ def main(args=sys.argv[1:]):
             for dep in value:
                 if dep in mozbase_packages and dep not in deps:
                     key, value = get_dependencies(os.path.join(here, dep))
-                    deps[key] = [sanitize_dependency(dep) for dep in value]
+                    deps[key] = [dep for dep in value]
 
                     for dep in value:
-                        alldeps[sanitize_dependency(dep)] = ''.join(dep.split())
+                        alldeps[dep] = ''.join(dep.split())
                     mapping[package] = key
                     flag = True
                     break
@@ -245,6 +246,10 @@ def main(args=sys.argv[1:]):
     for package, version in pypi_deps.items():
         # easy_install should be available since we rely on setuptools
         call(['easy_install', version])
+
+    # install packages required for unit testing
+    for package in test_packages:
+        call(['easy_install', package])
 
     # install extra non-mozbase packages if desired
     if options.extra:

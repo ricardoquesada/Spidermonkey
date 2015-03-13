@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,7 +15,7 @@ xpcJSWeakReference::xpcJSWeakReference()
 {
 }
 
-NS_IMPL_ISUPPORTS1(xpcJSWeakReference, xpcIJSWeakReference)
+NS_IMPL_ISUPPORTS(xpcJSWeakReference, xpcIJSWeakReference)
 
 nsresult xpcJSWeakReference::Init(JSContext* cx, const JS::Value& object)
 {
@@ -53,9 +54,9 @@ nsresult xpcJSWeakReference::Init(JSContext* cx, const JS::Value& object)
 }
 
 NS_IMETHODIMP
-xpcJSWeakReference::Get(JSContext* aCx, JS::Value* aRetval)
+xpcJSWeakReference::Get(JSContext* aCx, MutableHandleValue aRetval)
 {
-    *aRetval = JSVAL_NULL;
+    aRetval.setNull();
 
     if (!mReferent) {
         return NS_OK;
@@ -70,13 +71,9 @@ xpcJSWeakReference::Get(JSContext* aCx, JS::Value* aRetval)
     if (!wrappedObj) {
         // We have a generic XPCOM object that supports weak references here.
         // Wrap it and pass it out.
-        RootedObject global(aCx, CurrentGlobalOrNull(aCx));
-        RootedValue rval(aCx);
-        nsresult rv = nsContentUtils::WrapNative(aCx, global,
-                                                 supports, &NS_GET_IID(nsISupports),
-                                                 &rval);
-        *aRetval = rval;
-        return rv;
+        return nsContentUtils::WrapNative(aCx, supports,
+                                          &NS_GET_IID(nsISupports),
+                                          aRetval);
     }
 
     JS::RootedObject obj(aCx, wrappedObj->GetJSObject());
@@ -93,6 +90,6 @@ xpcJSWeakReference::Get(JSContext* aCx, JS::Value* aRetval)
         return NS_ERROR_FAILURE;
     }
 
-    *aRetval = OBJECT_TO_JSVAL(obj);
+    aRetval.setObject(*obj);
     return NS_OK;
 }

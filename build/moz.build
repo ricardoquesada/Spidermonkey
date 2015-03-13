@@ -4,10 +4,13 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-if CONFIG['OS_ARCH'] not in ('WINNT', 'OS2'):
-    DIRS += ['unix']
-elif CONFIG['OS_ARCH'] == 'WINNT':
+# This cannot be named "build" because of bug 922191.
+SPHINX_TREES['buildsystem'] = 'docs'
+
+if CONFIG['OS_ARCH'] == 'WINNT':
     DIRS += ['win32']
+else:
+    DIRS += ['unix']
 
 if CONFIG['OS_TARGET'] == 'Android' and not CONFIG['MOZ_ANDROID_LIBSTDCXX']:
     DIRS += ['stlport']
@@ -26,6 +29,9 @@ for var in ('GRE_MILESTONE', 'MOZ_APP_VERSION', 'MOZ_APP_BASENAME',
             'MOZ_APP_VENDOR', 'MOZ_APP_ID', 'MAR_CHANNEL_ID',
             'ACCEPTED_MAR_CHANNEL_IDS'):
     DEFINES[var] = CONFIG[var]
+
+if CONFIG['MOZ_APP_DISPLAYNAME'] != CONFIG['MOZ_APP_BASENAME']:
+    DEFINES['MOZ_APP_DISPLAYNAME'] = CONFIG['MOZ_APP_DISPLAYNAME']
 
 if CONFIG['MOZ_BUILD_APP'] == 'browser':
     DEFINES['MOZ_BUILD_APP_IS_BROWSER'] = True

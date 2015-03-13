@@ -1,6 +1,6 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -49,6 +49,15 @@ XPCStringConvert::ClearZoneCache(JS::Zone *zone)
 
 // static
 void
+XPCStringConvert::FinalizeLiteral(const JSStringFinalizer *fin, jschar *chars)
+{
+}
+
+const JSStringFinalizer XPCStringConvert::sLiteralFinalizer =
+    { XPCStringConvert::FinalizeLiteral };
+
+// static
+void
 XPCStringConvert::FinalizeDOMString(const JSStringFinalizer *fin, jschar *chars)
 {
     nsStringBuffer* buf = nsStringBuffer::FromData(chars);
@@ -69,8 +78,14 @@ XPCStringConvert::ReadableToJSVal(JSContext *cx,
     *sharedBuffer = nullptr;
 
     uint32_t length = readable.Length();
-    if (length == 0) {
-        vp.set(JS_GetEmptyStringValue(cx));
+
+    if (readable.IsLiteral()) {
+        JSString *str = JS_NewExternalString(cx,
+                                             static_cast<const jschar*>(readable.BeginReading()),
+                                             length, &sLiteralFinalizer);
+        if (!str)
+            return false;
+        vp.setString(str);
         return true;
     }
 

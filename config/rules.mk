@@ -17,7 +17,7 @@ endif
 INCLUDED_RULES_MK = 1
 
 # Make sure that anything that needs to be defined in moz.build wasn't
-# overwritten.
+# overwritten after including config.mk.
 _eval_for_side_effects := $(CHECK_MOZBUILD_VARIABLES)
 
 ifndef MOZILLA_DIR
@@ -35,50 +35,22 @@ endif
 USE_AUTOTARGETS_MK = 1
 include $(topsrcdir)/config/makefiles/makeutils.mk
 
-# Only build with Pymake (not GNU make) on Windows.
-ifeq ($(HOST_OS_ARCH),WINNT)
-ifndef L10NBASEDIR
-ifndef .PYMAKE
-$(error Pymake is required to build on Windows. Run |./mach build| to \
-automatically use pymake or invoke pymake directly via \
-|python build/pymake/make.py|.)
-endif
-endif
-endif
-
 ifdef REBUILD_CHECK
-ifdef .PYMAKE
-REPORT_BUILD = @%rebuild_check rebuild_check $@ $^
-else
 REPORT_BUILD = $(info $(shell $(PYTHON) $(MOZILLA_DIR)/config/rebuild_check.py $@ $^))
-endif
 else
 REPORT_BUILD = $(info $(notdir $@))
 endif
 
-ifeq ($(OS_ARCH),OS2)
-EXEC			=
-else
 EXEC			= exec
-endif
-
-# Don't copy xulrunner files at install time, when using system xulrunner
-ifdef SYSTEM_LIBXUL
-  SKIP_COPY_XULRUNNER=1
-endif
 
 # ELOG prints out failed command when building silently (gmake -s). Pymake
 # prints out failed commands anyway, so ELOG just makes things worse by
 # forcing shell invocations.
-ifndef .PYMAKE
 ifneq (,$(findstring s, $(filter-out --%, $(MAKEFLAGS))))
   ELOG := $(EXEC) sh $(BUILD_TOOLS)/print-failed-commands.sh
 else
   ELOG :=
 endif # -s
-else
-  ELOG :=
-endif # ifndef .PYMAKE
 
 _VPATH_SRCS = $(abspath $<)
 
@@ -103,10 +75,6 @@ ifdef ENABLE_TESTS
 # locally against non-current test code.
 DIRS += $(TEST_DIRS)
 
-ifndef INCLUDED_TESTS_MOCHITEST_MK #{
-  include $(topsrcdir)/config/makefiles/mochitest.mk
-endif #}
-
 ifdef CPP_UNIT_TESTS
 ifdef COMPILE_ENVIRONMENT
 
@@ -124,7 +92,7 @@ libs:: $(CPP_UNIT_TEST_BINS) $(call mkdir_deps,$(DIST)/cppunittests)
 	$(NSINSTALL) $(CPP_UNIT_TEST_BINS) $(DIST)/cppunittests
 endif
 
-check::
+run-cppunittests::
 	@$(PYTHON) $(topsrcdir)/testing/runcppunittests.py --xre-path=$(DIST)/bin --symbols-path=$(DIST)/crashreporter-symbols $(subst .cpp,$(BIN_SUFFIX),$(CPP_UNIT_TESTS))
 
 cppunittests-remote: DM_TRANS?=adb
@@ -194,7 +162,7 @@ ifdef LIB_IS_C_ONLY
 MKSHLIB			= $(MKCSHLIB)
 endif
 
-ifneq (,$(filter OS2 WINNT,$(OS_ARCH)))
+ifneq (,$(filter WINNT,$(OS_ARCH)))
 IMPORT_LIBRARY		:= $(LIB_PREFIX)$(SHARED_LIBRARY_NAME).$(IMPORT_LIB_SUFFIX)
 endif
 
@@ -204,15 +172,19 @@ else
 SHARED_LIBRARY		:= $(DLL_PREFIX)$(SHARED_LIBRARY_NAME)$(DLL_SUFFIX)
 endif
 
-ifeq ($(OS_ARCH),OS2)
-DEF_FILE		:= $(SHARED_LIBRARY:.dll=.def)
-endif
-
 EMBED_MANIFEST_AT=2
 
 endif # MKSHLIB
 endif # FORCE_SHARED_LIB
 endif # LIBRARY
+
+ifdef MKSHLIB
+ifdef SONAME
+DSO_SONAME			= $(DLL_PREFIX)$(SONAME)$(DLL_SUFFIX)
+else
+DSO_SONAME			= $(notdir $@)
+endif
+endif # MKSHLIB
 
 ifdef FORCE_STATIC_LIB
 ifndef FORCE_SHARED_LIB
@@ -243,12 +215,14 @@ ifndef GNU_CC
 #
 
 ifdef SIMPLE_PROGRAMS
-COMPILE_PDBFILE = $(basename $(@F)).pdb
+COMPILE_PDB_FLAG ?= -Fd$(basename $(@F)).pdb
 else
-COMPILE_PDBFILE = generated.pdb
+COMPILE_PDB_FLAG ?= -Fdgenerated.pdb
 endif
+COMPILE_CFLAGS += $(COMPILE_PDB_FLAG)
+COMPILE_CXXFLAGS += $(COMPILE_PDB_FLAG)
 
-LINK_PDBFILE = $(basename $(@F)).pdb
+LINK_PDBFILE ?= $(basename $(@F)).pdb
 ifdef MOZ_DEBUG
 CODFILE=$(basename $(@F)).cod
 endif
@@ -277,6 +251,9 @@ endif # Solaris Sun Studio C++
 
 ifeq ($(HOST_OS_ARCH),WINNT)
 HOST_PDBFILE=$(basename $(@F)).pdb
+HOST_PDB_FLAG ?= -Fd$(HOST_PDBFILE)
+HOST_CFLAGS += $(HOST_PDB_FLAG)
+HOST_CXXFLAGS += $(HOST_PDB_FLAG)
 endif
 
 # Don't build SIMPLE_PROGRAMS during the MOZ_PROFILE_GENERATE pass
@@ -364,7 +341,11 @@ ifdef MOZ_UPDATE_XTERM
 # Its good not to have a newline at the end of the titlebar string because it
 # makes the make -s output easier to read.  Echo -n does not work on all
 # platforms, but we can trick printf into doing it.
+ifeq (.,$(relativesrcdir))
+UPDATE_TITLE = printf '\033]0;%s in %s\007' $(1) $(2) ;
+else
 UPDATE_TITLE = printf '\033]0;%s in %s\007' $(1) $(relativesrcdir)/$(2) ;
+endif
 endif
 
 ifdef MACH
@@ -378,14 +359,12 @@ endif
 
 define SUBMAKE # $(call SUBMAKE,target,directory,static)
 +@$(UPDATE_TITLE)
-+$(MAKE) $(if $(2),-C $(2)) $(1)
++@$(MAKE) $(if $(2),-C $(2)) $(1)
 
 endef # The extra line is important here! don't delete it
 
 define TIER_DIR_SUBMAKE
-$(call BUILDSTATUS,TIERDIR_START  $(1) $(2) $(3))
 $(call SUBMAKE,$(4),$(3),$(5))
-$(call BUILDSTATUS,TIERDIR_FINISH $(1) $(2) $(3))
 
 endef # Ths empty line is important.
 
@@ -519,6 +498,10 @@ ifeq ($(OS_ARCH),Linux)
 ifdef IS_COMPONENT
 EXTRA_DSO_LDOPTS += -Wl,-Bsymbolic
 endif
+ifdef LD_VERSION_SCRIPT
+EXTRA_DSO_LDOPTS += -Wl,--version-script,$(LD_VERSION_SCRIPT)
+EXTRA_DEPS += $(LD_VERSION_SCRIPT)
+endif
 endif
 
 #
@@ -527,6 +510,12 @@ endif
 
 ifeq ($(OS_ARCH),GNU)
 OS_CPPFLAGS += -DPATH_MAX=1024 -DMAXPATHLEN=1024
+endif
+
+ifeq ($(OS_ARCH),WINNT)
+ifdef USE_DELAYIMP
+OS_LIBS += $(call EXPAND_LIBNAME,delayimp)
+endif
 endif
 
 #
@@ -591,17 +580,13 @@ endif
 # of the tiers and because of libxul. Suppress the default rules in favor
 # of something else. Makefiles which use this var *must* provide a sensible
 # default rule before including rules.mk
-ifndef SUPPRESS_DEFAULT_RULES
 default all::
 	$(MAKE) export
-ifdef MOZ_PSEUDO_DERECURSE
 ifdef COMPILE_ENVIRONMENT
 	$(MAKE) compile
 endif
-endif
 	$(MAKE) libs
 	$(MAKE) tools
-endif # SUPPRESS_DEFAULT_RULES
 
 ifeq ($(findstring s,$(filter-out --%, $(MAKEFLAGS))),)
 ECHO := echo
@@ -642,7 +627,7 @@ tools::
 endif
 
 ##############################################
-ifndef NO_PROFILE_GUIDED_OPTIMIZE
+ifneq (1,$(NO_PROFILE_GUIDED_OPTIMIZE))
 ifdef MOZ_PROFILE_USE
 ifeq ($(OS_ARCH)_$(GNU_CC), WINNT_)
 # When building with PGO, we have to make sure to re-link
@@ -712,9 +697,6 @@ clean clobber realclean clobber_all distclean::
 else
 clean clobber realclean clobber_all distclean::
 	$(foreach dir,$(PARALLEL_DIRS) $(DIRS) $(TOOL_DIRS),-$(call SUBMAKE,$@,$(dir)))
-
-distclean::
-	$(foreach dir,$(PARALLEL_DIRS) $(DIRS) $(TOOL_DIRS),-$(call SUBMAKE,$@,$(dir)))
 endif
 
 distclean::
@@ -724,9 +706,6 @@ distclean::
 	$(wildcard *.$(OBJ_SUFFIX)) $(wildcard *.ho) $(wildcard host_*.o*) \
 	$(wildcard *.$(LIB_SUFFIX)) $(wildcard *$(DLL_SUFFIX)) \
 	$(wildcard *.$(IMPORT_LIB_SUFFIX))
-ifeq ($(OS_ARCH),OS2)
-	-$(RM) $(PROGRAM:.exe=.map)
-endif
 
 alltags:
 	$(RM) TAGS
@@ -761,7 +740,7 @@ ifdef MOZ_PROFILE_GENERATE
 	touch -t `date +%Y%m%d%H%M.%S -d 'now+5seconds'` pgo.relink
 endif
 else # !WINNT || GNU_CC
-	$(EXPAND_CCC) -o $@ $(CXXFLAGS) $(PROGOBJS) $(RESFILE) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS_DIR) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS) $(EXE_DEF_FILE) $(STLPORT_LIBS)
+	$(EXPAND_CCC) -o $@ $(CXXFLAGS) $(PROGOBJS) $(RESFILE) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS) $(EXE_DEF_FILE) $(STLPORT_LIBS)
 	$(call CHECK_BINARY,$@)
 endif # WINNT && !GNU_CC
 
@@ -817,7 +796,7 @@ ifdef MSMANIFEST_TOOL
 	fi
 endif	# MSVC with manifest tool
 else
-	$(EXPAND_CCC) $(CXXFLAGS) -o $@ $< $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS_DIR) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS) $(STLPORT_LIBS)
+	$(EXPAND_CCC) $(CXXFLAGS) -o $@ $< $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(WRAP_LDFLAGS) $(LIBS) $(MOZ_GLUE_PROGRAM_LDFLAGS) $(OS_LIBS) $(EXTRA_LIBS) $(BIN_FLAGS) $(STLPORT_LIBS)
 	$(call CHECK_BINARY,$@)
 endif # WINNT && !GNU_CC
 
@@ -853,7 +832,7 @@ $(filter %.$(LIB_SUFFIX),$(LIBRARY)): $(OBJS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
 $(filter-out %.$(LIB_SUFFIX),$(LIBRARY)): $(filter %.$(LIB_SUFFIX),$(LIBRARY)) $(OBJS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
 # When we only build a library descriptor, blow out any existing library
 	$(REPORT_BUILD)
-	$(if $(filter %.$(LIB_SUFFIX),$(LIBRARY)),,$(RM) $(REAL_LIBRARY) $(EXPORT_LIBRARY:%=%/$(REAL_LIBRARY)))
+	$(if $(filter %.$(LIB_SUFFIX),$(LIBRARY)),,$(RM) $(REAL_LIBRARY))
 	$(EXPAND_LIBS_GEN) -o $@ $(OBJS) $(SHARED_LIBRARY_LIBS)
 
 ifeq ($(OS_ARCH),WINNT)
@@ -866,23 +845,6 @@ ifeq ($(OS_ARCH),WINNT)
 # See bug 795204.
 $(IMPORT_LIBRARY): $(SHARED_LIBRARY) ;
 endif
-
-ifeq ($(OS_ARCH),OS2)
-$(DEF_FILE): $(OBJS) $(SHARED_LIBRARY_LIBS)
-	$(RM) $@
-	echo LIBRARY $(SHARED_LIBRARY_NAME) INITINSTANCE TERMINSTANCE > $@
-	echo PROTMODE >> $@
-	echo CODE    LOADONCALL MOVEABLE DISCARDABLE >> $@
-	echo DATA    PRELOAD MOVEABLE MULTIPLE NONSHARED >> $@
-	echo EXPORTS >> $@
-
-	$(ADD_TO_DEF_FILE)
-
-$(IMPORT_LIBRARY): $(SHARED_LIBRARY)
-	$(REPORT_BUILD)
-	$(RM) $@
-	$(IMPLIB) $@ $^
-endif # OS/2
 
 $(HOST_LIBRARY): $(HOST_OBJS) Makefile
 	$(REPORT_BUILD)
@@ -996,7 +958,7 @@ $(HOST_CMMOBJS):
 $(COBJS):
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CC)
-	$(ELOG) $(CC) $(OUTOPTION)$@ -c $(COMPILE_CFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+	$(ELOG) $(CC) $(OUTOPTION)$@ -c $(COMPILE_CFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
 # DEFINES and ACDEFINES are needed here to enable conditional compilation of Q_OBJECTs:
 # 'moc' only knows about #defines it gets on the command line (-D...), not in
@@ -1018,75 +980,157 @@ ifdef ASFILES
 # a '-c' flag.
 $(ASOBJS):
 	$(REPORT_BUILD)
-	$(AS) $(ASOUTOPTION)$@ $(ASFLAGS) $(AS_DASH_C_FLAG) $(_VPATH_SRCS)
+	$(AS) $(ASOUTOPTION)$@ $(ASFLAGS) $($(notdir $<)_FLAGS) $(AS_DASH_C_FLAG) $(_VPATH_SRCS)
 endif
 
 $(SOBJS):
 	$(REPORT_BUILD)
-	$(AS) -o $@ $(ASFLAGS) $(LOCAL_INCLUDES) $(TARGET_LOCAL_INCLUDES) -c $<
+	$(AS) -o $@ $(ASFLAGS) $($(notdir $<)_FLAGS) $(LOCAL_INCLUDES) $(TARGET_LOCAL_INCLUDES) -c $<
 
 $(CPPOBJS):
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CXX)
-	$(ELOG) $(CCC) $(OUTOPTION)$@ -c $(COMPILE_CXXFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+	$(ELOG) $(CCC) $(OUTOPTION)$@ -c $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
 $(CMMOBJS):
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CXX)
-	$(ELOG) $(CCC) -o $@ -c $(COMPILE_CXXFLAGS) $(COMPILE_CMMFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+	$(ELOG) $(CCC) -o $@ -c $(COMPILE_CXXFLAGS) $(COMPILE_CMMFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
 $(CMOBJS):
 	$(REPORT_BUILD)
 	@$(MAKE_DEPS_AUTO_CC)
-	$(ELOG) $(CC) -o $@ -c $(COMPILE_CFLAGS) $(COMPILE_CMFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+	$(ELOG) $(CC) -o $@ -c $(COMPILE_CFLAGS) $(COMPILE_CMFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
 $(filter %.s,$(CPPSRCS:%.cpp=%.s)): %.s: %.cpp $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
-	$(CCC) -S $(COMPILE_CXXFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+	$(CCC) -S $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
 $(filter %.s,$(CPPSRCS:%.cc=%.s)): %.s: %.cc $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
-	$(CCC) -S $(COMPILE_CXXFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+	$(CCC) -S $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+
+$(filter %.s,$(CPPSRCS:%.cxx=%.s)): %.s: %.cpp $(call mkdir_deps,$(MDDEPDIR))
+	$(REPORT_BUILD)
+	$(CCC) -S $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
 $(filter %.s,$(CSRCS:%.c=%.s)): %.s: %.c $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
-	$(CC) -S $(COMPILE_CFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+	$(CC) -S $(COMPILE_CFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
-$(filter %.i,$(CPPSRCS:%.cpp=%.i)): %.i: %.cpp $(call mkdir_deps,$(MDDEPDIR))
-	$(REPORT_BUILD)
-	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+ifneq (,$(filter %.i,$(MAKECMDGOALS)))
+# Call as $(call _group_srcs,extension,$(SRCS)) - this will create a list
+# of the full sources, as well as the $(notdir) version. So:
+#   foo.cpp sub/bar.cpp
+# becomes:
+#   foo.cpp sub/bar.cpp bar.cpp
+#
+# This way we can match both 'make sub/bar.i' and 'make bar.i'
+_group_srcs = $(sort $(patsubst %.$1,%.i,$(filter %.$1,$2 $(notdir $2))))
+_PREPROCESSED_CPP_FILES := $(call _group_srcs,cpp,$(CPPSRCS))
+_PREPROCESSED_CC_FILES := $(call _group_srcs,cc,$(CPPSRCS))
+_PREPROCESSED_CXX_FILES := $(call _group_srcs,cxx,$(CPPSRCS))
+_PREPROCESSED_C_FILES := $(call _group_srcs,c,$(CSRCS))
+_PREPROCESSED_CMM_FILES := $(call _group_srcs,mm,$(CMMSRCS))
 
-$(filter %.i,$(CPPSRCS:%.cc=%.i)): %.i: %.cc $(call mkdir_deps,$(MDDEPDIR))
-	$(REPORT_BUILD)
-	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+# Hack up VPATH so we can reach the sources. Eg: 'make Parser.i' may need to
+# reach $(srcdir)/frontend/Parser.i
+VPATH += $(addprefix $(srcdir)/,$(sort $(dir $(CPPSRCS) $(CSRCS) $(CMMSRCS))))
 
-$(filter %.i,$(CSRCS:%.c=%.i)): %.i: %.c $(call mkdir_deps,$(MDDEPDIR))
-	$(REPORT_BUILD)
-	$(CC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+# Make preprocessed files PHONY so they are always executed, since they are
+# manual targets and we don't necessarily write to $@.
+.PHONY: $(_PREPROCESSED_CPP_FILES) $(_PREPROCESSED_CC_FILES) $(_PREPROCESSED_CXX_FILES) $(_PREPROCESSED_C_FILES) $(_PREPROCESSED_CMM_FILES)
 
-$(filter %.i,$(CMMSRCS:%.mm=%.i)): %.i: %.mm $(call mkdir_deps,$(MDDEPDIR))
+$(_PREPROCESSED_CPP_FILES): %.i: %.cpp $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
-	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $(COMPILE_CMMFLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+	$(addprefix $(MKDIR) -p ,$(filter-out .,$(@D)))
+	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+
+$(_PREPROCESSED_CC_FILES): %.i: %.cc $(call mkdir_deps,$(MDDEPDIR))
+	$(REPORT_BUILD)
+	$(addprefix $(MKDIR) -p ,$(filter-out .,$(@D)))
+	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+
+$(_PREPROCESSED_CXX_FILES): %.i: %.cxx $(call mkdir_deps,$(MDDEPDIR))
+	$(REPORT_BUILD)
+	$(addprefix $(MKDIR) -p ,$(filter-out .,$(@D)))
+	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+
+$(_PREPROCESSED_C_FILES): %.i: %.c $(call mkdir_deps,$(MDDEPDIR))
+	$(REPORT_BUILD)
+	$(addprefix $(MKDIR) -p ,$(filter-out .,$(@D)))
+	$(CC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+
+$(_PREPROCESSED_CMM_FILES): %.i: %.mm $(call mkdir_deps,$(MDDEPDIR))
+	$(REPORT_BUILD)
+	$(addprefix $(MKDIR) -p ,$(filter-out .,$(@D)))
+	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $(COMPILE_CMMFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+
+# Default to pre-processing the actual unified file. This can be overridden
+# at the command-line to pre-process only the individual source file.
+PP_UNIFIED ?= 1
+
+# PP_REINVOKE gets set on the sub-make to prevent us from going in an
+# infinite loop if the filename doesn't exist in the unified source files.
+ifndef PP_REINVOKE
+
+MATCH_cpp = \(cpp\|cc|cxx\)
+UPPER_c = C
+UPPER_cpp = CPP
+UPPER_mm = CMM
+
+# When building with PP_UNIFIED=0, we also have to look in the Unified files to
+# find a matching pathname.
+_get_all_sources = $1 $(if $(filter Unified%,$1),$(shell sed -n 's/\#include "\(.*\)"$$/\1/p' $(filter Unified%,$1)))
+all_cpp_sources := $(call _get_all_sources,$(CPPSRCS))
+all_mm_sources := $(call _get_all_sources,$(CMMSRCS))
+all_c_sources := $(call _get_all_sources,$(CSRCS))
+all_sources := $(all_cpp_sources) $(all_cmm_sources) $(all_c_sources)
+
+# The catch-all %.i rule runs when we pass in a .i filename that doesn't match
+# one of the *SRCS variables. The two code paths depend on whether or not
+# we are requesting a unified file (PP_UNIFIED=1, the default) or not:
+#
+# PP_UNIFIED=1:
+#  - Look for it in any of the Unified files, and re-exec make with
+#    Unified_foo0.i as the target. This gets us the full unified preprocessed
+#    file.
+#
+# PP_UNIFIED=0:
+#  - If the .i filename is in *SRCS, or in a Unified filename, then we re-exec
+#    make with that filename as the target. The *SRCS variables are modified
+#    to have the Unified sources appended to them so that the static pattern
+#    rules will match.
+%.i: FORCE
+ifeq ($(PP_UNIFIED),1)
+	@$(MAKE) PP_REINVOKE=1 \
+	    $(or $(addsuffix .i, \
+              $(foreach type,c cpp mm, \
+	        $(if $(filter Unified%,$($(UPPER_$(type))SRCS)), \
+	          $(shell grep -l '#include "\(.*/\)\?$(basename $@).$(or $(MATCH_$(type)),$(type))"' Unified*.$(type) | sed 's/\.$(type)$$//') \
+            ))),$(error "File not found for preprocessing: $@"))
+else
+	@$(MAKE) PP_REINVOKE=1 $@ \
+	    $(foreach type,c cpp mm,$(UPPER_$(type))SRCS="$(all_$(type)_sources)")
+endif
+
+endif
+
+endif
 
 $(RESFILE): %.res: %.rc
 	$(REPORT_BUILD)
 	@echo Creating Resource file: $@
-ifeq ($(OS_ARCH),OS2)
-	$(RC) $(RCFLAGS:-D%=-d %) -i $(subst /,\,$(srcdir)) -r $< $@
-else
 ifdef GNU_CC
 	$(RC) $(RCFLAGS) $(filter-out -U%,$(DEFINES)) $(INCLUDES:-I%=--include-dir %) $(OUTOPTION)$@ $(_VPATH_SRCS)
 else
 	$(RC) $(RCFLAGS) -r $(DEFINES) $(INCLUDES) $(OUTOPTION)$@ $(_VPATH_SRCS)
 endif
-endif
 
 # Cancel GNU make built-in implicit rules
-ifndef .PYMAKE
 MAKEFLAGS += -r
-endif
 
-ifneq (,$(filter OS2 WINNT,$(OS_ARCH)))
+ifneq (,$(filter WINNT,$(OS_ARCH)))
 SEP := ;
 else
 SEP := :
@@ -1241,28 +1285,6 @@ endif
 endif
 
 ################################################################################
-# Copy testing-only JS modules to appropriate destination.
-#
-# For each file defined in TESTING_JS_MODULES, copy it to
-# objdir/_tests/modules/. If TESTING_JS_MODULE_DIR is defined, that path
-# wlll be appended to the output directory.
-
-ifdef ENABLE_TESTS
-ifdef TESTING_JS_MODULES
-testmodulesdir = $(DEPTH)/_tests/modules/$(TESTING_JS_MODULE_DIR)
-
-GENERATED_DIRS += $(testmodulesdir)
-
-ifndef NO_DIST_INSTALL
-TESTING_JS_MODULES_FILES := $(TESTING_JS_MODULES)
-TESTING_JS_MODULES_DEST := $(testmodulesdir)
-INSTALL_TARGETS += TESTING_JS_MODULES
-endif
-
-endif
-endif
-
-################################################################################
 # SDK
 
 ifneq (,$(SDK_LIBRARY))
@@ -1284,8 +1306,6 @@ endif # SDK_BINARY
 ################################################################################
 # CHROME PACKAGING
 
-JAR_MANIFEST := $(srcdir)/jar.mn
-
 chrome::
 	$(MAKE) realchrome
 	$(LOOP_OVER_PARALLEL_DIRS)
@@ -1294,7 +1314,7 @@ chrome::
 
 $(FINAL_TARGET)/chrome: $(call mkdir_deps,$(FINAL_TARGET)/chrome)
 
-ifneq (,$(wildcard $(JAR_MANIFEST)))
+ifneq (,$(JAR_MANIFEST))
 ifndef NO_DIST_INSTALL
 
 ifdef XPI_NAME
@@ -1321,18 +1341,19 @@ libs realchrome:: $(FINAL_TARGET)/chrome
 	  $(JAR_MANIFEST))
 
 endif
+
+# This is a temporary check to ensure patches relying on the old behavior
+# of silently picking up jar.mn files continue to work.
+else # No JAR_MANIFEST
+ifneq (,$(wildcard $(srcdir)/jar.mn))
+$(error $(srcdir) contains a jar.mn file but this file is not declared in a JAR_MANIFESTS variable in a moz.build file)
+endif
 endif
 
 ifneq ($(DIST_FILES),)
 DIST_FILES_PATH := $(FINAL_TARGET)
 DIST_FILES_FLAGS := $(XULAPP_DEFINES)
 PP_TARGETS += DIST_FILES
-endif
-
-ifneq ($(DIST_CHROME_FILES),)
-DIST_CHROME_FILES_PATH := $(FINAL_TARGET)/chrome
-DIST_CHROME_FILES_FLAGS := $(XULAPP_DEFINES)
-PP_TARGETS += DIST_CHROME_FILES
 endif
 
 ifneq ($(XPI_PKGNAME),)
@@ -1451,12 +1472,12 @@ endif
 # file would be $(DIST)/include/bar/baz/qux.h instead of $(DIST)/include/qux.h
 
 # If we're using binary nsinstall and it's not built yet, fallback to python nsinstall.
-ifneq (,$(filter $(CONFIG_TOOLS)/nsinstall$(HOST_BIN_SUFFIX),$(install_cmd)))
-ifeq (,$(wildcard $(CONFIG_TOOLS)/nsinstall$(HOST_BIN_SUFFIX)))
-nsinstall_is_usable = $(if $(wildcard $(CONFIG_TOOLS)/nsinstall$(HOST_BIN_SUFFIX)),yes)
+ifneq (,$(filter $(DIST)/bin/nsinstall$(HOST_BIN_SUFFIX),$(install_cmd)))
+ifeq (,$(wildcard $(DIST)/bin/nsinstall$(HOST_BIN_SUFFIX)))
+nsinstall_is_usable = $(if $(wildcard $(DIST)/bin/nsinstall$(HOST_BIN_SUFFIX)),yes)
 
 define install_cmd_override
-$(1): install_cmd = $$(if $$(nsinstall_is_usable),$$(INSTALL),$$(NSINSTALL_PY)) $$(1)
+$(1): install_cmd = $$(if $$(nsinstall_is_usable),$$(INSTALL),$$(NSINSTALL_PY) -t) $$(1)
 endef
 endif
 endif
@@ -1658,12 +1679,6 @@ FREEZE_VARIABLES = \
   TIERS \
   EXTRA_COMPONENTS \
   EXTRA_PP_COMPONENTS \
-  MOCHITEST_FILES \
-  MOCHITEST_CHROME_FILES \
-  MOCHITEST_BROWSER_FILES \
-  MOCHITEST_A11Y_FILES \
-  MOCHITEST_METRO_FILES \
-  MOCHITEST_ROBOCOP_FILES \
   $(NULL)
 
 $(foreach var,$(FREEZE_VARIABLES),$(eval $(var)_FROZEN := '$($(var))'))
@@ -1699,3 +1714,10 @@ endif
 export:: $(GENERATED_FILES)
 
 GARBAGE += $(GENERATED_FILES)
+
+# We may have modified "frozen" variables in rules.mk (we do that), but we don't
+# want Makefile.in doing that, so collect the possibly modified variables here,
+# and check them again in recurse.mk, which is always included after Makefile.in
+# contents.
+$(foreach var,$(_MOZBUILD_EXTERNAL_VARIABLES),$(eval $(var)_FROZEN := '$($(var))'))
+$(foreach var,$(_DEPRECATED_VARIABLES),$(eval $(var)_FROZEN := '$($(var))'))

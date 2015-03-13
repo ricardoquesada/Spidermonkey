@@ -21,12 +21,14 @@
 
 using namespace js;
 
-using mozilla::DoubleIsInt32;
+using mozilla::ArrayLength;
 using mozilla::Forward;
 using mozilla::IsNaN;
 using mozilla::Move;
-using mozilla::ArrayLength;
+using mozilla::NumberEqualsInt32;
+
 using JS::DoubleNaNValue;
+using JS::ForOfIterator;
 
 
 /*** OrderedHashTable ****************************************************************************/
@@ -99,7 +101,7 @@ class OrderedHashTable
     AllocPolicy alloc;
 
   public:
-    OrderedHashTable(AllocPolicy &ap)
+    explicit OrderedHashTable(AllocPolicy &ap)
         : hashTable(nullptr), data(nullptr), dataLength(0), ranges(nullptr), alloc(ap) {}
 
     bool init() {
@@ -330,7 +332,7 @@ class OrderedHashTable
          * Create a Range over all the entries in ht.
          * (This is private on purpose. End users must use ht.all().)
          */
-        Range(OrderedHashTable &ht) : ht(ht), i(0), count(0), prevp(&ht.ranges), next(ht.ranges) {
+        explicit Range(OrderedHashTable &ht) : ht(ht), i(0), count(0), prevp(&ht.ranges), next(ht.ranges) {
             *prevp = this;
             if (next)
                 next->prevp = &next;
@@ -716,7 +718,7 @@ class OrderedHashMap
   public:
     typedef typename Impl::Range Range;
 
-    OrderedHashMap(AllocPolicy ap = AllocPolicy()) : impl(ap) {}
+    explicit OrderedHashMap(AllocPolicy ap = AllocPolicy()) : impl(ap) {}
     bool init()                                     { return impl.init(); }
     uint32_t count() const                          { return impl.count(); }
     bool has(const Key &key) const                  { return impl.has(key); }
@@ -752,7 +754,7 @@ class OrderedHashSet
   public:
     typedef typename Impl::Range Range;
 
-    OrderedHashSet(AllocPolicy ap = AllocPolicy()) : impl(ap) {}
+    explicit OrderedHashSet(AllocPolicy ap = AllocPolicy()) : impl(ap) {}
     bool init()                                     { return impl.init(); }
     uint32_t count() const                          { return impl.count(); }
     bool has(const T &value) const                  { return impl.has(value); }
@@ -783,7 +785,7 @@ HashableValue::setValue(JSContext *cx, HandleValue v)
     } else if (v.isDouble()) {
         double d = v.toDouble();
         int32_t i;
-        if (DoubleIsInt32(d, &i)) {
+        if (NumberEqualsInt32(d, &i)) {
             // Normalize int32_t-valued doubles to int32_t for faster hashing and testing.
             value = Int32Value(i);
         } else if (IsNaN(d)) {
@@ -796,8 +798,8 @@ HashableValue::setValue(JSContext *cx, HandleValue v)
         value = v;
     }
 
-    JS_ASSERT(value.isUndefined() || value.isNull() || value.isBoolean() ||
-              value.isNumber() || value.isString() || value.isObject());
+    JS_ASSERT(value.isUndefined() || value.isNull() || value.isBoolean() || value.isNumber() ||
+              value.isString() || value.isSymbol() || value.isObject());
     return true;
 }
 
@@ -828,7 +830,7 @@ HashableValue
 HashableValue::mark(JSTracer *trc) const
 {
     HashableValue hv(*this);
-    JS_SET_TRACING_LOCATION(trc, (void *)this);
+    trc->setTracingLocation((void *)this);
     gc::MarkValue(trc, &hv.value, "key");
     return hv;
 }
@@ -896,7 +898,7 @@ MapIteratorObject::kind() const
 bool
 GlobalObject::initMapIteratorProto(JSContext *cx, Handle<GlobalObject *> global)
 {
-    JSObject *base = global->getOrCreateIteratorPrototype(cx);
+    JSObject *base = GlobalObject::getOrCreateIteratorPrototype(cx, global);
     if (!base)
         return false;
     Rooted<JSObject*> proto(cx,
@@ -915,7 +917,7 @@ MapIteratorObject::create(JSContext *cx, HandleObject mapobj, ValueMap *data,
                           MapObject::IteratorKind kind)
 {
     Rooted<GlobalObject *> global(cx, &mapobj->global());
-    Rooted<JSObject*> proto(cx, global->getOrCreateMapIteratorPrototype(cx));
+    Rooted<JSObject*> proto(cx, GlobalObject::getOrCreateMapIteratorPrototype(cx, global));
     if (!proto)
         return nullptr;
 
@@ -970,10 +972,11 @@ MapIteratorObject::next_impl(JSContext *cx, CallArgs args)
             break;
 
           case MapObject::Entries: {
-            Value pair[2] = { range->front().key.get(), range->front().value };
-            AutoValueArray root(cx, pair, ArrayLength(pair));
+            JS::AutoValueArray<2> pair(cx);
+            pair[0].set(range->front().key.get());
+            pair[1].set(range->front().value);
 
-            JSObject *pairobj = NewDenseCopiedArray(cx, ArrayLength(pair), pair);
+            JSObject *pairobj = NewDenseCopiedArray(cx, pair.length(), pair.begin());
             if (!pairobj)
                 return false;
             value.setObject(*pairobj);
@@ -1014,7 +1017,6 @@ const Class MapObject::class_ = {
     JS_ResolveStub,
     JS_ConvertStub,
     finalize,
-    nullptr,                 // checkAccess
     nullptr,                 // call
     nullptr,                 // hasInstance
     nullptr,                 // construct
@@ -1050,8 +1052,8 @@ InitClass(JSContext *cx, Handle<GlobalObject*> global, const Class *clasp, JSPro
     Rooted<JSFunction*> ctor(cx, global->createConstructor(cx, construct, ClassName(key, cx), 1));
     if (!ctor ||
         !LinkConstructorAndPrototype(cx, ctor, proto) ||
-        !DefinePropertiesAndBrand(cx, proto, properties, methods) ||
-        !DefineConstructorAndPrototype(cx, global, key, ctor, proto))
+        !DefinePropertiesAndFunctions(cx, proto, properties, methods) ||
+        !GlobalObject::initBuiltinConstructor(cx, global, key, ctor, proto))
     {
         return nullptr;
     }
@@ -1072,7 +1074,7 @@ MapObject::initClass(JSContext *cx, JSObject *obj)
 
         // Define its alias.
         RootedValue funval(cx, ObjectValue(*fun));
-        if (!JS_DefineProperty(cx, proto, js_std_iterator_str, funval, nullptr, nullptr, 0))
+        if (!JS_DefineProperty(cx, proto, js_std_iterator_str, funval, 0))
             return nullptr;
     }
     return proto;
@@ -1130,24 +1132,84 @@ class OrderedHashTableRef : public gc::BufferableRef
 };
 #endif
 
-static void
-WriteBarrierPost(JSRuntime *rt, ValueMap *map, const HashableValue &key)
+inline static void
+WriteBarrierPost(JSRuntime *rt, ValueMap *map, const Value &key)
 {
 #ifdef JSGC_GENERATIONAL
     typedef OrderedHashMap<Value, Value, UnbarrieredHashPolicy, RuntimeAllocPolicy> UnbarrieredMap;
-    rt->gcStoreBuffer.putGeneric(OrderedHashTableRef<UnbarrieredMap>(
-                reinterpret_cast<UnbarrieredMap *>(map), key.get()));
+    if (MOZ_UNLIKELY(key.isObject() && IsInsideNursery(&key.toObject()))) {
+        rt->gc.storeBuffer.putGeneric(OrderedHashTableRef<UnbarrieredMap>(
+                    reinterpret_cast<UnbarrieredMap *>(map), key));
+    }
 #endif
 }
 
-static void
-WriteBarrierPost(JSRuntime *rt, ValueSet *set, const HashableValue &key)
+inline static void
+WriteBarrierPost(JSRuntime *rt, ValueSet *set, const Value &key)
 {
 #ifdef JSGC_GENERATIONAL
     typedef OrderedHashSet<Value, UnbarrieredHashPolicy, RuntimeAllocPolicy> UnbarrieredSet;
-    rt->gcStoreBuffer.putGeneric(OrderedHashTableRef<UnbarrieredSet>(
-                reinterpret_cast<UnbarrieredSet *>(set), key.get()));
+    if (MOZ_UNLIKELY(key.isObject() && IsInsideNursery(&key.toObject()))) {
+        rt->gc.storeBuffer.putGeneric(OrderedHashTableRef<UnbarrieredSet>(
+                    reinterpret_cast<UnbarrieredSet *>(set), key));
+    }
 #endif
+}
+
+bool
+MapObject::entries(JSContext *cx, HandleObject obj, JS::AutoValueVector *entries)
+{
+    ValueMap *map = obj->as<MapObject>().getData();
+    if (!map)
+        return false;
+
+    for (ValueMap::Range r = map->all(); !r.empty(); r.popFront()) {
+        if (!entries->append(r.front().key.get()) ||
+            !entries->append(r.front().value))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool
+MapObject::set(JSContext *cx, HandleObject obj, HandleValue k, HandleValue v)
+{
+    ValueMap *map = obj->as<MapObject>().getData();
+    if (!map)
+        return false;
+
+    AutoHashableValueRooter key(cx);
+    if (!key.setValue(cx, k))
+        return false;
+
+    RelocatableValue rval(v);
+    if (!map->put(key, rval)) {
+        js_ReportOutOfMemory(cx);
+        return false;
+    }
+    WriteBarrierPost(cx->runtime(), map, key.get());
+    return true;
+}
+
+MapObject*
+MapObject::create(JSContext *cx)
+{
+    RootedObject obj(cx, NewBuiltinClassInstance(cx, &class_));
+    if (!obj)
+        return nullptr;
+
+    ValueMap *map = cx->new_<ValueMap>(cx->runtime());
+    if (!map || !map->init()) {
+        js_delete(map);
+        js_ReportOutOfMemory(cx);
+        return nullptr;
+    }
+
+    obj->setPrivate(map);
+    return &obj->as<MapObject>();
 }
 
 void
@@ -1160,18 +1222,9 @@ MapObject::finalize(FreeOp *fop, JSObject *obj)
 bool
 MapObject::construct(JSContext *cx, unsigned argc, Value *vp)
 {
-    Rooted<JSObject*> obj(cx, NewBuiltinClassInstance(cx, &class_));
+    Rooted<MapObject*> obj(cx, MapObject::create(cx));
     if (!obj)
         return false;
-
-    ValueMap *map = cx->new_<ValueMap>(cx->runtime());
-    if (!map)
-        return false;
-    if (!map->init()) {
-        js_ReportOutOfMemory(cx);
-        return false;
-    }
-    obj->setPrivate(map);
 
     CallArgs args = CallArgsFromVp(argc, vp);
     if (args.hasDefined(0)) {
@@ -1180,6 +1233,7 @@ MapObject::construct(JSContext *cx, unsigned argc, Value *vp)
             return false;
         RootedValue pairVal(cx);
         RootedObject pairObj(cx);
+        ValueMap *map = obj->getData();
         while (true) {
             bool done;
             if (!iter.next(&pairVal, &done))
@@ -1212,7 +1266,7 @@ MapObject::construct(JSContext *cx, unsigned argc, Value *vp)
                 js_ReportOutOfMemory(cx);
                 return false;
             }
-            WriteBarrierPost(cx->runtime(), map, hkey);
+            WriteBarrierPost(cx->runtime(), map, key);
         }
     }
 
@@ -1309,8 +1363,8 @@ MapObject::set_impl(JSContext *cx, CallArgs args)
         js_ReportOutOfMemory(cx);
         return false;
     }
-    WriteBarrierPost(cx->runtime(), &map, key);
-    args.rval().setUndefined();
+    WriteBarrierPost(cx->runtime(), &map, key.get());
+    args.rval().set(args.thisv());
     return true;
 }
 
@@ -1492,7 +1546,7 @@ SetIteratorObject::kind() const
 bool
 GlobalObject::initSetIteratorProto(JSContext *cx, Handle<GlobalObject*> global)
 {
-    JSObject *base = global->getOrCreateIteratorPrototype(cx);
+    JSObject *base = GlobalObject::getOrCreateIteratorPrototype(cx, global);
     if (!base)
         return false;
     RootedObject proto(cx, NewObjectWithGivenProto(cx, &SetIteratorObject::class_, base, global));
@@ -1510,7 +1564,7 @@ SetIteratorObject::create(JSContext *cx, HandleObject setobj, ValueSet *data,
                           SetObject::IteratorKind kind)
 {
     Rooted<GlobalObject *> global(cx, &setobj->global());
-    Rooted<JSObject*> proto(cx, global->getOrCreateSetIteratorPrototype(cx));
+    Rooted<JSObject*> proto(cx, GlobalObject::getOrCreateSetIteratorPrototype(cx, global));
     if (!proto)
         return nullptr;
 
@@ -1561,10 +1615,11 @@ SetIteratorObject::next_impl(JSContext *cx, CallArgs args)
             break;
 
           case SetObject::Entries: {
-            Value pair[2] = { range->front().get(), range->front().get() };
-            AutoValueArray root(cx, pair, 2);
+            JS::AutoValueArray<2> pair(cx);
+            pair[0].set(range->front().get());
+            pair[1].set(range->front().get());
 
-            JSObject *pairObj = NewDenseCopiedArray(cx, 2, pair);
+            JSObject *pairObj = NewDenseCopiedArray(cx, 2, pair.begin());
             if (!pairObj)
               return false;
             value.setObject(*pairObj);
@@ -1605,7 +1660,6 @@ const Class SetObject::class_ = {
     JS_ResolveStub,
     JS_ConvertStub,
     finalize,
-    nullptr,                 // checkAccess
     nullptr,                 // call
     nullptr,                 // hasInstance
     nullptr,                 // construct
@@ -1641,12 +1695,64 @@ SetObject::initClass(JSContext *cx, JSObject *obj)
 
         // Define its aliases.
         RootedValue funval(cx, ObjectValue(*fun));
-        if (!JS_DefineProperty(cx, proto, "keys", funval, nullptr, nullptr, 0))
+        if (!JS_DefineProperty(cx, proto, "keys", funval, 0))
             return nullptr;
-        if (!JS_DefineProperty(cx, proto, js_std_iterator_str, funval, nullptr, nullptr, 0))
+        if (!JS_DefineProperty(cx, proto, js_std_iterator_str, funval, 0))
             return nullptr;
     }
     return proto;
+}
+
+
+bool
+SetObject::keys(JSContext *cx, HandleObject obj, JS::AutoValueVector *keys)
+{
+    ValueSet *set = obj->as<SetObject>().getData();
+    if (!set)
+        return false;
+
+    for (ValueSet::Range r = set->all(); !r.empty(); r.popFront()) {
+        if (!keys->append(r.front().get()))
+            return false;
+    }
+
+    return true;
+}
+
+bool
+SetObject::add(JSContext *cx, HandleObject obj, HandleValue k)
+{
+    ValueSet *set = obj->as<SetObject>().getData();
+    if (!set)
+        return false;
+
+    AutoHashableValueRooter key(cx);
+    if (!key.setValue(cx, k))
+        return false;
+
+    if (!set->put(key)) {
+        js_ReportOutOfMemory(cx);
+        return false;
+    }
+    WriteBarrierPost(cx->runtime(), set, key.get());
+    return true;
+}
+
+SetObject*
+SetObject::create(JSContext *cx)
+{
+    RootedObject obj(cx, NewBuiltinClassInstance(cx, &class_));
+    if (!obj)
+        return nullptr;
+
+    ValueSet *set = cx->new_<ValueSet>(cx->runtime());
+    if (!set || !set->init()) {
+        js_delete(set);
+        js_ReportOutOfMemory(cx);
+        return nullptr;
+    }
+    obj->setPrivate(set);
+    return &obj->as<SetObject>();
 }
 
 void
@@ -1670,18 +1776,9 @@ SetObject::finalize(FreeOp *fop, JSObject *obj)
 bool
 SetObject::construct(JSContext *cx, unsigned argc, Value *vp)
 {
-    Rooted<JSObject*> obj(cx, NewBuiltinClassInstance(cx, &class_));
+    Rooted<SetObject*> obj(cx, SetObject::create(cx));
     if (!obj)
         return false;
-
-    ValueSet *set = cx->new_<ValueSet>(cx->runtime());
-    if (!set)
-        return false;
-    if (!set->init()) {
-        js_ReportOutOfMemory(cx);
-        return false;
-    }
-    obj->setPrivate(set);
 
     CallArgs args = CallArgsFromVp(argc, vp);
     if (args.hasDefined(0)) {
@@ -1690,6 +1787,7 @@ SetObject::construct(JSContext *cx, unsigned argc, Value *vp)
         if (!iter.init(args[0]))
             return false;
         AutoHashableValueRooter key(cx);
+        ValueSet *set = obj->getData();
         while (true) {
             bool done;
             if (!iter.next(&keyVal, &done))
@@ -1702,7 +1800,7 @@ SetObject::construct(JSContext *cx, unsigned argc, Value *vp)
                 js_ReportOutOfMemory(cx);
                 return false;
             }
-            WriteBarrierPost(cx->runtime(), set, key);
+            WriteBarrierPost(cx->runtime(), set, keyVal);
         }
     }
 
@@ -1771,8 +1869,8 @@ SetObject::add_impl(JSContext *cx, CallArgs args)
         js_ReportOutOfMemory(cx);
         return false;
     }
-    WriteBarrierPost(cx->runtime(), &set, key);
-    args.rval().setUndefined();
+    WriteBarrierPost(cx->runtime(), &set, key.get());
+    args.rval().set(args.thisv());
     return true;
 }
 

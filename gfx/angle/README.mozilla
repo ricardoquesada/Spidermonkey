@@ -1,0 +1,35 @@
+This is the ANGLE project, originally from https://chromium.googlesource.com/angle/angle 
+
+The Mozilla upstream is the 'mozilla' branch from https://github.com/mozilla/angle, which
+includes Mozilla-specific patches on top of upstream.
+
+=== How to upgrade ANGLE ===
+
+1. git clone https://github.com/mozilla/angle angle
+
+2. Go into the angle dir, and add the google upstream as a remote:
+     git remote add google https://chromium.googlesource.com/angle/angle
+
+3. Fetch the new google upstream:
+     git fetch google
+
+4. Switch to the mozilla branch
+     git checkout mozilla
+
+5. Rebase the mozilla branch on top of the new google master.  Fix up patches along the way,
+   remove unneded commits.
+     git rebase -i google/master
+
+6. Re-generate moz.build files:
+     ./gyp_mozbuild
+
+7. nuke mozilla-central/gfx/angle directory
+
+8. copy all the relevant files from the github checkout
+     cd mozilla-central
+     mkdir gfx/angle
+     cp -r /c/proj/angle/[A-Z]* /c/proj/angle/{include,src,moz.build} gfx/angle
+
+9.  Build. Fix things until it builds.
+
+10. Try runs and reviews!

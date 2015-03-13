@@ -89,7 +89,7 @@ class PropertyTree
         MAX_HEIGHT_WITH_ELEMENTS_ACCESS = 128
     };
 
-    PropertyTree(JSCompartment *comp)
+    explicit PropertyTree(JSCompartment *comp)
         : compartment_(comp)
     {
     }
@@ -97,12 +97,8 @@ class PropertyTree
     JSCompartment *compartment() { return compartment_; }
 
     Shape *newShape(ExclusiveContext *cx);
-    Shape *getChild(ExclusiveContext *cx, Shape *parent, uint32_t nfixed, const StackShape &child);
+    Shape *getChild(ExclusiveContext *cx, Shape *parent, StackShape &child);
     Shape *lookupChild(ThreadSafeContext *cx, Shape *parent, const StackShape &child);
-
-#ifdef DEBUG
-    static void dumpShapes(JSRuntime *rt);
-#endif
 };
 
 } /* namespace js */

@@ -20,8 +20,9 @@
 // by the headers included above.
 namespace JS {
 
+class Latin1Chars;
 class Latin1CharsZ;
-class StableCharPtr;
+class ConstTwoByteChars;
 class TwoByteChars;
 
 class AutoFunctionVector;
@@ -32,11 +33,14 @@ class AutoValueVector;
 
 class AutoIdArray;
 
-class AutoGCRooter;
-class AutoArrayRooter;
 template <typename T> class AutoVectorRooter;
 template<typename K, typename V> class AutoHashMapRooter;
 template<typename T> class AutoHashSetRooter;
+template<typename T> class RootedGeneric;
+
+class MOZ_STACK_CLASS SourceBufferHolder;
+
+class HandleValueArray;
 
 }
 
@@ -61,8 +65,10 @@ using JS::UndefinedValue;
 
 using JS::IsPoisonedPtr;
 
+using JS::Latin1Char;
+using JS::Latin1Chars;
 using JS::Latin1CharsZ;
-using JS::StableCharPtr;
+using JS::ConstTwoByteChars;
 using JS::TwoByteChars;
 
 using JS::AutoFunctionVector;
@@ -73,11 +79,10 @@ using JS::AutoValueVector;
 
 using JS::AutoIdArray;
 
-using JS::AutoGCRooter;
-using JS::AutoArrayRooter;
 using JS::AutoHashMapRooter;
 using JS::AutoHashSetRooter;
 using JS::AutoVectorRooter;
+using JS::RootedGeneric;
 
 using JS::CallArgs;
 using JS::CallNonGenericMethod;
@@ -87,6 +92,7 @@ using JS::IsAcceptableThis;
 using JS::NativeImpl;
 using JS::OwningCompileOptions;
 using JS::ReadOnlyCompileOptions;
+using JS::SourceBufferHolder;
 
 using JS::Rooted;
 using JS::RootedFunction;
@@ -94,6 +100,7 @@ using JS::RootedId;
 using JS::RootedObject;
 using JS::RootedScript;
 using JS::RootedString;
+using JS::RootedSymbol;
 using JS::RootedValue;
 
 using JS::PersistentRooted;
@@ -102,6 +109,7 @@ using JS::PersistentRootedId;
 using JS::PersistentRootedObject;
 using JS::PersistentRootedScript;
 using JS::PersistentRootedString;
+using JS::PersistentRootedSymbol;
 using JS::PersistentRootedValue;
 
 using JS::Handle;
@@ -110,6 +118,7 @@ using JS::HandleId;
 using JS::HandleObject;
 using JS::HandleScript;
 using JS::HandleString;
+using JS::HandleSymbol;
 using JS::HandleValue;
 
 using JS::MutableHandle;
@@ -118,7 +127,13 @@ using JS::MutableHandleId;
 using JS::MutableHandleObject;
 using JS::MutableHandleScript;
 using JS::MutableHandleString;
+using JS::MutableHandleSymbol;
 using JS::MutableHandleValue;
+
+using JS::NullHandleValue;
+using JS::UndefinedHandleValue;
+
+using JS::HandleValueArray;
 
 using JS::Zone;
 

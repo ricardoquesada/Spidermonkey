@@ -3,7 +3,12 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 from __future__ import unicode_literals
+
 import os
+import sys
+import argparse
+
+from mozlog.structured import commandline
 
 from mozbuild.base import (
     MachCommandBase,
@@ -16,13 +21,6 @@ from mach.decorators import (
     Command,
 )
 
-MARIONETTE_DISABLED = '''
-The %s command requires a Marionette-enabled build.
-
-Add 'ENABLE_MARIONETTE=1' to your mozconfig file and re-build the application.
-Your currently active mozconfig is %s.
-'''.lstrip()
-
 MARIONETTE_DISABLED_B2G = '''
 The %s command requires a Marionette-enabled build.
 
@@ -32,15 +30,20 @@ this by ommitting the VARIANT variable when building, or using:
 VARIANT=eng ./build.sh
 '''
 
+# A parser that will accept structured logging commandline arguments.
+_parser = argparse.ArgumentParser()
+commandline.add_logging_group(_parser)
+
 def run_marionette(tests, b2g_path=None, emulator=None, testtype=None,
-    address=None, bin=None, topsrcdir=None):
+    address=None, binary=None, topsrcdir=None, **kwargs):
     from marionette.runtests import (
         MarionetteTestRunner,
-        MarionetteTestOptions,
+        BaseMarionetteOptions,
         startTestRunner
     )
 
-    parser = MarionetteTestOptions()
+    parser = BaseMarionetteOptions()
+    commandline.add_logging_group(parser)
     options, args = parser.parse_args()
 
     if not tests:
@@ -53,14 +56,16 @@ def run_marionette(tests, b2g_path=None, emulator=None, testtype=None,
         if emulator:
             options.emulator = emulator
     else:
-        options.bin = bin
-        path, exe = os.path.split(options.bin)
-        if 'b2g' in exe:
-            options.app = 'b2gdesktop'
+        options.binary = binary
+        path, exe = os.path.split(options.binary)
 
     options.address = address
 
     parser.verify_usage(options, tests)
+
+    options.logger = commandline.setup_logging("Marionette Unit Tests",
+                                               options,
+                                               {"mach": sys.stdout})
 
     runner = startTestRunner(MarionetteTestRunner, options, tests)
     if runner.failed > 0:
@@ -78,16 +83,18 @@ class B2GCommands(MachCommandBase):
     @Command('marionette-webapi', category='testing',
         description='Run a Marionette webapi test',
         conditions=[conditions.is_b2g])
-    @CommandArgument('--emulator', choices=['x86', 'arm'],
-        help='Run an emulator of the specified architecture.')
     @CommandArgument('--type', dest='testtype',
         help='Test type, usually one of: browser, b2g, b2g-qemu.',
         default='b2g')
     @CommandArgument('tests', nargs='*', metavar='TESTS',
         help='Path to test(s) to run.')
-    def run_marionette_webapi(self, tests, emulator=None, testtype=None):
-        if not emulator and self.device_name in ('emulator', 'emulator-jb'):
-            emulator='arm'
+    def run_marionette_webapi(self, tests, testtype=None):
+        emulator = None
+        if self.device_name:
+            if self.device_name.startswith('emulator'):
+                emulator = 'arm'
+                if 'x86' in self.device_name:
+                    emulator = 'x86'
 
         if self.substs.get('ENABLE_MARIONETTE') != '1':
             print(MARIONETTE_DISABLED_B2G % 'marionette-webapi')
@@ -96,12 +103,13 @@ class B2GCommands(MachCommandBase):
         return run_marionette(tests, b2g_path=self.b2g_home, emulator=emulator,
             testtype=testtype, topsrcdir=self.topsrcdir, address=None)
 
-
 @CommandProvider
 class MachCommands(MachCommandBase):
     @Command('marionette-test', category='testing',
         description='Run a Marionette test.',
-        conditions=[conditions.is_firefox])
+        conditions=[conditions.is_firefox],
+        parser=_parser,
+    )
     @CommandArgument('--address',
         help='host:port of running Gecko instance to connect to.')
     @CommandArgument('--type', dest='testtype',
@@ -109,12 +117,8 @@ class MachCommands(MachCommandBase):
         default='browser')
     @CommandArgument('tests', nargs='*', metavar='TESTS',
         help='Path to test(s) to run.')
-    def run_marionette_test(self, tests, address=None, testtype=None):
-        if self.substs.get('ENABLE_MARIONETTE') != '1':
-            print(MARIONETTE_DISABLED % ('marionette-test',
-                                         self.mozconfig['path']))
-            return 1
-
-        bin = self.get_binary_path('app')
-        return run_marionette(tests, bin=bin, testtype=testtype,
+    def run_marionette_test(self, tests, address=None, testtype=None,
+                            **kwargs):
+        binary = self.get_binary_path('app')
+        return run_marionette(tests, binary=binary, testtype=testtype,
             topsrcdir=self.topsrcdir, address=address)
