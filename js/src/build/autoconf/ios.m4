@@ -84,7 +84,12 @@ iPhoneOS|iPhoneSimulator)
     STRIP="$ios_toolchain"/strip
     LDFLAGS="-isysroot $ios_sdk_root -arch $ios_arch -v"
 
-    CFLAGS="-isysroot $ios_sdk_root -arch $ios_arch -miphoneos-version-min=$ios_deploy_version -I$ios_sdk_root/usr/include -pipe -Wno-implicit-int -Wno-return-type"
+    if test "$ios_target" == "iPhoneSimulator" ; then
+        CFLAGS="-isysroot $ios_sdk_root -arch $ios_arch -mios-simulator-version-min=$ios_deploy_version -I$ios_sdk_root/usr/include -pipe -Wno-implicit-int -Wno-return-type"
+    else
+        CFLAGS="-isysroot $ios_sdk_root -arch $ios_arch -miphoneos-version-min=$ios_deploy_version -I$ios_sdk_root/usr/include -pipe -Wno-implicit-int -Wno-return-type"
+    fi
+    
     CXXFLAGS="$CFLAGS"
     CPPFLAGS="$CFLAGS"
 
