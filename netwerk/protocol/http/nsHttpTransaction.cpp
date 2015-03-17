@@ -1767,7 +1767,7 @@ nsHttpTransaction::ReleaseBlockingTransaction()
 
 class DeleteHttpTransaction : public nsRunnable {
 public:
-    DeleteHttpTransaction(nsHttpTransaction *trans)
+    explicit DeleteHttpTransaction(nsHttpTransaction *trans)
         : mTrans(trans)
     {}
 
