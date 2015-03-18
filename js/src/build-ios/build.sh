@@ -56,7 +56,7 @@ mv js/src/libjs_static.a js/src/libjs_static.x86_64.a
             --disable-gcgenerational --disable-exact-rooting
 make -j$cpus
 if (( $? )) ; then
-    echo "error when compiling iOS version of the library"
+    echo "error when compiling armv7 (iOS version) of the library"
     exit
 fi
 mv js/src/libjs_static.a js/src/libjs_static.armv7.a
@@ -73,7 +73,7 @@ mv js/src/libjs_static.a js/src/libjs_static.armv7.a
             --disable-gcgenerational --disable-exact-rooting
 make -j$cpus
 if (( $? )) ; then
-    echo "error when compiling iOS version of the library"
+    echo "error when compiling armv7s (iOS version) of the library"
     exit
 fi
 mv js/src/libjs_static.a js/src/libjs_static.armv7s.a
@@ -88,7 +88,7 @@ mv js/src/libjs_static.a js/src/libjs_static.armv7s.a
             --disable-gcgenerational --disable-exact-rooting
 make -j$cpus
 if (( $? )) ; then
-   echo "error when compiling iOS version of the library"
+   echo "error when compiling arm64 (iOS version) of the library"
    exit
 fi
 mv js/src/libjs_static.a js/src/libjs_static.arm64.a

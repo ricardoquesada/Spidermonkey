@@ -589,34 +589,10 @@ nsBrowserContentHandler.prototype = {
                                .getService(Components.interfaces.nsISessionStartup);
             willRestoreSession = ss.isAutomaticRestoreEnabled();
 
-            // Temporary case for 33.X anniversary release's "panic button" (bug 1077643)
-            let locale = "en-US";
-            try {
-              locale = Services.prefs.getCharPref("general.useragent.locale");
-            } catch (e) {}
-
-            // We only want to show if our locale is in the pref privacy.panicButton.enabledLocales
-            // and the privacy.panicButton.enabled pref is set.
-            let featureEnabled;
-            let enabledLocales = [];
-            try {
-              featureEnabled = Services.prefs.getBoolPref("privacy.panicButton.enabled");
-              enabledLocales = Services.prefs.getCharPref("privacy.panicButton.enabledLocales").split(" ");
-            } catch (ex) {}
-            if (featureEnabled && enabledLocales.indexOf(locale) != -1) {
-              // Note we don't pass %OLD_VERSION to formatURL - while it will
-              // not replace it with anything, it will complain about the
-              // unknown value.
-              overridePage = Services.urlFormatter.formatURL(
-                "https://www.mozilla.org/%LOCALE%/firefox/%VERSION%/whatsnew/"
-              ) + "?oldversion=%OLD_VERSION%";
-            }
-            // End of temporary 33.x anniversary code.
-
-// The override page being specified in startup.homepage_override_url is
-// temporarily disabled while the 33.x code above is in place.
-// (But we still let the updater specify a page, just in case...)
-//            overridePage = Services.urlFormatter.formatURLPref("startup.homepage_override_url");
+            // Only show the whatsnew page if the new search UI is active
+            // This is a one-off hack for Firefox 34
+            if (Services.prefs.getBoolPref("browser.search.showOneOffButtons"))
+              overridePage = Services.urlFormatter.formatURLPref("startup.homepage_override_url");
             if (prefb.prefHasUserValue("app.update.postupdate"))
               overridePage = getPostUpdateOverridePage(overridePage);
 
@@ -809,9 +785,7 @@ nsDefaultCommandLineHandler.prototype = {
       Components.utils.reportError(e);
     }
 
-    count = cmdLine.length;
-
-    for (i = 0; i < count; ++i) {
+    for (let i = 0; i < cmdLine.length; ++i) {
       var curarg = cmdLine.getArgument(i);
       if (curarg.match(/^-/)) {
         Components.utils.reportError("Warning: unrecognized command line flag " + curarg + "\n");

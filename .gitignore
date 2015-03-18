@@ -51,6 +51,7 @@ js/src/build-osx/*
 js/src/build-linux/*
 !js/src/build-android/build.sh
 !js/src/build-ios/build.sh
+!js/src/build-ios/copy-header.sh
 !js/src/build-win32/build.sh
 !js/src/build-osx/build.sh
 !js/src/build-linux/build.sh

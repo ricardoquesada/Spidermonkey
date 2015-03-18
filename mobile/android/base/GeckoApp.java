@@ -26,6 +26,7 @@ import java.util.regex.Pattern;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.mozilla.gecko.AppConstants.Versions;
 import org.mozilla.gecko.GeckoProfileDirectories.NoMozillaDirectoryException;
 import org.mozilla.gecko.db.BrowserDB;
 import org.mozilla.gecko.favicons.Favicons;
@@ -80,7 +81,6 @@ import android.hardware.SensorEventListener;
 import android.location.Location;
 import android.location.LocationListener;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.PowerManager;
@@ -187,14 +187,14 @@ public abstract class GeckoApp
     private HashMap<String, PowerManager.WakeLock> mWakeLocks = new HashMap<String, PowerManager.WakeLock>();
 
     protected boolean mShouldRestore;
-    protected boolean mInitialized = false;
+    protected boolean mInitialized;
     private Telemetry.Timer mJavaUiStartupTimer;
     private Telemetry.Timer mGeckoReadyStartupTimer;
 
     private String mPrivateBrowsingSession;
 
-    private volatile HealthRecorder mHealthRecorder = null;
-    private volatile Locale mLastLocale = null;
+    private volatile HealthRecorder mHealthRecorder;
+    private volatile Locale mLastLocale;
 
     private EventListener mWebappEventListener;
 
@@ -297,13 +297,15 @@ public abstract class GeckoApp
 
     @Override
     public void invalidateOptionsMenu() {
-        if (mMenu == null)
+        if (mMenu == null) {
             return;
+        }
 
         onPrepareOptionsMenu(mMenu);
 
-        if (Build.VERSION.SDK_INT >= 11)
+        if (Versions.feature11Plus) {
             super.invalidateOptionsMenu();
+        }
     }
 
     @Override
@@ -317,10 +319,11 @@ public abstract class GeckoApp
 
     @Override
     public MenuInflater getMenuInflater() {
-        if (Build.VERSION.SDK_INT >= 11)
+        if (Versions.feature11Plus) {
             return new GeckoMenuInflater(this);
-        else
+        } else {
             return super.getMenuInflater();
+        }
     }
 
     public MenuPanel getMenuPanel() {
@@ -371,7 +374,7 @@ public abstract class GeckoApp
 
     @Override
     public View onCreatePanelView(int featureId) {
-        if (Build.VERSION.SDK_INT >= 11 && featureId == Window.FEATURE_OPTIONS_PANEL) {
+        if (Versions.feature11Plus && featureId == Window.FEATURE_OPTIONS_PANEL) {
             if (mMenuPanel == null) {
                 mMenuPanel = new MenuPanel(this, null);
             } else {
@@ -387,7 +390,7 @@ public abstract class GeckoApp
 
     @Override
     public boolean onCreatePanelMenu(int featureId, Menu menu) {
-        if (Build.VERSION.SDK_INT >= 11 && featureId == Window.FEATURE_OPTIONS_PANEL) {
+        if (Versions.feature11Plus && featureId == Window.FEATURE_OPTIONS_PANEL) {
             if (mMenuPanel == null) {
                 mMenuPanel = (MenuPanel) onCreatePanelView(featureId);
             }
@@ -406,8 +409,9 @@ public abstract class GeckoApp
 
     @Override
     public boolean onPreparePanel(int featureId, View view, Menu menu) {
-        if (Build.VERSION.SDK_INT >= 11 && featureId == Window.FEATURE_OPTIONS_PANEL)
+        if (Versions.feature11Plus && featureId == Window.FEATURE_OPTIONS_PANEL) {
             return onPrepareOptionsMenu(menu);
+        }
 
         return super.onPreparePanel(featureId, view, menu);
     }
@@ -419,7 +423,7 @@ public abstract class GeckoApp
             GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("FullScreen:Exit", null));
         }
 
-        if (Build.VERSION.SDK_INT >= 11 && featureId == Window.FEATURE_OPTIONS_PANEL) {
+        if (Versions.feature11Plus && featureId == Window.FEATURE_OPTIONS_PANEL) {
             if (mMenu == null) {
                 // getMenuPanel() will force the creation of the menu as well
                 MenuPanel panel = getMenuPanel();
@@ -483,7 +487,7 @@ public abstract class GeckoApp
 
     @Override
     public void onOptionsMenuClosed(Menu menu) {
-        if (Build.VERSION.SDK_INT >= 11) {
+        if (Versions.feature11Plus) {
             mMenuPanel.removeAllViews();
             mMenuPanel.addView((GeckoMenu) mMenu);
         }
@@ -616,26 +620,19 @@ public abstract class GeckoApp
             // Context: Sharing via chrome list (no explicit session is active)
             Telemetry.sendUIEvent(TelemetryContract.Event.SHARE, TelemetryContract.Method.LIST);
 
-        } else if ("Shortcut:Remove".equals(event)) {
-            final String url = message.getString("url");
-            final String origin = message.getString("origin");
-            final String title = message.getString("title");
-            final String type = message.getString("shortcutType");
-            GeckoAppShell.removeShortcut(title, url, origin, type);
-
         } else if ("SystemUI:Visibility".equals(event)) {
             setSystemUiVisible(message.getBoolean("visible"));
 
         } else if ("Toast:Show".equals(event)) {
             final String msg = message.getString("message");
+            final String duration = message.getString("duration");
             final NativeJSObject button = message.optObject("button", null);
             if (button != null) {
                 final String label = button.optString("label", "");
                 final String icon = button.optString("icon", "");
                 final String id = button.optString("id", "");
-                showButtonToast(msg, label, icon, id);
+                showButtonToast(msg, duration, label, icon, id);
             } else {
-                final String duration = message.getString("duration");
                 showNormalToast(msg, duration);
             }
 
@@ -811,12 +808,14 @@ public abstract class GeckoApp
         return mToast;
     }
 
-    void showButtonToast(final String message, final String buttonText,
-                         final String buttonIcon, final String buttonId) {
+    void showButtonToast(final String message, final String duration,
+                         final String buttonText, final String buttonIcon,
+                         final String buttonId) {
         BitmapUtils.getDrawable(GeckoApp.this, buttonIcon, new BitmapUtils.BitmapLoader() {
             @Override
             public void onBitmapFound(final Drawable d) {
-                getButtonToast().show(false, message, buttonText, d, new ButtonToast.ToastListener() {
+                final int toastDuration = duration.equals("long") ? ButtonToast.LENGTH_LONG : ButtonToast.LENGTH_SHORT;
+                getButtonToast().show(false, message, toastDuration ,buttonText, d, new ButtonToast.ToastListener() {
                     @Override
                     public void onButtonClicked() {
                         GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Toast:Click", buttonId));
@@ -1079,8 +1078,9 @@ public abstract class GeckoApp
                                 WindowManager.LayoutParams.FLAG_FULLSCREEN : 0,
                                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
-                if (Build.VERSION.SDK_INT >= 11)
+                if (Versions.feature11Plus) {
                     window.getDecorView().setSystemUiVisibility(fullscreen ? 1 : 0);
+                }
             }
         });
     }
@@ -1369,7 +1369,7 @@ public abstract class GeckoApp
 
         if (mCameraView == null) {
             // Pre-ICS devices need the camera surface in a visible layout.
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
+            if (Versions.preICS) {
                 mCameraView = new SurfaceView(this);
                 ((SurfaceView)mCameraView).getHolder().setType(SurfaceHolder.SURFACE_TYPE_PUSH_BUFFERS);
             }
@@ -1538,7 +1538,6 @@ public abstract class GeckoApp
             "Sanitize:ClearHistory",
             "Session:StatePurged",
             "Share:Text",
-            "Shortcut:Remove",
             "SystemUI:Visibility",
             "Toast:Show",
             "ToggleChrome:Focus",
@@ -1769,7 +1768,7 @@ public abstract class GeckoApp
 
         // Try to make it fully transparent.
         if (mCameraView != null && (mCameraView instanceof SurfaceView)) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
+            if (Versions.feature11Plus) {
                 mCameraView.setAlpha(0.0f);
             }
             ViewGroup mCameraLayout = (ViewGroup) findViewById(R.id.camera_layout);
@@ -1940,8 +1939,12 @@ public abstract class GeckoApp
             refreshChrome();
         }
 
-        // User may have enabled/disabled accessibility.
-        GeckoAccessibility.updateAccessibilitySettings(this);
+        if (!Versions.feature14Plus) {
+            // Update accessibility settings in case it has been changed by the
+            // user. On API14+, this is handled in LayerView by registering an
+            // accessibility state change listener.
+            GeckoAccessibility.updateAccessibilitySettings(this);
+        }
 
         if (mAppStateListeners != null) {
             for (GeckoAppShell.AppStateListener listener: mAppStateListeners) {
@@ -2071,7 +2074,6 @@ public abstract class GeckoApp
             "Sanitize:ClearHistory",
             "Session:StatePurged",
             "Share:Text",
-            "Shortcut:Remove",
             "SystemUI:Visibility",
             "Toast:Show",
             "ToggleChrome:Focus",
@@ -2102,6 +2104,7 @@ public abstract class GeckoApp
             mTextSelection.destroy();
         NotificationHelper.destroy();
         IntentHelper.destroy();
+        GeckoNetworkManager.destroy();
 
         if (SmsManager.getInstance() != null) {
             SmsManager.getInstance().stop();
@@ -2614,7 +2617,7 @@ public abstract class GeckoApp
     }
 
     private void setSystemUiVisible(final boolean visible) {
-        if (Build.VERSION.SDK_INT < 14) {
+        if (Versions.preICS) {
             return;
         }
 
