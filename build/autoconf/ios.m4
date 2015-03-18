@@ -52,12 +52,26 @@ iPhoneOS|iPhoneSimulator)
         target=i386-darwin
         TARGET_CPU=i386
     else
-        if test -z "$ios_arch" ; then
+        if test "$ios_arch" == "armv7"; then
+            CPU_ARCH=armv7
             ios_arch=armv7
+            TARGET_CPU=armv7
         fi
+
+        if test "$ios_arch" == "armv7s"; then
+            CPU_ARCH=armv7s
+            ios_arch=armv7s
+            TARGET_CPU=armv7s
+        fi
+
+        if test "$ios_arch" == "armv64"; then
+            CPU_ARCH=arm64
+            ios_arch=arm64
+            TARGET_CPU=arm64
+        fi
+
         target_name=arm
         target=arm-darwin
-        TARGET_CPU=armv7
         DISABLE_YARR_JIT=1
         AC_SUBST(DISABLE_YARR_JIT)
     fi
@@ -74,14 +88,14 @@ iPhoneOS|iPhoneSimulator)
     fi
 
     dnl set the compilers
-    AS="xcrun -sdk iphoneos as"
-    CC="xcrun -sdk iphoneos clang"
-    CXX="xcrun -sdk iphoneos clang++"
-    CPP="xcrun -sdk iphoneos clang -E"
-    LD="xcrun -sdk iphoneos ld"
-    AR="xcrun -sdk iphoneos ar"
-    RANLIB="xcrun -sdk iphoneos ranlib"
-    STRIP="xcrun -sdk iphoneos strip"
+    AS="$ios_toolchain"/as
+    CC="$ios_toolchain"/clang
+    CXX="$ios_toolchain"/clang++
+    CPP="$ios_toolchain/clang -E"
+    LD="$ios_toolchain"/ld
+    AR="$ios_toolchain"/ar
+    RANLIB="$ios_toolchain"/ranlib
+    STRIP="$ios_toolchain"/strip
     LDFLAGS="-isysroot $ios_sdk_root -arch $ios_arch -v"
 
     if test "$ios_target" == "iPhoneSimulator" ; then
