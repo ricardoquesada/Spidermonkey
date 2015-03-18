@@ -522,6 +522,14 @@ AsmJSExceptionHandler(LPEXCEPTION_POINTERS exception)
 }
 
 #elif defined(XP_MACOSX)
+#ifdef JS_CPU_ARM
+// (obastemur) IOS has the same API etc. for thread state ops.
+// We must be able to use OSX implementation for IOS.
+// retargeting X86 to ARM
+#define x86_THREAD_STATE ARM_THREAD_STATE
+#define x86_THREAD_STATE_COUNT ARM_THREAD_STATE_COUNT
+#define x86_thread_state_t arm_thread_state_t
+#endif
 # include <mach/exc.h>
 
 static uint8_t **
