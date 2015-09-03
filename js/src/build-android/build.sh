@@ -40,13 +40,11 @@ host_arch=`uname -m`
 build_with_arch()
 {
 
-NDK_ROOT=$HOME/bin/android-ndk
-
 rm -rf dist
 rm -f ./config.cache
 
 ../configure --with-android-ndk=$NDK_ROOT \
-             --with-android-sdk=$HOME/bin/android-sdk \
+             --with-android-sdk=$ANDROID_SDK_ROOT \
              --with-android-toolchain=$NDK_ROOT/toolchains/${TOOLS_ARCH}-${GCC_VERSION}/prebuilt/${host_os}-${host_arch} \
              --with-android-version=9 \
              --enable-application=mobile/android \
@@ -58,7 +56,7 @@ rm -f ./config.cache
              --disable-tests \
              --enable-strip \
              --enable-install-strip \
-             --disable-debug 
+             --disable-debug
 
 # make
 make -j15
@@ -81,7 +79,7 @@ if [[ $release ]]; then
     cp -L dist/lib/libjs_static.a "$RELEASE_DIR/lib/$RELEASE_ARCH_DIR/libjs_static.a"
 
 # strip unneeded symbols
-    $HOME/bin/android-ndk/toolchains/${TOOLS_ARCH}-${GCC_VERSION}/prebuilt/${host_os}-${host_arch}/bin/${TOOLNAME_PREFIX}-strip \
+    $NDK_ROOT/toolchains/${TOOLS_ARCH}-${GCC_VERSION}/prebuilt/${host_os}-${host_arch}/bin/${TOOLNAME_PREFIX}-strip \
         --strip-unneeded "$RELEASE_DIR/lib/$RELEASE_ARCH_DIR/libjs_static.a"
 fi
 
@@ -92,7 +90,7 @@ TOOLS_ARCH=arm-linux-androideabi
 TARGET_NAME=arm-linux-androideabi
 CPU_ARCH=armv6
 RELEASE_ARCH_DIR=armeabi
-GCC_VERSION=4.6
+GCC_VERSION=4.9
 TOOLNAME_PREFIX=arm-linux-androideabi
 build_with_arch
 
@@ -101,7 +99,7 @@ TOOLS_ARCH=arm-linux-androideabi
 TARGET_NAME=arm-linux-androideabi
 CPU_ARCH=armv7-a
 RELEASE_ARCH_DIR=armeabi-v7a
-GCC_VERSION=4.6
+GCC_VERSION=4.9
 TOOLNAME_PREFIX=arm-linux-androideabi
 build_with_arch
 
@@ -110,6 +108,6 @@ TOOLS_ARCH=x86
 TARGET_NAME=i686-linux-android
 CPU_ARCH=i686
 RELEASE_ARCH_DIR=x86
-GCC_VERSION=4.6
+GCC_VERSION=4.9
 TOOLNAME_PREFIX=i686-linux-android
 build_with_arch
