@@ -59,7 +59,7 @@ rm -f ./config.cache
              --disable-debug
 
 # make
-make -j15
+make -j15 -s -w
 
 if [[ $develop ]]; then
     rm ../../../include
@@ -90,7 +90,7 @@ TOOLS_ARCH=arm-linux-androideabi
 TARGET_NAME=arm-linux-androideabi
 CPU_ARCH=armv6
 RELEASE_ARCH_DIR=armeabi
-GCC_VERSION=4.9
+GCC_VERSION=4.8
 TOOLNAME_PREFIX=arm-linux-androideabi
 build_with_arch
 
@@ -99,7 +99,7 @@ TOOLS_ARCH=arm-linux-androideabi
 TARGET_NAME=arm-linux-androideabi
 CPU_ARCH=armv7-a
 RELEASE_ARCH_DIR=armeabi-v7a
-GCC_VERSION=4.9
+GCC_VERSION=4.8
 TOOLNAME_PREFIX=arm-linux-androideabi
 build_with_arch
 
@@ -108,6 +108,6 @@ TOOLS_ARCH=x86
 TARGET_NAME=i686-linux-android
 CPU_ARCH=i686
 RELEASE_ARCH_DIR=x86
-GCC_VERSION=4.9
+GCC_VERSION=4.8
 TOOLNAME_PREFIX=i686-linux-android
 build_with_arch
