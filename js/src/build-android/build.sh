@@ -46,7 +46,6 @@ rm -f ./config.cache
 ../configure --with-android-ndk=$NDK_ROOT \
              --with-android-sdk=$ANDROID_SDK_ROOT \
              --with-android-toolchain=$NDK_ROOT/toolchains/${TOOLS_ARCH}-${GCC_VERSION}/prebuilt/${host_os}-${host_arch} \
-             --with-android-platform=$NDK_ROOT/platforms/android-${ANDROID_VERSION} \
              --with-android-version=${ANDROID_VERSION} \
              --enable-application=mobile/android \
              --with-android-gnu-compiler-version=${GCC_VERSION} \
@@ -89,7 +88,7 @@ fi
 # Build with arm64
 TOOLS_ARCH=aarch64-linux-android
 TARGET_NAME=aarch64-linux-android
-CPU_ARCH=arm64
+CPU_ARCH=armv8-a
 ANDROID_VERSION=21
 RELEASE_ARCH_DIR=arm64-v8a
 GCC_VERSION=4.9

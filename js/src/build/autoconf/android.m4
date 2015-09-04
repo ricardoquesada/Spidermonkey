@@ -100,7 +100,7 @@ case "$target" in
         AC_MSG_CHECKING([for android platform directory])
 
         case "$target_cpu" in
-        arm64)
+        aarch64)
             target_name=arm64
             ;;
         arm)
@@ -187,12 +187,15 @@ case "$target" in
 esac
 
 ])
-    
+
 AC_DEFUN([MOZ_ANDROID_STLPORT],
 [
 
 if test "$OS_TARGET" = "Android" -a -z "$gonkdir"; then
     case "${CPU_ARCH}-${MOZ_ARCH}" in
+    *armv8-a)
+        ANDROID_CPU_ARCH=arm64-v8a
+        ;;
     arm-armv7*)
         ANDROID_CPU_ARCH=armeabi-v7a
         ;;
