@@ -1,6 +1,6 @@
 # options
 develop=
-release=
+release=1
 RELEASE_DIR="spidermonkey-android"
 
 usage(){
