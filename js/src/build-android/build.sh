@@ -59,7 +59,7 @@ rm -f ./config.cache
              --disable-debug
 
 # make
-make -j15 -s -w
+make -j8 -s -w
 
 if [[ $develop ]]; then
     rm ../../../include
