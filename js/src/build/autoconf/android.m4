@@ -39,6 +39,9 @@ MOZ_ARG_WITH_STRING(android-platform,
     android_platform=$withval)
 
 case "$target" in
+aarch64-*linux-android)
+    android_tool_prefix="aarch64-linux-android"
+    ;;
 arm-linux*-android*|*-linuxandroid*)
     android_tool_prefix="arm-linux-androideabi"
     ;;
@@ -97,6 +100,9 @@ case "$target" in
         AC_MSG_CHECKING([for android platform directory])
 
         case "$target_cpu" in
+        arm64)
+            target_name=arm64
+            ;;
         arm)
             target_name=arm
             ;;
