@@ -3,8 +3,8 @@
 ## this script is supposed to be run one directory below the original configure script
 ## usually in build-ios
 
-MIN_IOS_VERSION=5.1.1
-IOS_SDK=8.1
+MIN_IOS_VERSION=7.0
+IOS_SDK=9.2
 
 LIPO="xcrun -sdk iphoneos lipo"
 STRIP="xcrun -sdk iphoneos strip"
