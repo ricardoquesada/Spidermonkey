@@ -62,7 +62,12 @@ rm -f ./config.cache
              --disable-tests \
              --enable-strip \
              --enable-install-strip \
-             --disable-debug \
+             --disable-gcgenerational \
+             --disable-exact-rooting \
+             --disable-root-analysis \
+             --enable-gcincremental \
+             --enable-debug \
+             --disable-gczeal \
              --without-intl-api \
              --disable-threadsafe
 
@@ -87,7 +92,7 @@ if [[ $release ]]; then
     cp -L dist/lib/libjs_static.a "$RELEASE_DIR/lib/$RELEASE_ARCH_DIR/libjs_static.a"
 
 # strip unneeded symbols
-    $HOME/bin/android-ndk/toolchains/${TOOLS_ARCH}-${GCC_VERSION}/prebuilt/${host_os}-${host_arch}/bin/${TOOLNAME_PREFIX}-strip \
+    $NDK_ROOT/toolchains/${TOOLS_ARCH}-${GCC_VERSION}/prebuilt/${host_os}-${host_arch}/bin/${TOOLNAME_PREFIX}-strip \
         --strip-unneeded "$RELEASE_DIR/lib/$RELEASE_ARCH_DIR/libjs_static.a"
 fi
 
