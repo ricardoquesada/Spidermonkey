@@ -40,7 +40,7 @@ namespace JSC {
 
 size_t ExecutableAllocator::determinePageSize()
 {
-    return getpagesize();
+    return sysconf(_SC_PAGESIZE);
 }
 
 ExecutablePool::Allocation ExecutableAllocator::systemAlloc(size_t n)
