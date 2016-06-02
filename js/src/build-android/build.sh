@@ -66,7 +66,7 @@ rm -f ./config.cache
              --disable-exact-rooting \
              --disable-root-analysis \
              --enable-gcincremental \
-             --enable-debug \
+             --disable-debug \
              --disable-gczeal \
              --without-intl-api \
              --disable-threadsafe
